@@ -4,6 +4,7 @@ import arcade
 
 from configs.sim_config import SimConfig, build_sim_config
 from src.rendering import EnvironmentRenderer
+from src.ui import UiRenderer
 from src.world import World
 
 
@@ -14,6 +15,7 @@ class NeatGameView(arcade.View):
         self.world = World(self.config)
         self.environment_renderer = EnvironmentRenderer(self.config)
         self.background_color = self.config.theme.window_background
+        self.ui_renderer = UiRenderer(self.config)
 
     def on_show_view(self) -> None:
         if self.window is not None:
@@ -34,7 +36,7 @@ class NeatGameView(arcade.View):
     def on_mouse_press(
         self, x: int, y: int, button: int, modifiers: int
     ) -> bool | None:
-        self.world.select_creature_at(x, y)
+        # self.world.select_creature_at(x, y)
         return super().on_mouse_press(x, y, button, modifiers)
 
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:
