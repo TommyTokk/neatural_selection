@@ -5,6 +5,7 @@ from random import Random
 
 from configs.sim_config import SimConfig
 import src.utils as ut
+from src.creature import Creature
 
 from src.layout import ScreenLayout, build_screen_layout
 

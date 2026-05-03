@@ -40,7 +40,7 @@ class NeatGameView(arcade.View):
         return super().on_mouse_press(x, y, button, modifiers)
 
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:
-        if symbol == arcade.key.V:
+        if symbol == arcade.key.D:
             self.world.toggle_debug_vision()
         return super().on_key_press(symbol, modifiers)
 

@@ -14,21 +14,21 @@ class UiRenderer:
     def draw(self, world: World) -> None:
         self._draw_top_bar(world)
         self._draw_sidebar(world)
-        self._draw_bottom_bar(world)
 
     def _draw_top_bar(self, world: World) -> None:
         bounds = world.layout.top_bar
         self._draw_panel(bounds)
 
-        arcade.draw_text(
-            "NEAT Game Of Life",
+        self._draw_text(
+            "Neat Game Of Life",
             bounds.left + 18,
             bounds.top - 34,
             self.theme.text_primary,
-            24,
+            24,            
             bold=True,
         )
-        arcade.draw_text(
+
+        self._draw_text(
             "Window container with nested environment + UI panels",
             bounds.left + 18,
             bounds.top - 60,
@@ -37,7 +37,7 @@ class UiRenderer:
         )
 
         status = "Debug vision on" if world.debug_vision_enabled else "Debug vision off"
-        arcade.draw_text(
+        self._draw_text(
             status,
             bounds.right - 180,
             bounds.top - 40,
@@ -47,11 +47,11 @@ class UiRenderer:
         )
 
     def _draw_sidebar(self, world: World) -> None:
-        bounds = world.layout.right_sidebar
-        self._draw_panel(bounds)
+        bounds = world.layout.left_sidebar
+        self._draw_panel(bounds, fill_color=self.theme.panel_background_alt)
 
         title_y = bounds.top - 28
-        arcade.draw_text(
+        self._draw_text(
             "Inspector",
             bounds.left + 18,
             title_y,
@@ -86,36 +86,6 @@ class UiRenderer:
         self._draw_card(third_card, "Controls")
         self._draw_controls(world, third_card)
 
-    def _draw_bottom_bar(self, world: World) -> None:
-        bounds = world.layout.bottom_bar
-        self._draw_panel(bounds)
-
-        arcade.draw_text(
-            "Prototype Notes",
-            bounds.left + 18,
-            bounds.top - 28,
-            self.theme.text_primary,
-            18,
-            bold=True,
-        )
-        arcade.draw_text(
-            "The center region is reserved for the actual ecosystem. The surrounding panels are ready for stats, debug controls, and future trait graphs.",
-            bounds.left + 18,
-            bounds.top - 58,
-            self.theme.text_muted,
-            12,
-            width=bounds.width - 36,
-            multiline=True,
-        )
-        arcade.draw_text(
-            f"Window: {int(world.layout.window.width)} x {int(world.layout.window.height)}    "
-            f"Environment: {int(world.layout.environment.width)} x {int(world.layout.environment.height)}",
-            bounds.left + 18,
-            bounds.bottom + 20,
-            self.theme.accent,
-            11,
-        )
-
     def _draw_selected_creature(self, world: World, bounds: arcade.Rect) -> None:
         selected = world.selected_creature
         lines: list[str]
@@ -135,7 +105,7 @@ class UiRenderer:
 
         y = bounds.top - 50
         for line in lines:
-            arcade.draw_text(
+            self._draw_text(
                 line,
                 bounds.left + 16,
                 y,
@@ -156,7 +126,7 @@ class UiRenderer:
         ]
         y = bounds.top - 50
         for line in lines:
-            arcade.draw_text(
+            self._draw_text(
                 line,
                 bounds.left + 16,
                 y,
@@ -173,7 +143,7 @@ class UiRenderer:
         ]
         y = bounds.top - 50
         for line in lines:
-            arcade.draw_text(
+            self._draw_text(
                 line,
                 bounds.left + 16,
                 y,
@@ -184,40 +154,26 @@ class UiRenderer:
             )
             y -= 28
 
-    def _draw_panel(self, bounds: arcade.Rect) -> None:
-        arcade.draw_lrbt_rectangle_filled(
-            bounds.left,
-            bounds.right,
-            bounds.bottom,
-            bounds.top,
-            self.theme.panel_background,
-        )
-        arcade.draw_lrbt_rectangle_outline(
-            bounds.left,
-            bounds.right,
-            bounds.bottom,
-            bounds.top,
+    def _draw_panel(
+        self, bounds: arcade.Rect, fill_color: arcade.Color | tuple[int, ...] | None = None
+    ) -> None:
+        self._draw_rounded_rect(
+            bounds,
+            fill_color or self.theme.panel_background,
             self.theme.panel_border,
-            border_width=3,
+            self.config.layout.panel_radius,
+            2,
         )
 
     def _draw_card(self, bounds: arcade.Rect, title: str) -> None:
-        arcade.draw_lrbt_rectangle_filled(
-            bounds.left,
-            bounds.right,
-            bounds.bottom,
-            bounds.top,
+        self._draw_rounded_rect(
+            bounds,
             self.theme.card_background,
-        )
-        arcade.draw_lrbt_rectangle_outline(
-            bounds.left,
-            bounds.right,
-            bounds.bottom,
-            bounds.top,
             self.theme.panel_border,
-            border_width=2,
+            self.config.layout.card_radius,
+            2,
         )
-        arcade.draw_text(
+        self._draw_text(
             title,
             bounds.left + 16,
             bounds.top - 24,
@@ -225,3 +181,70 @@ class UiRenderer:
             14,
             bold=True,
         )
+
+    def _draw_text(
+        self,
+        text: str,
+        x: float,
+        y: float,
+        color: arcade.Color | tuple[int, ...],
+        size: float,
+        *,
+        bold: bool = False,
+        width: float | None = None,
+        multiline: bool = False,
+    ) -> None:
+        arcade.Text(
+            text,
+            round(x),
+            round(y),
+            color,
+            size,
+            font_name=("Verdana", "DejaVu Sans", "Arial"),
+            bold=bold,
+            width=width,
+            multiline=multiline,
+        ).draw()
+
+    def _draw_rounded_rect(
+        self,
+        bounds: arcade.Rect,
+        fill_color: arcade.Color | tuple[int, ...],
+        border_color: arcade.Color | tuple[int, ...],
+        radius: float,
+        border_width: float,
+    ) -> None:
+        self._draw_rounded_rect_fill(bounds, border_color, radius)
+        inner = arcade.LBWH(
+            bounds.left + border_width,
+            bounds.bottom + border_width,
+            max(0, bounds.width - border_width * 2),
+            max(0, bounds.height - border_width * 2),
+        )
+        self._draw_rounded_rect_fill(inner, fill_color, max(0, radius - border_width))
+
+    def _draw_rounded_rect_fill(
+        self,
+        bounds: arcade.Rect,
+        color: arcade.Color | tuple[int, ...],
+        radius: float,
+    ) -> None:
+        radius = min(radius, bounds.width / 2, bounds.height / 2)
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left + radius,
+            bounds.right - radius,
+            bounds.bottom,
+            bounds.top,
+            color,
+        )
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left,
+            bounds.right,
+            bounds.bottom + radius,
+            bounds.top - radius,
+            color,
+        )
+        arcade.draw_circle_filled(bounds.left + radius, bounds.bottom + radius, radius, color)
+        arcade.draw_circle_filled(bounds.right - radius, bounds.bottom + radius, radius, color)
+        arcade.draw_circle_filled(bounds.left + radius, bounds.top - radius, radius, color)
+        arcade.draw_circle_filled(bounds.right - radius, bounds.top - radius, radius, color)

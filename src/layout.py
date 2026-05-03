@@ -12,8 +12,7 @@ class ScreenLayout:
     window: arcade.Rect
     top_bar: arcade.Rect
     environment: arcade.Rect
-    right_sidebar: arcade.Rect
-    bottom_bar: arcade.Rect
+    left_sidebar: arcade.Rect
 
 
 def build_screen_layout(
@@ -31,19 +30,15 @@ def build_screen_layout(
     usable_height = usable_top - usable_bottom
 
     top_height = min(float(config.top_bar_height), max(64.0, usable_height * 0.16))
-    bottom_height = min(
-        float(config.bottom_bar_height), max(100.0, usable_height * 0.2)
-    )
     top_bar = arcade.LBWH(
         usable_left, usable_top - top_height, usable_width, top_height
     )
-    bottom_bar = arcade.LBWH(usable_left, usable_bottom, usable_width, bottom_height)
-    content_bottom = bottom_bar.top + gap
+    content_bottom = usable_bottom
     content_top = top_bar.bottom - gap
     content_height = max(100.0, content_top - content_bottom)
 
     sidebar_width = min(
-        float(config.right_panel_width),
+        float(config.left_panel_width),
         max(float(config.min_sidebar_width), usable_width * 0.28),
     )
     environment_width = usable_width - sidebar_width - gap
@@ -55,11 +50,11 @@ def build_screen_layout(
         )
         environment_width = max(280.0, usable_width - sidebar_width - gap)
 
-    environment = arcade.LBWH(
-        usable_left, content_bottom, environment_width, content_height
+    left_sidebar = arcade.LBWH(
+        usable_left, content_bottom, sidebar_width, content_height
     )
-    right_sidebar = arcade.LBWH(
-        environment.right + gap, content_bottom, sidebar_width, content_height
+    environment = arcade.LBWH(
+        left_sidebar.right + gap, content_bottom, environment_width, content_height
     )
     window = arcade.LBWH(0, 0, window_width, window_height)
 
@@ -67,6 +62,5 @@ def build_screen_layout(
         window=window,
         top_bar=top_bar,
         environment=environment,
-        right_sidebar=right_sidebar,
-        bottom_bar=bottom_bar,
+        left_sidebar=left_sidebar,
     )

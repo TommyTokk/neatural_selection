@@ -15,39 +15,44 @@ class DisplayConfig:
 
 @dataclass(slots=True)
 class LayoutConfig:
-    outer_padding: int = 24
-    panel_gap: int = 18
-    top_bar_height: int = 84
-    right_panel_width: int = 320
-    bottom_bar_height: int = 140
+    outer_padding: int = 20
+    panel_gap: int = 16
+    top_bar_height: int = 76
+    left_panel_width: int = 320
     min_environment_width: int = 420
     min_sidebar_width: int = 240
+    panel_radius: int = 18
+    card_radius: int = 14
+    environment_radius: int = 20
 
 
 @dataclass(slots=True)
 class ThemeConfig:
-    window_background: Color = (245, 244, 238)
-    panel_background: Color = (250, 249, 245)
-    panel_border: Color = (58, 67, 78)
-    environment_background: Color = (230, 237, 229)
-    environment_grid: Color = (195, 207, 194)
-    environment_border: Color = (43, 56, 47)
-    accent: Color = (69, 114, 92)
-    accent_soft: Color = (179, 214, 190)
-    text_primary: Color = (31, 38, 46)
-    text_muted: Color = (97, 108, 121)
-    herbivore_fill: Color = (108, 167, 108)
-    herbivore_outline: Color = (31, 74, 40)
-    selected_outline: Color = (224, 152, 54)
-    food_fill: Color = (118, 183, 84)
-    vision_fill: Color = (108, 167, 108, 50)
-    card_background: Color = (240, 237, 228)
+    window_background: Color = (18, 22, 30)
+    panel_background: Color = (224, 238, 247)
+    panel_background_alt: Color = (238, 230, 248)
+    panel_border: Color = (137, 153, 180)
+    environment_background: Color = (13, 21, 27)
+    environment_grid: Color = (38, 53, 61, 95)
+    environment_border: Color = (93, 126, 122)
+    environment_text: Color = (210, 232, 226)
+    environment_text_muted: Color = (132, 163, 164)
+    accent: Color = (76, 146, 132)
+    accent_soft: Color = (174, 223, 209)
+    text_primary: Color = (29, 36, 48)
+    text_muted: Color = (87, 101, 122)
+    herbivore_fill: Color = (142, 203, 161)
+    herbivore_outline: Color = (44, 88, 67)
+    selected_outline: Color = (247, 185, 109)
+    food_fill: Color = (192, 226, 130)
+    vision_fill: Color = (142, 203, 161, 42)
+    card_background: Color = (248, 244, 232)
 
 
 @dataclass(slots=True)
 class DebugConfig:
-    vision_toggle_label: str = "V"
-    show_debug_vision_by_default: bool = True
+    vision_toggle_label: str = "D"
+    show_debug_vision_by_default: bool = False
 
 
 @dataclass(slots=True)
