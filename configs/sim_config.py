@@ -56,11 +56,20 @@ class DebugConfig:
 
 
 @dataclass(slots=True)
+class ZoomConfig:
+    default: float = 1.0
+    minimum: float = 0.5
+    maximum: float = 3.0
+    step: float = 0.12
+
+
+@dataclass(slots=True)
 class SimConfig:
     display: DisplayConfig = field(default_factory=DisplayConfig)
     layout: LayoutConfig = field(default_factory=LayoutConfig)
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
+    zoom: ZoomConfig = field(default_factory=ZoomConfig)
 
 
 def build_sim_config() -> SimConfig:

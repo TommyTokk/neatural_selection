@@ -10,6 +10,7 @@ class UiRenderer:
     def __init__(self, config: SimConfig) -> None:
         self.config = config
         self.theme = config.theme
+        self._text_cache: dict[str, arcade.Text] = {}
 
     def draw(self, world: World) -> None:
         self._draw_top_bar(world)
@@ -20,6 +21,7 @@ class UiRenderer:
         self._draw_panel(bounds)
 
         self._draw_text(
+            "top_title",
             "Neat Game Of Life",
             bounds.left + 18,
             bounds.top - 34,
@@ -29,6 +31,7 @@ class UiRenderer:
         )
 
         self._draw_text(
+            "top_subtitle",
             "Window container with nested environment + UI panels",
             bounds.left + 18,
             bounds.top - 60,
@@ -38,6 +41,7 @@ class UiRenderer:
 
         status = "Debug vision on" if world.debug_vision_enabled else "Debug vision off"
         self._draw_text(
+            "top_status",
             status,
             bounds.right - 180,
             bounds.top - 40,
@@ -52,6 +56,7 @@ class UiRenderer:
 
         title_y = bounds.top - 28
         self._draw_text(
+            "sidebar_title",
             "Inspector",
             bounds.left + 18,
             title_y,
@@ -104,8 +109,10 @@ class UiRenderer:
             ]
 
         y = bounds.top - 50
+        line_index = 0
         for line in lines:
             self._draw_text(
+                f"selected_line_{line_index}",
                 line,
                 bounds.left + 16,
                 y,
@@ -116,17 +123,21 @@ class UiRenderer:
                 bold=y == bounds.top - 50,
             )
             y -= 26
+            line_index += 1
 
     def _draw_environment_stats(self, world: World, bounds: arcade.Rect) -> None:
         lines = [
             f"Herbivores: {world.stats.herbivore_count}",
             f"Food nodes: {world.stats.food_count}",
             f"Elapsed time: {world.elapsed_time:0.1f}s",
+            f"Zoom: {world.environment_zoom:.2f}x",
             world.stats.generation_label,
         ]
         y = bounds.top - 50
+        line_index = 0
         for line in lines:
             self._draw_text(
+                f"stats_line_{line_index}",
                 line,
                 bounds.left + 16,
                 y,
@@ -134,6 +145,7 @@ class UiRenderer:
                 12,
             )
             y -= 24
+            line_index += 1
 
     def _draw_controls(self, world: World, bounds: arcade.Rect) -> None:
         lines = [
@@ -142,8 +154,10 @@ class UiRenderer:
             "Sidebar reserved for future controls.",
         ]
         y = bounds.top - 50
+        line_index = 0
         for line in lines:
             self._draw_text(
+                f"controls_line_{line_index}",
                 line,
                 bounds.left + 16,
                 y,
@@ -153,6 +167,7 @@ class UiRenderer:
                 multiline=True,
             )
             y -= 28
+            line_index += 1
 
     def _draw_panel(
         self, bounds: arcade.Rect, fill_color: arcade.Color | tuple[int, ...] | None = None
@@ -174,6 +189,7 @@ class UiRenderer:
             2,
         )
         self._draw_text(
+            f"card_title_{title}",
             title,
             bounds.left + 16,
             bounds.top - 24,
@@ -184,6 +200,7 @@ class UiRenderer:
 
     def _draw_text(
         self,
+        key: str,
         text: str,
         x: float,
         y: float,
@@ -194,17 +211,32 @@ class UiRenderer:
         width: float | None = None,
         multiline: bool = False,
     ) -> None:
-        arcade.Text(
-            text,
-            round(x),
-            round(y),
-            color,
-            size,
-            font_name=("Verdana", "DejaVu Sans", "Arial"),
-            bold=bold,
-            width=width,
-            multiline=multiline,
-        ).draw()
+        rx = round(x)
+        ry = round(y)
+        cached = self._text_cache.get(key)
+        if cached is None:
+            cached = arcade.Text(
+                text,
+                rx,
+                ry,
+                color,
+                size,
+                font_name=("Verdana", "DejaVu Sans", "Arial"),
+                bold=bold,
+                width=width,
+                multiline=multiline,
+            )
+            self._text_cache[key] = cached
+        else:
+            cached.text = text
+            cached.x = rx
+            cached.y = ry
+            cached.color = color
+            cached.font_size = size
+            cached.bold = bold
+            cached.width = width
+            cached.multiline = multiline
+        cached.draw()
 
     def _draw_rounded_rect(
         self,
