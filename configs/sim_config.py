@@ -51,7 +51,7 @@ class ThemeConfig:
 
 @dataclass(slots=True)
 class DebugConfig:
-    vision_toggle_label: str = "D"
+    vision_toggle_label: str = "V"
     show_debug_vision_by_default: bool = False
 
 

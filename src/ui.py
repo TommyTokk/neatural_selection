@@ -11,6 +11,8 @@ class UiRenderer:
         self.config = config
         self.theme = config.theme
         self._text_cache: dict[str, arcade.Text] = {}
+        self._control_hitboxes: dict[str, arcade.Rect] = {}
+        self._active_slider = False
 
     def draw(self, world: World) -> None:
         self._draw_top_bar(world)
@@ -67,6 +69,8 @@ class UiRenderer:
 
         card_width = bounds.width - 36
         card_height = 146
+        stats_card_height = 170
+        controls_card_height = 190
         gap = 16
 
         first_card = arcade.LBWH(
@@ -74,12 +78,15 @@ class UiRenderer:
         )
         second_card = arcade.LBWH(
             bounds.left + 18,
-            first_card.bottom - gap - card_height,
+            first_card.bottom - gap - stats_card_height,
             card_width,
-            card_height,
+            stats_card_height,
         )
         third_card = arcade.LBWH(
-            bounds.left + 18, second_card.bottom - gap - 122, card_width, 122
+            bounds.left + 18,
+            second_card.bottom - gap - controls_card_height,
+            card_width,
+            controls_card_height,
         )
 
         self._draw_card(first_card, "Selected Creature")
@@ -104,8 +111,8 @@ class UiRenderer:
             lines = [
                 selected.name,
                 f"Energy: {selected.energy:.0%}",
-                f"Drift speed: {selected.drift_speed:.2f}",
-                f"Heading speed: {selected.heading_speed:.2f}",
+                f"Speed: {selected.speed:.1f} px/s",
+                f"Heading: {selected.heading:.2f} rad",
             ]
 
         y = bounds.top - 50
@@ -130,6 +137,8 @@ class UiRenderer:
             f"Herbivores: {world.stats.herbivore_count}",
             f"Food nodes: {world.stats.food_count}",
             f"Elapsed time: {world.elapsed_time:0.1f}s",
+            "State: Paused" if world.is_paused else "State: Running",
+            f"Simulation speed: {world.simulation_speed:.2f}x",
             f"Zoom: {world.environment_zoom:.2f}x",
             world.stats.generation_label,
         ]
@@ -148,26 +157,88 @@ class UiRenderer:
             line_index += 1
 
     def _draw_controls(self, world: World, bounds: arcade.Rect) -> None:
-        lines = [
-            "Click a herbivore to select it.",
-            f"Press {self.config.debug.vision_toggle_label} to toggle vision.",
-            "Sidebar reserved for future controls.",
-        ]
-        y = bounds.top - 50
-        line_index = 0
-        for line in lines:
-            self._draw_text(
-                f"controls_line_{line_index}",
-                line,
-                bounds.left + 16,
-                y,
-                self.theme.text_muted,
-                11,
-                width=bounds.width - 32,
-                multiline=True,
-            )
-            y -= 28
-            line_index += 1
+        self._control_hitboxes.clear()
+
+        button_top = bounds.top - 48
+        button_height = 30
+        button_gap = 8
+        button_width = (bounds.width - 32 - button_gap) / 2
+        pause_button = arcade.LBWH(
+            bounds.left + 16, button_top - button_height, button_width, button_height
+        )
+        reset_button = arcade.LBWH(
+            pause_button.right + button_gap,
+            button_top - button_height,
+            button_width,
+            button_height,
+        )
+        self._control_hitboxes["pause"] = pause_button
+        self._control_hitboxes["reset_speed"] = reset_button
+        self._draw_button(pause_button, "Resume" if world.is_paused else "Pause")
+        self._draw_button(reset_button, "Reset 1x")
+
+        slider_y = reset_button.bottom - 32
+        slider = arcade.LBWH(bounds.left + 16, slider_y, bounds.width - 32, 18)
+        self._control_hitboxes["speed_slider"] = slider
+        self._draw_speed_slider(slider, world)
+
+        small_button_width = (bounds.width - 32 - button_gap) / 2
+        small_button_top = slider.bottom - 16
+        slow_button = arcade.LBWH(
+            bounds.left + 16,
+            small_button_top - button_height,
+            small_button_width,
+            button_height,
+        )
+        fast_button = arcade.LBWH(
+            slow_button.right + button_gap,
+            small_button_top - button_height,
+            small_button_width,
+            button_height,
+        )
+        self._control_hitboxes["speed_down"] = slow_button
+        self._control_hitboxes["speed_up"] = fast_button
+        self._draw_button(slow_button, "Slower")
+        self._draw_button(fast_button, "Faster")
+
+        self._draw_text(
+            "controls_help",
+            f"Space pause  A/D speed  Arrows speed  {self.config.debug.vision_toggle_label} vision",
+            bounds.left + 16,
+            fast_button.bottom - 18,
+            self.theme.text_muted,
+            10,
+            width=bounds.width - 32,
+            multiline=True,
+        )
+
+    def handle_mouse_press(self, world: World, x: float, y: float) -> bool:
+        if self._contains_hitbox("pause", x, y):
+            world.toggle_pause()
+            return True
+        if self._contains_hitbox("reset_speed", x, y):
+            world.reset_simulation_speed()
+            return True
+        if self._contains_hitbox("speed_down", x, y):
+            world.decrease_simulation_speed()
+            return True
+        if self._contains_hitbox("speed_up", x, y):
+            world.increase_simulation_speed()
+            return True
+        if self._contains_hitbox("speed_slider", x, y):
+            self._active_slider = True
+            self._set_speed_from_slider(world, x)
+            return True
+        return False
+
+    def handle_mouse_drag(self, world: World, x: float, y: float) -> bool:
+        if not self._active_slider:
+            return False
+        self._set_speed_from_slider(world, x)
+        return True
+
+    def handle_mouse_release(self) -> None:
+        self._active_slider = False
 
     def _draw_panel(
         self, bounds: arcade.Rect, fill_color: arcade.Color | tuple[int, ...] | None = None
@@ -197,6 +268,91 @@ class UiRenderer:
             14,
             bold=True,
         )
+
+    def _draw_button(self, bounds: arcade.Rect, label: str) -> None:
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.panel_background,
+            self.theme.panel_border,
+            8,
+            1.5,
+        )
+        self._draw_text(
+            f"button_{label}",
+            label,
+            bounds.left + 10,
+            bounds.center_y - 5,
+            self.theme.text_primary,
+            11,
+            bold=True,
+        )
+
+    def _draw_speed_slider(self, bounds: arcade.Rect, world: World) -> None:
+        track_height = 6
+        track_bottom = bounds.center_y - track_height / 2
+        ratio = (
+            (world.simulation_speed - world.MIN_SIMULATION_SPEED)
+            / (world.MAX_SIMULATION_SPEED - world.MIN_SIMULATION_SPEED)
+        )
+        knob_x = bounds.left + bounds.width * ratio
+
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left,
+            bounds.right,
+            track_bottom,
+            track_bottom + track_height,
+            self.theme.panel_border,
+        )
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left,
+            knob_x,
+            track_bottom,
+            track_bottom + track_height,
+            self.theme.accent,
+        )
+        arcade.draw_circle_filled(knob_x, bounds.center_y, 8, self.theme.accent_soft)
+        arcade.draw_circle_outline(knob_x, bounds.center_y, 8, self.theme.accent, 2)
+
+        self._draw_text(
+            "speed_min_label",
+            f"{world.MIN_SIMULATION_SPEED:.2f}x",
+            bounds.left,
+            bounds.bottom - 13,
+            self.theme.text_muted,
+            9,
+        )
+        self._draw_text(
+            "speed_value_label",
+            f"{world.simulation_speed:.2f}x",
+            bounds.center_x - 18,
+            bounds.top + 7,
+            self.theme.text_primary,
+            10,
+            bold=True,
+        )
+        self._draw_text(
+            "speed_max_label",
+            f"{world.MAX_SIMULATION_SPEED:.2f}x",
+            bounds.right - 36,
+            bounds.bottom - 13,
+            self.theme.text_muted,
+            9,
+        )
+
+    def _contains_hitbox(self, key: str, x: float, y: float) -> bool:
+        bounds = self._control_hitboxes.get(key)
+        if bounds is None:
+            return False
+        return bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top
+
+    def _set_speed_from_slider(self, world: World, x: float) -> None:
+        bounds = self._control_hitboxes["speed_slider"]
+        ratio = (x - bounds.left) / bounds.width
+        ratio = max(0.0, min(1.0, ratio))
+        speed = world.MIN_SIMULATION_SPEED + ratio * (
+            world.MAX_SIMULATION_SPEED - world.MIN_SIMULATION_SPEED
+        )
+        world.set_simulation_speed(speed)
 
     def _draw_text(
         self,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import ceil, dist, floor, cos, sin
+from math import ceil, floor, cos, sin
 from src.world import World
 import arcade
 
@@ -25,7 +25,6 @@ class EnvironmentRenderer:
         self._draw_creatures(
             world.creatures,
             bounds,
-            world.elapsed_time,
             world.environment_zoom,
             pan_x,
             pan_y,
@@ -178,19 +177,6 @@ class EnvironmentRenderer:
             center_y + (point_y - center_y) * zoom + pan_y,
         )
 
-    def _zoom_points(
-        self,
-        bounds: arcade.Rect,
-        points: list[tuple[float, float]],
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
-    ) -> list[tuple[float, float]]:
-        return [
-            self._zoom_point(bounds, point_x, point_y, zoom, pan_x, pan_y)
-            for point_x, point_y in points
-        ]
-
     def _draw_food(
         self,
         foods: list[Food],
@@ -203,6 +189,8 @@ class EnvironmentRenderer:
             pos_x, pos_y = food.get_screen_position(bounds)
             draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
             radius = max(2.0, food.radius * zoom)
+            if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
+                continue
             arcade.draw_circle_filled(draw_x, draw_y, radius, self.theme.food_fill)
             arcade.draw_circle_outline(
                 draw_x,
@@ -216,19 +204,38 @@ class EnvironmentRenderer:
         self,
         creatures: list[Creature],
         bounds: arcade.Rect,
-        elapsed_time: float,
         zoom: float,
         pan_x: float,
         pan_y: float,
         selected_creature_id: int | None,
     ) -> None:
         for creature in creatures:
-            model_points = creature.triangle_points(bounds, elapsed_time)
-            draw_points = self._zoom_points(bounds, model_points, zoom, pan_x, pan_y)
-            arcade.draw_polygon_filled(draw_points, creature.color)
-            arcade.draw_polygon_outline(draw_points, self.theme.herbivore_outline, 2)
+            model_x, model_y = creature.position
+            draw_x, draw_y = self._zoom_point(
+                bounds, model_x, model_y, zoom, pan_x, pan_y
+            )
+            radius = max(3.0, creature.radius * zoom)
+            if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
+                continue
+            arcade.draw_circle_filled(draw_x, draw_y, radius, creature.color)
+            arcade.draw_circle_outline(
+                draw_x,
+                draw_y,
+                radius,
+                self.theme.herbivore_outline,
+                2,
+            )
 
-            left_eye_model, right_eye_model = creature.eye_positions(bounds, elapsed_time)
+            heading_x = draw_x + cos(creature.heading) * radius * 0.78
+            heading_y = draw_y + sin(creature.heading) * radius * 0.78
+            arcade.draw_circle_filled(
+                heading_x,
+                heading_y,
+                max(2.4, radius * 0.18),
+                self.theme.herbivore_outline,
+            )
+
+            left_eye_model, right_eye_model = self._creature_eye_positions(creature)
             left_eye_x, left_eye_y = self._zoom_point(
                 bounds, left_eye_model[0], left_eye_model[1], zoom, pan_x, pan_y
             )
@@ -240,28 +247,31 @@ class EnvironmentRenderer:
             arcade.draw_circle_filled(right_eye_x, right_eye_y, eye_radius, (247, 247, 241))
 
             if selected_creature_id == creature.creature_id:
-                self._draw_energy_bar(creature, bounds, elapsed_time, zoom, pan_x, pan_y)
+                self._draw_energy_bar(creature, bounds, zoom, pan_x, pan_y)
 
     def _draw_energy_bar(
         self,
         creature: Creature,
         bounds: arcade.Rect,
-        elapsed_time: float,
         zoom: float,
         pan_x: float,
         pan_y: float,
     ) -> None:
-        center_x, center_y = creature.get_screen_position(bounds, elapsed_time)
+        center_x, center_y = creature.position
         draw_x, draw_y = self._zoom_point(
             bounds, center_x, center_y, zoom, pan_x, pan_y
         )
-        radius = creature.get_radius(bounds) * zoom
+        radius = creature.radius * zoom
 
         width = max(20.0, radius * 2.1)
         height = max(3.0, 5.0 * zoom)
         left = draw_x - width / 2
         bottom = draw_y + radius + (8.0 * zoom)
         ratio = max(0.0, min(1.0, creature.energy))
+        if not self._rect_fits_visible_bounds(
+            bounds, left, bottom, left + width, bottom + height
+        ):
+            return
 
         arcade.draw_lrbt_rectangle_filled(
             left,
@@ -290,35 +300,37 @@ class EnvironmentRenderer:
         if selected is None:
             return
 
-        center_x, center_y = selected.get_screen_position(bounds, world.elapsed_time)
+        center_x, center_y = selected.position
         draw_x, draw_y = self._zoom_point(
             bounds, center_x, center_y, zoom, pan_x, pan_y
         )
-        radius = selected.get_radius(bounds) * zoom
+        radius = selected.radius * zoom
+        overlay_radius = radius + 8.0
+        if not self._circle_fits_visible_bounds(
+            bounds, draw_x, draw_y, overlay_radius
+        ):
+            return
 
         arcade.draw_circle_outline(
             draw_x,
             draw_y,
-            radius + 8.0,
+            overlay_radius,
             self.theme.selected_outline,
             2.5,
         )
 
         if world.debug_vision_enabled:
-            self._draw_vision_cone(
-                selected, bounds, world.elapsed_time, zoom, pan_x, pan_y
-            )
+            self._draw_vision_cone(selected, bounds, zoom, pan_x, pan_y)
 
     def _draw_vision_cone(
         self,
         creature: Creature,
         bounds: arcade.Rect,
-        elapsed_time: float,
         zoom: float,
         pan_x: float,
         pan_y: float,
     ) -> None:
-        left_eye_model, right_eye_model = creature.eye_positions(bounds, elapsed_time)
+        left_eye_model, right_eye_model = self._creature_eye_positions(creature)
         left_eye = self._zoom_point(
             bounds, left_eye_model[0], left_eye_model[1], zoom, pan_x, pan_y
         )
@@ -327,9 +339,8 @@ class EnvironmentRenderer:
         )
         draw_center_x = (left_eye[0] + right_eye[0]) / 2
         draw_center_y = (left_eye[1] + right_eye[1]) / 2
-        heading = creature.get_heading(elapsed_time)
-        eye_distance = dist(left_eye, right_eye)
-        cone_radius = max(eye_distance * 8.5, 74.0 * zoom)
+        heading = creature.heading
+        cone_radius = max(creature.radius * 7.0 * zoom, 74.0 * zoom)
         cone_angle = 0.95
         steps = 18
 
@@ -346,3 +357,43 @@ class EnvironmentRenderer:
 
         arcade.draw_polygon_filled(points, self.theme.vision_fill)
         arcade.draw_polygon_outline(points, self.theme.accent, 1)
+
+    def _creature_eye_positions(
+        self, creature: Creature
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        center_x, center_y = creature.position
+        heading = creature.heading
+        radius = creature.radius
+        front_x = center_x + cos(heading) * radius * 0.35
+        front_y = center_y + sin(heading) * radius * 0.35
+        side_x = cos(heading + 1.5708) * radius * 0.34
+        side_y = sin(heading + 1.5708) * radius * 0.34
+        return (
+            (front_x + side_x, front_y + side_y),
+            (front_x - side_x, front_y - side_y),
+        )
+
+    def _circle_fits_visible_bounds(
+        self, bounds: arcade.Rect, x: float, y: float, radius: float
+    ) -> bool:
+        return (
+            x - radius >= bounds.left
+            and x + radius <= bounds.right
+            and y - radius >= bounds.bottom
+            and y + radius <= bounds.top
+        )
+
+    def _rect_fits_visible_bounds(
+        self,
+        bounds: arcade.Rect,
+        left: float,
+        bottom: float,
+        right: float,
+        top: float,
+    ) -> bool:
+        return (
+            left >= bounds.left
+            and right <= bounds.right
+            and bottom >= bounds.bottom
+            and top <= bounds.top
+        )
