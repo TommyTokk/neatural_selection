@@ -1,18 +1,32 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from math import pi
 
-import arcade
+import pymunk
 
 
 @dataclass(slots=True)
 class Food:
-    x_ratio: float
-    y_ratio: float
+    id: int
+    x: float
+    y: float
     radius: float
+    energy_density: float
 
-    def get_screen_position(self, bounds: arcade.Rect) -> tuple[float, float]:
-        return (
-            bounds.left + bounds.width * self.x_ratio,
-            bounds.bottom + bounds.height * self.y_ratio,
-        )
+    body: pymunk.Body = field(init=False)
+    shape: pymunk.Circle = field(init=False)
+    energy_value: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.body = pymunk.Body(body_type=pymunk.Body.STATIC)
+        self.body.position = self.x, self.y
+
+        self.shape = pymunk.Circle(self.body, self.radius)
+        self.shape.sensor = True  # Make it a sensor so it doesn't affect physics
+
+        self.energy_value = pi * self.radius**2 * self.energy_density
+
+    @property
+    def position(self) -> tuple[float, float]:
+        return self.body.position.x, self.body.position.y

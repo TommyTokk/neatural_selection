@@ -62,6 +62,25 @@ class ZoomConfig:
     maximum: float = 3.0
     step: float = 0.12
 
+@dataclass(slots=True)
+class MetabolismConfing:
+    max_energy: float = 1
+    basic_metabolism_rate: float = 0.01
+    movement_energy_cost_factor: float = 0.02
+    reproduction_energy_threshold: float = 0.8
+    reproduction_energy_cost: float = 0.5
+    eating_distance: float = 8
+    starvation_energy_threshold: float = 0.3
+
+@dataclass(slots=True)
+class FoodConfig:
+    initial_food_items: int = 12
+    spawn_interval: float = 2.0
+    max_food_items: int = 60
+    min_food_radius: float = 6.0
+    max_food_radius: float = 10.0
+    energy_density: float = 0.002
+
 
 @dataclass(slots=True)
 class SimConfig:
@@ -70,6 +89,16 @@ class SimConfig:
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     zoom: ZoomConfig = field(default_factory=ZoomConfig)
+
+    # Metabolism config
+    metabolism: MetabolismConfing = field(default_factory=MetabolismConfing)
+
+    # Food config
+    food: FoodConfig = field(default_factory=FoodConfig)
+
+
+
+
 
 
 def build_sim_config() -> SimConfig:

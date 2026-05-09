@@ -186,7 +186,7 @@ class EnvironmentRenderer:
         pan_y: float,
     ) -> None:
         for food in foods:
-            pos_x, pos_y = food.get_screen_position(bounds)
+            pos_x, pos_y = food.position
             draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
             radius = max(2.0, food.radius * zoom)
             if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):

@@ -10,6 +10,7 @@ from configs.sim_config import SimConfig
 import src.utils as ut
 from src.creature import Creature
 from src.food import Food
+from src.food_spawner import FoodSpawner
 
 from src.layout import build_screen_layout
 
@@ -54,13 +55,11 @@ class World:
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
         self.creatures = self._spawn_creatures()
-        self.foods = [
-            Food(
-                x_ratio=0.59,
-                y_ratio=0.54,
-                radius=6.0,
-            )
-        ]
+        self.food_spawner = FoodSpawner(config.food, self.rng)
+        self.foods: list[Food] = []
+        self._add_foods(
+            self.food_spawner.create_initial_foods(self.environment_world_bounds)
+        )
         self.selected_creature_id: int | None = None
         self.stats = WorldStats(
             herbivore_count=len(self.creatures),
@@ -95,6 +94,7 @@ class World:
             self._physics_accumulator -= self.FIXED_TIMESTEP
             steps += 1
 
+        self._spawn_foods(scaled_delta_time)
         self._refresh_stats()
 
     def adjust_environment_zoom(self, scroll_y: float) -> None:
@@ -230,6 +230,19 @@ class World:
                 )
             )
         return creatures
+
+    def _spawn_foods(self, delta_time: float) -> None:
+        spawned_foods = self.food_spawner.update(
+            delta_time,
+            self.environment_world_bounds,
+            len(self.foods),
+        )
+        self._add_foods(spawned_foods)
+
+    def _add_foods(self, foods: list[Food]) -> None:
+        for food in foods:
+            self.foods.append(food)
+            self.space.add(food.body, food.shape)
 
     def _rebuild_boundaries(self) -> None:
         if self._boundary_shapes:
