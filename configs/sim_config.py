@@ -63,7 +63,7 @@ class ZoomConfig:
     step: float = 0.12
 
 @dataclass(slots=True)
-class MetabolismConfing:
+class MetabolismConfig:
     max_energy: float = 1
     basic_metabolism_rate: float = 0.01
     movement_energy_cost_factor: float = 0.02
@@ -91,7 +91,7 @@ class SimConfig:
     zoom: ZoomConfig = field(default_factory=ZoomConfig)
 
     # Metabolism config
-    metabolism: MetabolismConfing = field(default_factory=MetabolismConfing)
+    metabolism: MetabolismConfig = field(default_factory=MetabolismConfig)
 
     # Food config
     food: FoodConfig = field(default_factory=FoodConfig)

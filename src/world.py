@@ -11,6 +11,7 @@ import src.utils as ut
 from src.creature import Creature
 from src.food import Food
 from src.food_spawner import FoodSpawner
+from src.metabolism import Metabolism
 
 from src.layout import build_screen_layout
 
@@ -66,6 +67,8 @@ class World:
             food_count=len(self.foods),
         )
 
+        self.metabolism = Metabolism(config.metabolism)
+
     def resize(self, width: int, height: int) -> None:
         self.layout = build_screen_layout(width, height, self.config.layout)
         self._rebuild_boundaries()
@@ -91,6 +94,7 @@ class World:
             self._apply_creature_intents()
             self.space.step(self.FIXED_TIMESTEP)
             self._limit_creature_motion()
+            self._update_metabolism(self.FIXED_TIMESTEP)
             self._physics_accumulator -= self.FIXED_TIMESTEP
             steps += 1
 
@@ -325,3 +329,19 @@ class World:
     def _refresh_stats(self) -> None:
         self.stats.herbivore_count = len(self.creatures)
         self.stats.food_count = len(self.foods)
+
+    def _update_metabolism(self, delta_time: float) -> None:
+        report = self.metabolism.update(self.creatures, self.foods, delta_time, self.MAX_SPEED)
+
+        for food in report.eaten_foods:
+            if food in self.foods:
+                self.foods.remove(food)
+                self.space.remove(food.body, food.shape)
+
+        for creature in report.dead_creatures:
+            if creature in self.creatures:
+                self.creatures.remove(creature)
+                self.space.remove(creature.body, creature.shape)
+
+        if self.selected_creature_id is not None and self.selected_creature is None:
+            self.selected_creature_id = None
