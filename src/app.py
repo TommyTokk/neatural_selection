@@ -82,6 +82,9 @@ class NeatGameView(arcade.View):
     def on_mouse_scroll(
         self, x: int, y: int, scroll_x: int, scroll_y: int
     ) -> bool | None:
+        if self.ui_renderer.handle_mouse_scroll(x, y, scroll_y):
+            return super().on_mouse_scroll(x, y, scroll_x, scroll_y)
+
         if self.world.layout.environment.left <= x <= self.world.layout.environment.right and self.world.layout.environment.bottom <= y <= self.world.layout.environment.top:
             self.world.adjust_environment_zoom(scroll_y)
         return super().on_mouse_scroll(x, y, scroll_x, scroll_y)

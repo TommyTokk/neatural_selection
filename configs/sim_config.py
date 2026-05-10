@@ -106,8 +106,8 @@ class ActionConfig:
     search_turn_interval_min: int = 35
     search_turn_interval_max: int = 95
     search_straight_probability: float = 0.3
-    search_turn_jitter: float = 0.012 
-    search_angular_velocity_retention: float = 0.86
+    search_turn_jitter: float = 0.0 
+    search_angular_velocity_retention: float = 0.4 # Higher values make creatures more likely to continue turning in the same direction during search, while lower values make them more likely to change direction.
     boundary_avoidance_turn: float = 0.72
     boundary_avoidance_min_turn: float = 0.18
     boundary_avoidance_acceleration: float = 0.75

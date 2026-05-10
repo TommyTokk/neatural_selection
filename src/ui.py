@@ -12,6 +12,9 @@ class UiRenderer:
         self.theme = config.theme
         self._text_cache: dict[str, arcade.Text] = {}
         self._control_hitboxes: dict[str, arcade.Rect] = {}
+        self._scroll_regions: dict[str, arcade.Rect] = {}
+        self._scroll_offsets: dict[str, float] = {}
+        self._scroll_limits: dict[str, float] = {}
         self._active_slider = False
 
     def draw(self, world: World) -> None:
@@ -55,6 +58,8 @@ class UiRenderer:
     def _draw_sidebar(self, world: World) -> None:
         bounds = world.layout.left_sidebar
         self._draw_panel(bounds, fill_color=self.theme.panel_background_alt)
+        self._scroll_regions.clear()
+        self._scroll_limits.clear()
 
         title_y = bounds.top - 28
         self._draw_text(
@@ -120,22 +125,15 @@ class UiRenderer:
                 f"Vision cost: {world.vision.energy_cost_per_second(selected):.3f}/s",
             ]
 
-        y = bounds.top - 50
-        line_index = 0
-        for line in lines:
-            self._draw_text(
-                f"selected_line_{line_index}",
-                line,
-                bounds.left + 16,
-                y,
-                self.theme.text_primary
-                if y == bounds.top - 50
-                else self.theme.text_muted,
-                12,
-                bold=y == bounds.top - 50,
-            )
-            y -= 22
-            line_index += 1
+        self._draw_scrollable_lines(
+            "selected",
+            bounds,
+            lines,
+            line_spacing=22,
+            first_line_color=self.theme.text_primary,
+            body_color=self.theme.text_muted,
+            first_line_bold=True,
+        )
 
     def _draw_environment_stats(self, world: World, bounds: arcade.Rect) -> None:
         lines = [
@@ -147,19 +145,14 @@ class UiRenderer:
             f"Zoom: {world.environment_zoom:.2f}x",
             world.stats.generation_label,
         ]
-        y = bounds.top - 50
-        line_index = 0
-        for line in lines:
-            self._draw_text(
-                f"stats_line_{line_index}",
-                line,
-                bounds.left + 16,
-                y,
-                self.theme.text_muted,
-                12,
-            )
-            y -= 24
-            line_index += 1
+        self._draw_scrollable_lines(
+            "stats",
+            bounds,
+            lines,
+            line_spacing=24,
+            first_line_color=self.theme.text_muted,
+            body_color=self.theme.text_muted,
+        )
 
     def _draw_controls(self, world: World, bounds: arcade.Rect) -> None:
         self._control_hitboxes.clear()
@@ -179,8 +172,8 @@ class UiRenderer:
         )
         self._control_hitboxes["pause"] = pause_button
         self._control_hitboxes["reset_speed"] = reset_button
-        self._draw_button(pause_button, "Resume" if world.is_paused else "Pause")
-        self._draw_button(reset_button, "Reset 1x")
+        self._draw_button(pause_button, ">" if world.is_paused else "||", "pause")
+        self._draw_button(reset_button, "1x", "reset_speed")
 
         slider_y = reset_button.bottom - 32
         slider = arcade.LBWH(bounds.left + 16, slider_y, bounds.width - 32, 18)
@@ -203,12 +196,12 @@ class UiRenderer:
         )
         self._control_hitboxes["speed_down"] = slow_button
         self._control_hitboxes["speed_up"] = fast_button
-        self._draw_button(slow_button, "Slower")
-        self._draw_button(fast_button, "Faster")
+        self._draw_button(slow_button, "<<", "speed_down")
+        self._draw_button(fast_button, ">>", "speed_up")
 
         self._draw_text(
             "controls_help",
-            f"Space pause  A/D speed  Arrows speed  {self.config.debug.vision_toggle_label} vision",
+            f"Space  A/D  </>  {self.config.debug.vision_toggle_label}",
             bounds.left + 16,
             fast_button.bottom - 18,
             self.theme.text_muted,
@@ -245,6 +238,21 @@ class UiRenderer:
     def handle_mouse_release(self) -> None:
         self._active_slider = False
 
+    def handle_mouse_scroll(self, x: float, y: float, scroll_y: float) -> bool:
+        for key, bounds in self._scroll_regions.items():
+            if not (bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top):
+                continue
+
+            limit = self._scroll_limits.get(key, 0.0)
+            current = self._scroll_offsets.get(key, 0.0)
+            self._scroll_offsets[key] = max(
+                0.0,
+                min(limit, current - scroll_y * 24.0),
+            )
+            return True
+
+        return False
+
     def _draw_panel(
         self, bounds: arcade.Rect, fill_color: arcade.Color | tuple[int, ...] | None = None
     ) -> None:
@@ -274,7 +282,7 @@ class UiRenderer:
             bold=True,
         )
 
-    def _draw_button(self, bounds: arcade.Rect, label: str) -> None:
+    def _draw_button(self, bounds: arcade.Rect, label: str, key: str) -> None:
         self._draw_rounded_rect(
             bounds,
             self.theme.panel_background,
@@ -283,13 +291,15 @@ class UiRenderer:
             1.5,
         )
         self._draw_text(
-            f"button_{label}",
+            f"button_{key}",
             label,
-            bounds.left + 10,
-            bounds.center_y - 5,
+            bounds.center_x,
+            bounds.center_y,
             self.theme.text_primary,
-            11,
+            14,
             bold=True,
+            anchor_x="center",
+            anchor_y="center",
         )
 
     def _draw_speed_slider(self, bounds: arcade.Rect, world: World) -> None:
@@ -371,6 +381,9 @@ class UiRenderer:
         bold: bool = False,
         width: float | None = None,
         multiline: bool = False,
+        align: str = "left",
+        anchor_x: str = "left",
+        anchor_y: str = "baseline",
     ) -> None:
         rx = round(x)
         ry = round(y)
@@ -385,6 +398,9 @@ class UiRenderer:
                 font_name=("Verdana", "DejaVu Sans", "Arial"),
                 bold=bold,
                 width=width,
+                align=align,
+                anchor_x=anchor_x,
+                anchor_y=anchor_y,
                 multiline=multiline,
             )
             self._text_cache[key] = cached
@@ -397,7 +413,90 @@ class UiRenderer:
             cached.bold = bold
             cached.width = width
             cached.multiline = multiline
+            cached.align = align
+            cached.anchor_x = anchor_x
+            cached.anchor_y = anchor_y
         cached.draw()
+
+    def _draw_scrollable_lines(
+        self,
+        key: str,
+        card_bounds: arcade.Rect,
+        lines: list[str],
+        *,
+        line_spacing: float,
+        first_line_color: arcade.Color | tuple[int, ...],
+        body_color: arcade.Color | tuple[int, ...],
+        first_line_bold: bool = False,
+    ) -> None:
+        content = self._card_content_bounds(card_bounds)
+        total_height = max(0.0, len(lines) * line_spacing)
+        scroll_limit = max(0.0, total_height - content.height)
+        scroll_offset = max(
+            0.0,
+            min(scroll_limit, self._scroll_offsets.get(key, 0.0)),
+        )
+        self._scroll_offsets[key] = scroll_offset
+        self._scroll_limits[key] = scroll_limit
+        self._scroll_regions[key] = content
+
+        for line_index, line in enumerate(lines):
+            y = content.top - 12 - line_index * line_spacing + scroll_offset
+            if y < content.bottom or y > content.top:
+                continue
+            is_first_line = line_index == 0
+            self._draw_text(
+                f"{key}_line_{line_index}",
+                self._fit_line(line, content.width - (12 if scroll_limit > 0 else 0)),
+                content.left,
+                y,
+                first_line_color if is_first_line else body_color,
+                12,
+                bold=first_line_bold and is_first_line,
+            )
+
+        if scroll_limit > 0.0:
+            self._draw_scrollbar(content, scroll_offset, scroll_limit)
+
+    def _card_content_bounds(self, bounds: arcade.Rect) -> arcade.Rect:
+        bottom = bounds.bottom + 12
+        top = bounds.top - 42
+        return arcade.LBWH(
+            bounds.left + 16,
+            bottom,
+            max(0.0, bounds.width - 32),
+            max(0.0, top - bottom),
+        )
+
+    def _draw_scrollbar(
+        self, bounds: arcade.Rect, scroll_offset: float, scroll_limit: float
+    ) -> None:
+        track_width = 3
+        track_left = bounds.right - track_width
+        arcade.draw_lrbt_rectangle_filled(
+            track_left,
+            bounds.right,
+            bounds.bottom,
+            bounds.top,
+            self.theme.panel_border,
+        )
+        visible_ratio = bounds.height / (bounds.height + scroll_limit)
+        thumb_height = max(18.0, bounds.height * visible_ratio)
+        travel = max(0.0, bounds.height - thumb_height)
+        thumb_top = bounds.top - travel * (scroll_offset / scroll_limit)
+        arcade.draw_lrbt_rectangle_filled(
+            track_left,
+            bounds.right,
+            thumb_top - thumb_height,
+            thumb_top,
+            self.theme.accent,
+        )
+
+    def _fit_line(self, text: str, width: float) -> str:
+        max_chars = max(4, int(width / 7.0))
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars - 3]}..."
 
     def _draw_rounded_rect(
         self,
