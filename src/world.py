@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sin
+from math import cos, sin
 from random import Random
 
 import pymunk
 
 from configs.sim_config import SimConfig
 import src.utils as ut
+from src.action import Action
 from src.creature import Creature, VisionTraits
 from src.food import Food
 from src.food_spawner import FoodSpawner
 from src.metabolism import Metabolism
 from src.vision import SensorSnapshot, VisionSystem
+from src.controller import BaselineFoodController
 
 from src.layout import build_screen_layout
 
@@ -71,6 +73,8 @@ class World:
         )
 
         self.metabolism = Metabolism(config.metabolism, self.vision)
+
+        self.controller = BaselineFoodController(self.config.action)
 
     def resize(self, width: int, height: int) -> None:
         self.layout = build_screen_layout(width, height, self.config.layout)
@@ -193,6 +197,7 @@ class World:
             creature,
             self.foods,
             self.creatures,
+            self.environment_world_bounds,
             self.MAX_SPEED,
         )
 
@@ -246,8 +251,14 @@ class World:
             self.space.add(body, shape)
 
             vision=VisionTraits(
-                range=self.config.vision.default_range,
-                angle=self.config.vision.default_angle,
+                range=self.rng.uniform(
+                    self.config.vision.min_range,
+                    self.config.vision.max_range,
+                ),
+                angle=self.rng.uniform(
+                    self.config.vision.min_angle,
+                    self.config.vision.max_angle,
+                ),
             )
 
             creatures.append(
@@ -298,11 +309,75 @@ class World:
 
     def _apply_creature_intents(self) -> None:
         for creature in self.creatures:
-            phase = self.elapsed_time * 1.25 + creature.creature_id * 1.91
-            forward_force = 95.0 + 30.0 * sin(phase * 0.7)
-            torque = 420.0 * sin(phase)
-            creature.body.apply_force_at_local_point((forward_force, 0.0), (0.0, 0.0))
-            creature.body.torque += torque
+            snapshot = self.sensor_snapshot_for(creature)
+            action = self.controller.decide(snapshot, creature.creature_id)
+            self._apply_action(creature, action, snapshot.food.visible > 0.0)
+
+    def _apply_action(
+        self,
+        creature: Creature,
+        action: Action,
+        stabilize_velocity: bool = False,
+    ) -> None:
+        if stabilize_velocity and action.accelerate > 0.0:
+            self._stabilize_food_tracking_velocity(creature)
+
+        if action.accelerate >= 0:
+            force = self.config.action.max_forward_force * action.accelerate
+        else:
+            force = self.config.action.max_backward_force * action.accelerate
+
+        creature.body.apply_force_at_local_point(
+            (force, 0.0),
+            (0.0, 0.0),
+        )
+
+        if (
+            action.rotate == 0.0
+            and action.accelerate > 0.0
+            and abs(creature.body.angular_velocity) > 0.0
+        ):
+            creature.body.angular_velocity *= (
+                self.config.action.centered_food_angular_velocity_retention
+            )
+            damping_torque = (
+                -creature.body.angular_velocity
+                * self.config.action.max_turn_torque
+                * self.config.action.centered_food_angular_damping
+            )
+            creature.body.torque += damping_torque
+
+        creature.body.torque += self.config.action.max_turn_torque * action.rotate
+
+        if action.accelerate < 0.0:
+            creature.body.angular_velocity *= (
+                self.config.action.boundary_angular_velocity_retention
+            )
+
+        if not stabilize_velocity and action.accelerate > 0.0:
+            creature.body.angular_velocity *= (
+                self.config.action.search_angular_velocity_retention
+            )
+
+    def _stabilize_food_tracking_velocity(self, creature: Creature) -> None:
+        velocity = creature.body.velocity
+        heading = creature.heading
+        forward_x = cos(heading)
+        forward_y = sin(heading)
+        lateral_x = -sin(heading)
+        lateral_y = cos(heading)
+
+        forward_speed = velocity.x * forward_x + velocity.y * forward_y
+        lateral_speed = velocity.x * lateral_x + velocity.y * lateral_y
+
+        lateral_speed *= self.config.action.food_tracking_lateral_velocity_retention
+        if forward_speed < 0.0:
+            forward_speed *= self.config.action.food_tracking_backward_velocity_retention
+
+        creature.body.velocity = (
+            forward_x * forward_speed + lateral_x * lateral_speed,
+            forward_y * forward_speed + lateral_y * lateral_speed,
+        )
 
     def _limit_creature_motion(self) -> None:
         for creature in self.creatures:
@@ -319,10 +394,20 @@ class World:
         for creature in self.creatures:
             x, y = creature.position
             radius = creature.radius + 2.0
+            clamped_x = max(left + radius, min(right - radius, x))
+            clamped_y = max(bottom + radius, min(top - radius, y))
             creature.body.position = (
-                max(left + radius, min(right - radius, x)),
-                max(bottom + radius, min(top - radius, y)),
+                clamped_x,
+                clamped_y,
             )
+            velocity = creature.body.velocity
+            velocity_x = velocity.x
+            velocity_y = velocity.y
+            if clamped_x != x and (velocity_x < 0.0) == (x < clamped_x):
+                velocity_x = 0.0
+            if clamped_y != y and (velocity_y < 0.0) == (y < clamped_y):
+                velocity_y = 0.0
+            creature.body.velocity = (velocity_x, velocity_y)
 
     def _clamp_environment_pan(self) -> None:
         visible_bounds = self.layout.environment

@@ -77,13 +77,14 @@ class VisionConfig:
     default_range: float = 98.0
     default_angle: float = 0.95
 
-    min_range:float = 45.0
+    min_range:float = 90.0
     max_range:float = 160.0
     min_angle: float = 0.35
     max_angle: float = 1.40
 
     base_energy_cost: float = 0.002
     area_energy_cost_factor: float = 0.018
+    boundary_warning_distance: float = 90.0
 
 @dataclass(slots=True)
 class FoodConfig:
@@ -96,6 +97,36 @@ class FoodConfig:
 
 
 @dataclass(slots=True)
+class ActionConfig:
+    max_forward_force: float = 125.0
+    max_backward_force: float = 70.0
+    max_turn_torque: float = 260.0
+    search_turn: float = 0.018
+    search_acceleration: float = 0.82
+    search_turn_interval_min: int = 35
+    search_turn_interval_max: int = 95
+    search_straight_probability: float = 0.3
+    search_turn_jitter: float = 0.012 
+    search_angular_velocity_retention: float = 0.86
+    boundary_avoidance_turn: float = 0.72
+    boundary_avoidance_min_turn: float = 0.18
+    boundary_avoidance_acceleration: float = 0.75
+    boundary_escape_pressure: float = 0.72
+    boundary_escape_turn_threshold: float = 0.65
+    boundary_escape_acceleration: float = -0.35
+    boundary_angular_velocity_retention: float = 0.72
+    food_turn_factor: float = 0.25
+    min_food_acceleration: float = 0.7
+    centered_food_angle_threshold: float = 0.12
+    centered_food_angular_damping: float = 0.65
+    centered_food_angular_velocity_retention: float = 0.15
+    food_tracking_lateral_velocity_retention: float = 0.35
+    food_tracking_backward_velocity_retention: float = 0.65
+    low_energy_threshold: float = 0.25
+    low_energy_acceleration_factor: float = 0.5
+
+
+@dataclass(slots=True)
 class SimConfig:
     display: DisplayConfig = field(default_factory=DisplayConfig)
     layout: LayoutConfig = field(default_factory=LayoutConfig)
@@ -105,6 +136,9 @@ class SimConfig:
 
     # Metabolism config
     metabolism: MetabolismConfig = field(default_factory=MetabolismConfig)
+
+    # Action config
+    action: ActionConfig = field(default_factory=ActionConfig)
 
     # Vision config
     vision: VisionConfig = field(default_factory=VisionConfig)

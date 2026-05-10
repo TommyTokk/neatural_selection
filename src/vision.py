@@ -17,9 +17,16 @@ class VisionTargetSnapshot:
 
 
 @dataclass(slots=True)
+class BoundarySnapshot:
+    pressure: float
+    turn: float
+
+
+@dataclass(slots=True)
 class SensorSnapshot:
     food: VisionTargetSnapshot
     creatures: VisionTargetSnapshot
+    boundary: BoundarySnapshot
     energy: float
     speed: float
     vision_range: float
@@ -36,6 +43,8 @@ class SensorSnapshot:
             self.creatures.nearest_closeness,
             self.creatures.nearest_angle,
             self.creatures.density,
+            self.boundary.pressure,
+            self.boundary.turn,
             self.energy,
             self.speed,
             self.vision_range,
@@ -53,19 +62,59 @@ class VisionSystem:
         creature: Creature,
         foods: list[Food],
         creatures: list[Creature],
+        world_bounds: tuple[float, float, float, float],
         max_speed: float,
     ) -> SensorSnapshot:
         food_snapshot = self._sense_food(creature, foods)
         creature_snapshot = self._sense_creatures(creature, creatures)
+        boundary_snapshot = self.sense_boundary(creature, world_bounds)
 
         return SensorSnapshot(
             food=food_snapshot,
             creatures=creature_snapshot,
+            boundary=boundary_snapshot,
             energy=self._clamp01(creature.energy),
             speed=self.normalized_speed(creature, max_speed),
             vision_range=self.normalized_range(creature),
             vision_angle=self.normalized_angle(creature),
             vision_energy_cost=self.normalized_energy_cost(creature),
+        )
+
+    def sense_boundary(
+        self,
+        creature: Creature,
+        world_bounds: tuple[float, float, float, float],
+    ) -> BoundarySnapshot:
+        left, bottom, right, top = world_bounds
+        x, y = creature.position
+        radius = creature.radius
+        warning_distance = self.config.boundary_warning_distance
+        if warning_distance <= 0:
+            return BoundarySnapshot(pressure=0.0, turn=0.0)
+
+        boundary_vectors = [
+            (x - left - radius, (1.0, 0.0)),
+            (right - x - radius, (-1.0, 0.0)),
+            (y - bottom - radius, (0.0, 1.0)),
+            (top - y - radius, (0.0, -1.0)),
+        ]
+        pressure = 0.0
+        inward_x = 0.0
+        inward_y = 0.0
+        for distance, inward_vector in boundary_vectors:
+            wall_pressure = self._clamp01(1.0 - max(0.0, distance) / warning_distance)
+            pressure = max(pressure, wall_pressure)
+            inward_x += inward_vector[0] * wall_pressure
+            inward_y += inward_vector[1] * wall_pressure
+
+        if pressure <= 0.0:
+            return BoundarySnapshot(pressure=0.0, turn=0.0)
+
+        inward_angle = atan2(inward_y, inward_x)
+        signed_angle = self._signed_angle(inward_angle - creature.heading)
+        return BoundarySnapshot(
+            pressure=pressure,
+            turn=self._clamp(signed_angle / pi, -1.0, 1.0),
         )
 
     def visible_foods(self, creature: Creature, foods: list[Food]) -> list[Food]:
