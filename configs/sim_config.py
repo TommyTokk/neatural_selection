@@ -73,6 +73,19 @@ class MetabolismConfig:
     starvation_energy_threshold: float = 0.3
 
 @dataclass(slots=True)
+class VisionConfig:
+    default_range: float = 98.0
+    default_angle: float = 0.95
+
+    min_range:float = 45.0
+    max_range:float = 160.0
+    min_angle: float = 0.35
+    max_angle: float = 1.40
+
+    base_energy_cost: float = 0.002
+    area_energy_cost_factor: float = 0.018
+
+@dataclass(slots=True)
 class FoodConfig:
     initial_food_items: int = 12
     spawn_interval: float = 2.0
@@ -92,6 +105,9 @@ class SimConfig:
 
     # Metabolism config
     metabolism: MetabolismConfig = field(default_factory=MetabolismConfig)
+
+    # Vision config
+    vision: VisionConfig = field(default_factory=VisionConfig)
 
     # Food config
     food: FoodConfig = field(default_factory=FoodConfig)

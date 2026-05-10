@@ -7,6 +7,7 @@ from math import dist
 from src.food import Food
 from src.creature import Creature
 from configs.sim_config import MetabolismConfig
+from src.vision import VisionSystem
 
 
 @dataclass(slots=True)
@@ -16,8 +17,9 @@ class MetabolismReport:
 
 
 class Metabolism:
-    def __init__(self, config: MetabolismConfig) -> None:
+    def __init__(self, config: MetabolismConfig, vision: VisionSystem) -> None:
         self.config = config
+        self.vision = vision
 
     def update(self, creatures: list[Creature], food_items: list[Food], delta_time:float, max_speed:float) -> MetabolismReport:
 
@@ -51,6 +53,7 @@ class Metabolism:
         energy_cost = (
             self.config.basic_metabolism_rate
             + self.config.movement_energy_cost_factor * speed_ratio
+            + self.vision.energy_cost_per_second(creature)
         ) * delta_time
 
         # Update the creature's energy
@@ -96,5 +99,4 @@ class Metabolism:
 
 
         
-
 

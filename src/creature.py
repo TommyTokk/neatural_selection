@@ -8,6 +8,12 @@ import pymunk
 
 Color = tuple[int, int, int] | tuple[int, int, int, int]
 
+@dataclass(slots=True)
+class VisionTraits:
+    range: float
+    angle: float
+
+
 
 @dataclass(slots=True)
 class Creature:
@@ -17,6 +23,7 @@ class Creature:
     shape: pymunk.Circle
     radius: float
     energy: float
+    vision: VisionTraits
     color: Color
 
     @property

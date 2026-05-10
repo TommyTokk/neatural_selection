@@ -68,7 +68,7 @@ class UiRenderer:
         )
 
         card_width = bounds.width - 36
-        card_height = 146
+        card_height = 238
         stats_card_height = 170
         controls_card_height = 190
         gap = 16
@@ -108,11 +108,16 @@ class UiRenderer:
                 "to inspect a herbivore.",
             ]
         else:
+            snapshot = world.sensor_snapshot_for(selected)
             lines = [
                 selected.name,
                 f"Energy: {selected.energy:.0%}",
                 f"Speed: {selected.speed:.1f} px/s",
                 f"Heading: {selected.heading:.2f} rad",
+                f"Vision: {selected.vision.range:.0f}px / {selected.vision.angle:.2f} rad",
+                f"Food: {snapshot.food.visible:.0f} seen / {snapshot.food.density:.2f} density",
+                f"Creatures: {snapshot.creatures.visible:.0f} seen / {snapshot.creatures.density:.2f} density",
+                f"Vision cost: {world.vision.energy_cost_per_second(selected):.3f}/s",
             ]
 
         y = bounds.top - 50
@@ -129,7 +134,7 @@ class UiRenderer:
                 12,
                 bold=y == bounds.top - 50,
             )
-            y -= 26
+            y -= 22
             line_index += 1
 
     def _draw_environment_stats(self, world: World, bounds: arcade.Rect) -> None:

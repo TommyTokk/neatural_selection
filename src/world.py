@@ -8,10 +8,11 @@ import pymunk
 
 from configs.sim_config import SimConfig
 import src.utils as ut
-from src.creature import Creature
+from src.creature import Creature, VisionTraits
 from src.food import Food
 from src.food_spawner import FoodSpawner
 from src.metabolism import Metabolism
+from src.vision import SensorSnapshot, VisionSystem
 
 from src.layout import build_screen_layout
 
@@ -50,6 +51,7 @@ class World:
         self.environment_zoom = config.zoom.default
         self.environment_pan_x = 0.0
         self.environment_pan_y = 0.0
+        self.vision = VisionSystem(config.vision)
         self.space = pymunk.Space()
         self.space.gravity = (0.0, 0.0)
         self.space.damping = 0.94
@@ -68,7 +70,7 @@ class World:
             food_count=len(self.foods),
         )
 
-        self.metabolism = Metabolism(config.metabolism)
+        self.metabolism = Metabolism(config.metabolism, self.vision)
 
     def resize(self, width: int, height: int) -> None:
         self.layout = build_screen_layout(width, height, self.config.layout)
@@ -186,6 +188,20 @@ class World:
                 return creature
         return None
 
+    def sensor_snapshot_for(self, creature: Creature) -> SensorSnapshot:
+        return self.vision.sense(
+            creature,
+            self.foods,
+            self.creatures,
+            self.MAX_SPEED,
+        )
+
+    def visible_foods_for(self, creature: Creature) -> list[Food]:
+        return self.vision.visible_foods(creature, self.foods)
+
+    def visible_creatures_for(self, creature: Creature) -> list[Creature]:
+        return self.vision.visible_creatures(creature, self.creatures)
+
     def toggle_debug_vision(self) -> None:
         self.debug_vision_enabled = not self.debug_vision_enabled
 
@@ -229,6 +245,11 @@ class World:
             shape.friction = 0.8
             self.space.add(body, shape)
 
+            vision=VisionTraits(
+                range=self.config.vision.default_range,
+                angle=self.config.vision.default_angle,
+            )
+
             creatures.append(
                 Creature(
                     creature_id=creature_id,
@@ -237,6 +258,7 @@ class World:
                     shape=shape,
                     radius=self.CREATURE_RADIUS,
                     energy=self.rng.uniform(0.55, 0.95),
+                    vision=vision,
                     color=self.config.theme.herbivore_fill,
                 )
             )

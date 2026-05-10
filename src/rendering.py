@@ -307,6 +307,20 @@ class EnvironmentRenderer:
 
         if world.debug_vision_enabled:
             self._draw_vision_cone(selected, bounds, zoom, pan_x, pan_y)
+            self._draw_visible_food_highlights(
+                world.visible_foods_for(selected),
+                bounds,
+                zoom,
+                pan_x,
+                pan_y,
+            )
+            self._draw_visible_creature_highlights(
+                world.visible_creatures_for(selected),
+                bounds,
+                zoom,
+                pan_x,
+                pan_y,
+            )
 
     def _draw_vision_cone(
         self,
@@ -326,8 +340,8 @@ class EnvironmentRenderer:
         draw_center_x = (left_eye[0] + right_eye[0]) / 2
         draw_center_y = (left_eye[1] + right_eye[1]) / 2
         heading = creature.heading
-        cone_radius = max(creature.radius * 7.0 * zoom, 74.0 * zoom)
-        cone_angle = 0.95
+        cone_radius = creature.vision.range * zoom
+        cone_angle = creature.vision.angle
         steps = 18
 
         points: list[tuple[float, float]] = [(draw_center_x, draw_center_y)]
@@ -343,6 +357,42 @@ class EnvironmentRenderer:
 
         arcade.draw_polygon_filled(points, self.theme.vision_fill)
         arcade.draw_polygon_outline(points, self.theme.accent, 1)
+
+    def _draw_visible_food_highlights(
+        self,
+        foods: list[Food],
+        bounds: arcade.Rect,
+        zoom: float,
+        pan_x: float,
+        pan_y: float,
+    ) -> None:
+        for food in foods:
+            pos_x, pos_y = food.position
+            draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
+            radius = max(4.0, (food.radius + 4.0) * zoom)
+            if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
+                continue
+
+            arcade.draw_circle_outline(draw_x, draw_y, radius, (246, 232, 116), 3)
+            arcade.draw_circle_outline(draw_x, draw_y, radius + 3.0, (246, 232, 116, 110), 2)
+
+    def _draw_visible_creature_highlights(
+        self,
+        creatures: list[Creature],
+        bounds: arcade.Rect,
+        zoom: float,
+        pan_x: float,
+        pan_y: float,
+    ) -> None:
+        for creature in creatures:
+            pos_x, pos_y = creature.position
+            draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
+            radius = max(6.0, (creature.radius + 5.0) * zoom)
+            if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
+                continue
+
+            arcade.draw_circle_outline(draw_x, draw_y, radius, (116, 202, 246), 3)
+            arcade.draw_circle_outline(draw_x, draw_y, radius + 3.0, (116, 202, 246, 105), 2)
 
     def _creature_eye_positions(
         self, creature: Creature
