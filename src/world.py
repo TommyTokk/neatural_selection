@@ -34,6 +34,7 @@ class World:
     MIN_SIMULATION_SPEED = 0.25
     MAX_SIMULATION_SPEED = 2.0
     SIMULATION_SPEED_STEP = 0.25
+    SELECTED_CREATURE_ZOOM = 2.25
 
     def __init__(self, config: SimConfig) -> None:
         self.config = config
@@ -73,6 +74,7 @@ class World:
         self.layout = build_screen_layout(width, height, self.config.layout)
         self._rebuild_boundaries()
         self._keep_creatures_inside_bounds()
+        self._follow_selected_creature()
         self._clamp_environment_pan()
 
     def update(self, delta_time: float) -> None:
@@ -100,6 +102,7 @@ class World:
 
         self._spawn_foods(scaled_delta_time)
         self._refresh_stats()
+        self._follow_selected_creature()
 
     def adjust_environment_zoom(self, scroll_y: float) -> None:
         if scroll_y == 0:
@@ -111,7 +114,10 @@ class World:
             self.config.zoom.minimum,
             min(self.config.zoom.maximum, updated_zoom),
         )
-        self._clamp_environment_pan()
+        if self.selected_creature is None:
+            self._clamp_environment_pan()
+        else:
+            self._follow_selected_creature()
 
     def pan_environment(self, delta_x: float, delta_y: float) -> None:
         self.environment_pan_x += delta_x
@@ -197,6 +203,7 @@ class World:
                 chosen = creature
                 break
         self.selected_creature_id = None if chosen is None else chosen.creature_id
+        self._focus_selected_creature()
 
     def _spawn_creatures(self) -> list[Creature]:
         creatures: list[Creature] = []
@@ -314,6 +321,32 @@ class World:
         self.environment_pan_y = max(
             -max_pan_y, min(max_pan_y, self.environment_pan_y)
         )
+
+    def _focus_selected_creature(self) -> None:
+        selected = self.selected_creature
+        if selected is None:
+            return
+
+        self.environment_zoom = max(
+            self.config.zoom.minimum,
+            min(self.config.zoom.maximum, self.SELECTED_CREATURE_ZOOM),
+        )
+        self._follow_selected_creature()
+
+    def _follow_selected_creature(self) -> None:
+        selected = self.selected_creature
+        if selected is None:
+            return
+
+        bounds = self.layout.environment
+        selected_x, selected_y = selected.position
+        self.environment_pan_x = (
+            -(selected_x - bounds.center_x) * self.environment_zoom
+        )
+        self.environment_pan_y = (
+            -(selected_y - bounds.center_y) * self.environment_zoom
+        )
+        self._clamp_environment_pan()
 
     def _creature_is_visible(self, creature: Creature) -> bool:
         draw_x, draw_y = self.environment_to_screen(*creature.position)

@@ -43,7 +43,7 @@ class ThemeConfig:
     text_muted: Color = (87, 101, 122)
     herbivore_fill: Color = (142, 203, 161)
     herbivore_outline: Color = (44, 88, 67)
-    selected_outline: Color = (247, 185, 109)
+    selected_outline: Color = (232, 63, 63)
     food_fill: Color = (192, 226, 130)
     vision_fill: Color = (142, 203, 161, 42)
     card_background: Color = (248, 244, 232)

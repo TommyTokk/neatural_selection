@@ -218,11 +218,16 @@ class EnvironmentRenderer:
             if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
             arcade.draw_circle_filled(draw_x, draw_y, radius, creature.color)
+            outline_color = (
+                self.theme.selected_outline
+                if selected_creature_id == creature.creature_id
+                else self.theme.herbivore_outline
+            )
             arcade.draw_circle_outline(
                 draw_x,
                 draw_y,
                 radius,
-                self.theme.herbivore_outline,
+                outline_color,
                 2,
             )
 
@@ -299,25 +304,6 @@ class EnvironmentRenderer:
         selected = world.selected_creature
         if selected is None:
             return
-
-        center_x, center_y = selected.position
-        draw_x, draw_y = self._zoom_point(
-            bounds, center_x, center_y, zoom, pan_x, pan_y
-        )
-        radius = selected.radius * zoom
-        overlay_radius = radius + 8.0
-        if not self._circle_fits_visible_bounds(
-            bounds, draw_x, draw_y, overlay_radius
-        ):
-            return
-
-        arcade.draw_circle_outline(
-            draw_x,
-            draw_y,
-            overlay_radius,
-            self.theme.selected_outline,
-            2.5,
-        )
 
         if world.debug_vision_enabled:
             self._draw_vision_cone(selected, bounds, zoom, pan_x, pan_y)
