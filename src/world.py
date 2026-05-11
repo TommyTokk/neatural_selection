@@ -291,10 +291,7 @@ class World:
             if heading is None
             else heading
         )
-        body.velocity = (
-            self.rng.uniform(-35.0, 35.0),
-            self.rng.uniform(-35.0, 35.0),
-        )
+        body.velocity = (0.0, 0.0)
 
         shape = pymunk.Circle(body, self.CREATURE_RADIUS)
         shape.elasticity = 0.45
@@ -381,17 +378,29 @@ class World:
             snapshot = self.sensor_snapshot_for(creature)
             if self.use_neat_brains:
                 action = self.neat_controller.decide(creature.creature_id, snapshot)
+                self._apply_action(
+                    creature,
+                    action,
+                    stabilize_velocity=False,
+                    apply_stabilizers=False,
+                )
             else:
                 action = self.baseline_controller.decide(snapshot, creature.creature_id)
-            self._apply_action(creature, action, snapshot.food.visible > 0.0)
+                self._apply_action(
+                    creature,
+                    action,
+                    stabilize_velocity=snapshot.food.visible > 0.0,
+                    apply_stabilizers=True,
+                )
 
     def _apply_action(
         self,
         creature: Creature,
         action: Action,
         stabilize_velocity: bool = False,
+        apply_stabilizers: bool = True,
     ) -> None:
-        if stabilize_velocity and action.accelerate > 0.0:
+        if apply_stabilizers and stabilize_velocity and action.accelerate > 0.0:
             self._stabilize_food_tracking_velocity(creature)
 
         if action.accelerate >= 0:
@@ -405,6 +414,8 @@ class World:
         )
 
         if (
+            apply_stabilizers
+            and
             action.rotate == 0.0
             and action.accelerate > 0.0
             and abs(creature.body.angular_velocity) > 0.0
@@ -421,12 +432,12 @@ class World:
 
         creature.body.torque += self.config.action.max_turn_torque * action.rotate
 
-        if action.accelerate < 0.0:
+        if apply_stabilizers and action.accelerate < 0.0:
             creature.body.angular_velocity *= (
                 self.config.action.boundary_angular_velocity_retention
             )
 
-        if not stabilize_velocity and action.accelerate > 0.0:
+        if apply_stabilizers and not stabilize_velocity and action.accelerate > 0.0:
             creature.body.angular_velocity *= (
                 self.config.action.search_angular_velocity_retention
             )

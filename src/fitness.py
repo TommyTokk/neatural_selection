@@ -31,8 +31,8 @@ class CreatureFitness:
     @property
     def score(self) -> float:
         return (
-            self.age_seconds * 0.10
-            + self.food_eaten * 10.0
-            + self.energy_gained * 25.0
-            - self.movement_effort * 0.03
+            self.age_seconds * 0.03
+            + self.food_eaten * 25.0
+            + self.energy_gained * 50.0
+            - self.movement_effort * 0.02
         )

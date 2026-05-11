@@ -266,13 +266,24 @@ class UiRenderer:
 
         action = brain.last_action
         action_label = (
-            f"Action acc {action.accelerate:.2f} rot {action.rotate:.2f}"
+            f"acc {action.accelerate:.2f} rot {action.rotate:.2f} herd {action.herding:.2f}"
             if action is not None
-            else "Action waiting"
+            else "waiting"
+        )
+        brain_values = self._brain_value_readout(brain.last_inputs, brain.last_outputs)
+        self._draw_text(
+            "brain_values",
+            brain_values,
+            content.left,
+            content.bottom + 13,
+            self.theme.text_muted,
+            8,
+            width=content.width,
+            multiline=True,
         )
         self._draw_text(
             "brain_summary",
-            f"Genome {brain.genome_id}  {action_label}",
+            f"Genome {brain.genome_id}  Action {action_label}",
             content.left,
             content.bottom,
             self.theme.text_primary,
@@ -569,6 +580,21 @@ class UiRenderer:
             "rotate": "rot",
         }
         return replacements.get(label, label)
+
+    def _brain_value_readout(
+        self,
+        inputs: list[float],
+        outputs: list[float],
+    ) -> str:
+        def value(index: int, values: list[float]) -> float:
+            return values[index] if index < len(values) else 0.0
+
+        return (
+            f"F {value(0, inputs):.2f}/{value(1, inputs):.2f}  "
+            f"C {value(2, inputs):.2f}/{value(3, inputs):.2f}  "
+            f"S {value(4, inputs):.2f} T {value(5, inputs):.2f} E {value(6, inputs):.2f}\n"
+            f"O {value(0, outputs):.2f}/{value(1, outputs):.2f}/{value(2, outputs):.2f}"
+        )
 
     def _contains_hitbox(self, key: str, x: float, y: float) -> bool:
         bounds = self._control_hitboxes.get(key)

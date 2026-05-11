@@ -46,14 +46,19 @@ class SensorSnapshot:
 
     def as_inputs(self) -> list[float]:
         return [
-            self.food.nearest_closeness,
+            self._visible_closeness(self.food),
             self.food.nearest_angle,
-            self.creatures.nearest_closeness,
+            self._visible_closeness(self.creatures),
             self.creatures.nearest_angle,
             self.boundary.pressure,
             self.boundary.turn,
             self.energy,
         ]
+
+    def _visible_closeness(self, target: VisionTargetSnapshot) -> float:
+        if target.visible <= 0.0:
+            return -1.0
+        return target.nearest_closeness
 
 
 class VisionSystem:
