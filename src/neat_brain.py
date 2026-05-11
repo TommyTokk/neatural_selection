@@ -44,7 +44,6 @@ class NeatBrain:
         self.last_action = Action(
             accelerate=action_outputs[0],
             rotate=action_outputs[1],
-            herding=action_outputs[2],
         ).clamped()
         return self.last_action
 

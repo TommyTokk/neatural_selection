@@ -189,7 +189,7 @@ class EnvironmentRenderer:
             pos_x, pos_y = food.position
             draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
             radius = max(2.0, food.radius * zoom)
-            if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
+            if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
             arcade.draw_circle_filled(draw_x, draw_y, radius, self.theme.food_fill)
             arcade.draw_circle_outline(
@@ -215,7 +215,7 @@ class EnvironmentRenderer:
                 bounds, model_x, model_y, zoom, pan_x, pan_y
             )
             radius = max(3.0, creature.radius * zoom)
-            if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
+            if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
             arcade.draw_circle_filled(draw_x, draw_y, radius, creature.color)
             outline_color = (
@@ -417,6 +417,16 @@ class EnvironmentRenderer:
             and x + radius <= bounds.right
             and y - radius >= bounds.bottom
             and y + radius <= bounds.top
+        )
+
+    def _circle_intersects_visible_bounds(
+        self, bounds: arcade.Rect, x: float, y: float, radius: float
+    ) -> bool:
+        return (
+            x + radius >= bounds.left
+            and x - radius <= bounds.right
+            and y + radius >= bounds.bottom
+            and y - radius <= bounds.top
         )
 
     def _rect_fits_visible_bounds(

@@ -11,7 +11,7 @@ from src.action import ACTION_OUTPUT_COUNT, Action
 from src.neat_brain import NeatBrain
 from src.vision import SENSOR_INPUT_COUNT, SensorSnapshot
 
-FALLBACK_ACTION = Action(accelerate=0.0, rotate=0.0, herding=0.0)
+FALLBACK_ACTION = Action(accelerate=0.0, rotate=0.0)
 
 
 class NeatBrainController:
@@ -56,11 +56,19 @@ class NeatBrainController:
         return Action(
             accelerate=FALLBACK_ACTION.accelerate,
             rotate=FALLBACK_ACTION.rotate,
-            herding=FALLBACK_ACTION.herding,
         )
 
     def remove_brain(self, creature_id: int) -> None:
         self.brains.pop(creature_id, None)
+
+    def archive_brain(self, creature_id: int, fitness_score: float) -> bool:
+        brain = self.brains.get(creature_id)
+        if brain is None:
+            return False
+
+        brain.genome.fitness = fitness_score
+        self.population.population[brain.genome_id] = brain.genome
+        return True
 
     def genome_id_for(self, creature_id: int) -> int | None:
         brain = self.brains.get(creature_id)
@@ -83,19 +91,41 @@ class NeatBrainController:
         parent_brain = self.brains.get(parent_creature_id)
         if parent_brain is None:
             return False
-        
-        child_genome = copy.deepcopy(parent_brain.genome)
+
+        return self.create_mutated_brain_from_genome(
+            parent_brain.genome,
+            child_creature_id,
+        )
+
+    def create_mutated_brain_from_genome(
+        self,
+        parent_genome: Any,
+        creature_id: int,
+    ) -> bool:
+        child_genome = copy.deepcopy(parent_genome)
         child_genome.key = self._next_genome_id()
         child_genome.fitness = None
         child_genome.mutate(self.config.genome_config)
         self.population.population[child_genome.key] = child_genome
 
-        self.brains[child_creature_id] = NeatBrain.from_genome(
+        self.brains[creature_id] = NeatBrain.from_genome(
             child_genome.key,
             child_genome,
             self.config,
         )
         return True
+
+    def best_genomes(self, count: int) -> list[Any]:
+        scored_genomes = [
+            genome
+            for genome in self.population.population.values()
+            if genome.fitness is not None
+        ]
+        return sorted(
+            scored_genomes,
+            key=lambda genome: genome.fitness,
+            reverse=True,
+        )[:count]
     
     def _next_genome_id(self) -> int:
         genome_ids = [

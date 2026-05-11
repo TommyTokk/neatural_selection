@@ -50,6 +50,7 @@ class World:
         self.simulation_speed = 1.0
         self._physics_accumulator = 0.0
         self._reproduction_accumulator = 0.0
+        self._last_actions: dict[int, Action] = {}
         self.debug_vision_enabled = config.debug.show_debug_vision_by_default
         self.layout = build_screen_layout(
             config.display.width, config.display.height, config.layout
@@ -117,6 +118,7 @@ class World:
         ):
             self._apply_creature_intents()
             self.space.step(self.FIXED_TIMESTEP)
+            self._apply_top_down_motion()
             self._limit_creature_motion()
             self._update_fitness_survival(self.FIXED_TIMESTEP)
             self._update_metabolism(self.FIXED_TIMESTEP)
@@ -294,8 +296,8 @@ class World:
         body.velocity = (0.0, 0.0)
 
         shape = pymunk.Circle(body, self.CREATURE_RADIUS)
-        shape.elasticity = 0.45
-        shape.friction = 0.8
+        shape.elasticity = 0.15
+        shape.friction = 0.0
         self.space.add(body, shape)
 
         vision = VisionTraits(
@@ -337,9 +339,14 @@ class World:
         return spawn_x, spawn_y
 
     def _next_creature_id(self) -> int:
-        if not self.creatures:
+        known_ids = [
+            *(creature.creature_id for creature in self.creatures),
+            *self.fitness.keys(),
+            *self.fitness_archive.keys(),
+        ]
+        if not known_ids:
             return 1
-        return max(creature.creature_id for creature in self.creatures) + 1
+        return max(known_ids) + 1
 
     def _spawn_foods(self, delta_time: float) -> None:
         spawned_foods = self.food_spawner.update(
@@ -368,8 +375,8 @@ class World:
         ]
         for start, end in zip(corners, [*corners[1:], corners[0]]):
             shape = pymunk.Segment(self.space.static_body, start, end, 1.0)
-            shape.elasticity = 0.7
-            shape.friction = 0.9
+            shape.elasticity = 0.25
+            shape.friction = 0.0
             self._boundary_shapes.append(shape)
         self.space.add(*self._boundary_shapes)
 
@@ -378,6 +385,7 @@ class World:
             snapshot = self.sensor_snapshot_for(creature)
             if self.use_neat_brains:
                 action = self.neat_controller.decide(creature.creature_id, snapshot)
+                self._last_actions[creature.creature_id] = action
                 self._apply_action(
                     creature,
                     action,
@@ -386,6 +394,7 @@ class World:
                 )
             else:
                 action = self.baseline_controller.decide(snapshot, creature.creature_id)
+                self._last_actions[creature.creature_id] = action
                 self._apply_action(
                     creature,
                     action,
@@ -441,6 +450,37 @@ class World:
             creature.body.angular_velocity *= (
                 self.config.action.search_angular_velocity_retention
             )
+
+    def _apply_top_down_motion(self) -> None:
+        for creature in self.creatures:
+            self._apply_planar_drag(creature)
+            action = self._last_actions.get(creature.creature_id)
+            if action is not None:
+                self._apply_turn_control(creature, action)
+
+    def _apply_planar_drag(self, creature: Creature) -> None:
+        velocity = creature.body.velocity
+        heading = creature.heading
+        forward_x = cos(heading)
+        forward_y = sin(heading)
+        lateral_x = -sin(heading)
+        lateral_y = cos(heading)
+
+        forward_speed = velocity.x * forward_x + velocity.y * forward_y
+        lateral_speed = velocity.x * lateral_x + velocity.y * lateral_y
+
+        forward_speed *= self.config.action.forward_velocity_retention
+        lateral_speed *= self.config.action.lateral_velocity_retention
+
+        if abs(forward_speed) < self.config.action.linear_stop_threshold:
+            forward_speed = 0.0
+        if abs(lateral_speed) < self.config.action.linear_stop_threshold:
+            lateral_speed = 0.0
+
+        creature.body.velocity = (
+            forward_x * forward_speed + lateral_x * lateral_speed,
+            forward_y * forward_speed + lateral_y * lateral_speed,
+        )
 
     def _apply_turn_control(self, creature: Creature, action: Action) -> None:
         rotate = action.rotate
@@ -570,20 +610,30 @@ class World:
         radius = creature.radius * self.environment_zoom
         bounds = self.layout.environment
         return (
-            draw_x - radius >= bounds.left
-            and draw_x + radius <= bounds.right
-            and draw_y - radius >= bounds.bottom
-            and draw_y + radius <= bounds.top
+            draw_x + radius >= bounds.left
+            and draw_x - radius <= bounds.right
+            and draw_y + radius >= bounds.bottom
+            and draw_y - radius <= bounds.top
         )
 
     def _refresh_stats(self) -> None:
         self.stats.herbivore_count = len(self.creatures)
         self.stats.food_count = len(self.foods)
+        self._update_genome_fitness_scores()
         self.rt_neat.update_stats(
             self.creatures,
             self.fitness,
             self.config.population,
         )
+
+    def _update_genome_fitness_scores(self) -> None:
+        for creature in self.creatures:
+            fitness = self.fitness.get(creature.creature_id)
+            if fitness is not None:
+                self.neat_controller.update_genome_fitness(
+                    creature.creature_id,
+                    fitness.score,
+                )
 
     def _update_fitness_survival(self, delta_time: float) -> None:
         for creature in self.creatures:
@@ -607,14 +657,22 @@ class World:
         for creature in report.dead_creatures:
             self._remove_creature(creature)
 
+        if not self.creatures:
+            self._recover_extinct_population()
+
         if self.selected_creature_id is not None and self.selected_creature is None:
             self.selected_creature_id = None
 
     def _remove_creature(self, creature: Creature) -> None:
+        fitness = self.fitness.get(creature.creature_id)
+        if fitness is not None:
+            self.neat_controller.archive_brain(creature.creature_id, fitness.score)
+
         if creature in self.creatures:
             self.creatures.remove(creature)
             self.space.remove(creature.body, creature.shape)
             self.neat_controller.remove_brain(creature.creature_id)
+            self._last_actions.pop(creature.creature_id, None)
 
         fitness = self.fitness.pop(creature.creature_id, None)
         if fitness is not None:
@@ -622,6 +680,41 @@ class World:
 
         if self.selected_creature_id == creature.creature_id:
             self.selected_creature_id = None
+
+    def _recover_extinct_population(self) -> None:
+        parent_pool_size = max(
+            1,
+            self.config.population.extinction_recovery_parent_pool,
+        )
+        parent_genomes = self.neat_controller.best_genomes(parent_pool_size)
+        if not parent_genomes:
+            return
+
+        recovery_count = min(
+            self.config.population.extinction_recovery_creatures,
+            self.config.population.max_creatures,
+        )
+
+        recovered_count = 0
+        for index in range(recovery_count):
+            parent_genome = parent_genomes[index % len(parent_genomes)]
+            child_id = self._next_creature_id()
+            child = self._spawn_creature(
+                child_id,
+                energy=self.config.metabolism.max_energy,
+            )
+            if not self.neat_controller.create_mutated_brain_from_genome(
+                parent_genome,
+                child_id,
+            ):
+                self.space.remove(child.body, child.shape)
+                continue
+
+            self.creatures.append(child)
+            self.fitness[child_id] = CreatureFitness()
+            recovered_count += 1
+
+        self.rt_neat.stats.replacements += recovered_count
 
     def _update_reproduction(self, delta_time: float) -> None:
         self._reproduction_accumulator += delta_time

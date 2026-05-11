@@ -75,10 +75,10 @@ class UiRenderer:
         )
 
         card_width = bounds.width - 36
-        card_height = 238
-        stats_card_height = 170
-        controls_card_height = 190
-        gap = 16
+        card_height = 300
+        stats_card_height = 150
+        controls_card_height = 210
+        gap = 14
 
         first_card = arcade.LBWH(
             bounds.left + 18, bounds.top - 58 - card_height, card_width, card_height
@@ -191,24 +191,36 @@ class UiRenderer:
             for key in brain.genome.nodes
             if key not in output_keys
         )
+        graph_bounds = arcade.LBWH(
+            content.left,
+            content.bottom + 82,
+            content.width,
+            max(96.0, content.height - 82),
+        )
+        details_bounds = arcade.LBWH(
+            content.left,
+            content.bottom,
+            content.width,
+            70,
+        )
 
         input_positions = self._node_column_positions(
             input_keys,
-            content.left + 16,
-            content.bottom + 16,
-            content.top - 22,
+            graph_bounds.left + 18,
+            graph_bounds.bottom + 18,
+            graph_bounds.top - 22,
         )
         output_positions = self._node_column_positions(
             output_keys,
-            content.right - 16,
-            content.bottom + 28,
-            content.top - 34,
+            graph_bounds.right - 18,
+            graph_bounds.bottom + 24,
+            graph_bounds.top - 30,
         )
         hidden_positions = self._node_column_positions(
             hidden_keys,
-            content.center_x,
-            content.bottom + 22,
-            content.top - 28,
+            graph_bounds.center_x,
+            graph_bounds.bottom + 22,
+            graph_bounds.top - 26,
         )
         positions = {**input_positions, **hidden_positions, **output_positions}
 
@@ -236,10 +248,10 @@ class UiRenderer:
             self._draw_text(
                 f"brain_input_{index}",
                 f"{self._short_brain_label(label)} {value:.2f}",
-                position[0] + 8,
+                position[0] + 10,
                 position[1] - 4,
                 self.theme.text_muted,
-                8,
+                9,
             )
 
         for key in hidden_keys:
@@ -258,36 +270,40 @@ class UiRenderer:
             self._draw_text(
                 f"brain_output_{index}",
                 f"{self._short_brain_label(label)} {value:.2f}",
-                position[0] - 52,
+                position[0] - 58,
                 position[1] - 4,
                 self.theme.text_muted,
-                8,
+                9,
             )
 
         action = brain.last_action
         action_label = (
-            f"acc {action.accelerate:.2f} rot {action.rotate:.2f} herd {action.herding:.2f}"
+            f"acc {action.accelerate:.2f} rot {action.rotate:.2f}"
             if action is not None
             else "waiting"
         )
-        brain_values = self._brain_value_readout(brain.last_inputs, brain.last_outputs)
-        self._draw_text(
-            "brain_values",
-            brain_values,
-            content.left,
-            content.bottom + 13,
-            self.theme.text_muted,
-            8,
-            width=content.width,
-            multiline=True,
+        enabled_connections = sum(
+            1
+            for connection in brain.genome.connections.values()
+            if connection.enabled
         )
-        self._draw_text(
-            "brain_summary",
-            f"Genome {brain.genome_id}  Action {action_label}",
-            content.left,
-            content.bottom,
-            self.theme.text_primary,
-            9,
+        detail_lines = [
+            f"Genome: {brain.genome_id}",
+            f"Action: {action_label}",
+            self._brain_input_readout(brain.last_inputs),
+            self._brain_output_readout(brain.last_outputs),
+            f"Nodes: {len(brain.genome.nodes)}",
+            f"Connections: {enabled_connections}/{len(brain.genome.connections)} enabled",
+            f"Genome fitness: {brain.genome.fitness if brain.genome.fitness is not None else 'None'}",
+        ]
+        self._draw_scrollable_lines_in_bounds(
+            "brain_details",
+            details_bounds,
+            detail_lines,
+            line_spacing=17,
+            first_line_color=self.theme.text_primary,
+            body_color=self.theme.text_muted,
+            first_line_bold=True,
         )
 
     def _draw_environment_stats(self, world: World, bounds: arcade.Rect) -> None:
@@ -319,9 +335,9 @@ class UiRenderer:
     def _draw_controls(self, world: World, bounds: arcade.Rect) -> None:
         self._control_hitboxes.clear()
 
-        button_top = bounds.top - 48
-        button_height = 30
-        button_gap = 8
+        button_top = bounds.top - 50
+        button_height = 32
+        button_gap = 10
         button_width = (bounds.width - 32 - button_gap * 2) / 3
         pause_button = arcade.LBWH(
             bounds.left + 16, button_top - button_height, button_width, button_height
@@ -341,17 +357,17 @@ class UiRenderer:
         self._control_hitboxes["pause"] = pause_button
         self._control_hitboxes["reset_speed"] = reset_button
         self._control_hitboxes["brain_view"] = brain_button
-        self._draw_button(pause_button, ">" if world.is_paused else "||", "pause")
-        self._draw_button(reset_button, "1x", "reset_speed")
+        self._draw_button(pause_button, "> Space" if world.is_paused else "|| Space", "pause")
+        self._draw_button(reset_button, "1x 0", "reset_speed")
         self._draw_button(brain_button, "Stats" if world.show_brain_view else "Brain", "brain_view")
 
-        slider_y = reset_button.bottom - 32
+        slider_y = reset_button.bottom - 42
         slider = arcade.LBWH(bounds.left + 16, slider_y, bounds.width - 32, 18)
         self._control_hitboxes["speed_slider"] = slider
         self._draw_speed_slider(slider, world)
 
         small_button_width = (bounds.width - 32 - button_gap) / 2
-        small_button_top = slider.bottom - 16
+        small_button_top = slider.bottom - 28
         slow_button = arcade.LBWH(
             bounds.left + 16,
             small_button_top - button_height,
@@ -366,19 +382,8 @@ class UiRenderer:
         )
         self._control_hitboxes["speed_down"] = slow_button
         self._control_hitboxes["speed_up"] = fast_button
-        self._draw_button(slow_button, "<<", "speed_down")
-        self._draw_button(fast_button, ">>", "speed_up")
-
-        self._draw_text(
-            "controls_help",
-            f"Space  A/D  </>  {self.config.debug.vision_toggle_label}",
-            bounds.left + 16,
-            fast_button.bottom - 18,
-            self.theme.text_muted,
-            10,
-            width=bounds.width - 32,
-            multiline=True,
-        )
+        self._draw_button(slow_button, "<< A/<-", "speed_down")
+        self._draw_button(fast_button, ">> D/->", "speed_up")
 
     def handle_mouse_press(self, world: World, x: float, y: float) -> bool:
         if self._contains_hitbox("pause", x, y):
@@ -465,7 +470,7 @@ class UiRenderer:
         )
         self._draw_text(
             f"button_{key}",
-            label,
+            self._fit_line(label, bounds.width - 8),
             bounds.center_x,
             bounds.center_y,
             self.theme.text_primary,
@@ -570,9 +575,9 @@ class UiRenderer:
 
     def _short_brain_label(self, label: str) -> str:
         replacements = {
-            "food_closeness": "food",
+            "food_proximity": "food",
             "food_angle": "f_ang",
-            "creature_closeness": "near",
+            "creature_proximity": "near",
             "creature_angle": "n_ang",
             "accelerate": "acc",
             "rotate": "rot",
@@ -584,15 +589,23 @@ class UiRenderer:
         inputs: list[float],
         outputs: list[float],
     ) -> str:
+        return f"{self._brain_input_readout(inputs)}\n{self._brain_output_readout(outputs)}"
+
+    def _brain_input_readout(self, inputs: list[float]) -> str:
         def value(index: int, values: list[float]) -> float:
             return values[index] if index < len(values) else 0.0
 
         return (
             f"F {value(0, inputs):.2f}/{value(1, inputs):.2f}  "
             f"C {value(2, inputs):.2f}/{value(3, inputs):.2f}  "
-            f"E {value(4, inputs):.2f}\n"
-            f"O {value(0, outputs):.2f}/{value(1, outputs):.2f}/{value(2, outputs):.2f}"
+            f"E {value(4, inputs):.2f}"
         )
+
+    def _brain_output_readout(self, outputs: list[float]) -> str:
+        def value(index: int, values: list[float]) -> float:
+            return values[index] if index < len(values) else 0.0
+
+        return f"O {value(0, outputs):.2f}/{value(1, outputs):.2f}"
 
     def _contains_hitbox(self, key: str, x: float, y: float) -> bool:
         bounds = self._control_hitboxes.get(key)
@@ -670,6 +683,27 @@ class UiRenderer:
         first_line_bold: bool = False,
     ) -> None:
         content = self._card_content_bounds(card_bounds)
+        self._draw_scrollable_lines_in_bounds(
+            key,
+            content,
+            lines,
+            line_spacing=line_spacing,
+            first_line_color=first_line_color,
+            body_color=body_color,
+            first_line_bold=first_line_bold,
+        )
+
+    def _draw_scrollable_lines_in_bounds(
+        self,
+        key: str,
+        content: arcade.Rect,
+        lines: list[str],
+        *,
+        line_spacing: float,
+        first_line_color: arcade.Color | tuple[int, ...],
+        body_color: arcade.Color | tuple[int, ...],
+        first_line_bold: bool = False,
+    ) -> None:
         total_height = max(0.0, len(lines) * line_spacing)
         scroll_limit = max(0.0, total_height - content.height)
         scroll_offset = max(

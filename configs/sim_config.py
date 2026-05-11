@@ -75,6 +75,8 @@ class MetabolismConfig:
 class PopulationConfig:
     initial_creatures: int = 20
     max_creatures: int = 30
+    extinction_recovery_creatures: int = 20
+    extinction_recovery_parent_pool: int = 5
     min_reproduction_age: float = 20.0
     reproduction_cooldown: float = 12.0
     reproduction_energy_threshold: float = 0.8
@@ -115,6 +117,9 @@ class ActionConfig:
     turn_damping: float = 0.88
     turn_deadzone: float = 0.03
     angular_stop_threshold: float = 0.05
+    forward_velocity_retention: float = 0.992
+    lateral_velocity_retention: float = 0.72
+    linear_stop_threshold: float = 2.0
     search_turn: float = 0.018
     search_acceleration: float = 0.82
     search_turn_interval_min: int = 35

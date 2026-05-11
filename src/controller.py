@@ -65,7 +65,6 @@ class BaselineFoodController:
         return Action(
             accelerate=accelerate,
             rotate=rotate,
-            herding=0.0,
         ).clamped()
 
     def _scavenge_turn(self, creature_id: int) -> float:

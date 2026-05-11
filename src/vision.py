@@ -9,9 +9,9 @@ from src.food import Food
 
 SENSOR_INPUT_COUNT = 5
 SENSOR_INPUT_NAMES = (
-    "food_closeness",
+    "food_proximity",
     "food_angle",
-    "creature_closeness",
+    "creature_proximity",
     "creature_angle",
     "energy",
 )
@@ -44,17 +44,22 @@ class SensorSnapshot:
 
     def as_inputs(self) -> list[float]:
         return [
-            self._visible_closeness(self.food),
-            self.food.nearest_angle,
-            self._visible_closeness(self.creatures),
-            self.creatures.nearest_angle,
+            self._target_proximity(self.food),
+            self._target_angle(self.food),
+            self._target_proximity(self.creatures),
+            self._target_angle(self.creatures),
             self.energy,
         ]
 
-    def _visible_closeness(self, target: VisionTargetSnapshot) -> float:
+    def _target_proximity(self, target: VisionTargetSnapshot) -> float:
         if target.visible <= 0.0:
-            return -1.0
+            return 0.0
         return target.nearest_closeness
+
+    def _target_angle(self, target: VisionTargetSnapshot) -> float:
+        if target.visible <= 0.0:
+            return 0.0
+        return target.nearest_angle
 
 
 class VisionSystem:
