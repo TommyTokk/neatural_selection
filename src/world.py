@@ -10,11 +10,14 @@ from configs.sim_config import SimConfig
 import src.utils as ut
 from src.action import Action
 from src.creature import Creature, VisionTraits
+from src.fitness import CreatureFitness
 from src.food import Food
 from src.food_spawner import FoodSpawner
 from src.metabolism import Metabolism
 from src.vision import SensorSnapshot, VisionSystem
 from src.controller import BaselineFoodController
+from src.neat_controller import NeatBrainController
+from src.rt_neat import RtNeatManager
 
 from src.layout import build_screen_layout
 
@@ -28,7 +31,6 @@ class WorldStats:
 
 
 class World:
-    CREATURE_COUNT = 20
     CREATURE_RADIUS = 14.0
     FIXED_TIMESTEP = 1.0 / 60.0
     MAX_FRAME_STEPS = 5
@@ -38,6 +40,7 @@ class World:
     MAX_SIMULATION_SPEED = 2.0
     SIMULATION_SPEED_STEP = 0.25
     SELECTED_CREATURE_ZOOM = 2.25
+    REPRODUCTION_INTERVAL = 1.0
 
     def __init__(self, config: SimConfig) -> None:
         self.config = config
@@ -46,6 +49,7 @@ class World:
         self.is_paused = False
         self.simulation_speed = 1.0
         self._physics_accumulator = 0.0
+        self._reproduction_accumulator = 0.0
         self.debug_vision_enabled = config.debug.show_debug_vision_by_default
         self.layout = build_screen_layout(
             config.display.width, config.display.height, config.layout
@@ -61,6 +65,10 @@ class World:
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
         self.creatures = self._spawn_creatures()
+        self.fitness: dict[int, CreatureFitness] = {
+            creature.creature_id: CreatureFitness()
+            for creature in self.creatures
+        }
         self.food_spawner = FoodSpawner(config.food, self.rng)
         self.foods: list[Food] = []
         self._add_foods(
@@ -74,7 +82,13 @@ class World:
 
         self.metabolism = Metabolism(config.metabolism, self.vision)
 
-        self.controller = BaselineFoodController(self.config.action)
+        self.baseline_controller = BaselineFoodController(self.config.action)
+        self.neat_controller = NeatBrainController("configs/neat_herbivore.ini")
+        self.neat_controller.assign_initial_brains(
+            [creature.creature_id for creature in self.creatures]
+        )
+        self.rt_neat = RtNeatManager(self.neat_controller)
+        self.use_neat_brains = True
 
     def resize(self, width: int, height: int) -> None:
         self.layout = build_screen_layout(width, height, self.config.layout)
@@ -102,11 +116,13 @@ class World:
             self._apply_creature_intents()
             self.space.step(self.FIXED_TIMESTEP)
             self._limit_creature_motion()
+            self._update_fitness_survival(self.FIXED_TIMESTEP)
             self._update_metabolism(self.FIXED_TIMESTEP)
             self._physics_accumulator -= self.FIXED_TIMESTEP
             steps += 1
 
         self._spawn_foods(scaled_delta_time)
+        self._update_reproduction(scaled_delta_time)
         self._refresh_stats()
         self._follow_selected_creature()
 
@@ -207,6 +223,9 @@ class World:
     def visible_creatures_for(self, creature: Creature) -> list[Creature]:
         return self.vision.visible_creatures(creature, self.creatures)
 
+    def fitness_for(self, creature: Creature) -> CreatureFitness | None:
+        return self.fitness.get(creature.creature_id)
+
     def toggle_debug_vision(self) -> None:
         self.debug_vision_enabled = not self.debug_vision_enabled
 
@@ -227,53 +246,88 @@ class World:
         self._focus_selected_creature()
 
     def _spawn_creatures(self) -> list[Creature]:
-        creatures: list[Creature] = []
+        return [
+            self._spawn_creature(index + 1)
+            for index in range(self.config.population.initial_creatures)
+        ]
+
+    def _spawn_creature(
+        self,
+        creature_id: int,
+        position: tuple[float, float] | None = None,
+        heading: float | None = None,
+        energy: float | None = None,
+    ) -> Creature:
         left, bottom, right, top = self.environment_world_bounds
         margin = self.CREATURE_RADIUS + 10.0
-        for index in range(self.CREATURE_COUNT):
-            creature_id = index + 1
-            mass = 1.0
-            moment = pymunk.moment_for_circle(mass, 0.0, self.CREATURE_RADIUS)
-            body = pymunk.Body(mass, moment)
+
+        mass = 1.0
+        moment = pymunk.moment_for_circle(mass, 0.0, self.CREATURE_RADIUS)
+        body = pymunk.Body(mass, moment)
+        if position is None:
             body.position = (
                 self.rng.uniform(left + margin, right - margin),
                 self.rng.uniform(bottom + margin, top - margin),
             )
-            body.angle = self.rng.uniform(0.0, 6.283185307179586)
-            body.velocity = (
-                self.rng.uniform(-35.0, 35.0),
-                self.rng.uniform(-35.0, 35.0),
-            )
+        else:
+            body.position = position
+        body.angle = (
+            self.rng.uniform(0.0, 6.283185307179586)
+            if heading is None
+            else heading
+        )
+        body.velocity = (
+            self.rng.uniform(-35.0, 35.0),
+            self.rng.uniform(-35.0, 35.0),
+        )
 
-            shape = pymunk.Circle(body, self.CREATURE_RADIUS)
-            shape.elasticity = 0.45
-            shape.friction = 0.8
-            self.space.add(body, shape)
+        shape = pymunk.Circle(body, self.CREATURE_RADIUS)
+        shape.elasticity = 0.45
+        shape.friction = 0.8
+        self.space.add(body, shape)
 
-            vision=VisionTraits(
-                range=self.rng.uniform(
-                    self.config.vision.min_range,
-                    self.config.vision.max_range,
-                ),
-                angle=self.rng.uniform(
-                    self.config.vision.min_angle,
-                    self.config.vision.max_angle,
-                ),
-            )
+        vision = VisionTraits(
+            range=self.rng.uniform(
+                self.config.vision.min_range,
+                self.config.vision.max_range,
+            ),
+            angle=self.rng.uniform(
+                self.config.vision.min_angle,
+                self.config.vision.max_angle,
+            ),
+        )
 
-            creatures.append(
-                Creature(
-                    creature_id=creature_id,
-                    name=f"Herbivore {creature_id:02d}",
-                    body=body,
-                    shape=shape,
-                    radius=self.CREATURE_RADIUS,
-                    energy=self.rng.uniform(0.55, 0.95),
-                    vision=vision,
-                    color=self.config.theme.herbivore_fill,
-                )
-            )
-        return creatures
+        return Creature(
+            creature_id=creature_id,
+            name=f"Herbivore {creature_id:02d}",
+            body=body,
+            shape=shape,
+            radius=self.CREATURE_RADIUS,
+            energy=(
+                self.rng.uniform(0.55, 0.95)
+                if energy is None
+                else energy
+            ),
+            vision=vision,
+            color=self.config.theme.herbivore_fill,
+        )
+
+    def _child_spawn_position(self, parent: Creature) -> tuple[float, float]:
+        distance = self.config.population.child_spawn_distance
+        parent_x, parent_y = parent.position
+        raw_x = parent_x - cos(parent.heading) * distance
+        raw_y = parent_y - sin(parent.heading) * distance
+
+        left, bottom, right, top = self.environment_world_bounds
+        radius = self.CREATURE_RADIUS + 2.0
+        spawn_x = max(left + radius, min(right - radius, raw_x))
+        spawn_y = max(bottom + radius, min(top - radius, raw_y))
+        return spawn_x, spawn_y
+
+    def _next_creature_id(self) -> int:
+        if not self.creatures:
+            return 1
+        return max(creature.creature_id for creature in self.creatures) + 1
 
     def _spawn_foods(self, delta_time: float) -> None:
         spawned_foods = self.food_spawner.update(
@@ -310,7 +364,10 @@ class World:
     def _apply_creature_intents(self) -> None:
         for creature in self.creatures:
             snapshot = self.sensor_snapshot_for(creature)
-            action = self.controller.decide(snapshot, creature.creature_id)
+            if self.use_neat_brains:
+                action = self.neat_controller.decide(creature.creature_id, snapshot)
+            else:
+                action = self.baseline_controller.decide(snapshot, creature.creature_id)
             self._apply_action(creature, action, snapshot.food.visible > 0.0)
 
     def _apply_action(
@@ -469,9 +526,25 @@ class World:
     def _refresh_stats(self) -> None:
         self.stats.herbivore_count = len(self.creatures)
         self.stats.food_count = len(self.foods)
+        self.rt_neat.update_stats(
+            self.creatures,
+            self.fitness,
+            self.config.population,
+        )
+
+    def _update_fitness_survival(self, delta_time: float) -> None:
+        for creature in self.creatures:
+            fitness = self.fitness.get(creature.creature_id)
+            if fitness is not None:
+                fitness.record_tick(delta_time, creature.speed, self.MAX_SPEED)
 
     def _update_metabolism(self, delta_time: float) -> None:
         report = self.metabolism.update(self.creatures, self.foods, delta_time, self.MAX_SPEED)
+
+        for consumption in report.food_consumptions:
+            fitness = self.fitness.get(consumption.creature_id)
+            if fitness is not None:
+                fitness.record_food(consumption.energy_gained)
 
         for food in report.eaten_foods:
             if food in self.foods:
@@ -479,9 +552,72 @@ class World:
                 self.space.remove(food.body, food.shape)
 
         for creature in report.dead_creatures:
-            if creature in self.creatures:
-                self.creatures.remove(creature)
-                self.space.remove(creature.body, creature.shape)
+            self._remove_creature(creature)
 
         if self.selected_creature_id is not None and self.selected_creature is None:
             self.selected_creature_id = None
+
+    def _remove_creature(self, creature: Creature) -> None:
+        if creature in self.creatures:
+            self.creatures.remove(creature)
+            self.space.remove(creature.body, creature.shape)
+            self.neat_controller.remove_brain(creature.creature_id)
+
+        if self.selected_creature_id == creature.creature_id:
+            self.selected_creature_id = None
+
+    def _update_reproduction(self, delta_time: float) -> None:
+        self._reproduction_accumulator += delta_time
+        if self._reproduction_accumulator < self.REPRODUCTION_INTERVAL:
+            return
+
+        self._reproduction_accumulator %= self.REPRODUCTION_INTERVAL
+        self._refresh_stats()
+        self._try_reproduce()
+
+    def _spend_reproduction_energy(self, parent: Creature) -> None:
+        parent.energy = max(
+            0.0,
+            parent.energy - self.config.population.reproduction_energy_cost,
+        )
+
+    def _try_reproduce(self) -> bool:
+        if len(self.creatures) >= self.config.population.max_creatures:
+            return False
+
+        if not self.rt_neat.eligible_parent_ids:
+            return False
+
+        parent_id = self.rt_neat.eligible_parent_ids[0]
+        parent = next(
+            (creature for creature in self.creatures if creature.creature_id == parent_id),
+            None,
+        )
+        if parent is None:
+            return False
+
+        parent_fitness = self.fitness.get(parent.creature_id)
+        if parent_fitness is None:
+            return False
+
+        child_id = self._next_creature_id()
+        child_position = self._child_spawn_position(parent)
+
+        child = self._spawn_creature(
+            child_id,
+            position=child_position,
+            heading=parent.heading,
+            energy=self.config.population.reproduction_energy_cost,
+        )
+
+        if not self.neat_controller.create_child_brain(parent.creature_id, child_id):
+            self.space.remove(child.body, child.shape)
+            return False
+
+        self.creatures.append(child)
+        self.fitness[child_id] = CreatureFitness()
+
+        self._spend_reproduction_energy(parent)
+        parent_fitness.record_reproduction()
+        self.rt_neat.stats.births += 1
+        return True

@@ -67,10 +67,20 @@ class MetabolismConfig:
     max_energy: float = 1
     basic_metabolism_rate: float = 0.01
     movement_energy_cost_factor: float = 0.02
-    reproduction_energy_threshold: float = 0.8
-    reproduction_energy_cost: float = 0.5
     eating_distance: float = 8
     starvation_energy_threshold: float = 0.3
+
+
+@dataclass(slots=True)
+class PopulationConfig:
+    initial_creatures: int = 20
+    max_creatures: int = 30
+    min_reproduction_age: float = 20.0
+    reproduction_cooldown: float = 12.0
+    reproduction_energy_threshold: float = 0.8
+    reproduction_energy_cost: float = 0.5
+    child_spawn_distance: float = 34.0
+
 
 @dataclass(slots=True)
 class VisionConfig:
@@ -136,6 +146,9 @@ class SimConfig:
 
     # Metabolism config
     metabolism: MetabolismConfig = field(default_factory=MetabolismConfig)
+
+    # Population config
+    population: PopulationConfig = field(default_factory=PopulationConfig)
 
     # Action config
     action: ActionConfig = field(default_factory=ActionConfig)

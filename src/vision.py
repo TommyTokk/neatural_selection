@@ -7,6 +7,17 @@ from configs.sim_config import VisionConfig
 from src.creature import Creature
 from src.food import Food
 
+SENSOR_INPUT_COUNT = 7
+SENSOR_INPUT_NAMES = (
+    "food_closeness",
+    "food_angle",
+    "creature_closeness",
+    "creature_angle",
+    "boundary_closeness",
+    "boundary_turn",
+    "energy",
+)
+
 
 @dataclass(slots=True)
 class VisionTargetSnapshot:
@@ -35,21 +46,13 @@ class SensorSnapshot:
 
     def as_inputs(self) -> list[float]:
         return [
-            self.food.visible,
             self.food.nearest_closeness,
             self.food.nearest_angle,
-            self.food.density,
-            self.creatures.visible,
             self.creatures.nearest_closeness,
             self.creatures.nearest_angle,
-            self.creatures.density,
             self.boundary.pressure,
             self.boundary.turn,
             self.energy,
-            self.speed,
-            self.vision_range,
-            self.vision_angle,
-            self.vision_energy_cost,
         ]
 
 

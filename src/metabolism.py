@@ -11,8 +11,16 @@ from src.vision import VisionSystem
 
 
 @dataclass(slots=True)
+class FoodConsumption:
+    creature_id: int
+    food: Food
+    energy_gained: float
+
+
+@dataclass(slots=True)
 class MetabolismReport:
     eaten_foods: list[Food] = field(default_factory=list)
+    food_consumptions: list[FoodConsumption] = field(default_factory=list)
     dead_creatures: list[Creature] = field(default_factory=list)
 
 
@@ -24,6 +32,7 @@ class Metabolism:
     def update(self, creatures: list[Creature], food_items: list[Food], delta_time:float, max_speed:float) -> MetabolismReport:
 
         eaten_foods: list[Food] = []
+        food_consumptions: list[FoodConsumption] = []
         dead_creatures: list[Creature] = []
         
         for creature in creatures:
@@ -34,13 +43,24 @@ class Metabolism:
             food = self.find_eatable_food(creature, food_items, eaten_foods)
 
             if food is not None:
-                self.eat(creature, food)
+                energy_gained = self.eat(creature, food)
                 eaten_foods.append(food)
+                food_consumptions.append(
+                    FoodConsumption(
+                        creature_id=creature.creature_id,
+                        food=food,
+                        energy_gained=energy_gained,
+                    )
+                )
 
             if self.is_dead(creature):
                 dead_creatures.append(creature)
 
-        return MetabolismReport(eaten_foods=eaten_foods, dead_creatures=dead_creatures)
+        return MetabolismReport(
+            eaten_foods=eaten_foods,
+            food_consumptions=food_consumptions,
+            dead_creatures=dead_creatures,
+        )
     
     def consume_energy(self, creature: Creature, delta_time: float, max_speed: float) -> None:
 
@@ -59,11 +79,13 @@ class Metabolism:
         # Update the creature's energy
         creature.energy = max(0.0, creature.energy - energy_cost)
 
-    def eat(self, creature: Creature, food: Food) -> None:
+    def eat(self, creature: Creature, food: Food) -> float:
+        previous_energy = creature.energy
         creature.energy = min(
             self.config.max_energy,
             creature.energy + food.energy_value,
         )
+        return creature.energy - previous_energy
 
     def find_eatable_food(self, creature: Creature, food_items: list[Food], ignored_foods: list[Food]) -> Food | None:
 
@@ -87,16 +109,3 @@ class Metabolism:
     
     def is_dead(self, creature: Creature) -> bool:
         return creature.energy <= 0
-    
-    def can_reproduce(self, creature: Creature) -> bool:
-        return creature.energy >= self.config.reproduction_energy_threshold
-    
-    def spend_reproduction_energy(self, creature: Creature) -> None:
-        creature.energy = max(
-            0.0,
-            creature.energy - self.config.reproduction_energy_cost,
-        )
-
-
-        
-

@@ -114,6 +114,7 @@ class UiRenderer:
             ]
         else:
             snapshot = world.sensor_snapshot_for(selected)
+            fitness = world.fitness_for(selected)
             lines = [
                 selected.name,
                 f"Energy: {selected.energy:.0%}",
@@ -124,6 +125,22 @@ class UiRenderer:
                 f"Creatures: {snapshot.creatures.visible:.0f} seen / {snapshot.creatures.density:.2f} density",
                 f"Vision cost: {world.vision.energy_cost_per_second(selected):.3f}/s",
             ]
+            if fitness is not None:
+                can_reproduce = world.rt_neat.is_reproduction_eligible(
+                    selected,
+                    fitness,
+                    world.config.population,
+                )
+                lines.extend(
+                    [
+                        f"Fitness: {fitness.score:.2f}",
+                        f"Age: {fitness.age_seconds:.1f}s",
+                        f"Food eaten: {fitness.food_eaten}",
+                        f"Energy gained: {fitness.energy_gained:.3f}",
+                        f"Can reproduce: {'Yes' if can_reproduce else 'No'}",
+                        f"Offspring: {fitness.offspring_count}",
+                    ]
+                )
 
         self._draw_scrollable_lines(
             "selected",
@@ -143,6 +160,10 @@ class UiRenderer:
             "State: Paused" if world.is_paused else "State: Running",
             f"Simulation speed: {world.simulation_speed:.2f}x",
             f"Zoom: {world.environment_zoom:.2f}x",
+            f"Best fitness: {world.rt_neat.stats.best_fitness:.2f}",
+            f"Avg fitness: {world.rt_neat.stats.average_fitness:.2f}",
+            f"Worst fitness: {world.rt_neat.stats.worst_fitness:.2f}",
+            f"Eligible parents: {world.rt_neat.stats.eligible_parent_count}",
             world.stats.generation_label,
         ]
         self._draw_scrollable_lines(
