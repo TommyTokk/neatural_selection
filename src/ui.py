@@ -574,8 +574,6 @@ class UiRenderer:
             "food_angle": "f_ang",
             "creature_closeness": "near",
             "creature_angle": "n_ang",
-            "boundary_closeness": "wall",
-            "boundary_turn": "w_turn",
             "accelerate": "acc",
             "rotate": "rot",
         }
@@ -592,7 +590,7 @@ class UiRenderer:
         return (
             f"F {value(0, inputs):.2f}/{value(1, inputs):.2f}  "
             f"C {value(2, inputs):.2f}/{value(3, inputs):.2f}  "
-            f"S {value(4, inputs):.2f} T {value(5, inputs):.2f} E {value(6, inputs):.2f}\n"
+            f"E {value(4, inputs):.2f}\n"
             f"O {value(0, outputs):.2f}/{value(1, outputs):.2f}/{value(2, outputs):.2f}"
         )
 

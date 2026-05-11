@@ -430,7 +430,7 @@ class World:
             )
             creature.body.torque += damping_torque
 
-        creature.body.torque += self.config.action.max_turn_torque * action.rotate
+        self._apply_turn_control(creature, action)
 
         if apply_stabilizers and action.accelerate < 0.0:
             creature.body.angular_velocity *= (
@@ -441,6 +441,33 @@ class World:
             creature.body.angular_velocity *= (
                 self.config.action.search_angular_velocity_retention
             )
+
+    def _apply_turn_control(self, creature: Creature, action: Action) -> None:
+        rotate = action.rotate
+        if abs(rotate) < self.config.action.turn_deadzone:
+            rotate = 0.0
+
+        target_angular_velocity = rotate * self.MAX_ANGULAR_SPEED
+        current_angular_velocity = creature.body.angular_velocity
+        response = (
+            self.config.action.turn_damping
+            if rotate == 0.0
+            else self.config.action.turn_response
+        )
+        response = max(0.0, min(1.0, response))
+        updated_angular_velocity = current_angular_velocity + (
+            target_angular_velocity - current_angular_velocity
+        ) * response
+
+        if (
+            rotate == 0.0
+            and abs(updated_angular_velocity)
+            < self.config.action.angular_stop_threshold
+        ):
+            updated_angular_velocity = 0.0
+
+        creature.body.angular_velocity = updated_angular_velocity
+        creature.body.torque = 0.0
 
     def _stabilize_food_tracking_velocity(self, creature: Creature) -> None:
         velocity = creature.body.velocity

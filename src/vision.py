@@ -7,14 +7,12 @@ from configs.sim_config import VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 7
+SENSOR_INPUT_COUNT = 5
 SENSOR_INPUT_NAMES = (
     "food_closeness",
     "food_angle",
     "creature_closeness",
     "creature_angle",
-    "boundary_closeness",
-    "boundary_turn",
     "energy",
 )
 
@@ -50,8 +48,6 @@ class SensorSnapshot:
             self.food.nearest_angle,
             self._visible_closeness(self.creatures),
             self.creatures.nearest_angle,
-            self.boundary.pressure,
-            self.boundary.turn,
             self.energy,
         ]
 

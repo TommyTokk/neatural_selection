@@ -98,9 +98,9 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 12
-    spawn_interval: float = 2.0
-    max_food_items: int = 60
+    initial_food_items: int = 25
+    spawn_interval: float = 0.75
+    max_food_items: int = 100
     min_food_radius: float = 6.0
     max_food_radius: float = 10.0
     energy_density: float = 0.002
@@ -111,6 +111,10 @@ class ActionConfig:
     max_forward_force: float = 125.0
     max_backward_force: float = 70.0
     max_turn_torque: float = 260.0
+    turn_response: float = 0.72
+    turn_damping: float = 0.88
+    turn_deadzone: float = 0.03
+    angular_stop_threshold: float = 0.05
     search_turn: float = 0.018
     search_acceleration: float = 0.82
     search_turn_interval_min: int = 35

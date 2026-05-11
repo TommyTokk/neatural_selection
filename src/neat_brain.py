@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Any
 
 import neat
 
-from src.action import Action
+from src.action import ACTION_OUTPUT_COUNT, Action
 from src.vision import SensorSnapshot
+
+SIGMOID_NEUTRAL_OUTPUT = 0.5
+DEFAULT_ACTION_OUTPUTS = [SIGMOID_NEUTRAL_OUTPUT] * ACTION_OUTPUT_COUNT
+
 
 @dataclass(slots=True)
 class NeatBrain:
@@ -28,16 +33,48 @@ class NeatBrain:
 
     def decide(self, snapshot: SensorSnapshot) -> Action:
         self.last_inputs = snapshot.as_inputs()
-        outputs = self.network.activate(self.last_inputs)
-        self.last_outputs = list(outputs)
-
-        accelerate = outputs[0] if len(outputs) > 0 else 0.0
-        rotate = outputs[1] if len(outputs) > 1 else 0.0
-        herding = outputs[2] if len(outputs) > 2 else 0.0
+        raw_outputs = self.network.activate(self.last_inputs)
+        outputs = self._normalize_outputs(raw_outputs)
+        self.last_outputs = outputs
+        action_outputs = [
+            self._signed_action_output(output)
+            for output in outputs
+        ]
 
         self.last_action = Action(
-            accelerate=accelerate,
-            rotate=rotate,
-            herding=herding,
+            accelerate=action_outputs[0],
+            rotate=action_outputs[1],
+            herding=action_outputs[2],
         ).clamped()
         return self.last_action
+
+    def _normalize_outputs(self, raw_outputs: Any) -> list[float]:
+        try:
+            output_values = list(raw_outputs)
+        except TypeError:
+            return DEFAULT_ACTION_OUTPUTS.copy()
+
+        normalized = [
+            self._safe_output(value)
+            for value in output_values[:ACTION_OUTPUT_COUNT]
+        ]
+
+        missing_outputs = ACTION_OUTPUT_COUNT - len(normalized)
+        if missing_outputs > 0:
+            normalized.extend(DEFAULT_ACTION_OUTPUTS[:missing_outputs])
+
+        return normalized
+
+    def _safe_output(self, value: Any) -> float:
+        try:
+            output = float(value)
+        except (TypeError, ValueError):
+            return SIGMOID_NEUTRAL_OUTPUT
+
+        if not isfinite(output):
+            return SIGMOID_NEUTRAL_OUTPUT
+
+        return max(0.0, min(1.0, output))
+
+    def _signed_action_output(self, value: float) -> float:
+        return (value - SIGMOID_NEUTRAL_OUTPUT) * 2.0

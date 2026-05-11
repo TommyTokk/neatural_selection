@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import copy
 
 import neat
 
-from src.action import Action
+from src.action import ACTION_OUTPUT_COUNT, Action
 from src.neat_brain import NeatBrain
-from src.vision import SensorSnapshot
+from src.vision import SENSOR_INPUT_COUNT, SensorSnapshot
+
+FALLBACK_ACTION = Action(accelerate=0.0, rotate=0.0, herding=0.0)
 
 
 class NeatBrainController:
@@ -21,19 +24,20 @@ class NeatBrainController:
             neat.DefaultStagnation,
             str(self.config_path),
         )
+        self._validate_network_contract()
         self.population = neat.Population(self.config)
         self.brains: dict[int, NeatBrain] = {}
 
     def assign_initial_brains(self, creature_ids: list[int]) -> None:
-        # Get the list of genome IDs from the input genomes
-        genomes = list(self.population.population.items())
+        self._validate_creature_ids(creature_ids)
+        genomes = self._initial_genomes()
 
         if len(genomes) < len(creature_ids):
             raise ValueError(
                 f"Not enough genomes in the population to assign to all creatures. "
                 f"Genomes: {len(genomes)}, Creatures: {len(creature_ids)}"
             )
-        # Assign brains to creatures based on the genome IDs
+
         for creature_id, (genome_id, genome) in zip(creature_ids, genomes):
             self.brains[creature_id] = NeatBrain.from_genome(
                 genome_id,
@@ -42,14 +46,18 @@ class NeatBrainController:
             )
 
     def decide(self, creature_id: int, snapshot: SensorSnapshot) -> Action:
-        # Get the brain for the given creature ID
         brain = self.brains.get(creature_id)
-
-        # If no brain is assigned to this creature, return a default action.
         if brain is None:
-            return Action(accelerate=0.0, rotate=0.0, herding=0.0)
+            return self.fallback_action()
 
         return brain.decide(snapshot)
+
+    def fallback_action(self) -> Action:
+        return Action(
+            accelerate=FALLBACK_ACTION.accelerate,
+            rotate=FALLBACK_ACTION.rotate,
+            herding=FALLBACK_ACTION.herding,
+        )
 
     def remove_brain(self, creature_id: int) -> None:
         self.brains.pop(creature_id, None)
@@ -62,21 +70,25 @@ class NeatBrainController:
 
     def brain_for(self, creature_id: int) -> NeatBrain | None:
         return self.brains.get(creature_id)
+
+    def update_genome_fitness(self, creature_id: int, fitness_score: float) -> bool:
+        brain = self.brains.get(creature_id)
+        if brain is None:
+            return False
+
+        brain.genome.fitness = fitness_score
+        return True
     
-    def create_child_brain(self, parent_creature_id: int, child_creature_id:int) -> bool:
-        # Retrieve the parent brain
+    def create_child_brain(self, parent_creature_id: int, child_creature_id: int) -> bool:
         parent_brain = self.brains.get(parent_creature_id)
-        if parent_brain is None: # No parent brain found, cannot create child brain
+        if parent_brain is None:
             return False
         
-        # Create a child genome by mutating the parent's genome
         child_genome = copy.deepcopy(parent_brain.genome)
-        # Assign a new unique genome ID to the child genome and reset its fitness
         child_genome.key = self._next_genome_id()
-        # Reset the fitness of the child genome to None (or 0.0) before mutation
         child_genome.fitness = None
-        # Mutate the child genome using the NEAT configuration
         child_genome.mutate(self.config.genome_config)
+        self.population.population[child_genome.key] = child_genome
 
         self.brains[child_creature_id] = NeatBrain.from_genome(
             child_genome.key,
@@ -92,8 +104,27 @@ class NeatBrainController:
         ]
         population_ids = list(self.population.population.keys())
         return max([0, *genome_ids, *population_ids]) + 1
-        
 
+    def _initial_genomes(self) -> list[tuple[int, Any]]:
+        return list(self.population.population.items())
 
+    def _validate_creature_ids(self, creature_ids: list[int]) -> None:
+        if len(set(creature_ids)) != len(creature_ids):
+            raise ValueError("Cannot assign NEAT brains to duplicate creature ids.")
 
-        
+    def _validate_network_contract(self) -> None:
+        genome_config = self.config.genome_config
+        input_count = len(genome_config.input_keys)
+        output_count = len(genome_config.output_keys)
+
+        if input_count != SENSOR_INPUT_COUNT:
+            raise ValueError(
+                f"NEAT config input count mismatch. "
+                f"Config: {input_count}, code: {SENSOR_INPUT_COUNT}"
+            )
+
+        if output_count != ACTION_OUTPUT_COUNT:
+            raise ValueError(
+                f"NEAT config output count mismatch. "
+                f"Config: {output_count}, code: {ACTION_OUTPUT_COUNT}"
+            )
