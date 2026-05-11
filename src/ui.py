@@ -3,6 +3,8 @@ from __future__ import annotations
 import arcade
 
 from configs.sim_config import SimConfig
+from src.action import ACTION_OUTPUT_NAMES
+from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
 
 
@@ -105,6 +107,10 @@ class UiRenderer:
 
     def _draw_selected_creature(self, world: World, bounds: arcade.Rect) -> None:
         selected = world.selected_creature
+        if selected is not None and world.show_brain_view:
+            self._draw_selected_brain(world, bounds)
+            return
+
         lines: list[str]
         if selected is None:
             lines = [
@@ -131,13 +137,21 @@ class UiRenderer:
                     fitness,
                     world.config.population,
                 )
+                genome_id = world.neat_controller.genome_id_for(selected.creature_id)
+                cooldown_remaining = max(
+                    0.0,
+                    world.config.population.reproduction_cooldown
+                    - fitness.seconds_since_reproduction(),
+                )
                 lines.extend(
                     [
+                        f"Genome: {genome_id if genome_id is not None else 'None'}",
                         f"Fitness: {fitness.score:.2f}",
                         f"Age: {fitness.age_seconds:.1f}s",
                         f"Food eaten: {fitness.food_eaten}",
                         f"Energy gained: {fitness.energy_gained:.3f}",
                         f"Can reproduce: {'Yes' if can_reproduce else 'No'}",
+                        f"Cooldown: {cooldown_remaining:.1f}s",
                         f"Offspring: {fitness.offspring_count}",
                     ]
                 )
@@ -152,14 +166,130 @@ class UiRenderer:
             first_line_bold=True,
         )
 
+    def _draw_selected_brain(self, world: World, bounds: arcade.Rect) -> None:
+        selected = world.selected_creature
+        content = self._card_content_bounds(bounds)
+        if selected is None:
+            return
+
+        brain = world.neat_controller.brain_for(selected.creature_id)
+        if brain is None:
+            self._draw_text(
+                "selected_brain_empty",
+                "No brain assigned.",
+                content.left,
+                content.top - 12,
+                self.theme.text_muted,
+                12,
+            )
+            return
+
+        input_keys = list(world.neat_controller.config.genome_config.input_keys)
+        output_keys = list(world.neat_controller.config.genome_config.output_keys)
+        hidden_keys = sorted(
+            key
+            for key in brain.genome.nodes
+            if key not in output_keys
+        )
+
+        input_positions = self._node_column_positions(
+            input_keys,
+            content.left + 16,
+            content.bottom + 16,
+            content.top - 22,
+        )
+        output_positions = self._node_column_positions(
+            output_keys,
+            content.right - 16,
+            content.bottom + 28,
+            content.top - 34,
+        )
+        hidden_positions = self._node_column_positions(
+            hidden_keys,
+            content.center_x,
+            content.bottom + 22,
+            content.top - 28,
+        )
+        positions = {**input_positions, **hidden_positions, **output_positions}
+
+        for connection in brain.genome.connections.values():
+            if not connection.enabled:
+                continue
+            start = positions.get(connection.key[0])
+            end = positions.get(connection.key[1])
+            if start is None or end is None:
+                continue
+            color = self.theme.accent if connection.weight >= 0.0 else self.theme.selected_outline
+            width = max(1.0, min(4.0, abs(connection.weight) * 0.7))
+            arcade.draw_line(start[0], start[1], end[0], end[1], color, width)
+
+        for index, key in enumerate(input_keys):
+            position = positions[key]
+            value = brain.last_inputs[index] if index < len(brain.last_inputs) else 0.0
+            self._draw_brain_node(
+                position,
+                self._brain_activity_color(value),
+                self.theme.accent,
+                radius=4.0 + min(1.0, abs(value)) * 3.0,
+            )
+            label = SENSOR_INPUT_NAMES[index] if index < len(SENSOR_INPUT_NAMES) else str(key)
+            self._draw_text(
+                f"brain_input_{index}",
+                f"{self._short_brain_label(label)} {value:.2f}",
+                position[0] + 8,
+                position[1] - 4,
+                self.theme.text_muted,
+                8,
+            )
+
+        for key in hidden_keys:
+            self._draw_brain_node(positions[key], self.theme.panel_background, self.theme.panel_border)
+
+        for index, key in enumerate(output_keys):
+            position = positions[key]
+            value = brain.last_outputs[index] if index < len(brain.last_outputs) else 0.0
+            self._draw_brain_node(
+                position,
+                self._brain_activity_color(value),
+                self.theme.herbivore_outline,
+                radius=4.0 + min(1.0, abs(value)) * 3.0,
+            )
+            label = ACTION_OUTPUT_NAMES[index] if index < len(ACTION_OUTPUT_NAMES) else str(key)
+            self._draw_text(
+                f"brain_output_{index}",
+                f"{self._short_brain_label(label)} {value:.2f}",
+                position[0] - 52,
+                position[1] - 4,
+                self.theme.text_muted,
+                8,
+            )
+
+        action = brain.last_action
+        action_label = (
+            f"Action acc {action.accelerate:.2f} rot {action.rotate:.2f}"
+            if action is not None
+            else "Action waiting"
+        )
+        self._draw_text(
+            "brain_summary",
+            f"Genome {brain.genome_id}  {action_label}",
+            content.left,
+            content.bottom,
+            self.theme.text_primary,
+            9,
+        )
+
     def _draw_environment_stats(self, world: World, bounds: arcade.Rect) -> None:
         lines = [
-            f"Herbivores: {world.stats.herbivore_count}",
+            f"Population: {world.stats.herbivore_count}/{world.config.population.max_creatures}",
             f"Food nodes: {world.stats.food_count}",
             f"Elapsed time: {world.elapsed_time:0.1f}s",
             "State: Paused" if world.is_paused else "State: Running",
             f"Simulation speed: {world.simulation_speed:.2f}x",
             f"Zoom: {world.environment_zoom:.2f}x",
+            f"Births: {world.rt_neat.stats.births}",
+            f"Live brains: {world.live_brain_count()}",
+            f"Archived: {world.archived_fitness_count()}",
             f"Best fitness: {world.rt_neat.stats.best_fitness:.2f}",
             f"Avg fitness: {world.rt_neat.stats.average_fitness:.2f}",
             f"Worst fitness: {world.rt_neat.stats.worst_fitness:.2f}",
@@ -181,7 +311,7 @@ class UiRenderer:
         button_top = bounds.top - 48
         button_height = 30
         button_gap = 8
-        button_width = (bounds.width - 32 - button_gap) / 2
+        button_width = (bounds.width - 32 - button_gap * 2) / 3
         pause_button = arcade.LBWH(
             bounds.left + 16, button_top - button_height, button_width, button_height
         )
@@ -191,10 +321,18 @@ class UiRenderer:
             button_width,
             button_height,
         )
+        brain_button = arcade.LBWH(
+            reset_button.right + button_gap,
+            button_top - button_height,
+            button_width,
+            button_height,
+        )
         self._control_hitboxes["pause"] = pause_button
         self._control_hitboxes["reset_speed"] = reset_button
+        self._control_hitboxes["brain_view"] = brain_button
         self._draw_button(pause_button, ">" if world.is_paused else "||", "pause")
         self._draw_button(reset_button, "1x", "reset_speed")
+        self._draw_button(brain_button, "Stats" if world.show_brain_view else "Brain", "brain_view")
 
         slider_y = reset_button.bottom - 32
         slider = arcade.LBWH(bounds.left + 16, slider_y, bounds.width - 32, 18)
@@ -237,6 +375,9 @@ class UiRenderer:
             return True
         if self._contains_hitbox("reset_speed", x, y):
             world.reset_simulation_speed()
+            return True
+        if self._contains_hitbox("brain_view", x, y):
+            world.toggle_brain_view()
             return True
         if self._contains_hitbox("speed_down", x, y):
             world.decrease_simulation_speed()
@@ -374,6 +515,60 @@ class UiRenderer:
             self.theme.text_muted,
             9,
         )
+
+    def _node_column_positions(
+        self,
+        node_keys: list[int],
+        x: float,
+        bottom: float,
+        top: float,
+    ) -> dict[int, tuple[float, float]]:
+        if not node_keys:
+            return {}
+        if len(node_keys) == 1:
+            return {node_keys[0]: (x, (bottom + top) * 0.5)}
+
+        step = (top - bottom) / (len(node_keys) - 1)
+        return {
+            key: (x, top - index * step)
+            for index, key in enumerate(node_keys)
+        }
+
+    def _draw_brain_node(
+        self,
+        position: tuple[float, float],
+        fill_color: arcade.Color | tuple[int, ...],
+        outline_color: arcade.Color | tuple[int, ...],
+        *,
+        radius: float = 5.0,
+    ) -> None:
+        arcade.draw_circle_filled(position[0], position[1], radius, fill_color)
+        arcade.draw_circle_outline(position[0], position[1], radius, outline_color, 1.5)
+
+    def _brain_activity_color(self, value: float) -> arcade.Color | tuple[int, ...]:
+        strength = max(0.0, min(1.0, abs(value)))
+        if value < 0.0:
+            base = self.theme.selected_outline
+        else:
+            base = self.theme.accent
+        return (
+            int(235 * (1.0 - strength) + base[0] * strength),
+            int(235 * (1.0 - strength) + base[1] * strength),
+            int(235 * (1.0 - strength) + base[2] * strength),
+        )
+
+    def _short_brain_label(self, label: str) -> str:
+        replacements = {
+            "food_closeness": "food",
+            "food_angle": "f_ang",
+            "creature_closeness": "near",
+            "creature_angle": "n_ang",
+            "boundary_closeness": "wall",
+            "boundary_turn": "w_turn",
+            "accelerate": "acc",
+            "rotate": "rot",
+        }
+        return replacements.get(label, label)
 
     def _contains_hitbox(self, key: str, x: float, y: float) -> bool:
         bounds = self._control_hitboxes.get(key)

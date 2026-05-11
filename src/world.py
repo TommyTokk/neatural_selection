@@ -69,6 +69,7 @@ class World:
             creature.creature_id: CreatureFitness()
             for creature in self.creatures
         }
+        self.fitness_archive: dict[int, CreatureFitness] = {}
         self.food_spawner = FoodSpawner(config.food, self.rng)
         self.foods: list[Food] = []
         self._add_foods(
@@ -89,6 +90,7 @@ class World:
         )
         self.rt_neat = RtNeatManager(self.neat_controller)
         self.use_neat_brains = True
+        self.show_brain_view = False
 
     def resize(self, width: int, height: int) -> None:
         self.layout = build_screen_layout(width, height, self.config.layout)
@@ -154,6 +156,9 @@ class World:
 
     def toggle_pause(self) -> None:
         self.is_paused = not self.is_paused
+
+    def toggle_brain_view(self) -> None:
+        self.show_brain_view = not self.show_brain_view
 
     def set_simulation_speed(self, speed: float) -> None:
         clamped_speed = max(
@@ -225,6 +230,16 @@ class World:
 
     def fitness_for(self, creature: Creature) -> CreatureFitness | None:
         return self.fitness.get(creature.creature_id)
+
+    def live_brain_count(self) -> int:
+        return sum(
+            1
+            for creature in self.creatures
+            if creature.creature_id in self.neat_controller.brains
+        )
+
+    def archived_fitness_count(self) -> int:
+        return len(self.fitness_archive)
 
     def toggle_debug_vision(self) -> None:
         self.debug_vision_enabled = not self.debug_vision_enabled
@@ -562,6 +577,10 @@ class World:
             self.creatures.remove(creature)
             self.space.remove(creature.body, creature.shape)
             self.neat_controller.remove_brain(creature.creature_id)
+
+        fitness = self.fitness.pop(creature.creature_id, None)
+        if fitness is not None:
+            self.fitness_archive[creature.creature_id] = fitness
 
         if self.selected_creature_id == creature.creature_id:
             self.selected_creature_id = None

@@ -53,6 +53,15 @@ class NeatBrainController:
 
     def remove_brain(self, creature_id: int) -> None:
         self.brains.pop(creature_id, None)
+
+    def genome_id_for(self, creature_id: int) -> int | None:
+        brain = self.brains.get(creature_id)
+        if brain is None:
+            return None
+        return brain.genome_id
+
+    def brain_for(self, creature_id: int) -> NeatBrain | None:
+        return self.brains.get(creature_id)
     
     def create_child_brain(self, parent_creature_id: int, child_creature_id:int) -> bool:
         # Retrieve the parent brain
