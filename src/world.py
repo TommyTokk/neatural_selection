@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cos, sin
+from math import cos, floor, sin
 from random import Random
 
 import pymunk
 
 from configs.sim_config import SimConfig
 import src.utils as ut
-from src.action import Action
+from src.action import Action, acceleration_force_vector
 from src.creature import Creature, VisionTraits
 from src.fitness import CreatureFitness
 from src.food import Food
@@ -28,6 +28,11 @@ class WorldStats:
     generation_label: str = "Physics Prototype"
     herbivore_count: int = 0
     food_count: int = 0
+    total_biomass_energy: float = 0.0
+    creature_energy: float = 0.0
+    plant_energy: float = 0.0
+    available_biomass: float = 0.0
+    plant_spawn_pressure: float = 1.0
 
 
 class World:
@@ -73,13 +78,25 @@ class World:
         self.fitness_archive: dict[int, CreatureFitness] = {}
         self.food_spawner = FoodSpawner(config.food, self.rng)
         self.foods: list[Food] = []
+        self._food_grid: dict[tuple[int, int], list[Food]] = {}
+        self._food_grid_dirty = True
+        self._food_grid_cell_size = max(
+            config.vision.max_range,
+            config.metabolism.eating_distance,
+        ) + config.food.max_food_radius + self.CREATURE_RADIUS
         self._add_foods(
             self.food_spawner.create_initial_foods(self.environment_world_bounds)
         )
+        self.total_biomass_energy = self._initial_total_biomass_energy()
         self.selected_creature_id: int | None = None
         self.stats = WorldStats(
             herbivore_count=len(self.creatures),
             food_count=len(self.foods),
+            total_biomass_energy=self.total_biomass_energy,
+            creature_energy=self._creature_energy(),
+            plant_energy=self._plant_energy(),
+            available_biomass=self._available_biomass(),
+            plant_spawn_pressure=self._plant_spawn_pressure(),
         )
 
         self.metabolism = Metabolism(config.metabolism, self.vision)
@@ -216,16 +233,34 @@ class World:
         return None
 
     def sensor_snapshot_for(self, creature: Creature) -> SensorSnapshot:
+        return self._sensor_snapshot_for(creature, record_food_discoveries=False)
+
+    def _sensor_snapshot_for(
+        self,
+        creature: Creature,
+        *,
+        record_food_discoveries: bool,
+    ) -> SensorSnapshot:
+        nearby_foods = self._nearby_foods_for(
+            creature,
+            creature.vision.range + self.config.food.max_food_radius,
+        )
+        if record_food_discoveries:
+            self._record_food_discoveries(creature, nearby_foods)
         return self.vision.sense(
             creature,
-            self.foods,
+            nearby_foods,
             self.creatures,
             self.environment_world_bounds,
             self.MAX_SPEED,
         )
 
     def visible_foods_for(self, creature: Creature) -> list[Food]:
-        return self.vision.visible_foods(creature, self.foods)
+        nearby_foods = self._nearby_foods_for(
+            creature,
+            creature.vision.range + self.config.food.max_food_radius,
+        )
+        return self.vision.visible_foods(creature, nearby_foods)
 
     def visible_creatures_for(self, creature: Creature) -> list[Creature]:
         return self.vision.visible_creatures(creature, self.creatures)
@@ -353,6 +388,8 @@ class World:
             delta_time,
             self.environment_world_bounds,
             len(self.foods),
+            len(self.creatures),
+            self._available_biomass(),
         )
         self._add_foods(spawned_foods)
 
@@ -360,6 +397,8 @@ class World:
         for food in foods:
             self.foods.append(food)
             self.space.add(food.body, food.shape)
+        if foods:
+            self._food_grid_dirty = True
 
     def _rebuild_boundaries(self) -> None:
         if self._boundary_shapes:
@@ -382,7 +421,10 @@ class World:
 
     def _apply_creature_intents(self) -> None:
         for creature in self.creatures:
-            snapshot = self.sensor_snapshot_for(creature)
+            snapshot = self._sensor_snapshot_for(
+                creature,
+                record_food_discoveries=True,
+            )
             if self.use_neat_brains:
                 action = self.neat_controller.decide(creature.creature_id, snapshot)
                 self._last_actions[creature.creature_id] = action
@@ -412,14 +454,15 @@ class World:
         if apply_stabilizers and stabilize_velocity and action.accelerate > 0.0:
             self._stabilize_food_tracking_velocity(creature)
 
-        if action.accelerate >= 0:
-            force = self.config.action.max_forward_force * action.accelerate
-        else:
-            force = self.config.action.max_backward_force * action.accelerate
-
-        creature.body.apply_force_at_local_point(
-            (force, 0.0),
-            (0.0, 0.0),
+        force_vector = acceleration_force_vector(
+            action.accelerate,
+            creature.heading,
+            self.config.action.max_forward_force,
+            self.config.action.max_backward_force,
+        )
+        creature.body.apply_force_at_world_point(
+            force_vector,
+            creature.body.position,
         )
 
         if (
@@ -619,6 +662,11 @@ class World:
     def _refresh_stats(self) -> None:
         self.stats.herbivore_count = len(self.creatures)
         self.stats.food_count = len(self.foods)
+        self.stats.total_biomass_energy = self.total_biomass_energy
+        self.stats.creature_energy = self._creature_energy()
+        self.stats.plant_energy = self._plant_energy()
+        self.stats.available_biomass = self._available_biomass()
+        self.stats.plant_spawn_pressure = self._plant_spawn_pressure()
         self._update_genome_fitness_scores()
         self.rt_neat.update_stats(
             self.creatures,
@@ -641,8 +689,29 @@ class World:
             if fitness is not None:
                 fitness.record_tick(delta_time, creature.speed, self.MAX_SPEED)
 
+    def _record_food_discoveries(
+        self,
+        creature: Creature,
+        nearby_foods: list[Food],
+    ) -> None:
+        fitness = self.fitness.get(creature.creature_id)
+        if fitness is None:
+            return
+
+        visible_food_ids = [
+            food.id
+            for food in self.vision.visible_foods(creature, nearby_foods)
+        ]
+        fitness.record_food_discoveries(visible_food_ids)
+
     def _update_metabolism(self, delta_time: float) -> None:
-        report = self.metabolism.update(self.creatures, self.foods, delta_time, self.MAX_SPEED)
+        report = self.metabolism.update(
+            self.creatures,
+            self.foods,
+            delta_time,
+            self.MAX_SPEED,
+            self._eatable_foods_for,
+        )
 
         for consumption in report.food_consumptions:
             fitness = self.fitness.get(consumption.creature_id)
@@ -653,6 +722,7 @@ class World:
             if food in self.foods:
                 self.foods.remove(food)
                 self.space.remove(food.body, food.shape)
+                self._food_grid_dirty = True
 
         for creature in report.dead_creatures:
             self._remove_creature(creature)
@@ -662,6 +732,49 @@ class World:
 
         if self.selected_creature_id is not None and self.selected_creature is None:
             self.selected_creature_id = None
+
+    def _eatable_foods_for(self, creature: Creature) -> list[Food]:
+        radius = (
+            creature.radius
+            + self.config.food.max_food_radius
+            + self.config.metabolism.eating_distance
+        )
+        return self._nearby_foods_for(creature, radius)
+
+    def _nearby_foods_for(self, creature: Creature, radius: float) -> list[Food]:
+        self._ensure_food_grid()
+        creature_x, creature_y = creature.position
+        left = creature_x - radius
+        right = creature_x + radius
+        bottom = creature_y - radius
+        top = creature_y + radius
+        min_cell_x, min_cell_y = self._food_grid_cell(left, bottom)
+        max_cell_x, max_cell_y = self._food_grid_cell(right, top)
+
+        nearby_foods: list[Food] = []
+        for cell_x in range(min_cell_x, max_cell_x + 1):
+            for cell_y in range(min_cell_y, max_cell_y + 1):
+                nearby_foods.extend(self._food_grid.get((cell_x, cell_y), []))
+
+        return nearby_foods
+
+    def _ensure_food_grid(self) -> None:
+        if not self._food_grid_dirty:
+            return
+
+        self._food_grid.clear()
+        for food in self.foods:
+            self._food_grid.setdefault(
+                self._food_grid_cell(*food.position),
+                [],
+            ).append(food)
+        self._food_grid_dirty = False
+
+    def _food_grid_cell(self, x: float, y: float) -> tuple[int, int]:
+        return (
+            floor(x / self._food_grid_cell_size),
+            floor(y / self._food_grid_cell_size),
+        )
 
     def _remove_creature(self, creature: Creature) -> None:
         fitness = self.fitness.get(creature.creature_id)
@@ -680,6 +793,25 @@ class World:
 
         if self.selected_creature_id == creature.creature_id:
             self.selected_creature_id = None
+
+    def _initial_total_biomass_energy(self) -> float:
+        configured_total = self.config.food.total_biomass_energy
+        if configured_total is not None:
+            return configured_total
+        return self._creature_energy() + self._plant_energy()
+
+    def _creature_energy(self) -> float:
+        return sum(creature.energy for creature in self.creatures)
+
+    def _plant_energy(self) -> float:
+        return sum(food.energy_value for food in self.foods)
+
+    def _available_biomass(self) -> float:
+        used_biomass = self._creature_energy() + self._plant_energy()
+        return max(0.0, self.total_biomass_energy - used_biomass)
+
+    def _plant_spawn_pressure(self) -> float:
+        return self.food_spawner.creature_pressure_factor(len(self.creatures))
 
     def _recover_extinct_population(self) -> None:
         parent_pool_size = max(

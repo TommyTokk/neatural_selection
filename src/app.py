@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from src.graphics import configure_graphics, log_graphics_context
+
+configure_graphics()
+
 import arcade
 
 from configs.sim_config import SimConfig, build_sim_config
@@ -118,6 +122,10 @@ def create_and_run(config: SimConfig | None = None) -> None:
         active_config.display.height,
         active_config.display.title,
         resizable=active_config.display.resizable,
+        gl_version=active_config.display.gl_version,
+        antialiasing=active_config.display.antialiasing,
+        vsync=active_config.display.vsync,
     )
+    log_graphics_context()
     window.show_view(NeatGameView(active_config))
     arcade.run()

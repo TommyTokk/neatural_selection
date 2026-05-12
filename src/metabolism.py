@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
-from math import dist
+from collections.abc import Callable, Sequence
 
 from src.food import Food
 from src.creature import Creature
@@ -29,7 +28,14 @@ class Metabolism:
         self.config = config
         self.vision = vision
 
-    def update(self, creatures: list[Creature], food_items: list[Food], delta_time:float, max_speed:float) -> MetabolismReport:
+    def update(
+        self,
+        creatures: list[Creature],
+        food_items: list[Food],
+        delta_time: float,
+        max_speed: float,
+        nearby_foods_for: Callable[[Creature], Sequence[Food]] | None = None,
+    ) -> MetabolismReport:
 
         eaten_foods: list[Food] = []
         food_consumptions: list[FoodConsumption] = []
@@ -40,7 +46,12 @@ class Metabolism:
             self.consume_energy(creature, delta_time, max_speed)
 
             # Calculate the eatble food
-            food = self.find_eatable_food(creature, food_items, eaten_foods)
+            candidate_foods = (
+                food_items
+                if nearby_foods_for is None
+                else nearby_foods_for(creature)
+            )
+            food = self.find_eatable_food(creature, candidate_foods, eaten_foods)
 
             if food is not None:
                 energy_gained = self.eat(creature, food)
@@ -87,19 +98,27 @@ class Metabolism:
         )
         return creature.energy - previous_energy
 
-    def find_eatable_food(self, creature: Creature, food_items: list[Food], ignored_foods: list[Food]) -> Food | None:
+    def find_eatable_food(
+        self,
+        creature: Creature,
+        food_items: Sequence[Food],
+        ignored_foods: list[Food],
+    ) -> Food | None:
+        creature_x, creature_y = creature.position
+        ignored_food_ids = {food.id for food in ignored_foods}
 
         for food in food_items:
-            
             # Check if ignored food
-            if food in ignored_foods:
+            if food.id in ignored_food_ids:
                 continue
 
             # Calculate the eating radius 
             eating_range = creature.radius + food.radius + self.config.eating_distance
+            dx = food.position[0] - creature_x
+            dy = food.position[1] - creature_y
 
             # Check if the food is within the eating range
-            if dist(creature.position, food.position) <= eating_range:
+            if dx * dx + dy * dy <= eating_range * eating_range:
                 return food
             
         return None

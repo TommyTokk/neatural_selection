@@ -6,11 +6,15 @@ from typing import Any
 
 import neat
 
-from src.action import ACTION_OUTPUT_COUNT, Action
+from src.action import (
+    ACTION_OUTPUT_COUNT,
+    NEUTRAL_NETWORK_OUTPUT,
+    Action,
+    signed_output,
+)
 from src.vision import SensorSnapshot
 
-SIGMOID_NEUTRAL_OUTPUT = 0.5
-DEFAULT_ACTION_OUTPUTS = [SIGMOID_NEUTRAL_OUTPUT] * ACTION_OUTPUT_COUNT
+DEFAULT_ACTION_OUTPUTS = [NEUTRAL_NETWORK_OUTPUT] * ACTION_OUTPUT_COUNT
 
 
 @dataclass(slots=True)
@@ -68,12 +72,12 @@ class NeatBrain:
         try:
             output = float(value)
         except (TypeError, ValueError):
-            return SIGMOID_NEUTRAL_OUTPUT
+            return NEUTRAL_NETWORK_OUTPUT
 
         if not isfinite(output):
-            return SIGMOID_NEUTRAL_OUTPUT
+            return NEUTRAL_NETWORK_OUTPUT
 
         return max(0.0, min(1.0, output))
 
     def _signed_action_output(self, value: float) -> float:
-        return (value - SIGMOID_NEUTRAL_OUTPUT) * 2.0
+        return signed_output(value)

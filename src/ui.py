@@ -148,6 +148,7 @@ class UiRenderer:
                         f"Genome: {genome_id if genome_id is not None else 'None'}",
                         f"Fitness: {fitness.score:.2f}",
                         f"Age: {fitness.age_seconds:.1f}s",
+                        f"Food discovered: {fitness.food_discovered}",
                         f"Food eaten: {fitness.food_eaten}",
                         f"Energy gained: {fitness.energy_gained:.3f}",
                         f"Can reproduce: {'Yes' if can_reproduce else 'No'}",
@@ -289,7 +290,8 @@ class UiRenderer:
         )
         detail_lines = [
             f"Genome: {brain.genome_id}",
-            f"Action: {action_label}",
+            f"Signed action: {action_label}",
+            f"Speed: {selected.speed:.1f} px/s",
             self._brain_input_readout(brain.last_inputs),
             self._brain_output_readout(brain.last_outputs),
             f"Nodes: {len(brain.genome.nodes)}",
@@ -310,6 +312,10 @@ class UiRenderer:
         lines = [
             f"Population: {world.stats.herbivore_count}/{world.config.population.max_creatures}",
             f"Food nodes: {world.stats.food_count}",
+            f"Biomass: {world.stats.available_biomass:.1f} available",
+            f"Plant pressure: {world.stats.plant_spawn_pressure:.0%}",
+            f"Plants: {world.stats.plant_energy:.1f} energy",
+            f"Creatures: {world.stats.creature_energy:.1f} energy",
             f"Elapsed time: {world.elapsed_time:0.1f}s",
             "State: Paused" if world.is_paused else "State: Running",
             f"Simulation speed: {world.simulation_speed:.2f}x",
@@ -605,7 +611,7 @@ class UiRenderer:
         def value(index: int, values: list[float]) -> float:
             return values[index] if index < len(values) else 0.0
 
-        return f"O {value(0, outputs):.2f}/{value(1, outputs):.2f}"
+        return f"Raw outputs: {value(0, outputs):.2f}/{value(1, outputs):.2f}"
 
     def _contains_hitbox(self, key: str, x: float, y: float) -> bool:
         bounds = self._control_hitboxes.get(key)

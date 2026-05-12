@@ -185,6 +185,7 @@ class EnvironmentRenderer:
         pan_x: float,
         pan_y: float,
     ) -> None:
+        draw_outlines = len(foods) <= 250 or zoom >= 1.25
         for food in foods:
             pos_x, pos_y = food.position
             draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
@@ -192,6 +193,8 @@ class EnvironmentRenderer:
             if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
             arcade.draw_circle_filled(draw_x, draw_y, radius, self.theme.food_fill)
+            if not draw_outlines:
+                continue
             arcade.draw_circle_outline(
                 draw_x,
                 draw_y,

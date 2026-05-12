@@ -11,6 +11,9 @@ class DisplayConfig:
     height: int = 900
     title: str = "neat_game_of_life"
     resizable: bool = True
+    gl_version: tuple[int, int] = (3, 3)
+    antialiasing: bool = True
+    vsync: bool = False
 
 
 @dataclass(slots=True)
@@ -100,9 +103,14 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 25
-    spawn_interval: float = 0.75
-    max_food_items: int = 100
+    initial_food_items: int = 500
+    max_food_items: int = 500
+    total_biomass_energy: float | None = None
+    max_biomass_spawns_per_second: float = 4.0
+    biomass_spawn_pressure_exponent: float = 1.6
+    creature_pressure_midpoint: float = 18.0
+    creature_pressure_steepness: float = 3.0
+    creature_pressure_spawn_cutoff: float = 0.05
     min_food_radius: float = 6.0
     max_food_radius: float = 10.0
     energy_density: float = 0.002
@@ -119,7 +127,7 @@ class ActionConfig:
     angular_stop_threshold: float = 0.05
     forward_velocity_retention: float = 0.992
     lateral_velocity_retention: float = 0.72
-    linear_stop_threshold: float = 2.0
+    linear_stop_threshold: float = 0.05
     search_turn: float = 0.018
     search_acceleration: float = 0.82
     search_turn_interval_min: int = 35

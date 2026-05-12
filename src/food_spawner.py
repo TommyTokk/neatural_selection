@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import exp, pi
 from random import Random
 
 from configs.sim_config import FoodConfig
@@ -11,7 +12,7 @@ class FoodSpawner:
         self.config = config
         self.rng = rng
         self._next_food_id = 1
-        self._spawn_timer = 0.0
+        self._spawn_credit = 0.0
 
     def create_initial_foods(
         self, bounds: tuple[float, float, float, float]
@@ -24,21 +25,43 @@ class FoodSpawner:
         delta_time: float,
         bounds: tuple[float, float, float, float],
         current_food_count: int,
+        creature_count: int,
+        available_biomass: float,
     ) -> list[Food]:
         if current_food_count >= self.config.max_food_items:
-            self._spawn_timer = 0.0
+            self._spawn_credit = 0.0
             return []
 
-        self._spawn_timer += delta_time
-        if self._spawn_timer < self.config.spawn_interval:
+        spawn_pressure = self.creature_pressure_factor(creature_count)
+        if spawn_pressure <= self.config.creature_pressure_spawn_cutoff:
+            self._spawn_credit = 0.0
             return []
 
-        spawn_count = int(self._spawn_timer // self.config.spawn_interval)
-        self._spawn_timer %= self.config.spawn_interval
+        plant_energy_value = self.average_food_energy_value()
+        spawnable_biomass = available_biomass * spawn_pressure
+        if spawnable_biomass <= plant_energy_value:
+            return []
+
         available_slots = self.config.max_food_items - current_food_count
+        biomass_slots = int(spawnable_biomass // plant_energy_value)
+        allowed_spawns = min(available_slots, biomass_slots)
+        if allowed_spawns <= 0:
+            return []
+
+        spawn_rate = self._spawn_rate_per_second(allowed_spawns, spawn_pressure)
+        self._spawn_credit += max(0.0, delta_time) * spawn_rate
+        spawn_count = min(allowed_spawns, int(self._spawn_credit))
+        if spawn_count <= 0:
+            return []
+
+        self._spawn_credit -= spawn_count
+        self._spawn_credit = min(
+            self._spawn_credit,
+            max(1.0, self.config.max_biomass_spawns_per_second),
+        )
         return [
             self.create_food(bounds)
-            for _ in range(min(spawn_count, available_slots))
+            for _ in range(spawn_count)
         ]
 
     def create_food(self, bounds: tuple[float, float, float, float]) -> Food:
@@ -59,3 +82,27 @@ class FoodSpawner:
         food_id = self._next_food_id
         self._next_food_id += 1
         return food_id
+
+    def average_food_energy_value(self) -> float:
+        average_radius = (
+            self.config.min_food_radius + self.config.max_food_radius
+        ) * 0.5
+        return pi * average_radius**2 * self.config.energy_density
+
+    def creature_pressure_factor(self, creature_count: int) -> float:
+        steepness = max(0.001, self.config.creature_pressure_steepness)
+        pressure = (creature_count - self.config.creature_pressure_midpoint) / steepness
+        return 1.0 / (1.0 + exp(pressure))
+
+    def _spawn_rate_per_second(
+        self,
+        allowed_spawns: int,
+        spawn_pressure: float,
+    ) -> float:
+        density_pressure = min(1.0, allowed_spawns / self.config.max_food_items)
+        biomass_pressure = density_pressure ** self.config.biomass_spawn_pressure_exponent
+        return (
+            self.config.max_biomass_spawns_per_second
+            * biomass_pressure
+            * spawn_pressure
+        )
