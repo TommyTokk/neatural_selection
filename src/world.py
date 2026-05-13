@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass
 from math import cos, floor, sin
 from random import Random
@@ -9,7 +10,7 @@ import pymunk
 from configs.sim_config import SimConfig
 import src.utils as ut
 from src.action import Action, acceleration_force_vector
-from src.creature import Creature, VisionTraits
+from src.creature import Color, Creature, VisionTraits
 from src.fitness import CreatureFitness
 from src.food import Food
 from src.food_spawner import FoodSpawner
@@ -36,6 +37,18 @@ class WorldStats:
 
 
 class World:
+    CREATURE_COLOR_PALETTE: tuple[Color, ...] = (
+        (86, 156, 214),
+        (207, 112, 139),
+        (236, 178, 84),
+        (154, 126, 206),
+        (69, 170, 160),
+        (224, 126, 74),
+        (116, 143, 214),
+        (198, 96, 185),
+        (98, 188, 196),
+        (220, 150, 105),
+    )
     CREATURE_RADIUS = 14.0
     FIXED_TIMESTEP = 1.0 / 60.0
     MAX_FRAME_STEPS = 5
@@ -299,7 +312,10 @@ class World:
 
     def _spawn_creatures(self) -> list[Creature]:
         return [
-            self._spawn_creature(index + 1)
+            self._spawn_creature(
+                index + 1,
+                color=self._initial_creature_color(index),
+            )
             for index in range(self.config.population.initial_creatures)
         ]
 
@@ -309,6 +325,7 @@ class World:
         position: tuple[float, float] | None = None,
         heading: float | None = None,
         energy: float | None = None,
+        color: Color | None = None,
     ) -> Creature:
         left, bottom, right, top = self.environment_world_bounds
         margin = self.CREATURE_RADIUS + 10.0
@@ -358,8 +375,43 @@ class World:
                 else energy
             ),
             vision=vision,
-            color=self.config.theme.herbivore_fill,
+            color=(
+                color
+                if color is not None
+                else self._initial_creature_color(creature_id - 1)
+            ),
         )
+
+    def _initial_creature_color(self, index: int) -> Color:
+        return self.CREATURE_COLOR_PALETTE[index % len(self.CREATURE_COLOR_PALETTE)]
+
+    def _mutated_creature_color(self, parent_color: Color) -> Color:
+        red, green, blue = parent_color[:3]
+        hue, saturation, value = rgb_to_hsv(
+            red / 255.0,
+            green / 255.0,
+            blue / 255.0,
+        )
+        hue = (hue + self.rng.uniform(-0.035, 0.035)) % 1.0
+        saturation = max(
+            0.48,
+            min(0.82, saturation + self.rng.uniform(-0.06, 0.06)),
+        )
+        value = max(0.62, min(0.92, value + self.rng.uniform(-0.05, 0.05)))
+        if self._is_food_like_color(hsv_to_rgb(hue, saturation, value)):
+            hue = (hue + 0.22) % 1.0
+        red, green, blue = hsv_to_rgb(hue, saturation, value)
+        return (int(red * 255), int(green * 255), int(blue * 255))
+
+    def _is_food_like_color(self, color: tuple[float, float, float]) -> bool:
+        food_red, food_green, food_blue = self.config.theme.food_fill[:3]
+        red, green, blue = (channel * 255.0 for channel in color)
+        distance_squared = (
+            (red - food_red) ** 2
+            + (green - food_green) ** 2
+            + (blue - food_blue) ** 2
+        )
+        return distance_squared < 70.0**2
 
     def _child_spawn_position(self, parent: Creature) -> tuple[float, float]:
         distance = self.config.population.child_spawn_distance
@@ -834,6 +886,7 @@ class World:
             child = self._spawn_creature(
                 child_id,
                 energy=self.config.metabolism.max_energy,
+                color=self._initial_creature_color(recovered_count),
             )
             if not self.neat_controller.create_mutated_brain_from_genome(
                 parent_genome,
@@ -890,6 +943,7 @@ class World:
             position=child_position,
             heading=parent.heading,
             energy=self.config.population.reproduction_energy_cost,
+            color=self._mutated_creature_color(parent.color),
         )
 
         if not self.neat_controller.create_child_brain(parent.creature_id, child_id):

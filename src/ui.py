@@ -246,13 +246,12 @@ class UiRenderer:
                 radius=4.0 + min(1.0, abs(value)) * 3.0,
             )
             label = SENSOR_INPUT_NAMES[index] if index < len(SENSOR_INPUT_NAMES) else str(key)
-            self._draw_text(
+            self._draw_brain_node_label(
                 f"brain_input_{index}",
                 f"{self._short_brain_label(label)} {value:.2f}",
-                position[0] + 10,
-                position[1] - 4,
-                self.theme.text_muted,
-                9,
+                position,
+                graph_bounds,
+                side="right",
             )
 
         for key in hidden_keys:
@@ -268,13 +267,12 @@ class UiRenderer:
                 radius=4.0 + min(1.0, abs(value)) * 3.0,
             )
             label = ACTION_OUTPUT_NAMES[index] if index < len(ACTION_OUTPUT_NAMES) else str(key)
-            self._draw_text(
+            self._draw_brain_node_label(
                 f"brain_output_{index}",
                 f"{self._short_brain_label(label)} {value:.2f}",
-                position[0] - 58,
-                position[1] - 4,
-                self.theme.text_muted,
-                9,
+                position,
+                graph_bounds,
+                side="left",
             )
 
         action = brain.last_action
@@ -296,7 +294,7 @@ class UiRenderer:
             self._brain_output_readout(brain.last_outputs),
             f"Nodes: {len(brain.genome.nodes)}",
             f"Connections: {enabled_connections}/{len(brain.genome.connections)} enabled",
-            f"Genome fitness: {brain.genome.fitness if brain.genome.fitness is not None else 'None'}",
+            f"Fitness: {self._format_genome_fitness(brain.genome.fitness)}",
         ]
         self._draw_scrollable_lines_in_bounds(
             "brain_details",
@@ -579,6 +577,34 @@ class UiRenderer:
             int(235 * (1.0 - strength) + base[2] * strength),
         )
 
+    def _draw_brain_node_label(
+        self,
+        key: str,
+        text: str,
+        position: tuple[float, float],
+        bounds: arcade.Rect,
+        *,
+        side: str,
+    ) -> None:
+        label_width = min(68.0, max(28.0, bounds.width * 0.32))
+        if side == "left":
+            x = position[0] - label_width - 10
+        else:
+            x = position[0] + 10
+
+        x = max(bounds.left, min(bounds.right - label_width, x))
+        y = max(bounds.bottom + 4, min(bounds.top - 12, position[1] - 4))
+
+        self._draw_text(
+            key,
+            self._fit_line(text, label_width),
+            x,
+            y,
+            self.theme.text_muted,
+            9,
+            width=label_width,
+        )
+
     def _short_brain_label(self, label: str) -> str:
         replacements = {
             "food_proximity": "food",
@@ -589,6 +615,14 @@ class UiRenderer:
             "rotate": "rot",
         }
         return replacements.get(label, label)
+
+    def _format_genome_fitness(self, fitness: object) -> str:
+        if fitness is None:
+            return "None"
+        try:
+            return f"{float(fitness):.2f}"
+        except (TypeError, ValueError):
+            return str(fitness)
 
     def _brain_value_readout(
         self,

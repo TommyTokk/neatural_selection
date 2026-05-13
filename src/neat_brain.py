@@ -40,14 +40,10 @@ class NeatBrain:
         raw_outputs = self.network.activate(self.last_inputs)
         outputs = self._normalize_outputs(raw_outputs)
         self.last_outputs = outputs
-        action_outputs = [
-            self._signed_action_output(output)
-            for output in outputs
-        ]
 
         self.last_action = Action(
-            accelerate=action_outputs[0],
-            rotate=action_outputs[1],
+            accelerate=self._acceleration_action_output(outputs[0]),
+            rotate=self._signed_action_output(outputs[1]),
         ).clamped()
         return self.last_action
 
@@ -81,3 +77,6 @@ class NeatBrain:
 
     def _signed_action_output(self, value: float) -> float:
         return signed_output(value)
+
+    def _acceleration_action_output(self, value: float) -> float:
+        return max(0.0, self._signed_action_output(value))

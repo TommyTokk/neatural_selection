@@ -105,8 +105,12 @@ class VisionConfig:
 class FoodConfig:
     initial_food_items: int = 500
     max_food_items: int = 500
+    low_creature_food_bonus_items: int = 250
+    low_creature_food_bonus_threshold: int = 10
+    low_creature_burst_items: int = 4
+    low_creature_burst_interval: float = 2.5
     total_biomass_energy: float | None = None
-    max_biomass_spawns_per_second: float = 4.0
+    max_biomass_spawns_per_second: float = 8.0
     biomass_spawn_pressure_exponent: float = 1.6
     creature_pressure_midpoint: float = 18.0
     creature_pressure_steepness: float = 3.0
