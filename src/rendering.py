@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from math import ceil, floor, cos, sin
 from src.world import World
 import arcade
@@ -20,18 +21,86 @@ class EnvironmentRenderer:
         self._draw_panel(bounds)
         pan_x = world.environment_pan_x
         pan_y = world.environment_pan_y
-        self._draw_grid(bounds, world.environment_zoom, pan_x, pan_y)
-        self._draw_food(world.foods, bounds, world.environment_zoom, pan_x, pan_y)
-        self._draw_creatures(
-            world.creatures,
-            bounds,
-            world.environment_zoom,
-            pan_x,
-            pan_y,
-            world.selected_creature_id,
-        )
-        self._draw_selected_overlay(world, bounds, world.environment_zoom, pan_x, pan_y)
+
+        with self._environment_clip(bounds):
+            self._draw_grid(bounds, world.environment_zoom, pan_x, pan_y)
+            self._draw_food(world.foods, bounds, world.environment_zoom, pan_x, pan_y)
+            self._draw_creatures(
+                world.creatures,
+                bounds,
+                world.environment_zoom,
+                pan_x,
+                pan_y,
+                world.selected_creature_id,
+            )
+            self._draw_selected_overlay(
+                world,
+                bounds,
+                world.environment_zoom,
+                pan_x,
+                pan_y,
+            )
+
         self._draw_environment_header(bounds, world)
+
+    @contextmanager
+    def _environment_clip(self, bounds: arcade.Rect):
+        try:
+            from pyglet import gl
+        except ImportError:
+            yield
+            return
+
+        clip_bounds = self._content_clip_bounds(bounds)
+        x, y, width, height = self._scissor_box_for_bounds(clip_bounds)
+        previous_box = (gl.GLint * 4)()
+        was_enabled = bool(gl.glIsEnabled(gl.GL_SCISSOR_TEST))
+        gl.glGetIntegerv(gl.GL_SCISSOR_BOX, previous_box)
+
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(x, y, width, height)
+        try:
+            yield
+        finally:
+            gl.glScissor(
+                previous_box[0],
+                previous_box[1],
+                previous_box[2],
+                previous_box[3],
+            )
+            if not was_enabled:
+                gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _content_clip_bounds(self, bounds: arcade.Rect) -> arcade.Rect:
+        border_width = 2.0
+        return arcade.LBWH(
+            bounds.left + border_width,
+            bounds.bottom + border_width,
+            max(0.0, bounds.width - border_width * 2),
+            max(0.0, bounds.height - border_width * 2),
+        )
+
+    def _scissor_box_for_bounds(self, bounds: arcade.Rect) -> tuple[int, int, int, int]:
+        scale_x, scale_y = self._framebuffer_scale()
+        return (
+            round(bounds.left * scale_x),
+            round(bounds.bottom * scale_y),
+            round(bounds.width * scale_x),
+            round(bounds.height * scale_y),
+        )
+
+    def _framebuffer_scale(self) -> tuple[float, float]:
+        try:
+            window = arcade.get_window()
+            window_width, window_height = window.get_size()
+            framebuffer_width, framebuffer_height = window.get_framebuffer_size()
+        except (AttributeError, RuntimeError):
+            return 1.0, 1.0
+
+        if window_width <= 0 or window_height <= 0:
+            return 1.0, 1.0
+
+        return framebuffer_width / window_width, framebuffer_height / window_height
 
     def _draw_panel(self, bounds: arcade.Rect) -> None:
         self._draw_rounded_rect(

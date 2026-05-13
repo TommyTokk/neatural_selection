@@ -105,10 +105,14 @@ class VisionConfig:
 class FoodConfig:
     initial_food_items: int = 500
     max_food_items: int = 500
-    low_creature_food_bonus_items: int = 250
-    low_creature_food_bonus_threshold: int = 10
-    low_creature_burst_items: int = 4
-    low_creature_burst_interval: float = 2.5
+    low_creature_food_bonus_items: int = 500# Number of bonus food items to spawn when creature count is low.
+    low_creature_food_bonus_threshold: int = 10# Creature count threshold below which bonus food items will spawn.
+    low_creature_burst_items: int = 300 # Number of food items to spawn in a burst when creature count is low.
+    low_creature_burst_interval: float = 1.5# Minimum interval in seconds between food bursts when creature count is low.
+    low_food_pressure_threshold: float = 0.5# Food spawn pressure threshold below which low food spawn rate multiplier is applied.
+    low_food_spawn_rate_multiplier: float = 2.0# Multiplier for food spawn rate when food pressure is below the low_food_pressure_threshold.
+    low_food_burst_items: int = 500# Number of food items to spawn in a burst when food pressure is low.
+    low_food_burst_interval: float = 1.25# Minimum interval in seconds between food bursts when food pressure is low.
     total_biomass_energy: float | None = None
     max_biomass_spawns_per_second: float = 8.0
     biomass_spawn_pressure_exponent: float = 1.6
