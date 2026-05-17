@@ -61,11 +61,11 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             180,
         )
 
-    def test_scroll_over_graph_zooms_brain_graph(self) -> None:
+    def test_scroll_over_graph_is_consumed_without_zooming_brain_graph(self) -> None:
         handled = self.renderer.handle_mouse_scroll(200, 200, 1)
 
         self.assertTrue(handled)
-        self.assertAlmostEqual(self.renderer._brain_graph_zoom, 1.1)
+        self.assertAlmostEqual(self.renderer._brain_graph_zoom, 1.0)
 
     def test_scroll_over_non_graph_brain_window_is_consumed(self) -> None:
         handled = self.renderer.handle_mouse_scroll(200, 380, 1)

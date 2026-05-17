@@ -824,14 +824,6 @@ class UiRenderer:
         self._active_brain_graph_drag = False
 
     def handle_mouse_scroll(self, x: float, y: float, scroll_y: float) -> bool:
-        if self._contains_hitbox("brain_window_graph", x, y):
-            direction = 1 if scroll_y > 0 else -1
-            self._brain_graph_zoom = max(
-                0.5,
-                min(2.4, self._brain_graph_zoom + direction * 0.1),
-            )
-            return True
-
         if (
             self._brain_window_open
             and self._brain_window_bounds is not None
