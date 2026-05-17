@@ -85,18 +85,21 @@ class World:
         self._rebuild_boundaries()
         self.creatures = self._spawn_creatures()
         self.fitness: dict[int, CreatureFitness] = {
-            creature.creature_id: CreatureFitness()
-            for creature in self.creatures
+            creature.creature_id: CreatureFitness() for creature in self.creatures
         }
         self.fitness_archive: dict[int, CreatureFitness] = {}
         self.food_spawner = FoodSpawner(config.food, self.rng)
         self.foods: list[Food] = []
         self._food_grid: dict[tuple[int, int], list[Food]] = {}
         self._food_grid_dirty = True
-        self._food_grid_cell_size = max(
-            config.vision.max_range,
-            config.metabolism.eating_distance,
-        ) + config.food.max_food_radius + self.CREATURE_RADIUS
+        self._food_grid_cell_size = (
+            max(
+                config.vision.max_range,
+                config.metabolism.eating_distance,
+            )
+            + config.food.max_food_radius
+            + self.CREATURE_RADIUS
+        )
         self._add_foods(
             self.food_spawner.create_initial_foods(self.environment_world_bounds)
         )
@@ -234,8 +237,12 @@ class World:
         bounds = self.layout.environment
         center_x = bounds.center_x
         center_y = bounds.center_y
-        model_x = center_x + (x - center_x - self.environment_pan_x) / self.environment_zoom
-        model_y = center_y + (y - center_y - self.environment_pan_y) / self.environment_zoom
+        model_x = (
+            center_x + (x - center_x - self.environment_pan_x) / self.environment_zoom
+        )
+        model_y = (
+            center_y + (y - center_y - self.environment_pan_y) / self.environment_zoom
+        )
         return model_x, model_y
 
     @property
@@ -326,6 +333,7 @@ class World:
         heading: float | None = None,
         energy: float | None = None,
         color: Color | None = None,
+        vision: VisionTraits | None = None,
     ) -> Creature:
         left, bottom, right, top = self.environment_world_bounds
         margin = self.CREATURE_RADIUS + 10.0
@@ -341,9 +349,7 @@ class World:
         else:
             body.position = position
         body.angle = (
-            self.rng.uniform(0.0, 6.283185307179586)
-            if heading is None
-            else heading
+            self.rng.uniform(0.0, 6.283185307179586) if heading is None else heading
         )
         body.velocity = (0.0, 0.0)
 
@@ -352,16 +358,15 @@ class World:
         shape.friction = 0.0
         self.space.add(body, shape)
 
-        vision = VisionTraits(
-            range=self.rng.uniform(
-                self.config.vision.min_range,
-                self.config.vision.max_range,
-            ),
-            angle=self.rng.uniform(
-                self.config.vision.min_angle,
-                self.config.vision.max_angle,
-            ),
-        )
+        if vision is None:
+            vision = VisionTraits(
+                range=self.rng.uniform(
+                    self.config.vision.min_range, self.config.vision.max_range
+                ),
+                angle=self.rng.uniform(
+                    self.config.vision.min_angle, self.config.vision.max_angle
+                ),
+            )
 
         return Creature(
             creature_id=creature_id,
@@ -369,11 +374,7 @@ class World:
             body=body,
             shape=shape,
             radius=self.CREATURE_RADIUS,
-            energy=(
-                self.rng.uniform(0.55, 0.95)
-                if energy is None
-                else energy
-            ),
+            energy=(self.rng.uniform(0.55, 0.95) if energy is None else energy),
             vision=vision,
             color=(
                 color
@@ -384,6 +385,21 @@ class World:
 
     def _initial_creature_color(self, index: int) -> Color:
         return self.CREATURE_COLOR_PALETTE[index % len(self.CREATURE_COLOR_PALETTE)]
+
+    def _mutated_vision(self, parent_vision: VisionTraits) -> VisionTraits:
+        range_mutation = self.rng.gauss(0, 8)
+        angle_mutation = self.rng.gauss(0, 0.08)
+
+        return VisionTraits(
+            range=max(
+                self.config.vision.min_range,
+                min(self.config.vision.max_range, parent_vision.range + range_mutation),
+            ),
+            angle=max(
+                self.config.vision.min_angle,
+                min(self.config.vision.max_angle, parent_vision.angle + angle_mutation),
+            ),
+        )
 
     def _mutated_creature_color(self, parent_color: Color) -> Color:
         red, green, blue = parent_color[:3]
@@ -407,9 +423,7 @@ class World:
         food_red, food_green, food_blue = self.config.theme.food_fill[:3]
         red, green, blue = (channel * 255.0 for channel in color)
         distance_squared = (
-            (red - food_red) ** 2
-            + (green - food_green) ** 2
-            + (blue - food_blue) ** 2
+            (red - food_red) ** 2 + (green - food_green) ** 2 + (blue - food_blue) ** 2
         )
         return distance_squared < 70.0**2
 
@@ -519,8 +533,7 @@ class World:
 
         if (
             apply_stabilizers
-            and
-            action.rotate == 0.0
+            and action.rotate == 0.0
             and action.accelerate > 0.0
             and abs(creature.body.angular_velocity) > 0.0
         ):
@@ -590,9 +603,10 @@ class World:
             else self.config.action.turn_response
         )
         response = max(0.0, min(1.0, response))
-        updated_angular_velocity = current_angular_velocity + (
-            target_angular_velocity - current_angular_velocity
-        ) * response
+        updated_angular_velocity = (
+            current_angular_velocity
+            + (target_angular_velocity - current_angular_velocity) * response
+        )
 
         if (
             rotate == 0.0
@@ -617,7 +631,9 @@ class World:
 
         lateral_speed *= self.config.action.food_tracking_lateral_velocity_retention
         if forward_speed < 0.0:
-            forward_speed *= self.config.action.food_tracking_backward_velocity_retention
+            forward_speed *= (
+                self.config.action.food_tracking_backward_velocity_retention
+            )
 
         creature.body.velocity = (
             forward_x * forward_speed + lateral_x * lateral_speed,
@@ -667,12 +683,8 @@ class World:
         max_pan_y = max(
             0.0, (world_half_height - visible_half_height) * self.environment_zoom
         )
-        self.environment_pan_x = max(
-            -max_pan_x, min(max_pan_x, self.environment_pan_x)
-        )
-        self.environment_pan_y = max(
-            -max_pan_y, min(max_pan_y, self.environment_pan_y)
-        )
+        self.environment_pan_x = max(-max_pan_x, min(max_pan_x, self.environment_pan_x))
+        self.environment_pan_y = max(-max_pan_y, min(max_pan_y, self.environment_pan_y))
 
     def _focus_selected_creature(self) -> None:
         selected = self.selected_creature
@@ -692,12 +704,8 @@ class World:
 
         bounds = self.layout.environment
         selected_x, selected_y = selected.position
-        self.environment_pan_x = (
-            -(selected_x - bounds.center_x) * self.environment_zoom
-        )
-        self.environment_pan_y = (
-            -(selected_y - bounds.center_y) * self.environment_zoom
-        )
+        self.environment_pan_x = -(selected_x - bounds.center_x) * self.environment_zoom
+        self.environment_pan_y = -(selected_y - bounds.center_y) * self.environment_zoom
         self._clamp_environment_pan()
 
     def _creature_is_visible(self, creature: Creature) -> bool:
@@ -751,8 +759,7 @@ class World:
             return
 
         visible_food_ids = [
-            food.id
-            for food in self.vision.visible_foods(creature, nearby_foods)
+            food.id for food in self.vision.visible_foods(creature, nearby_foods)
         ]
         fitness.record_food_discoveries(visible_food_ids)
 
@@ -925,7 +932,11 @@ class World:
 
         parent_id = self.rt_neat.eligible_parent_ids[0]
         parent = next(
-            (creature for creature in self.creatures if creature.creature_id == parent_id),
+            (
+                creature
+                for creature in self.creatures
+                if creature.creature_id == parent_id
+            ),
             None,
         )
         if parent is None:
@@ -944,6 +955,7 @@ class World:
             heading=parent.heading,
             energy=self.config.population.reproduction_energy_cost,
             color=self._mutated_creature_color(parent.color),
+            vision=self._mutated_vision(parent.vision),
         )
 
         if not self.neat_controller.create_child_brain(parent.creature_id, child_id):

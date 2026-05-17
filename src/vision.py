@@ -277,9 +277,8 @@ class VisionSystem:
             return start
 
         t = (
-            ((point_x - start_x) * segment_x + (point_y - start_y) * segment_y)
-            / length_squared
-        )
+            (point_x - start_x) * segment_x + (point_y - start_y) * segment_y
+        ) / length_squared
         t = self._clamp(t, 0.0, 1.0)
         return start_x + segment_x * t, start_y + segment_y * t
 
@@ -419,10 +418,7 @@ class VisionSystem:
         return self._clamp01(creature.speed / max_speed)
 
     def normalized_energy_cost(self, creature: Creature) -> float:
-        max_cost = (
-            self.config.base_energy_cost
-            + self.config.area_energy_cost_factor
-        )
+        max_cost = self.config.base_energy_cost + self.config.area_energy_cost_factor
 
         if max_cost <= 0:
             return 0.0
