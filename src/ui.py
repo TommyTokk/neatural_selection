@@ -579,8 +579,8 @@ class UiRenderer:
             return
 
         environment = world.layout.environment
-        width = max(420.0, min(environment.width * 0.78, 860.0))
-        height = max(320.0, min(environment.height * 0.72, 620.0))
+        width = max(360.0, min(environment.width * 0.62, 720.0))
+        height = max(260.0, min(environment.height * 0.58, 500.0))
         left = environment.center_x - width / 2
         bottom = environment.center_y - height / 2
         self._brain_window_bounds = self._clamped_brain_window_bounds(
@@ -832,6 +832,13 @@ class UiRenderer:
             )
             return True
 
+        if (
+            self._brain_window_open
+            and self._brain_window_bounds is not None
+            and self._contains_bounds(self._brain_window_bounds, x, y)
+        ):
+            return True
+
         for key, bounds in self._scroll_regions.items():
             if not (bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top):
                 continue
@@ -1063,6 +1070,9 @@ class UiRenderer:
         bounds = self._control_hitboxes.get(key)
         if bounds is None:
             return False
+        return self._contains_bounds(bounds, x, y)
+
+    def _contains_bounds(self, bounds: arcade.Rect, x: float, y: float) -> bool:
         return bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top
 
     def _set_speed_from_slider(self, world: World, x: float) -> None:
