@@ -4,6 +4,12 @@ import arcade
 
 from configs.sim_config import SimConfig
 from src.action import ACTION_OUTPUT_NAMES
+from src.brain_graph import (
+    BrainEdgeKind,
+    BrainGraphEdge,
+    BrainNodeKind,
+    build_brain_graph_layout,
+)
 from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
 
@@ -18,10 +24,20 @@ class UiRenderer:
         self._scroll_offsets: dict[str, float] = {}
         self._scroll_limits: dict[str, float] = {}
         self._active_slider = False
+        self._brain_window_open = False
+        self._brain_window_bounds: arcade.Rect | None = None
+        self._brain_window_drag_offset = (0.0, 0.0)
+        self._brain_graph_pan = (0.0, 0.0)
+        self._brain_graph_zoom = 1.0
+        self._active_brain_window_drag = False
+        self._active_brain_graph_drag = False
+        self._brain_graph_drag_last = (0.0, 0.0)
 
     def draw(self, world: World) -> None:
+        self._control_hitboxes.clear()
         self._draw_top_bar(world)
         self._draw_sidebar(world)
+        self._draw_brain_window(world)
 
     def _draw_top_bar(self, world: World) -> None:
         bounds = world.layout.top_bar
@@ -107,9 +123,6 @@ class UiRenderer:
 
     def _draw_selected_creature(self, world: World, bounds: arcade.Rect) -> None:
         selected = world.selected_creature
-        if selected is not None and world.show_brain_view:
-            self._draw_selected_brain(world, bounds)
-            return
 
         lines: list[str]
         if selected is None:
@@ -157,15 +170,44 @@ class UiRenderer:
                     ]
                 )
 
-        self._draw_scrollable_lines(
+        if selected is None:
+            self._draw_scrollable_lines(
+                "selected",
+                bounds,
+                lines,
+                line_spacing=22,
+                first_line_color=self.theme.text_primary,
+                body_color=self.theme.text_muted,
+                first_line_bold=True,
+            )
+            return
+
+        content = self._card_content_bounds(bounds)
+        button_height = 32
+        button_gap = 10
+        open_button = arcade.LBWH(
+            content.left,
+            content.bottom,
+            content.width,
+            button_height,
+        )
+        lines_bounds = arcade.LBWH(
+            content.left,
+            content.bottom + button_height + button_gap,
+            content.width,
+            max(0.0, content.height - button_height - button_gap),
+        )
+        self._draw_scrollable_lines_in_bounds(
             "selected",
-            bounds,
+            lines_bounds,
             lines,
             line_spacing=22,
             first_line_color=self.theme.text_primary,
             body_color=self.theme.text_muted,
             first_line_bold=True,
         )
+        self._control_hitboxes["open_brain_window"] = open_button
+        self._draw_button(open_button, "Open Brain", "open_brain_window")
 
     def _draw_selected_brain(self, world: World, bounds: arcade.Rect) -> None:
         selected = world.selected_creature
@@ -306,6 +348,339 @@ class UiRenderer:
             first_line_bold=True,
         )
 
+    def _draw_brain_window(self, world: World) -> None:
+        if not self._brain_window_open:
+            return
+
+        selected = world.selected_creature
+        if selected is None:
+            self._brain_window_open = False
+            return
+
+        brain = world.neat_controller.brain_for(selected.creature_id)
+        self._ensure_brain_window_bounds(world)
+        bounds = self._brain_window_bounds
+        if bounds is None:
+            return
+
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.panel_background,
+            self.theme.environment_border,
+            self.config.layout.panel_radius,
+            2.5,
+        )
+
+        title_bar = arcade.LBWH(bounds.left, bounds.top - 44, bounds.width, 44)
+        close_button = arcade.LBWH(bounds.right - 42, bounds.top - 34, 24, 24)
+        self._control_hitboxes["brain_window_title"] = title_bar
+        self._control_hitboxes["brain_window_close"] = close_button
+
+        genome_label = (
+            f"Genome {brain.genome_id}"
+            if brain is not None
+            else "No genome"
+        )
+        self._draw_text(
+            "brain_window_title_text",
+            f"Brain: {selected.name} / {genome_label}",
+            bounds.left + 18,
+            bounds.top - 27,
+            self.theme.text_primary,
+            15,
+            bold=True,
+        )
+        self._draw_button(close_button, "x", "brain_window_close")
+
+        graph_bounds = arcade.LBWH(
+            bounds.left + 18,
+            bounds.bottom + 72,
+            bounds.width - 36,
+            max(120.0, bounds.height - 134),
+        )
+        self._control_hitboxes["brain_window_graph"] = graph_bounds
+        self._draw_rounded_rect(
+            graph_bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.5,
+        )
+
+        footer_bounds = arcade.LBWH(
+            bounds.left + 18,
+            bounds.bottom + 14,
+            bounds.width - 36,
+            42,
+        )
+        if brain is None:
+            self._draw_text(
+                "brain_window_empty",
+                "No brain assigned.",
+                graph_bounds.left + 18,
+                graph_bounds.top - 28,
+                self.theme.text_muted,
+                13,
+            )
+            return
+
+        self._draw_brain_graph(world, graph_bounds)
+        enabled_connections = sum(
+            1
+            for connection in brain.genome.connections.values()
+            if connection.enabled
+        )
+        action = brain.last_action
+        action_label = (
+            f"acc {action.accelerate:.2f} rot {action.rotate:.2f}"
+            if action is not None
+            else "waiting"
+        )
+        footer_lines = [
+            (
+                f"Nodes: {len(brain.genome.nodes)}  "
+                f"Connections: {enabled_connections}/{len(brain.genome.connections)} enabled"
+            ),
+            (
+                f"Fitness: {self._format_genome_fitness(brain.genome.fitness)}  "
+                f"Signed action: {action_label}"
+            ),
+        ]
+        self._draw_scrollable_lines_in_bounds(
+            "brain_window_footer",
+            footer_bounds,
+            footer_lines,
+            line_spacing=18,
+            first_line_color=self.theme.text_muted,
+            body_color=self.theme.text_muted,
+        )
+
+    def _draw_brain_graph(self, world: World, bounds: arcade.Rect) -> None:
+        selected = world.selected_creature
+        if selected is None:
+            return
+
+        brain = world.neat_controller.brain_for(selected.creature_id)
+        if brain is None:
+            return
+
+        input_keys = list(world.neat_controller.config.genome_config.input_keys)
+        output_keys = list(world.neat_controller.config.genome_config.output_keys)
+        layout = build_brain_graph_layout(
+            brain.genome,
+            input_keys,
+            output_keys,
+            bounds,
+            SENSOR_INPUT_NAMES,
+            ACTION_OUTPUT_NAMES,
+        )
+        positions = {
+            key: self._brain_graph_screen_position(position, bounds)
+            for key, position in layout.positions.items()
+        }
+
+        for edge in layout.edges:
+            if not edge.enabled:
+                continue
+            self._draw_brain_graph_edge(edge, positions, bounds)
+
+        for key, node in layout.nodes.items():
+            position = positions.get(key)
+            if position is None:
+                continue
+
+            fill_color = self.theme.panel_background
+            outline_color = self.theme.panel_border
+            radius = 6.0
+            if node.kind == BrainNodeKind.INPUT:
+                index = input_keys.index(key)
+                value = brain.last_inputs[index] if index < len(brain.last_inputs) else 0.0
+                fill_color = self._brain_activity_color(value)
+                outline_color = self.theme.accent
+                radius = 5.0 + min(1.0, abs(value)) * 3.0
+            elif node.kind == BrainNodeKind.OUTPUT:
+                index = output_keys.index(key)
+                value = brain.last_outputs[index] if index < len(brain.last_outputs) else 0.0
+                fill_color = self._brain_activity_color(value)
+                outline_color = self.theme.herbivore_outline
+                radius = 5.0 + min(1.0, abs(value)) * 3.0
+
+            self._draw_brain_node(position, fill_color, outline_color, radius=radius)
+            self._draw_brain_graph_label(key, node.label, node.kind, position, bounds)
+
+    def _draw_brain_graph_edge(
+        self,
+        edge: BrainGraphEdge,
+        positions: dict[int, tuple[float, float]],
+        bounds: arcade.Rect,
+    ) -> None:
+        start = positions.get(edge.source)
+        end = positions.get(edge.target)
+        if start is None or end is None:
+            return
+
+        color = self._brain_edge_color(edge.weight)
+        width = max(1.0, min(5.0, abs(edge.weight) * 0.7))
+        if edge.kind == BrainEdgeKind.SELF_LOOP:
+            self._draw_self_loop(start, color, width)
+            return
+        if edge.kind == BrainEdgeKind.RECURRENT:
+            control_y = bounds.top - 18.0 if start[1] <= end[1] else bounds.bottom + 18.0
+            control = ((start[0] + end[0]) * 0.5, control_y)
+            self._draw_curve(
+                self._quadratic_bezier_points(start, control, end),
+                color,
+                width,
+            )
+            return
+
+        arcade.draw_line(start[0], start[1], end[0], end[1], color, width)
+
+    def _draw_brain_graph_label(
+        self,
+        node_key: int,
+        label: str,
+        kind: BrainNodeKind,
+        position: tuple[float, float],
+        bounds: arcade.Rect,
+    ) -> None:
+        label_text = self._short_brain_label(label)
+        label_width = 62.0
+        if kind == BrainNodeKind.INPUT:
+            x = max(bounds.left + 8, position[0] + 10)
+            anchor_x = "left"
+        elif kind == BrainNodeKind.OUTPUT:
+            x = min(bounds.right - 8, position[0] - 10)
+            anchor_x = "right"
+        else:
+            x = position[0]
+            anchor_x = "center"
+
+        y = max(bounds.bottom + 8, min(bounds.top - 16, position[1] - 15))
+        self._draw_text(
+            f"brain_window_node_label_{node_key}",
+            self._fit_line(label_text, label_width),
+            x,
+            y,
+            self.theme.text_muted,
+            9,
+            anchor_x=anchor_x,
+        )
+
+    def _ensure_brain_window_bounds(self, world: World) -> None:
+        if self._brain_window_bounds is not None:
+            self._brain_window_bounds = self._clamped_brain_window_bounds(
+                world,
+                self._brain_window_bounds.left,
+                self._brain_window_bounds.bottom,
+                self._brain_window_bounds.width,
+                self._brain_window_bounds.height,
+            )
+            return
+
+        environment = world.layout.environment
+        width = max(420.0, min(environment.width * 0.78, 860.0))
+        height = max(320.0, min(environment.height * 0.72, 620.0))
+        left = environment.center_x - width / 2
+        bottom = environment.center_y - height / 2
+        self._brain_window_bounds = self._clamped_brain_window_bounds(
+            world,
+            left,
+            bottom,
+            width,
+            height,
+        )
+
+    def _clamped_brain_window_bounds(
+        self,
+        world: World,
+        left: float,
+        bottom: float,
+        width: float,
+        height: float,
+    ) -> arcade.Rect:
+        outer_padding = self.config.layout.outer_padding
+        min_left = outer_padding
+        min_bottom = outer_padding
+        max_left = max(min_left, world.layout.window.width - outer_padding - width)
+        max_bottom = max(min_bottom, world.layout.window.height - outer_padding - height)
+        return arcade.LBWH(
+            max(min_left, min(max_left, left)),
+            max(min_bottom, min(max_bottom, bottom)),
+            width,
+            height,
+        )
+
+    def _brain_graph_screen_position(
+        self,
+        position: tuple[float, float],
+        bounds: arcade.Rect,
+    ) -> tuple[float, float]:
+        pan_x, pan_y = self._brain_graph_pan
+        return (
+            bounds.center_x + (position[0] - bounds.center_x) * self._brain_graph_zoom + pan_x,
+            bounds.center_y + (position[1] - bounds.center_y) * self._brain_graph_zoom + pan_y,
+        )
+
+    def _brain_edge_color(self, weight: float) -> arcade.Color | tuple[int, ...]:
+        return self.theme.accent if weight >= 0.0 else self.theme.selected_outline
+
+    def _draw_self_loop(
+        self,
+        position: tuple[float, float],
+        color: arcade.Color | tuple[int, ...],
+        width: float,
+    ) -> None:
+        x, y = position
+        points = [
+            (x + 8.0, y + 2.0),
+            (x + 32.0, y + 26.0),
+            (x + 22.0, y - 24.0),
+            (x + 8.0, y - 2.0),
+        ]
+        for start, control, end in (
+            (points[0], points[1], points[2]),
+            (points[2], points[3], points[0]),
+        ):
+            self._draw_curve(
+                self._quadratic_bezier_points(start, control, end, steps=10),
+                color,
+                width,
+            )
+
+    def _draw_curve(
+        self,
+        points: list[tuple[float, float]],
+        color: arcade.Color | tuple[int, ...],
+        width: float,
+    ) -> None:
+        for start, end in zip(points, points[1:]):
+            arcade.draw_line(start[0], start[1], end[0], end[1], color, width)
+
+    def _quadratic_bezier_points(
+        self,
+        start: tuple[float, float],
+        control: tuple[float, float],
+        end: tuple[float, float],
+        *,
+        steps: int = 24,
+    ) -> list[tuple[float, float]]:
+        points: list[tuple[float, float]] = []
+        for index in range(steps + 1):
+            t = index / steps
+            inverse = 1.0 - t
+            points.append(
+                (
+                    inverse * inverse * start[0]
+                    + 2.0 * inverse * t * control[0]
+                    + t * t * end[0],
+                    inverse * inverse * start[1]
+                    + 2.0 * inverse * t * control[1]
+                    + t * t * end[1],
+                )
+            )
+        return points
+
     def _draw_environment_stats(self, world: World, bounds: arcade.Rect) -> None:
         lines = [
             f"Population: {world.stats.herbivore_count}/{world.config.population.max_creatures}",
@@ -337,12 +712,10 @@ class UiRenderer:
         )
 
     def _draw_controls(self, world: World, bounds: arcade.Rect) -> None:
-        self._control_hitboxes.clear()
-
         button_top = bounds.top - 50
         button_height = 32
         button_gap = 10
-        button_width = (bounds.width - 32 - button_gap * 2) / 3
+        button_width = (bounds.width - 32 - button_gap) / 2
         pause_button = arcade.LBWH(
             bounds.left + 16, button_top - button_height, button_width, button_height
         )
@@ -352,18 +725,10 @@ class UiRenderer:
             button_width,
             button_height,
         )
-        brain_button = arcade.LBWH(
-            reset_button.right + button_gap,
-            button_top - button_height,
-            button_width,
-            button_height,
-        )
         self._control_hitboxes["pause"] = pause_button
         self._control_hitboxes["reset_speed"] = reset_button
-        self._control_hitboxes["brain_view"] = brain_button
         self._draw_button(pause_button, "> Space" if world.is_paused else "|| Space", "pause")
         self._draw_button(reset_button, "1x 0", "reset_speed")
-        self._draw_button(brain_button, "Stats" if world.show_brain_view else "Brain", "brain_view")
 
         slider_y = reset_button.bottom - 42
         slider = arcade.LBWH(bounds.left + 16, slider_y, bounds.width - 32, 18)
@@ -390,14 +755,31 @@ class UiRenderer:
         self._draw_button(fast_button, ">> D/->", "speed_up")
 
     def handle_mouse_press(self, world: World, x: float, y: float) -> bool:
+        if self._contains_hitbox("brain_window_close", x, y):
+            self._brain_window_open = False
+            self._active_brain_window_drag = False
+            self._active_brain_graph_drag = False
+            return True
+        if self._contains_hitbox("brain_window_title", x, y):
+            bounds = self._brain_window_bounds
+            if bounds is not None:
+                self._active_brain_window_drag = True
+                self._brain_window_drag_offset = (x - bounds.left, y - bounds.bottom)
+                return True
+        if self._contains_hitbox("brain_window_graph", x, y):
+            self._active_brain_graph_drag = True
+            self._brain_graph_drag_last = (x, y)
+            return True
+        if self._contains_hitbox("open_brain_window", x, y):
+            if world.selected_creature is not None:
+                self._brain_window_open = True
+                self._ensure_brain_window_bounds(world)
+            return True
         if self._contains_hitbox("pause", x, y):
             world.toggle_pause()
             return True
         if self._contains_hitbox("reset_speed", x, y):
             world.reset_simulation_speed()
-            return True
-        if self._contains_hitbox("brain_view", x, y):
-            world.toggle_brain_view()
             return True
         if self._contains_hitbox("speed_down", x, y):
             world.decrease_simulation_speed()
@@ -412,6 +794,25 @@ class UiRenderer:
         return False
 
     def handle_mouse_drag(self, world: World, x: float, y: float) -> bool:
+        if self._active_brain_window_drag:
+            bounds = self._brain_window_bounds
+            if bounds is None:
+                return False
+            offset_x, offset_y = self._brain_window_drag_offset
+            self._brain_window_bounds = self._clamped_brain_window_bounds(
+                world,
+                x - offset_x,
+                y - offset_y,
+                bounds.width,
+                bounds.height,
+            )
+            return True
+        if self._active_brain_graph_drag:
+            last_x, last_y = self._brain_graph_drag_last
+            pan_x, pan_y = self._brain_graph_pan
+            self._brain_graph_pan = (pan_x + x - last_x, pan_y + y - last_y)
+            self._brain_graph_drag_last = (x, y)
+            return True
         if not self._active_slider:
             return False
         self._set_speed_from_slider(world, x)
@@ -419,8 +820,18 @@ class UiRenderer:
 
     def handle_mouse_release(self) -> None:
         self._active_slider = False
+        self._active_brain_window_drag = False
+        self._active_brain_graph_drag = False
 
     def handle_mouse_scroll(self, x: float, y: float, scroll_y: float) -> bool:
+        if self._contains_hitbox("brain_window_graph", x, y):
+            direction = 1 if scroll_y > 0 else -1
+            self._brain_graph_zoom = max(
+                0.5,
+                min(2.4, self._brain_graph_zoom + direction * 0.1),
+            )
+            return True
+
         for key, bounds in self._scroll_regions.items():
             if not (bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top):
                 continue
@@ -638,7 +1049,8 @@ class UiRenderer:
         return (
             f"F {value(0, inputs):.2f}/{value(1, inputs):.2f}  "
             f"C {value(2, inputs):.2f}/{value(3, inputs):.2f}  "
-            f"E {value(4, inputs):.2f}"
+            f"W {value(4, inputs):.2f}/{value(5, inputs):.2f}  "
+            f"E {value(6, inputs):.2f}"
         )
 
     def _brain_output_readout(self, outputs: list[float]) -> str:

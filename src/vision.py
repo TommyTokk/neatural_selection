@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import atan2, hypot, pi
+from math import atan2, cos, hypot, pi, sin
 
 from configs.sim_config import VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 5
+SENSOR_INPUT_COUNT = 7
 SENSOR_INPUT_NAMES = (
     "food_proximity",
     "food_angle",
     "creature_proximity",
     "creature_angle",
+    "wall_proximity",
+    "wall_angle",
     "energy",
 )
 
@@ -35,6 +37,7 @@ class BoundarySnapshot:
 class SensorSnapshot:
     food: VisionTargetSnapshot
     creatures: VisionTargetSnapshot
+    walls: VisionTargetSnapshot
     boundary: BoundarySnapshot
     energy: float
     speed: float
@@ -48,6 +51,8 @@ class SensorSnapshot:
             self._target_angle(self.food),
             self._target_proximity(self.creatures),
             self._target_angle(self.creatures),
+            self._target_proximity(self.walls),
+            self._target_angle(self.walls),
             self.energy,
         ]
 
@@ -76,11 +81,13 @@ class VisionSystem:
     ) -> SensorSnapshot:
         food_snapshot = self._sense_food(creature, foods)
         creature_snapshot = self._sense_creatures(creature, creatures)
+        wall_snapshot = self._sense_walls(creature, world_bounds)
         boundary_snapshot = self.sense_boundary(creature, world_bounds)
 
         return SensorSnapshot(
             food=food_snapshot,
             creatures=creature_snapshot,
+            walls=wall_snapshot,
             boundary=boundary_snapshot,
             energy=self._clamp01(creature.energy),
             speed=self.normalized_speed(creature, max_speed),
@@ -169,6 +176,138 @@ class VisionSystem:
             ],
         )
 
+    def _sense_walls(
+        self,
+        creature: Creature,
+        world_bounds: tuple[float, float, float, float],
+    ) -> VisionTargetSnapshot:
+        creature_x, creature_y = creature.position
+        vision_range = creature.vision.range
+        cone_angle = creature.vision.angle
+        if vision_range <= 0 or cone_angle <= 0:
+            return self._empty_target_snapshot()
+
+        left, bottom, right, top = world_bounds
+        wall_segments = [
+            ((left, bottom), (right, bottom)),
+            ((right, bottom), (right, top)),
+            ((right, top), (left, top)),
+            ((left, top), (left, bottom)),
+        ]
+
+        nearest_distance = vision_range
+        nearest_angle = 0.0
+        best_closeness = 0.0
+        visible_count = 0
+        density = 0.0
+
+        for start, end in wall_segments:
+            for point in self._wall_candidate_points(creature, start, end):
+                dx = point[0] - creature_x
+                dy = point[1] - creature_y
+                distance = hypot(dx, dy)
+                surface_distance = max(0.0, distance - creature.radius)
+                if surface_distance > vision_range:
+                    continue
+
+                angle_to_wall = atan2(dy, dx)
+                signed_angle = self._signed_angle(angle_to_wall - creature.heading)
+                if abs(signed_angle) > cone_angle / 2:
+                    continue
+
+                closeness = 1.0 - (surface_distance / vision_range)
+                visible_count += 1
+                density += closeness
+
+                if surface_distance < nearest_distance:
+                    nearest_distance = surface_distance
+                    nearest_angle = signed_angle
+                    best_closeness = closeness
+
+        if visible_count == 0:
+            return self._empty_target_snapshot()
+
+        normalized_angle = nearest_angle / (cone_angle / 2)
+        return VisionTargetSnapshot(
+            visible=1.0,
+            nearest_closeness=self._clamp01(best_closeness),
+            nearest_angle=self._clamp(normalized_angle, -1.0, 1.0),
+            density=self._clamp01(density),
+        )
+
+    def _wall_candidate_points(
+        self,
+        creature: Creature,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> list[tuple[float, float]]:
+        left_ray_angle = creature.heading - creature.vision.angle / 2
+        right_ray_angle = creature.heading + creature.vision.angle / 2
+        candidates = [
+            start,
+            end,
+            self._closest_point_on_segment(creature.position, start, end),
+        ]
+
+        for ray_angle in (left_ray_angle, right_ray_angle):
+            intersection = self._ray_segment_intersection(
+                creature.position,
+                (cos(ray_angle), sin(ray_angle)),
+                start,
+                end,
+            )
+            if intersection is not None:
+                candidates.append(intersection)
+
+        return candidates
+
+    def _closest_point_on_segment(
+        self,
+        point: tuple[float, float],
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> tuple[float, float]:
+        point_x, point_y = point
+        start_x, start_y = start
+        end_x, end_y = end
+        segment_x = end_x - start_x
+        segment_y = end_y - start_y
+        length_squared = segment_x**2 + segment_y**2
+        if length_squared <= 0.0:
+            return start
+
+        t = (
+            ((point_x - start_x) * segment_x + (point_y - start_y) * segment_y)
+            / length_squared
+        )
+        t = self._clamp(t, 0.0, 1.0)
+        return start_x + segment_x * t, start_y + segment_y * t
+
+    def _ray_segment_intersection(
+        self,
+        ray_origin: tuple[float, float],
+        ray_direction: tuple[float, float],
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> tuple[float, float] | None:
+        origin_x, origin_y = ray_origin
+        ray_x, ray_y = ray_direction
+        start_x, start_y = start
+        segment_x = end[0] - start_x
+        segment_y = end[1] - start_y
+        denominator = self._cross(ray_x, ray_y, segment_x, segment_y)
+        if abs(denominator) <= 1e-9:
+            return None
+
+        offset_x = start_x - origin_x
+        offset_y = start_y - origin_y
+        ray_scale = self._cross(offset_x, offset_y, segment_x, segment_y) / denominator
+        segment_scale = self._cross(offset_x, offset_y, ray_x, ray_y) / denominator
+        if ray_scale < 0.0 or segment_scale < 0.0 or segment_scale > 1.0:
+            return None
+
+        return origin_x + ray_x * ray_scale, origin_y + ray_y * ray_scale
+
     def _sense_targets(
         self,
         creature: Creature,
@@ -178,12 +317,7 @@ class VisionSystem:
         vision_range = creature.vision.range
         cone_angle = creature.vision.angle
         if vision_range <= 0 or cone_angle <= 0:
-            return VisionTargetSnapshot(
-                visible=0.0,
-                nearest_closeness=0.0,
-                nearest_angle=0.0,
-                density=0.0,
-            )
+            return self._empty_target_snapshot()
 
         nearest_distance = vision_range
         nearest_angle = 0.0
@@ -216,12 +350,7 @@ class VisionSystem:
                 nearest_angle = signed_angle
 
         if visible_count == 0:
-            return VisionTargetSnapshot(
-                visible=0.0,
-                nearest_closeness=0.0,
-                nearest_angle=0.0,
-                density=0.0,
-            )
+            return self._empty_target_snapshot()
 
         nearest_closeness = 1.0 - (nearest_distance / vision_range)
         normalized_angle = nearest_angle / (cone_angle / 2)
@@ -306,6 +435,17 @@ class VisionSystem:
         while angle < -pi:
             angle += 2 * pi
         return angle
+
+    def _empty_target_snapshot(self) -> VisionTargetSnapshot:
+        return VisionTargetSnapshot(
+            visible=0.0,
+            nearest_closeness=0.0,
+            nearest_angle=0.0,
+            density=0.0,
+        )
+
+    def _cross(self, ax: float, ay: float, bx: float, by: float) -> float:
+        return ax * by - ay * bx
 
     def _normalize(self, value: float, minimum: float, maximum: float) -> float:
         if maximum <= minimum:

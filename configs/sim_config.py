@@ -65,6 +65,7 @@ class ZoomConfig:
     maximum: float = 3.0
     step: float = 0.12
 
+
 @dataclass(slots=True)
 class MetabolismConfig:
     max_energy: float = 1
@@ -92,8 +93,8 @@ class VisionConfig:
     default_range: float = 98.0
     default_angle: float = 0.95
 
-    min_range:float = 90.0
-    max_range:float = 160.0
+    min_range: float = 90.0
+    max_range: float = 160.0
     min_angle: float = 0.35
     max_angle: float = 1.40
 
@@ -101,24 +102,38 @@ class VisionConfig:
     area_energy_cost_factor: float = 0.018
     boundary_warning_distance: float = 90.0
 
+
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 500
-    max_food_items: int = 500
-    low_creature_food_bonus_items: int = 500# Number of bonus food items to spawn when creature count is low.
-    low_creature_food_bonus_threshold: int = 10# Creature count threshold below which bonus food items will spawn.
-    low_creature_burst_items: int = 300 # Number of food items to spawn in a burst when creature count is low.
-    low_creature_burst_interval: float = 1.5# Minimum interval in seconds between food bursts when creature count is low.
-    low_food_pressure_threshold: float = 0.5# Food spawn pressure threshold below which low food spawn rate multiplier is applied.
-    low_food_spawn_rate_multiplier: float = 2.0# Multiplier for food spawn rate when food pressure is below the low_food_pressure_threshold.
-    low_food_burst_items: int = 500# Number of food items to spawn in a burst when food pressure is low.
-    low_food_burst_interval: float = 1.25# Minimum interval in seconds between food bursts when food pressure is low.
+    initial_food_items: int = 800
+    max_food_items: int = 800
+    low_creature_food_bonus_items: int = (
+        200  # Number of bonus food items to spawn when creature count is low.
+    )
+    low_creature_food_bonus_threshold: int = (
+        10  # Creature count threshold below which bonus food items will spawn.
+    )
+    low_creature_burst_items: int = (
+        80  # Number of food items to spawn in a burst when creature count is low.
+    )
+    low_creature_burst_interval: float = 0.75  # Minimum interval in seconds between food bursts when creature count is low.
+    low_food_pressure_threshold: float = 0.5  # Food spawn pressure threshold below which low food spawn rate multiplier is applied.
+    low_food_spawn_rate_multiplier: float = 3.0  # Multiplier for food spawn rate when food pressure is below the low_food_pressure_threshold.
+    low_food_burst_items: int = (
+        100  # Number of food items to spawn in a burst when food pressure is low.
+    )
+    low_food_burst_interval: float = 0.75  # Minimum interval in seconds between food bursts when food pressure is low.
     total_biomass_energy: float | None = None
-    max_biomass_spawns_per_second: float = 8.0
+    max_biomass_spawns_per_second: float = 20.0
     biomass_spawn_pressure_exponent: float = 1.6
     creature_pressure_midpoint: float = 18.0
     creature_pressure_steepness: float = 3.0
     creature_pressure_spawn_cutoff: float = 0.05
+
+    food_regrowth_midpoint_ratio: float = 0.65  # Higher spawn rate below 65% capacity
+    food_regrowth_steepness: float = 0.12  # Sharpness of the logistic curve
+    critical_food_ratio: float = 0.15  # Burst below 15% capacity
+
     min_food_radius: float = 6.0
     max_food_radius: float = 10.0
     energy_density: float = 0.002
@@ -141,8 +156,8 @@ class ActionConfig:
     search_turn_interval_min: int = 35
     search_turn_interval_max: int = 95
     search_straight_probability: float = 0.3
-    search_turn_jitter: float = 0.0 
-    search_angular_velocity_retention: float = 0.4 # Higher values make creatures more likely to continue turning in the same direction during search, while lower values make them more likely to change direction.
+    search_turn_jitter: float = 0.0
+    search_angular_velocity_retention: float = 0.4  # Higher values make creatures more likely to continue turning in the same direction during search, while lower values make them more likely to change direction.
     boundary_avoidance_turn: float = 0.72
     boundary_avoidance_min_turn: float = 0.18
     boundary_avoidance_acceleration: float = 0.75
@@ -183,10 +198,6 @@ class SimConfig:
 
     # Food config
     food: FoodConfig = field(default_factory=FoodConfig)
-
-
-
-
 
 
 def build_sim_config() -> SimConfig:

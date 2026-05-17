@@ -11,7 +11,7 @@ from src.action import ACTION_OUTPUT_COUNT, Action
 from src.neat_brain import NeatBrain
 from src.vision import SENSOR_INPUT_COUNT, SensorSnapshot
 
-FALLBACK_ACTION = Action(accelerate=0.0, rotate=0.0)
+FALLBACK_ACTION = Action(accelerate=0.5, rotate=0.5)
 
 
 class NeatBrainController:

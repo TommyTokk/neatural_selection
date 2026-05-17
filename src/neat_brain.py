@@ -99,9 +99,7 @@ class NeatBrain:
             node = nodes.get(key)
             activation = getattr(node, "activation", None)
             activations.append(
-                str(activation).strip().lower()
-                if activation is not None
-                else ""
+                str(activation).strip().lower() if activation is not None else ""
             )
 
         return activations
