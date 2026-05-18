@@ -89,6 +89,19 @@ class PopulationConfig:
 
 
 @dataclass(slots=True)
+class FitnessConfig:
+    age_weight: float = 0.03
+    food_discovery_weight: float = 0.2
+    food_discovery_cap: int = 25
+    food_eaten_weight: float = 8
+    energy_gained_weight: float = 80
+    energy_efficiency_weight: float = 120
+    efficiency_min_age_seconds: float = 20
+    movement_effort_penalty: float = 0.08
+    offspring_weight: float = 12
+
+
+@dataclass(slots=True)
 class VisionConfig:
     default_range: float = 98.0
     default_angle: float = 0.95
@@ -186,6 +199,9 @@ class SimConfig:
 
     # Metabolism config
     metabolism: MetabolismConfig = field(default_factory=MetabolismConfig)
+
+    # Fitness config
+    fitness: FitnessConfig = field(default_factory=FitnessConfig)
 
     # Population config
     population: PopulationConfig = field(default_factory=PopulationConfig)

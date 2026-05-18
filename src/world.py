@@ -729,9 +729,7 @@ class World:
         self.stats.plant_spawn_pressure = self._plant_spawn_pressure()
         self._update_genome_fitness_scores()
         self.rt_neat.update_stats(
-            self.creatures,
-            self.fitness,
-            self.config.population,
+            self.creatures, self.fitness, self.config.population, self.config.fitness
         )
 
     def _update_genome_fitness_scores(self) -> None:
@@ -740,7 +738,7 @@ class World:
             if fitness is not None:
                 self.neat_controller.update_genome_fitness(
                     creature.creature_id,
-                    fitness.score,
+                    fitness.score(self.config.fitness),
                 )
 
     def _update_fitness_survival(self, delta_time: float) -> None:
@@ -838,7 +836,9 @@ class World:
     def _remove_creature(self, creature: Creature) -> None:
         fitness = self.fitness.get(creature.creature_id)
         if fitness is not None:
-            self.neat_controller.archive_brain(creature.creature_id, fitness.score)
+            self.neat_controller.archive_brain(
+                creature.creature_id, fitness.score(self.config.fitness)
+            )
 
         if creature in self.creatures:
             self.creatures.remove(creature)

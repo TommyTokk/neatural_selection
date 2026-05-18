@@ -49,7 +49,7 @@ class UiRenderer:
             bounds.left + 18,
             bounds.top - 34,
             self.theme.text_primary,
-            24,            
+            24,
             bold=True,
         )
 
@@ -159,7 +159,7 @@ class UiRenderer:
                 lines.extend(
                     [
                         f"Genome: {genome_id if genome_id is not None else 'None'}",
-                        f"Fitness: {fitness.score:.2f}",
+                        f"Fitness: {fitness.score(world.config.fitness):.2f}",
                         f"Age: {fitness.age_seconds:.1f}s",
                         f"Food discovered: {fitness.food_discovered}",
                         f"Food eaten: {fitness.food_eaten}",
@@ -230,9 +230,7 @@ class UiRenderer:
         input_keys = list(world.neat_controller.config.genome_config.input_keys)
         output_keys = list(world.neat_controller.config.genome_config.output_keys)
         hidden_keys = sorted(
-            key
-            for key in brain.genome.nodes
-            if key not in output_keys
+            key for key in brain.genome.nodes if key not in output_keys
         )
         graph_bounds = arcade.LBWH(
             content.left,
@@ -274,7 +272,11 @@ class UiRenderer:
             end = positions.get(connection.key[1])
             if start is None or end is None:
                 continue
-            color = self.theme.accent if connection.weight >= 0.0 else self.theme.selected_outline
+            color = (
+                self.theme.accent
+                if connection.weight >= 0.0
+                else self.theme.selected_outline
+            )
             width = max(1.0, min(4.0, abs(connection.weight) * 0.7))
             arcade.draw_line(start[0], start[1], end[0], end[1], color, width)
 
@@ -287,7 +289,11 @@ class UiRenderer:
                 self.theme.accent,
                 radius=4.0 + min(1.0, abs(value)) * 3.0,
             )
-            label = SENSOR_INPUT_NAMES[index] if index < len(SENSOR_INPUT_NAMES) else str(key)
+            label = (
+                SENSOR_INPUT_NAMES[index]
+                if index < len(SENSOR_INPUT_NAMES)
+                else str(key)
+            )
             self._draw_brain_node_label(
                 f"brain_input_{index}",
                 f"{self._short_brain_label(label)} {value:.2f}",
@@ -297,18 +303,26 @@ class UiRenderer:
             )
 
         for key in hidden_keys:
-            self._draw_brain_node(positions[key], self.theme.panel_background, self.theme.panel_border)
+            self._draw_brain_node(
+                positions[key], self.theme.panel_background, self.theme.panel_border
+            )
 
         for index, key in enumerate(output_keys):
             position = positions[key]
-            value = brain.last_outputs[index] if index < len(brain.last_outputs) else 0.0
+            value = (
+                brain.last_outputs[index] if index < len(brain.last_outputs) else 0.0
+            )
             self._draw_brain_node(
                 position,
                 self._brain_activity_color(value),
                 self.theme.herbivore_outline,
                 radius=4.0 + min(1.0, abs(value)) * 3.0,
             )
-            label = ACTION_OUTPUT_NAMES[index] if index < len(ACTION_OUTPUT_NAMES) else str(key)
+            label = (
+                ACTION_OUTPUT_NAMES[index]
+                if index < len(ACTION_OUTPUT_NAMES)
+                else str(key)
+            )
             self._draw_brain_node_label(
                 f"brain_output_{index}",
                 f"{self._short_brain_label(label)} {value:.2f}",
@@ -324,9 +338,7 @@ class UiRenderer:
             else "waiting"
         )
         enabled_connections = sum(
-            1
-            for connection in brain.genome.connections.values()
-            if connection.enabled
+            1 for connection in brain.genome.connections.values() if connection.enabled
         )
         detail_lines = [
             f"Genome: {brain.genome_id}",
@@ -376,11 +388,7 @@ class UiRenderer:
         self._control_hitboxes["brain_window_title"] = title_bar
         self._control_hitboxes["brain_window_close"] = close_button
 
-        genome_label = (
-            f"Genome {brain.genome_id}"
-            if brain is not None
-            else "No genome"
-        )
+        genome_label = f"Genome {brain.genome_id}" if brain is not None else "No genome"
         self._draw_text(
             "brain_window_title_text",
             f"Brain: {selected.name} / {genome_label}",
@@ -426,9 +434,7 @@ class UiRenderer:
 
         self._draw_brain_graph(world, graph_bounds)
         enabled_connections = sum(
-            1
-            for connection in brain.genome.connections.values()
-            if connection.enabled
+            1 for connection in brain.genome.connections.values() if connection.enabled
         )
         action = brain.last_action
         action_label = (
@@ -494,13 +500,19 @@ class UiRenderer:
             radius = 6.0
             if node.kind == BrainNodeKind.INPUT:
                 index = input_keys.index(key)
-                value = brain.last_inputs[index] if index < len(brain.last_inputs) else 0.0
+                value = (
+                    brain.last_inputs[index] if index < len(brain.last_inputs) else 0.0
+                )
                 fill_color = self._brain_activity_color(value)
                 outline_color = self.theme.accent
                 radius = 5.0 + min(1.0, abs(value)) * 3.0
             elif node.kind == BrainNodeKind.OUTPUT:
                 index = output_keys.index(key)
-                value = brain.last_outputs[index] if index < len(brain.last_outputs) else 0.0
+                value = (
+                    brain.last_outputs[index]
+                    if index < len(brain.last_outputs)
+                    else 0.0
+                )
                 fill_color = self._brain_activity_color(value)
                 outline_color = self.theme.herbivore_outline
                 radius = 5.0 + min(1.0, abs(value)) * 3.0
@@ -525,7 +537,9 @@ class UiRenderer:
             self._draw_self_loop(start, color, width)
             return
         if edge.kind == BrainEdgeKind.RECURRENT:
-            control_y = bounds.top - 18.0 if start[1] <= end[1] else bounds.bottom + 18.0
+            control_y = (
+                bounds.top - 18.0 if start[1] <= end[1] else bounds.bottom + 18.0
+            )
             control = ((start[0] + end[0]) * 0.5, control_y)
             self._draw_curve(
                 self._quadratic_bezier_points(start, control, end),
@@ -603,7 +617,9 @@ class UiRenderer:
         min_left = outer_padding
         min_bottom = outer_padding
         max_left = max(min_left, world.layout.window.width - outer_padding - width)
-        max_bottom = max(min_bottom, world.layout.window.height - outer_padding - height)
+        max_bottom = max(
+            min_bottom, world.layout.window.height - outer_padding - height
+        )
         return arcade.LBWH(
             max(min_left, min(max_left, left)),
             max(min_bottom, min(max_bottom, bottom)),
@@ -618,8 +634,12 @@ class UiRenderer:
     ) -> tuple[float, float]:
         pan_x, pan_y = self._brain_graph_pan
         return (
-            bounds.center_x + (position[0] - bounds.center_x) * self._brain_graph_zoom + pan_x,
-            bounds.center_y + (position[1] - bounds.center_y) * self._brain_graph_zoom + pan_y,
+            bounds.center_x
+            + (position[0] - bounds.center_x) * self._brain_graph_zoom
+            + pan_x,
+            bounds.center_y
+            + (position[1] - bounds.center_y) * self._brain_graph_zoom
+            + pan_y,
         )
 
     def _brain_edge_color(self, weight: float) -> arcade.Color | tuple[int, ...]:
@@ -727,7 +747,9 @@ class UiRenderer:
         )
         self._control_hitboxes["pause"] = pause_button
         self._control_hitboxes["reset_speed"] = reset_button
-        self._draw_button(pause_button, "> Space" if world.is_paused else "|| Space", "pause")
+        self._draw_button(
+            pause_button, "> Space" if world.is_paused else "|| Space", "pause"
+        )
         self._draw_button(reset_button, "1x 0", "reset_speed")
 
         slider_y = reset_button.bottom - 42
@@ -832,7 +854,9 @@ class UiRenderer:
             return True
 
         for key, bounds in self._scroll_regions.items():
-            if not (bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top):
+            if not (
+                bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top
+            ):
                 continue
 
             limit = self._scroll_limits.get(key, 0.0)
@@ -846,7 +870,9 @@ class UiRenderer:
         return False
 
     def _draw_panel(
-        self, bounds: arcade.Rect, fill_color: arcade.Color | tuple[int, ...] | None = None
+        self,
+        bounds: arcade.Rect,
+        fill_color: arcade.Color | tuple[int, ...] | None = None,
     ) -> None:
         self._draw_rounded_rect(
             bounds,
@@ -897,9 +923,8 @@ class UiRenderer:
     def _draw_speed_slider(self, bounds: arcade.Rect, world: World) -> None:
         track_height = 6
         track_bottom = bounds.center_y - track_height / 2
-        ratio = (
-            (world.simulation_speed - world.MIN_SIMULATION_SPEED)
-            / (world.MAX_SIMULATION_SPEED - world.MIN_SIMULATION_SPEED)
+        ratio = (world.simulation_speed - world.MIN_SIMULATION_SPEED) / (
+            world.MAX_SIMULATION_SPEED - world.MIN_SIMULATION_SPEED
         )
         knob_x = bounds.left + bounds.width * ratio
 
@@ -959,10 +984,7 @@ class UiRenderer:
             return {node_keys[0]: (x, (bottom + top) * 0.5)}
 
         step = (top - bottom) / (len(node_keys) - 1)
-        return {
-            key: (x, top - index * step)
-            for index, key in enumerate(node_keys)
-        }
+        return {key: (x, top - index * step) for index, key in enumerate(node_keys)}
 
     def _draw_brain_node(
         self,
@@ -1224,7 +1246,7 @@ class UiRenderer:
         max_chars = max(4, int(width / 7.0))
         if len(text) <= max_chars:
             return text
-        return f"{text[:max_chars - 3]}..."
+        return f"{text[: max_chars - 3]}..."
 
     def _draw_rounded_rect(
         self,
@@ -1264,7 +1286,15 @@ class UiRenderer:
             bounds.top - radius,
             color,
         )
-        arcade.draw_circle_filled(bounds.left + radius, bounds.bottom + radius, radius, color)
-        arcade.draw_circle_filled(bounds.right - radius, bounds.bottom + radius, radius, color)
-        arcade.draw_circle_filled(bounds.left + radius, bounds.top - radius, radius, color)
-        arcade.draw_circle_filled(bounds.right - radius, bounds.top - radius, radius, color)
+        arcade.draw_circle_filled(
+            bounds.left + radius, bounds.bottom + radius, radius, color
+        )
+        arcade.draw_circle_filled(
+            bounds.right - radius, bounds.bottom + radius, radius, color
+        )
+        arcade.draw_circle_filled(
+            bounds.left + radius, bounds.top - radius, radius, color
+        )
+        arcade.draw_circle_filled(
+            bounds.right - radius, bounds.top - radius, radius, color
+        )

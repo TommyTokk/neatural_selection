@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import unittest
+
+from configs.sim_config import FitnessConfig
+from src.fitness import CreatureFitness
+
+
+class CreatureFitnessScoreTest(unittest.TestCase):
+    def test_food_discovery_reward_is_capped(self) -> None:
+        config = FitnessConfig(
+            age_weight=0.0,
+            food_discovery_weight=1.0,
+            food_discovery_cap=3,
+            food_eaten_weight=0.0,
+            energy_gained_weight=0.0,
+            energy_efficiency_weight=0.0,
+            movement_effort_penalty=0.0,
+            offspring_weight=0.0,
+        )
+        fitness = CreatureFitness(food_discovered=10)
+
+        self.assertAlmostEqual(fitness.score(config), 3.0)
+
+    def test_energy_efficiency_uses_minimum_age_for_young_creatures(self) -> None:
+        config = FitnessConfig(
+            age_weight=0.0,
+            food_discovery_weight=0.0,
+            food_eaten_weight=0.0,
+            energy_gained_weight=0.0,
+            energy_efficiency_weight=100.0,
+            efficiency_min_age_seconds=20.0,
+            movement_effort_penalty=0.0,
+            offspring_weight=0.0,
+        )
+        fitness = CreatureFitness(age_seconds=5.0, energy_gained=1.0)
+
+        self.assertAlmostEqual(fitness.score(config), 5.0)
+
+    def test_eating_and_energy_gain_reward_foraging(self) -> None:
+        config = FitnessConfig(
+            age_weight=0.0,
+            food_discovery_weight=0.0,
+            food_eaten_weight=8.0,
+            energy_gained_weight=80.0,
+            energy_efficiency_weight=0.0,
+            movement_effort_penalty=0.0,
+            offspring_weight=0.0,
+        )
+        fitness = CreatureFitness(food_eaten=2, energy_gained=0.5)
+
+        self.assertAlmostEqual(fitness.score(config), 56.0)
+
+    def test_offspring_bonus_increases_score(self) -> None:
+        config = FitnessConfig(offspring_weight=12.0)
+        without_child = CreatureFitness(age_seconds=20.0)
+        with_child = CreatureFitness(age_seconds=20.0, offspring_count=1)
+
+        self.assertAlmostEqual(
+            with_child.score(config) - without_child.score(config),
+            12.0,
+        )
+
+    def test_movement_effort_reduces_score(self) -> None:
+        config = FitnessConfig(
+            age_weight=0.0,
+            food_discovery_weight=0.0,
+            food_eaten_weight=0.0,
+            energy_gained_weight=0.0,
+            energy_efficiency_weight=0.0,
+            movement_effort_penalty=0.5,
+            offspring_weight=0.0,
+        )
+        fitness = CreatureFitness(movement_effort=10.0)
+
+        self.assertAlmostEqual(fitness.score(config), -5.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

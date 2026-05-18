@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from configs.sim_config import FitnessConfig
+
 
 @dataclass(slots=True)
 class CreatureFitness:
@@ -37,12 +39,17 @@ class CreatureFitness:
     def seconds_since_reproduction(self) -> float:
         return self.age_seconds - self.last_reproduction_age
 
-    @property
-    def score(self) -> float:
+    def score(self, config: FitnessConfig) -> float:
+        scoring_age = max(self.age_seconds, config.efficiency_min_age_seconds)
+        capped_discoveries = min(self.food_discovered, config.food_discovery_cap)
+        energy_efficiency = self.energy_gained / scoring_age
+
         return (
-            self.age_seconds * 0.03
-            + self.food_discovered * 1.0
-            + self.food_eaten * 25.0
-            + self.energy_gained * 50.0
-            - self.movement_effort * 0.02
+            self.age_seconds * config.age_weight
+            + capped_discoveries * config.food_discovery_weight
+            + self.food_eaten * config.food_eaten_weight
+            + self.energy_gained * config.energy_gained_weight
+            + energy_efficiency * config.energy_efficiency_weight
+            + self.offspring_count * config.offspring_weight
+            - self.movement_effort * config.movement_effort_penalty
         )
