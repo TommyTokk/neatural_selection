@@ -64,6 +64,7 @@ class World:
         self.config = config
         self.rng = Random(7)
         self.elapsed_time = 0.0
+        self.fps = 0.0
         self.is_paused = False
         self.simulation_speed = 1.0
         self._physics_accumulator = 0.0
@@ -134,6 +135,14 @@ class World:
         self._clamp_environment_pan()
 
     def update(self, delta_time: float) -> None:
+        if delta_time > 0.0:
+            instant_fps = 1.0 / delta_time
+            self.fps = (
+                instant_fps
+                if self.fps == 0.0
+                else self.fps * 0.9 + instant_fps * 0.1
+            )
+
         if self.is_paused:
             self._refresh_stats()
             return

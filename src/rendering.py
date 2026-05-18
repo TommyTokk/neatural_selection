@@ -187,21 +187,13 @@ class EnvironmentRenderer:
 
     def _draw_environment_header(self, bounds: arcade.Rect, world: World) -> None:
         self._draw_text(
-            "env_title",
-            world.stats.environment_name,
+            "env_fps",
+            f"FPS: {world.fps:0.0f}",
             bounds.left + 16,
-            bounds.top - 30,
+            bounds.top - 34,
             self.theme.environment_text,
-            16,
+            18,
             bold=True,
-        )
-        self._draw_text(
-            "env_subtitle",
-            "Central simulation viewport",
-            bounds.left + 16,
-            bounds.top - 52,
-            self.theme.environment_text_muted,
-            11,
         )
 
     def _draw_text(
