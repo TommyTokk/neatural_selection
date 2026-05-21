@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections.abc import Callable, Sequence
+from math import cos, sin
 
 from src.food import Food
 from src.creature import Creature
@@ -35,22 +36,25 @@ class Metabolism:
         delta_time: float,
         max_speed: float,
         nearby_foods_for: Callable[[Creature], Sequence[Food]] | None = None,
+        can_eat: Callable[[Creature], bool] | None = None,
     ) -> MetabolismReport:
-
         eaten_foods: list[Food] = []
         food_consumptions: list[FoodConsumption] = []
         dead_creatures: list[Creature] = []
-        
+
         for creature in creatures:
-            # Consume the energy from the creatures
+            # Consume the energy from the creatures
             self.consume_energy(creature, delta_time, max_speed)
 
             # Calculate the eatble food
             candidate_foods = (
-                food_items
-                if nearby_foods_for is None
-                else nearby_foods_for(creature)
+                food_items if nearby_foods_for is None else nearby_foods_for(creature)
             )
+
+            if can_eat is not None and not can_eat(creature):
+                if self.is_dead(creature):
+                    dead_creatures.append(creature)
+                continue
             food = self.find_eatable_food(creature, candidate_foods, eaten_foods)
 
             if food is not None:
@@ -72,9 +76,10 @@ class Metabolism:
             food_consumptions=food_consumptions,
             dead_creatures=dead_creatures,
         )
-    
-    def consume_energy(self, creature: Creature, delta_time: float, max_speed: float) -> None:
 
+    def consume_energy(
+        self, creature: Creature, delta_time: float, max_speed: float
+    ) -> None:
         speed_ratio: float = 0
 
         if max_speed > 0:
@@ -104,7 +109,6 @@ class Metabolism:
         food_items: Sequence[Food],
         ignored_foods: list[Food],
     ) -> Food | None:
-        creature_x, creature_y = creature.position
         ignored_food_ids = {food.id for food in ignored_foods}
 
         for food in food_items:
@@ -112,19 +116,43 @@ class Metabolism:
             if food.id in ignored_food_ids:
                 continue
 
-            # Calculate the eating radius 
-            eating_range = creature.radius + food.radius + self.config.eating_distance
-            dx = food.position[0] - creature_x
-            dy = food.position[1] - creature_y
-
-            # Check if the food is within the eating range
-            if dx * dx + dy * dy <= eating_range * eating_range:
+            if self.food_overlaps_mouth(creature, food):
                 return food
-            
+
         return None
-    
+
+    def mouth_position(self, creature: Creature) -> tuple[float, float]:
+        creature_x, creature_y = creature.position
+        return (
+            creature_x + cos(creature.heading) * creature.radius,
+            creature_y + sin(creature.heading) * creature.radius,
+        )
+
+    def food_overlaps_mouth(self, creature: Creature, food: Food) -> bool:
+        creature_x, creature_y = creature.position
+        food_x, food_y = food.position
+        dx = food_x - creature_x
+        dy = food_y - creature_y
+
+        contact_slop = max(1.0, min(3.0, self.config.eating_distance * 0.25))
+        contact_range = creature.radius + food.radius + contact_slop
+        if dx * dx + dy * dy > contact_range * contact_range:
+            return False
+
+        forward_x = cos(creature.heading)
+        forward_y = sin(creature.heading)
+        forward_distance = dx * forward_x + dy * forward_y
+        if forward_distance < creature.radius - contact_slop:
+            return False
+
+        lateral_x = -forward_y
+        lateral_y = forward_x
+        lateral_distance = abs(dx * lateral_x + dy * lateral_y)
+        mouth_half_width = max(2.0, creature.radius * 0.35)
+        return lateral_distance <= food.radius + mouth_half_width
+
     def is_starving(self, creature: Creature) -> bool:
         return creature.energy < self.config.starvation_energy_threshold
-    
+
     def is_dead(self, creature: Creature) -> bool:
         return creature.energy <= 0

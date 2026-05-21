@@ -7,15 +7,22 @@ from configs.sim_config import VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 7
+SENSOR_INPUT_COUNT = 14
 SENSOR_INPUT_NAMES = (
+    "constant",
+    "hungriness",
+    "maturity",
+    "energy_percent",
+    "speed",
+    "creature_count",
+    "food_count",
+    "clock_tik_tok",
+    "clock_chronometer",
+    "clock_time_alive",
     "food_proximity",
     "food_angle",
     "creature_proximity",
     "creature_angle",
-    "wall_proximity",
-    "wall_angle",
-    "energy",
 )
 
 
@@ -25,6 +32,7 @@ class VisionTargetSnapshot:
     nearest_closeness: float
     nearest_angle: float
     density: float
+    count: int
 
 
 @dataclass(slots=True)
@@ -44,16 +52,29 @@ class SensorSnapshot:
     vision_range: float
     vision_angle: float
     vision_energy_cost: float
+    maturity: float
+    visible_food_count: float
+    visible_creature_count: float
+    clock_tik_tok: float
+    clock_chronometer: float
+    clock_time_alive: float
 
     def as_inputs(self) -> list[float]:
         return [
+            1.0,  # constant
+            1.0 - self.energy,  # hungriness
+            self.maturity,
+            self.energy,
+            self.speed,
+            min(self.visible_creature_count / 5.0, 1.0),
+            min(self.visible_food_count / 10.0, 1.0),
+            self.clock_tik_tok,
+            self.clock_chronometer,
+            self.clock_time_alive,
             self._target_proximity(self.food),
             self._target_angle(self.food),
             self._target_proximity(self.creatures),
             self._target_angle(self.creatures),
-            self._target_proximity(self.walls),
-            self._target_angle(self.walls),
-            self.energy,
         ]
 
     def _target_proximity(self, target: VisionTargetSnapshot) -> float:
@@ -78,6 +99,10 @@ class VisionSystem:
         creatures: list[Creature],
         world_bounds: tuple[float, float, float, float],
         max_speed: float,
+        maturity: float = 0.0,
+        clock_tik_tok: float = 0.0,
+        clock_chronometer: float = 0.0,
+        clock_time_alive: float = 0.0,
     ) -> SensorSnapshot:
         food_snapshot = self._sense_food(creature, foods)
         creature_snapshot = self._sense_creatures(creature, creatures)
@@ -94,6 +119,12 @@ class VisionSystem:
             vision_range=self.normalized_range(creature),
             vision_angle=self.normalized_angle(creature),
             vision_energy_cost=self.normalized_energy_cost(creature),
+            maturity=maturity,
+            visible_food_count=food_snapshot.count,
+            visible_creature_count=creature_snapshot.count,
+            clock_tik_tok=clock_tik_tok,
+            clock_chronometer=clock_chronometer,
+            clock_time_alive=clock_time_alive,
         )
 
     def sense_boundary(
@@ -233,6 +264,7 @@ class VisionSystem:
             nearest_closeness=self._clamp01(best_closeness),
             nearest_angle=self._clamp(normalized_angle, -1.0, 1.0),
             density=self._clamp01(density),
+            count=visible_count,
         )
 
     def _wall_candidate_points(
@@ -359,6 +391,7 @@ class VisionSystem:
             nearest_closeness=self._clamp01(nearest_closeness),
             nearest_angle=self._clamp(normalized_angle, -1.0, 1.0),
             density=self._clamp01(density),
+            count=visible_count,
         )
 
     def _target_is_visible(
@@ -434,10 +467,7 @@ class VisionSystem:
 
     def _empty_target_snapshot(self) -> VisionTargetSnapshot:
         return VisionTargetSnapshot(
-            visible=0.0,
-            nearest_closeness=0.0,
-            nearest_angle=0.0,
-            density=0.0,
+            visible=0.0, nearest_closeness=0.0, nearest_angle=0.0, density=0.0, count=0
         )
 
     def _cross(self, ax: float, ay: float, bx: float, by: float) -> float:

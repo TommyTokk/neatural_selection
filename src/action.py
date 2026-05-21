@@ -3,20 +3,38 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import cos, sin
 
-ACTION_OUTPUT_COUNT = 2
-ACTION_OUTPUT_NAMES = ("accelerate", "rotate")
+ACTION_OUTPUT_COUNT = 7
+ACTION_OUTPUT_NAMES = (
+    "forward",
+    "backward",
+    "left",
+    "right",
+    "want_reproduce",
+    "want_eat",
+    "reset_chronometer",
+)
 NEUTRAL_NETWORK_OUTPUT = 0.5
 
 
 @dataclass(slots=True)
 class Action:
-    accelerate: float
-    rotate: float
+    forward: float
+    backward: float
+    left: float
+    right: float
+    want_reproduce: float
+    want_eat: float
+    reset_chronometer: float
 
     def clamped(self) -> Action:
         return Action(
-            accelerate=max(-1.0, min(1.0, self.accelerate)),
-            rotate=max(-1.0, min(1.0, self.rotate)),
+            forward=max(0.0, min(1.0, self.forward)),
+            backward=max(0.0, min(1.0, self.backward)),
+            left=max(0.0, min(1.0, self.left)),
+            right=max(0.0, min(1.0, self.right)),
+            want_reproduce=max(0.0, min(1.0, self.want_reproduce)),
+            want_eat=max(0.0, min(1.0, self.want_eat)),
+            reset_chronometer=max(0.0, min(1.0, self.reset_chronometer)),
         )
 
 

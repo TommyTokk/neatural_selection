@@ -45,8 +45,13 @@ class NeatBrain:
         self.last_outputs = outputs
 
         self.last_action = Action(
-            accelerate=self._acceleration_action_output(outputs[0]),
-            rotate=self._signed_action_output(outputs[1]),
+            forward=outputs[0],
+            backward=outputs[1],
+            left=outputs[2],
+            right=outputs[3],
+            want_reproduce=outputs[4],
+            want_eat=outputs[5],
+            reset_chronometer=outputs[6],
         ).clamped()
         return self.last_action
 

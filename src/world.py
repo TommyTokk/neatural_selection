@@ -19,6 +19,7 @@ from src.vision import SensorSnapshot, VisionSystem
 from src.controller import BaselineFoodController
 from src.neat_controller import NeatBrainController
 from src.rt_neat import RtNeatManager
+from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
 
 from src.layout import build_screen_layout
 
@@ -49,7 +50,7 @@ class World:
         (98, 188, 196),
         (220, 150, 105),
     )
-    CREATURE_RADIUS = 14.0
+    CREATURE_RADIUS = 16.0
     FIXED_TIMESTEP = 1.0 / 60.0
     MAX_FRAME_STEPS = 5
     MAX_SPEED = 170.0
@@ -85,6 +86,9 @@ class World:
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
         self.creatures = self._spawn_creatures()
+        self._chronometers: dict[int, float] = {
+            creature.creature_id: 0.0 for creature in self.creatures
+        }
         self.fitness: dict[int, CreatureFitness] = {
             creature.creature_id: CreatureFitness() for creature in self.creatures
         }
@@ -138,9 +142,7 @@ class World:
         if delta_time > 0.0:
             instant_fps = 1.0 / delta_time
             self.fps = (
-                instant_fps
-                if self.fps == 0.0
-                else self.fps * 0.9 + instant_fps * 0.1
+                instant_fps if self.fps == 0.0 else self.fps * 0.9 + instant_fps * 0.1
             )
 
         if self.is_paused:
@@ -160,9 +162,12 @@ class World:
         ):
             self._apply_creature_intents()
             self.space.step(self.FIXED_TIMESTEP)
+            self._settle_food_motion()
+            self._food_grid_dirty = True
             self._apply_top_down_motion()
             self._limit_creature_motion()
             self._update_fitness_survival(self.FIXED_TIMESTEP)
+            self._update_chronometers(self.FIXED_TIMESTEP)
             self._update_metabolism(self.FIXED_TIMESTEP)
             self._physics_accumulator -= self.FIXED_TIMESTEP
             steps += 1
@@ -276,12 +281,30 @@ class World:
         )
         if record_food_discoveries:
             self._record_food_discoveries(creature, nearby_foods)
+
+        fitness = self.fitness.get(creature.creature_id)
+        age_seconds = 0.0 if fitness is None else fitness.age_seconds
+        chronometer = self._chronometers.get(creature.creature_id, 0.0)
+
+        maturity = min(
+            age_seconds / self.config.population.min_reproduction_age,
+            1.0,
+        )
+
+        clock_tik_tok = 1.0 if int(age_seconds) % 2 == 0 else 0.0
+        clock_chronometer = min(chronometer / 20.0, 1.0)
+        clock_time_alive = min(age_seconds / 120.0, 1.0)
+
         return self.vision.sense(
             creature,
             nearby_foods,
             self.creatures,
             self.environment_world_bounds,
             self.MAX_SPEED,
+            maturity=maturity,
+            clock_tik_tok=clock_tik_tok,
+            clock_chronometer=clock_chronometer,
+            clock_time_alive=clock_time_alive,
         )
 
     def visible_foods_for(self, creature: Creature) -> list[Food]:
@@ -326,6 +349,12 @@ class World:
         self.selected_creature_id = None if chosen is None else chosen.creature_id
         self._focus_selected_creature()
 
+    def _update_chronometers(self, delta_time: float) -> None:
+        for creature in self.creatures:
+            self._chronometers[creature.creature_id] = (
+                self._chronometers.get(creature.creature_id, 0.0) + delta_time
+            )
+
     def _spawn_creatures(self) -> list[Creature]:
         return [
             self._spawn_creature(
@@ -363,6 +392,10 @@ class World:
         body.velocity = (0.0, 0.0)
 
         shape = pymunk.Circle(body, self.CREATURE_RADIUS)
+        shape.filter = pymunk.ShapeFilter(
+            categories=CREATURE_CATEGORY,
+            mask=CREATURE_CATEGORY | FOOD_CATEGORY | BOUNDARY_CATEGORY,
+        )
         shape.elasticity = 0.15
         shape.friction = 0.0
         self.space.add(body, shape)
@@ -489,6 +522,10 @@ class World:
         ]
         for start, end in zip(corners, [*corners[1:], corners[0]]):
             shape = pymunk.Segment(self.space.static_body, start, end, 1.0)
+            shape.filter = pymunk.ShapeFilter(
+                categories=BOUNDARY_CATEGORY,
+                mask=CREATURE_CATEGORY | FOOD_CATEGORY,
+            )
             shape.elasticity = 0.25
             shape.friction = 0.0
             self._boundary_shapes.append(shape)
@@ -503,6 +540,10 @@ class World:
             if self.use_neat_brains:
                 action = self.neat_controller.decide(creature.creature_id, snapshot)
                 self._last_actions[creature.creature_id] = action
+
+                if action.reset_chronometer >= 0.5:
+                    self._chronometers[creature.creature_id] = 0.0
+
                 self._apply_action(
                     creature,
                     action,
@@ -512,6 +553,10 @@ class World:
             else:
                 action = self.baseline_controller.decide(snapshot, creature.creature_id)
                 self._last_actions[creature.creature_id] = action
+
+                if action.reset_chronometer >= 0.5:
+                    self._chronometers[creature.creature_id] = 0.0
+
                 self._apply_action(
                     creature,
                     action,
@@ -526,11 +571,14 @@ class World:
         stabilize_velocity: bool = False,
         apply_stabilizers: bool = True,
     ) -> None:
-        if apply_stabilizers and stabilize_velocity and action.accelerate > 0.0:
+        thrust = action.forward - action.backward
+        turn = action.right - action.left
+
+        if apply_stabilizers and stabilize_velocity and thrust > 0.0:
             self._stabilize_food_tracking_velocity(creature)
 
         force_vector = acceleration_force_vector(
-            action.accelerate,
+            thrust,
             creature.heading,
             self.config.action.max_forward_force,
             self.config.action.max_backward_force,
@@ -542,8 +590,8 @@ class World:
 
         if (
             apply_stabilizers
-            and action.rotate == 0.0
-            and action.accelerate > 0.0
+            and turn == 0.0
+            and thrust > 0.0
             and abs(creature.body.angular_velocity) > 0.0
         ):
             creature.body.angular_velocity *= (
@@ -556,14 +604,14 @@ class World:
             )
             creature.body.torque += damping_torque
 
-        self._apply_turn_control(creature, action)
+        self._apply_turn_control(creature, turn)
 
-        if apply_stabilizers and action.accelerate < 0.0:
+        if apply_stabilizers and thrust < 0.0:
             creature.body.angular_velocity *= (
                 self.config.action.boundary_angular_velocity_retention
             )
 
-        if apply_stabilizers and not stabilize_velocity and action.accelerate > 0.0:
+        if apply_stabilizers and not stabilize_velocity and thrust > 0.0:
             creature.body.angular_velocity *= (
                 self.config.action.search_angular_velocity_retention
             )
@@ -573,7 +621,7 @@ class World:
             self._apply_planar_drag(creature)
             action = self._last_actions.get(creature.creature_id)
             if action is not None:
-                self._apply_turn_control(creature, action)
+                self._apply_turn_control(creature, action.right - action.left)
 
     def _apply_planar_drag(self, creature: Creature) -> None:
         velocity = creature.body.velocity
@@ -599,8 +647,7 @@ class World:
             forward_y * forward_speed + lateral_y * lateral_speed,
         )
 
-    def _apply_turn_control(self, creature: Creature, action: Action) -> None:
-        rotate = action.rotate
+    def _apply_turn_control(self, creature: Creature, rotate: float) -> None:
         if abs(rotate) < self.config.action.turn_deadzone:
             rotate = 0.0
 
@@ -777,6 +824,7 @@ class World:
             delta_time,
             self.MAX_SPEED,
             self._eatable_foods_for,
+            self._creature_want_to_eat,
         )
 
         for consumption in report.food_consumptions:
@@ -862,6 +910,8 @@ class World:
         if self.selected_creature_id == creature.creature_id:
             self.selected_creature_id = None
 
+        self._chronometers.pop(creature.creature_id, None)
+
     def _initial_total_biomass_energy(self) -> float:
         configured_total = self.config.food.total_biomass_energy
         if configured_total is not None:
@@ -913,6 +963,7 @@ class World:
 
             self.creatures.append(child)
             self.fitness[child_id] = CreatureFitness()
+            self._chronometers[child_id] = 0.0
             recovered_count += 1
 
         self.rt_neat.stats.replacements += recovered_count
@@ -952,7 +1003,13 @@ class World:
             return False
 
         parent_fitness = self.fitness.get(parent.creature_id)
-        if parent_fitness is None:
+        parent_action = self._last_actions.get(parent.creature_id)
+
+        if (
+            parent_fitness is None
+            or parent_action is None
+            or parent_action.want_reproduce < 0.5
+        ):
             return False
 
         child_id = self._next_creature_id()
@@ -973,8 +1030,26 @@ class World:
 
         self.creatures.append(child)
         self.fitness[child_id] = CreatureFitness()
+        self._chronometers[child_id] = 0.0
 
         self._spend_reproduction_energy(parent)
         parent_fitness.record_reproduction()
         self.rt_neat.stats.births += 1
         return True
+
+    def _creature_want_to_eat(self, creature: Creature) -> bool:
+        action = self._last_actions.get(creature.creature_id)
+        if action is None:
+            return False
+        return action.want_eat >= 0.5
+
+    def _settle_food_motion(self) -> None:
+        for food in self.foods:
+            food.body.velocity *= 0.84
+            food.body.angular_velocity *= 0.62
+
+            if food.body.velocity.length < 0.75:
+                food.body.velocity = (0.0, 0.0)
+
+            if abs(food.body.angular_velocity) < 0.2:
+                food.body.angular_velocity = 0.0

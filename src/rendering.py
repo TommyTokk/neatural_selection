@@ -295,8 +295,8 @@ class EnvironmentRenderer:
                 2,
             )
 
-            heading_x = draw_x + cos(creature.heading) * radius * 0.78
-            heading_y = draw_y + sin(creature.heading) * radius * 0.78
+            heading_x = draw_x + cos(creature.heading) * radius
+            heading_y = draw_y + sin(creature.heading) * radius
             arcade.draw_circle_filled(
                 heading_x,
                 heading_y,

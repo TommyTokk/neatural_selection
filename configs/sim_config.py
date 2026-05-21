@@ -118,8 +118,8 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 800
-    max_food_items: int = 800
+    initial_food_items: int = 250
+    max_food_items: int = 300
     low_creature_food_bonus_items: int = (
         200  # Number of bonus food items to spawn when creature count is low.
     )

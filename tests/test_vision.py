@@ -47,26 +47,33 @@ class VisionWallSensorTest(unittest.TestCase):
         creature: FakeCreature,
         bounds: tuple[float, float, float, float],
     ) -> list[float]:
+        return self.sense_snapshot(creature, bounds).as_inputs()
+
+    def sense_snapshot(
+        self,
+        creature: FakeCreature,
+        bounds: tuple[float, float, float, float],
+    ):
         return self.vision.sense(
             creature,
             foods=[],
             creatures=[],
             world_bounds=bounds,
             max_speed=100.0,
-        ).as_inputs()
+        )
 
     def test_wall_directly_ahead_within_range_is_visible(self) -> None:
-        inputs = self.sense_inputs(
+        snapshot = self.sense_snapshot(
             creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
             (0.0, 0.0, 100.0, 100.0),
         )
 
-        self.assertGreater(inputs[4], 0.0)
-        self.assertAlmostEqual(inputs[4], 0.2)
-        self.assertAlmostEqual(inputs[5], 0.0)
+        self.assertGreater(snapshot.walls.nearest_closeness, 0.0)
+        self.assertAlmostEqual(snapshot.walls.nearest_closeness, 0.2)
+        self.assertAlmostEqual(snapshot.walls.nearest_angle, 0.0)
 
     def test_wall_outside_vision_cone_is_not_visible(self) -> None:
-        inputs = self.sense_inputs(
+        snapshot = self.sense_snapshot(
             creature_at(
                 (90.0, 50.0),
                 heading=pi / 2,
@@ -76,45 +83,47 @@ class VisionWallSensorTest(unittest.TestCase):
             (0.0, 0.0, 100.0, 200.0),
         )
 
-        self.assertEqual(inputs[4], 0.0)
-        self.assertEqual(inputs[5], 0.0)
+        self.assertEqual(snapshot.walls.nearest_closeness, 0.0)
+        self.assertEqual(snapshot.walls.nearest_angle, 0.0)
 
     def test_wall_at_left_edge_reports_negative_angle(self) -> None:
-        inputs = self.sense_inputs(
+        snapshot = self.sense_snapshot(
             creature_at((50.0, 50.0), vision_range=100.0),
             (0.0, 0.0, 150.0, 300.0),
         )
 
-        self.assertGreater(inputs[4], 0.0)
-        self.assertAlmostEqual(inputs[5], -1.0)
+        self.assertGreater(snapshot.walls.nearest_closeness, 0.0)
+        self.assertAlmostEqual(snapshot.walls.nearest_angle, -1.0)
 
     def test_wall_at_right_edge_reports_positive_angle(self) -> None:
-        inputs = self.sense_inputs(
+        snapshot = self.sense_snapshot(
             creature_at((50.0, 50.0), vision_range=100.0),
             (0.0, -200.0, 150.0, 100.0),
         )
 
-        self.assertGreater(inputs[4], 0.0)
-        self.assertAlmostEqual(inputs[5], 1.0)
+        self.assertGreater(snapshot.walls.nearest_closeness, 0.0)
+        self.assertAlmostEqual(snapshot.walls.nearest_angle, 1.0)
 
     def test_wall_farther_than_vision_range_is_not_visible(self) -> None:
-        inputs = self.sense_inputs(
+        snapshot = self.sense_snapshot(
             creature_at((50.0, 50.0), vision_range=40.0),
             (0.0, 0.0, 200.0, 200.0),
         )
 
-        self.assertEqual(inputs[4], 0.0)
-        self.assertEqual(inputs[5], 0.0)
+        self.assertEqual(snapshot.walls.nearest_closeness, 0.0)
+        self.assertEqual(snapshot.walls.nearest_angle, 0.0)
 
-    def test_sensor_input_contract_includes_wall_inputs(self) -> None:
+    def test_sensor_input_contract_excludes_wall_inputs(self) -> None:
         inputs = self.sense_inputs(
             creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
             (0.0, 0.0, 100.0, 100.0),
         )
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 7)
+        self.assertEqual(SENSOR_INPUT_COUNT, 14)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
-        self.assertAlmostEqual(inputs[6], 0.75)
+        self.assertAlmostEqual(inputs[0], 1.0)
+        self.assertAlmostEqual(inputs[1], 0.25)
+        self.assertAlmostEqual(inputs[3], 0.75)
 
 
 if __name__ == "__main__":

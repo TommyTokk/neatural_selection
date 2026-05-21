@@ -333,7 +333,8 @@ class UiRenderer:
 
         action = brain.last_action
         action_label = (
-            f"acc {action.accelerate:.2f} rot {action.rotate:.2f}"
+            f"thr {action.forward - action.backward:.2f} "
+            f"turn {action.right - action.left:.2f}"
             if action is not None
             else "waiting"
         )
@@ -438,7 +439,8 @@ class UiRenderer:
         )
         action = brain.last_action
         action_label = (
-            f"acc {action.accelerate:.2f} rot {action.rotate:.2f}"
+            f"thr {action.forward - action.backward:.2f} "
+            f"turn {action.right - action.left:.2f}"
             if action is not None
             else "waiting"
         )
@@ -1039,12 +1041,26 @@ class UiRenderer:
 
     def _short_brain_label(self, label: str) -> str:
         replacements = {
+            "constant": "const",
+            "hungriness": "hungry",
+            "maturity": "mat",
+            "energy_percent": "energy",
+            "creature_count": "near",
+            "food_count": "food#",
+            "clock_tik_tok": "tik",
+            "clock_chronometer": "chrono",
+            "clock_time_alive": "age",
             "food_proximity": "food",
             "food_angle": "f_ang",
             "creature_proximity": "near",
             "creature_angle": "n_ang",
-            "accelerate": "acc",
-            "rotate": "rot",
+            "forward": "fwd",
+            "backward": "back",
+            "left": "left",
+            "right": "right",
+            "want_reproduce": "repr",
+            "want_eat": "eat",
+            "reset_chronometer": "reset",
         }
         return replacements.get(label, label)
 
