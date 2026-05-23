@@ -8,16 +8,29 @@ from random import Random
 
 
 class _Position:
-    x = 0.0
-    y = 0.0
+    def __init__(self, x: float = 0.0, y: float = 0.0) -> None:
+        self.x = x
+        self.y = y
 
 
 class _Body:
     STATIC = object()
 
-    def __init__(self, body_type: object | None = None) -> None:
+    def __init__(self, *args: object, body_type: object | None = None) -> None:
+        self.args = args
         self.body_type = body_type
-        self.position = _Position()
+        self._position = _Position()
+
+    @property
+    def position(self) -> _Position:
+        return self._position
+
+    @position.setter
+    def position(self, value: tuple[float, float] | _Position) -> None:
+        if isinstance(value, _Position):
+            self._position = value
+        else:
+            self._position = _Position(value[0], value[1])
 
 
 class _Circle:
@@ -27,9 +40,19 @@ class _Circle:
         self.sensor = False
 
 
+class _ShapeFilter:
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+
+
 sys.modules.setdefault(
     "pymunk",
-    types.SimpleNamespace(Body=_Body, Circle=_Circle),
+    types.SimpleNamespace(
+        Body=_Body,
+        Circle=_Circle,
+        ShapeFilter=_ShapeFilter,
+        moment_for_circle=lambda *args: 1.0,
+    ),
 )
 
 from configs.sim_config import FoodConfig

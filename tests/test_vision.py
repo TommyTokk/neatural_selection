@@ -3,6 +3,30 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 from math import pi
+import sys
+import types
+
+
+class _Body:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.position = types.SimpleNamespace(x=0.0, y=0.0)
+
+
+class _Circle:
+    def __init__(self, body: _Body, radius: float) -> None:
+        self.body = body
+        self.radius = radius
+
+
+sys.modules.setdefault(
+    "pymunk",
+    types.SimpleNamespace(
+        Body=_Body,
+        Circle=_Circle,
+        ShapeFilter=lambda **kwargs: types.SimpleNamespace(**kwargs),
+        moment_for_circle=lambda *args: 1.0,
+    ),
+)
 
 from configs.sim_config import VisionConfig
 from src.creature import VisionTraits
@@ -113,17 +137,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.walls.nearest_closeness, 0.0)
         self.assertEqual(snapshot.walls.nearest_angle, 0.0)
 
-    def test_sensor_input_contract_excludes_wall_inputs(self) -> None:
+    def test_sensor_input_contract_includes_wall_inputs(self) -> None:
         inputs = self.sense_inputs(
             creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
             (0.0, 0.0, 100.0, 100.0),
         )
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 14)
+        self.assertEqual(SENSOR_INPUT_COUNT, 16)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertAlmostEqual(inputs[0], 1.0)
         self.assertAlmostEqual(inputs[1], 0.25)
         self.assertAlmostEqual(inputs[3], 0.75)
+        self.assertAlmostEqual(inputs[14], 0.2)
+        self.assertAlmostEqual(inputs[15], 0.0)
 
 
 if __name__ == "__main__":

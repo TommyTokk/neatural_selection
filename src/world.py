@@ -990,28 +990,11 @@ class World:
         if not self.rt_neat.eligible_parent_ids:
             return False
 
-        parent_id = self.rt_neat.eligible_parent_ids[0]
-        parent = next(
-            (
-                creature
-                for creature in self.creatures
-                if creature.creature_id == parent_id
-            ),
-            None,
-        )
+        parent = self._reproduction_parent()
         if parent is None:
             return False
 
-        parent_fitness = self.fitness.get(parent.creature_id)
-        parent_action = self._last_actions.get(parent.creature_id)
-
-        if (
-            parent_fitness is None
-            or parent_action is None
-            or parent_action.want_reproduce < 0.5
-        ):
-            return False
-
+        parent_fitness = self.fitness[parent.creature_id]
         child_id = self._next_creature_id()
         child_position = self._child_spawn_position(parent)
 
@@ -1036,6 +1019,22 @@ class World:
         parent_fitness.record_reproduction()
         self.rt_neat.stats.births += 1
         return True
+
+    def _reproduction_parent(self) -> Creature | None:
+        live_creatures = {
+            creature.creature_id: creature
+            for creature in self.creatures
+        }
+        for parent_id in self.rt_neat.eligible_parent_ids:
+            parent = live_creatures.get(parent_id)
+            if parent is None or parent.creature_id not in self.fitness:
+                continue
+
+            parent_action = self._last_actions.get(parent.creature_id)
+            if parent_action is not None and parent_action.want_reproduce >= 0.5:
+                return parent
+
+        return None
 
     def _creature_want_to_eat(self, creature: Creature) -> bool:
         action = self._last_actions.get(creature.creature_id)

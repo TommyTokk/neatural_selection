@@ -1054,6 +1054,8 @@ class UiRenderer:
             "food_angle": "f_ang",
             "creature_proximity": "near",
             "creature_angle": "n_ang",
+            "wall_proximity": "wall",
+            "wall_angle": "w_ang",
             "forward": "fwd",
             "backward": "back",
             "left": "left",

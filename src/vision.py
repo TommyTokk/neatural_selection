@@ -7,7 +7,7 @@ from configs.sim_config import VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 14
+SENSOR_INPUT_COUNT = 16
 SENSOR_INPUT_NAMES = (
     "constant",
     "hungriness",
@@ -23,6 +23,8 @@ SENSOR_INPUT_NAMES = (
     "food_angle",
     "creature_proximity",
     "creature_angle",
+    "wall_proximity",
+    "wall_angle",
 )
 
 
@@ -75,6 +77,8 @@ class SensorSnapshot:
             self._target_angle(self.food),
             self._target_proximity(self.creatures),
             self._target_angle(self.creatures),
+            self._target_proximity(self.walls),
+            self._target_angle(self.walls),
         ]
 
     def _target_proximity(self, target: VisionTargetSnapshot) -> float:
