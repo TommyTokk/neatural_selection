@@ -75,6 +75,15 @@ class CreatureFitnessScoreTest(unittest.TestCase):
 
         self.assertAlmostEqual(fitness.score(config), -5.0)
 
+    def test_record_tick_tracks_distance_and_average_speed(self) -> None:
+        fitness = CreatureFitness()
+
+        fitness.record_tick(delta_time=2.0, speed=12.0, max_speed=20.0)
+        fitness.record_tick(delta_time=3.0, speed=8.0, max_speed=20.0)
+
+        self.assertAlmostEqual(fitness.distance_traveled, 48.0)
+        self.assertAlmostEqual(fitness.average_speed(), 9.6)
+
 
 if __name__ == "__main__":
     unittest.main()

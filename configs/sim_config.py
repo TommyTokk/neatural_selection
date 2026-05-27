@@ -92,6 +92,9 @@ class PopulationConfig:
     reproduction_energy_threshold: float = 0.8
     reproduction_energy_cost: float = 0.5
     child_spawn_distance: float = 34.0
+    reproduction_min_food_ratio: float = 0.2
+    reproduction_min_available_biomass_ratio: float = 0.02
+    reproduction_recovery_pressure_threshold: float = 0.25
 
 
 @dataclass(slots=True)

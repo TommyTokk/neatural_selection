@@ -726,6 +726,17 @@ class UiRenderer:
             f"Simulation speed: {world.simulation_speed:.2f}x",
             f"Zoom: {world.environment_zoom:.2f}x",
             f"Births: {world.rt_neat.stats.births}",
+            f"Deaths: {world.rt_neat.stats.deaths}",
+            f"Births/min: {world.rt_neat.stats.births_per_minute:.2f}",
+            f"Deaths/min: {world.rt_neat.stats.deaths_per_minute:.2f}",
+            f"Normal replacements: {world.rt_neat.stats.normal_replacements}",
+            f"Extinction replacements: {world.rt_neat.stats.extinction_replacements}",
+            f"Avg lifespan: {world.rt_neat.stats.average_lifespan_at_death:.1f}s",
+            f"Avg speed: {world.rt_neat.stats.average_speed:.1f} px/s",
+            f"Avg distance: {world.rt_neat.stats.average_distance_traveled:.0f}px",
+            f"Brain size: {world.rt_neat.stats.average_brain_nodes:.1f} nodes / "
+            f"{world.rt_neat.stats.average_brain_enabled_connections:.1f}"
+            f"/{world.rt_neat.stats.average_brain_connections:.1f} conns",
             f"Live brains: {world.live_brain_count()}",
             f"Archived: {world.archived_fitness_count()}",
             f"Best fitness: {world.rt_neat.stats.best_fitness:.2f}",

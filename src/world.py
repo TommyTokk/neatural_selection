@@ -796,7 +796,11 @@ class World:
         self.stats.plant_spawn_pressure = self._plant_spawn_pressure()
         self._update_genome_fitness_scores()
         self.rt_neat.update_stats(
-            self.creatures, self.fitness, self.config.population, self.config.fitness
+            self.creatures,
+            self.fitness,
+            self.config.population,
+            self.config.fitness,
+            self.elapsed_time,
         )
 
     def _update_genome_fitness_scores(self) -> None:
@@ -915,6 +919,7 @@ class World:
             self._last_actions.pop(creature.creature_id, None)
 
         fitness = self.fitness.pop(creature.creature_id, None)
+        self.rt_neat.record_death(fitness)
         if fitness is not None:
             self.fitness_archive[creature.creature_id] = fitness
 
@@ -951,9 +956,13 @@ class World:
         if not parent_genomes:
             return
 
+        available_creature_slots = max(
+            0,
+            self.config.population.max_creatures - len(self.creatures),
+        )
         recovery_count = min(
             self.config.population.extinction_recovery_creatures,
-            self.config.population.max_creatures,
+            available_creature_slots,
         )
 
         recovered_count = 0
@@ -977,7 +986,7 @@ class World:
             self._chronometers[child_id] = 0.0
             recovered_count += 1
 
-        self.rt_neat.stats.replacements += recovered_count
+        self.rt_neat.record_extinction_replacements(recovered_count)
 
     def _update_reproduction(self, delta_time: float) -> None:
         self._reproduction_accumulator += delta_time
@@ -996,6 +1005,9 @@ class World:
 
     def _try_reproduce(self) -> bool:
         if len(self.creatures) >= self.config.population.max_creatures:
+            return False
+
+        if not self._has_reproduction_resources():
             return False
 
         if not self.rt_neat.eligible_parent_ids:
@@ -1028,8 +1040,28 @@ class World:
 
         self._spend_reproduction_energy(parent)
         parent_fitness.record_reproduction()
-        self.rt_neat.stats.births += 1
+        self.rt_neat.record_normal_replacement()
         return True
+
+    def _has_reproduction_resources(self) -> bool:
+        child_energy = self.config.population.reproduction_energy_cost
+        available_biomass = self._available_biomass()
+        if available_biomass < child_energy:
+            return False
+
+        food_capacity = self.food_spawner.food_capacity(len(self.creatures))
+        food_ratio = len(self.foods) / max(1, food_capacity)
+        if food_ratio >= self.config.population.reproduction_min_food_ratio:
+            return True
+
+        total_biomass = max(self.total_biomass_energy, child_energy)
+        available_biomass_ratio = available_biomass / total_biomass
+        return (
+            self._plant_spawn_pressure()
+            >= self.config.population.reproduction_recovery_pressure_threshold
+            and available_biomass_ratio
+            >= self.config.population.reproduction_min_available_biomass_ratio
+        )
 
     def _reproduction_parent(self) -> Creature | None:
         live_creatures = {
