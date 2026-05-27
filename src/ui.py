@@ -185,10 +185,17 @@ class UiRenderer:
         content = self._card_content_bounds(bounds)
         button_height = 32
         button_gap = 10
+        button_width = (content.width - button_gap) / 2
         open_button = arcade.LBWH(
             content.left,
             content.bottom,
-            content.width,
+            button_width,
+            button_height,
+        )
+        kill_button = arcade.LBWH(
+            open_button.right + button_gap,
+            content.bottom,
+            button_width,
             button_height,
         )
         lines_bounds = arcade.LBWH(
@@ -207,7 +214,9 @@ class UiRenderer:
             first_line_bold=True,
         )
         self._control_hitboxes["open_brain_window"] = open_button
+        self._control_hitboxes["kill_selected_creature"] = kill_button
         self._draw_button(open_button, "Open Brain", "open_brain_window")
+        self._draw_button(kill_button, "Kill", "kill_selected_creature")
 
     def _draw_selected_brain(self, world: World, bounds: arcade.Rect) -> None:
         selected = world.selected_creature
@@ -798,6 +807,10 @@ class UiRenderer:
             if world.selected_creature is not None:
                 self._brain_window_open = True
                 self._ensure_brain_window_bounds(world)
+            return True
+        if self._contains_hitbox("kill_selected_creature", x, y):
+            if world.kill_selected_creature():
+                self._brain_window_open = False
             return True
         if self._contains_hitbox("pause", x, y):
             world.toggle_pause()

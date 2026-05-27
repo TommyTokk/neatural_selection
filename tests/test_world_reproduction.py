@@ -48,6 +48,8 @@ class FakeCreature:
     heading: float = 0.0
     position: tuple[float, float] = (0.0, 0.0)
     color: tuple[int, int, int] = (86, 156, 214)
+    body: object = field(default_factory=object)
+    shape: object = field(default_factory=object)
     vision: VisionTraits = field(
         default_factory=lambda: VisionTraits(range=100.0, angle=1.0)
     )
@@ -56,6 +58,8 @@ class FakeCreature:
 class FakeBrainController:
     def __init__(self) -> None:
         self.created_children: list[tuple[int, int]] = []
+        self.archived: list[tuple[int, float]] = []
+        self.removed: list[int] = []
 
     def create_child_brain(
         self,
@@ -64,6 +68,13 @@ class FakeBrainController:
     ) -> bool:
         self.created_children.append((parent_creature_id, child_creature_id))
         return True
+
+    def archive_brain(self, creature_id: int, fitness_score: float) -> bool:
+        self.archived.append((creature_id, fitness_score))
+        return True
+
+    def remove_brain(self, creature_id: int) -> None:
+        self.removed.append(creature_id)
 
 
 class WorldReproductionTest(unittest.TestCase):
@@ -123,6 +134,39 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world.creatures[-1].creature_id, 3)
         self.assertEqual(world.fitness[1].offspring_count, 1)
         self.assertEqual(world.creatures[0].energy, 0.5)
+
+    def test_kill_selected_creature_removes_live_state(self) -> None:
+        world = object.__new__(World)
+        creature = FakeCreature(creature_id=1)
+        world.config = build_sim_config()
+        world.creatures = [creature]
+        world.fitness = {1: CreatureFitness(age_seconds=10.0)}
+        world.fitness_archive = {}
+        world.selected_creature_id = 1
+        world.neat_controller = FakeBrainController()
+        world._last_actions = {1: Action(0.0, 0.0, 0.0, 0.0, 0.0)}
+        world._chronometers = {1: 4.0}
+        world.space = SimpleNamespace(remove=lambda *args: None)
+        world._recover_extinct_population = lambda: None
+        world._refresh_stats = lambda: None
+
+        self.assertTrue(world.kill_selected_creature())
+
+        self.assertEqual(world.creatures, [])
+        self.assertIsNone(world.selected_creature_id)
+        self.assertNotIn(1, world.fitness)
+        self.assertIn(1, world.fitness_archive)
+        self.assertNotIn(1, world._last_actions)
+        self.assertNotIn(1, world._chronometers)
+        self.assertEqual(world.neat_controller.removed, [1])
+
+    def test_kill_selected_creature_without_selection_is_noop(self) -> None:
+        world = object.__new__(World)
+        world.creatures = [FakeCreature(creature_id=1)]
+        world.selected_creature_id = None
+
+        self.assertFalse(world.kill_selected_creature())
+        self.assertEqual(len(world.creatures), 1)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,9 @@ try:
     import arcade
 except ModuleNotFoundError:
     arcade = ModuleType("arcade")
+    sys.modules["arcade"] = arcade
+
+if not hasattr(arcade, "LBWH"):
 
     @dataclass(slots=True)
     class FakeRect:
@@ -39,7 +42,6 @@ except ModuleNotFoundError:
 
     arcade.LBWH = fake_lbwh
     arcade.Rect = FakeRect
-    sys.modules["arcade"] = arcade
 
 for optional_module in ("neat", "pymunk"):
     if optional_module not in sys.modules:

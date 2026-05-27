@@ -349,6 +349,17 @@ class World:
         self.selected_creature_id = None if chosen is None else chosen.creature_id
         self._focus_selected_creature()
 
+    def kill_selected_creature(self) -> bool:
+        selected = self.selected_creature
+        if selected is None:
+            return False
+
+        self._remove_creature(selected)
+        if not self.creatures:
+            self._recover_extinct_population()
+        self._refresh_stats()
+        return True
+
     def _update_chronometers(self, delta_time: float) -> None:
         for creature in self.creatures:
             self._chronometers[creature.creature_id] = (
