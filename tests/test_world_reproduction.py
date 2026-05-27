@@ -83,19 +83,15 @@ class WorldReproductionTest(unittest.TestCase):
         world.fitness_archive = {}
         world._last_actions = {
             1: Action(
-                forward=0.0,
-                backward=0.0,
-                left=0.0,
-                right=0.0,
+                accelerate=0.0,
+                rotate=0.0,
                 want_reproduce=1.0,
                 want_eat=0.0,
                 reset_chronometer=0.0,
             ),
             2: Action(
-                forward=0.0,
-                backward=0.0,
-                left=0.0,
-                right=0.0,
+                accelerate=0.0,
+                rotate=0.0,
                 want_reproduce=0.0,
                 want_eat=0.0,
                 reset_chronometer=0.0,

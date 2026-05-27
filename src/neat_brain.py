@@ -45,13 +45,11 @@ class NeatBrain:
         self.last_outputs = outputs
 
         self.last_action = Action(
-            forward=outputs[0],
-            backward=outputs[1],
-            left=outputs[2],
-            right=outputs[3],
-            want_reproduce=outputs[4],
-            want_eat=outputs[5],
-            reset_chronometer=outputs[6],
+            accelerate=self._signed_action_output(outputs[0]),
+            rotate=self._signed_action_output(outputs[1]),
+            want_reproduce=outputs[2],
+            want_eat=outputs[3],
+            reset_chronometer=outputs[4],
         ).clamped()
         return self.last_action
 
@@ -113,7 +111,4 @@ class NeatBrain:
         return max(minimum, min(maximum, value))
 
     def _signed_action_output(self, value: float) -> float:
-        return signed_output(value)
-
-    def _acceleration_action_output(self, value: float) -> float:
-        return max(0.0, self._signed_action_output(value))
+        return self._clamp(signed_output(value), -1.0, 1.0)

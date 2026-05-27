@@ -333,8 +333,8 @@ class UiRenderer:
 
         action = brain.last_action
         action_label = (
-            f"thr {action.forward - action.backward:.2f} "
-            f"turn {action.right - action.left:.2f}"
+            f"acc {action.accelerate:.2f} "
+            f"rot {action.rotate:.2f}"
             if action is not None
             else "waiting"
         )
@@ -439,8 +439,8 @@ class UiRenderer:
         )
         action = brain.last_action
         action_label = (
-            f"thr {action.forward - action.backward:.2f} "
-            f"turn {action.right - action.left:.2f}"
+            f"acc {action.accelerate:.2f} "
+            f"rot {action.rotate:.2f}"
             if action is not None
             else "waiting"
         )
@@ -1056,10 +1056,8 @@ class UiRenderer:
             "creature_angle": "n_ang",
             "wall_proximity": "wall",
             "wall_angle": "w_ang",
-            "forward": "fwd",
-            "backward": "back",
-            "left": "left",
-            "right": "right",
+            "accelerate": "acc",
+            "rotate": "rot",
             "want_reproduce": "repr",
             "want_eat": "eat",
             "reset_chronometer": "reset",
@@ -1096,7 +1094,11 @@ class UiRenderer:
         def value(index: int, values: list[float]) -> float:
             return values[index] if index < len(values) else 0.0
 
-        return f"Raw outputs: {value(0, outputs):.2f}/{value(1, outputs):.2f}"
+        return (
+            f"Raw outputs: {value(0, outputs):.2f}/{value(1, outputs):.2f}  "
+            f"Intent: {value(2, outputs):.2f}/{value(3, outputs):.2f}/"
+            f"{value(4, outputs):.2f}"
+        )
 
     def _contains_hitbox(self, key: str, x: float, y: float) -> bool:
         bounds = self._control_hitboxes.get(key)

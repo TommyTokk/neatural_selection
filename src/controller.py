@@ -63,10 +63,8 @@ class BaselineFoodController:
             accelerate *= self.config.low_energy_acceleration_factor
 
         return Action(
-            forward=max(accelerate, 0.0),
-            backward=max(-accelerate, 0.0),
-            left=max(-rotate, 0.0),
-            right=max(rotate, 0.0),
+            accelerate=accelerate,
+            rotate=rotate,
             want_reproduce=1.0,
             want_eat=1.0,
             reset_chronometer=0.0,

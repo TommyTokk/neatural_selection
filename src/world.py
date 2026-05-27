@@ -571,8 +571,8 @@ class World:
         stabilize_velocity: bool = False,
         apply_stabilizers: bool = True,
     ) -> None:
-        thrust = action.forward - action.backward
-        turn = action.right - action.left
+        thrust = action.accelerate
+        turn = action.rotate
 
         if apply_stabilizers and stabilize_velocity and thrust > 0.0:
             self._stabilize_food_tracking_velocity(creature)
@@ -621,7 +621,7 @@ class World:
             self._apply_planar_drag(creature)
             action = self._last_actions.get(creature.creature_id)
             if action is not None:
-                self._apply_turn_control(creature, action.right - action.left)
+                self._apply_turn_control(creature, action.rotate)
 
     def _apply_planar_drag(self, creature: Creature) -> None:
         velocity = creature.body.velocity

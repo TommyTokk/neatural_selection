@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import pi
 
 Color = tuple[int, int, int] | tuple[int, int, int, int]
 
@@ -109,7 +110,7 @@ class VisionConfig:
     min_range: float = 90.0
     max_range: float = 160.0
     min_angle: float = 0.35
-    max_angle: float = 1.40
+    max_angle: float = pi
 
     base_energy_cost: float = 0.002
     area_energy_cost_factor: float = 0.018

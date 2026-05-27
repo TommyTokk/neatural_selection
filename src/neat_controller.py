@@ -12,10 +12,8 @@ from src.neat_brain import NeatBrain
 from src.vision import SENSOR_INPUT_COUNT, SensorSnapshot
 
 FALLBACK_ACTION = Action(
-    forward=0.0,
-    backward=0.0,
-    left=0.0,
-    right=0.0,
+    accelerate=0.0,
+    rotate=0.0,
     want_reproduce=0.0,
     want_eat=0.0,
     reset_chronometer=0.0,
@@ -62,10 +60,8 @@ class NeatBrainController:
 
     def fallback_action(self) -> Action:
         return Action(
-            forward=FALLBACK_ACTION.forward,
-            backward=FALLBACK_ACTION.backward,
-            left=FALLBACK_ACTION.left,
-            right=FALLBACK_ACTION.right,
+            accelerate=FALLBACK_ACTION.accelerate,
+            rotate=FALLBACK_ACTION.rotate,
             want_reproduce=FALLBACK_ACTION.want_reproduce,
             want_eat=FALLBACK_ACTION.want_eat,
             reset_chronometer=FALLBACK_ACTION.reset_chronometer,
