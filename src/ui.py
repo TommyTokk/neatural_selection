@@ -722,6 +722,7 @@ class UiRenderer:
             f"Creatures: {world.stats.creature_energy:.1f} energy",
             f"Elapsed time: {world.elapsed_time:0.1f}s",
             "State: Paused" if world.is_paused else "State: Running",
+            f"Controller: {'NEAT' if world.use_neat_brains else 'Baseline'}",
             f"Simulation speed: {world.simulation_speed:.2f}x",
             f"Zoom: {world.environment_zoom:.2f}x",
             f"Births: {world.rt_neat.stats.births}",

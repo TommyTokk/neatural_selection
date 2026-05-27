@@ -60,6 +60,11 @@ class DebugConfig:
 
 
 @dataclass(slots=True)
+class ControllerConfig:
+    use_neat_brains: bool = True
+
+
+@dataclass(slots=True)
 class ZoomConfig:
     default: float = 1.0
     minimum: float = 0.5
@@ -196,6 +201,7 @@ class SimConfig:
     layout: LayoutConfig = field(default_factory=LayoutConfig)
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
+    controller: ControllerConfig = field(default_factory=ControllerConfig)
     zoom: ZoomConfig = field(default_factory=ZoomConfig)
 
     # Metabolism config

@@ -44,7 +44,9 @@ if not hasattr(arcade, "LBWH"):
     arcade.Rect = FakeRect
 
 for optional_module in ("neat", "pymunk"):
-    if optional_module not in sys.modules:
+    try:
+        __import__(optional_module)
+    except ModuleNotFoundError:
         sys.modules[optional_module] = ModuleType(optional_module)
 
 from configs.sim_config import build_sim_config

@@ -16,7 +16,9 @@ class _Circle:
         self.radius = radius
 
 
-if "pymunk" not in sys.modules:
+try:
+    import pymunk  # noqa: F401
+except ModuleNotFoundError:
     sys.modules["pymunk"] = SimpleNamespace(
         Body=_Body,
         Circle=_Circle,
@@ -24,8 +26,11 @@ if "pymunk" not in sys.modules:
         moment_for_circle=lambda *args: 1.0,
     )
 
-if "neat" not in sys.modules:
+try:
+    import neat
+except ModuleNotFoundError:
     sys.modules["neat"] = ModuleType("neat")
+    import neat
 
 from src.neat_brain import NeatBrain
 from src.vision import BoundarySnapshot, SensorSnapshot, VisionTargetSnapshot
@@ -34,8 +39,10 @@ from src.vision import BoundarySnapshot, SensorSnapshot, VisionTargetSnapshot
 class FakeNetwork:
     def __init__(self, outputs: list[float]) -> None:
         self.outputs = outputs
+        self.activate_count = 0
 
     def activate(self, inputs: list[float]) -> list[float]:
+        self.activate_count += 1
         return self.outputs
 
 
@@ -103,6 +110,43 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.want_reproduce, 1.0)
         self.assertEqual(action.want_eat, 0.0)
         self.assertEqual(action.reset_chronometer, 0.75)
+
+
+class NeatBrainNetworkCachingTest(unittest.TestCase):
+    def test_from_genome_compiles_network_once_and_reuses_it(self) -> None:
+        created_networks: list[FakeNetwork] = []
+        fake_network = FakeNetwork([0.5, 0.5, 0.0, 0.0, 0.0])
+
+        class FakeFeedForwardNetwork:
+            @staticmethod
+            def create(genome: object, config: object) -> FakeNetwork:
+                created_networks.append(fake_network)
+                return fake_network
+
+        original_nn = getattr(neat, "nn", None)
+        neat.nn = SimpleNamespace(FeedForwardNetwork=FakeFeedForwardNetwork)
+
+        try:
+            config = SimpleNamespace(
+                genome_config=SimpleNamespace(output_keys=[0, 1, 2, 3, 4])
+            )
+            genome = SimpleNamespace(nodes={})
+
+            brain = NeatBrain.from_genome(1, genome, config)
+            first_network = brain.network
+
+            brain.decide(sensor_snapshot())
+            brain.decide(sensor_snapshot())
+            brain.decide(sensor_snapshot())
+        finally:
+            if original_nn is None:
+                del neat.nn
+            else:
+                neat.nn = original_nn
+
+        self.assertEqual(created_networks, [fake_network])
+        self.assertIs(brain.network, first_network)
+        self.assertEqual(fake_network.activate_count, 3)
 
 
 if __name__ == "__main__":

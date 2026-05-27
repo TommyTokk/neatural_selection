@@ -45,15 +45,15 @@ class _ShapeFilter:
         self.kwargs = kwargs
 
 
-sys.modules.setdefault(
-    "pymunk",
-    types.SimpleNamespace(
+try:
+    import pymunk  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["pymunk"] = types.SimpleNamespace(
         Body=_Body,
         Circle=_Circle,
         ShapeFilter=_ShapeFilter,
         moment_for_circle=lambda *args: 1.0,
-    ),
-)
+    )
 
 from configs.sim_config import FoodConfig
 from src.food_spawner import FoodSpawner

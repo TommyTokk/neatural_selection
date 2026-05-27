@@ -5,7 +5,9 @@ from types import ModuleType
 import sys
 import unittest
 
-if "pymunk" not in sys.modules:
+try:
+    import pymunk  # noqa: F401
+except ModuleNotFoundError:
     sys.modules["pymunk"] = ModuleType("pymunk")
 
 from configs.sim_config import MetabolismConfig

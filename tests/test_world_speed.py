@@ -5,7 +5,9 @@ from types import ModuleType
 import unittest
 
 for optional_module in ("arcade", "neat", "pymunk"):
-    if optional_module not in sys.modules:
+    try:
+        __import__(optional_module)
+    except ModuleNotFoundError:
         sys.modules[optional_module] = ModuleType(optional_module)
 
 from src.world import World

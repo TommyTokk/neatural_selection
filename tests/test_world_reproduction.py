@@ -22,7 +22,9 @@ class _Circle:
         self.radius = radius
 
 
-if "pymunk" not in sys.modules:
+try:
+    import pymunk  # noqa: F401
+except ModuleNotFoundError:
     sys.modules["pymunk"] = SimpleNamespace(
         Body=_Body,
         Circle=_Circle,

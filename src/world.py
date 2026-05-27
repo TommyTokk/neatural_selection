@@ -128,7 +128,7 @@ class World:
             [creature.creature_id for creature in self.creatures]
         )
         self.rt_neat = RtNeatManager(self.neat_controller)
-        self.use_neat_brains = True
+        self.use_neat_brains = config.controller.use_neat_brains
         self.show_brain_view = False
 
     def resize(self, width: int, height: int) -> None:
