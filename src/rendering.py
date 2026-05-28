@@ -24,22 +24,14 @@ class EnvironmentRenderer:
 
         with self._environment_clip(bounds):
             self._draw_grid(bounds, world.environment_zoom, pan_x, pan_y)
-            self._draw_food(world.foods, bounds, world.environment_zoom, pan_x, pan_y)
+            self._draw_food(world.visible_foods_for_viewport(), bounds, world)
             self._draw_creatures(
-                world.creatures,
+                world.visible_creatures_for_viewport(),
                 bounds,
-                world.environment_zoom,
-                pan_x,
-                pan_y,
+                world,
                 world.selected_creature_id,
             )
-            self._draw_selected_overlay(
-                world,
-                bounds,
-                world.environment_zoom,
-                pan_x,
-                pan_y,
-            )
+            self._draw_selected_overlay(world, bounds)
 
         self._draw_environment_header(bounds, world)
 
@@ -222,34 +214,17 @@ class EnvironmentRenderer:
             cached.bold = bold
         cached.draw()
 
-    def _zoom_point(
-        self,
-        bounds: arcade.Rect,
-        point_x: float,
-        point_y: float,
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
-    ) -> tuple[float, float]:
-        center_x = bounds.center_x
-        center_y = bounds.center_y
-        return (
-            center_x + (point_x - center_x) * zoom + pan_x,
-            center_y + (point_y - center_y) * zoom + pan_y,
-        )
-
     def _draw_food(
         self,
         foods: list[Food],
         bounds: arcade.Rect,
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
+        world: World,
     ) -> None:
+        zoom = world.environment_zoom
         draw_outlines = len(foods) <= 250 or zoom >= 1.25
         for food in foods:
             pos_x, pos_y = food.position
-            draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
+            draw_x, draw_y = world.environment_to_screen(pos_x, pos_y)
             radius = max(2.0, food.radius * zoom)
             if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
@@ -268,16 +243,13 @@ class EnvironmentRenderer:
         self,
         creatures: list[Creature],
         bounds: arcade.Rect,
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
+        world: World,
         selected_creature_id: int | None,
     ) -> None:
+        zoom = world.environment_zoom
         for creature in creatures:
             model_x, model_y = creature.position
-            draw_x, draw_y = self._zoom_point(
-                bounds, model_x, model_y, zoom, pan_x, pan_y
-            )
+            draw_x, draw_y = world.environment_to_screen(model_x, model_y)
             radius = max(3.0, creature.radius * zoom)
             if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
@@ -305,31 +277,24 @@ class EnvironmentRenderer:
             )
 
             left_eye_model, right_eye_model = self._creature_eye_positions(creature)
-            left_eye_x, left_eye_y = self._zoom_point(
-                bounds, left_eye_model[0], left_eye_model[1], zoom, pan_x, pan_y
-            )
-            right_eye_x, right_eye_y = self._zoom_point(
-                bounds, right_eye_model[0], right_eye_model[1], zoom, pan_x, pan_y
-            )
+            left_eye_x, left_eye_y = world.environment_to_screen(*left_eye_model)
+            right_eye_x, right_eye_y = world.environment_to_screen(*right_eye_model)
             eye_radius = max(2.0, 2.3 * zoom)
             arcade.draw_circle_filled(left_eye_x, left_eye_y, eye_radius, (247, 247, 241))
             arcade.draw_circle_filled(right_eye_x, right_eye_y, eye_radius, (247, 247, 241))
 
             if selected_creature_id == creature.creature_id:
-                self._draw_energy_bar(creature, bounds, zoom, pan_x, pan_y)
+                self._draw_energy_bar(creature, bounds, world)
 
     def _draw_energy_bar(
         self,
         creature: Creature,
         bounds: arcade.Rect,
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
+        world: World,
     ) -> None:
+        zoom = world.environment_zoom
         center_x, center_y = creature.position
-        draw_x, draw_y = self._zoom_point(
-            bounds, center_x, center_y, zoom, pan_x, pan_y
-        )
+        draw_x, draw_y = world.environment_to_screen(center_x, center_y)
         radius = creature.radius * zoom
 
         width = max(20.0, radius * 2.1)
@@ -361,46 +326,34 @@ class EnvironmentRenderer:
         self,
         world: World,
         bounds: arcade.Rect,
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
     ) -> None:
         selected = world.selected_creature
         if selected is None:
             return
 
         if world.debug_vision_enabled:
-            self._draw_vision_cone(selected, bounds, zoom, pan_x, pan_y)
+            self._draw_vision_cone(selected, bounds, world)
             self._draw_visible_food_highlights(
                 world.visible_foods_for(selected),
                 bounds,
-                zoom,
-                pan_x,
-                pan_y,
+                world,
             )
             self._draw_visible_creature_highlights(
                 world.visible_creatures_for(selected),
                 bounds,
-                zoom,
-                pan_x,
-                pan_y,
+                world,
             )
 
     def _draw_vision_cone(
         self,
         creature: Creature,
         bounds: arcade.Rect,
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
+        world: World,
     ) -> None:
+        zoom = world.environment_zoom
         left_eye_model, right_eye_model = self._creature_eye_positions(creature)
-        left_eye = self._zoom_point(
-            bounds, left_eye_model[0], left_eye_model[1], zoom, pan_x, pan_y
-        )
-        right_eye = self._zoom_point(
-            bounds, right_eye_model[0], right_eye_model[1], zoom, pan_x, pan_y
-        )
+        left_eye = world.environment_to_screen(*left_eye_model)
+        right_eye = world.environment_to_screen(*right_eye_model)
         draw_center_x = (left_eye[0] + right_eye[0]) / 2
         draw_center_y = (left_eye[1] + right_eye[1]) / 2
         heading = creature.heading
@@ -426,13 +379,12 @@ class EnvironmentRenderer:
         self,
         foods: list[Food],
         bounds: arcade.Rect,
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
+        world: World,
     ) -> None:
+        zoom = world.environment_zoom
         for food in foods:
             pos_x, pos_y = food.position
-            draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
+            draw_x, draw_y = world.environment_to_screen(pos_x, pos_y)
             radius = max(4.0, (food.radius + 4.0) * zoom)
             if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
@@ -444,13 +396,12 @@ class EnvironmentRenderer:
         self,
         creatures: list[Creature],
         bounds: arcade.Rect,
-        zoom: float,
-        pan_x: float,
-        pan_y: float,
+        world: World,
     ) -> None:
+        zoom = world.environment_zoom
         for creature in creatures:
             pos_x, pos_y = creature.position
-            draw_x, draw_y = self._zoom_point(bounds, pos_x, pos_y, zoom, pan_x, pan_y)
+            draw_x, draw_y = world.environment_to_screen(pos_x, pos_y)
             radius = max(6.0, (creature.radius + 5.0) * zoom)
             if not self._circle_fits_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue

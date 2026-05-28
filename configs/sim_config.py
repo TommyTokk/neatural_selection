@@ -65,9 +65,15 @@ class ControllerConfig:
 
 
 @dataclass(slots=True)
+class EnvironmentConfig:
+    world_width: float = 3200.0
+    world_height: float = 2200.0
+
+
+@dataclass(slots=True)
 class ZoomConfig:
     default: float = 1.0
-    minimum: float = 0.5
+    minimum: float = 0.3
     maximum: float = 3.0
     step: float = 0.12
 
@@ -127,22 +133,22 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 250
-    max_food_items: int = 300
+    initial_food_items: int = 540
+    max_food_items: int = 650
     low_creature_food_bonus_items: int = (
-        200  # Number of bonus food items to spawn when creature count is low.
+        430  # Number of bonus food items to spawn when creature count is low.
     )
     low_creature_food_bonus_threshold: int = (
         10  # Creature count threshold below which bonus food items will spawn.
     )
     low_creature_burst_items: int = (
-        80  # Number of food items to spawn in a burst when creature count is low.
+        170  # Number of food items to spawn in a burst when creature count is low.
     )
     low_creature_burst_interval: float = 0.75  # Minimum interval in seconds between food bursts when creature count is low.
     low_food_pressure_threshold: float = 0.5  # Food spawn pressure threshold below which low food spawn rate multiplier is applied.
     low_food_spawn_rate_multiplier: float = 3.0  # Multiplier for food spawn rate when food pressure is below the low_food_pressure_threshold.
     low_food_burst_items: int = (
-        100  # Number of food items to spawn in a burst when food pressure is low.
+        215  # Number of food items to spawn in a burst when food pressure is low.
     )
     low_food_burst_interval: float = 0.75  # Minimum interval in seconds between food bursts when food pressure is low.
     total_biomass_energy: float | None = None
@@ -205,6 +211,7 @@ class SimConfig:
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
+    environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     zoom: ZoomConfig = field(default_factory=ZoomConfig)
 
     # Metabolism config

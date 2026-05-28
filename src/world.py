@@ -133,9 +133,6 @@ class World:
 
     def resize(self, width: int, height: int) -> None:
         self.layout = build_screen_layout(width, height, self.config.layout)
-        self._rebuild_boundaries()
-        self._keep_creatures_inside_bounds()
-        self._follow_selected_creature()
         self._clamp_environment_pan()
 
     def update(self, delta_time: float) -> None:
@@ -227,37 +224,83 @@ class World:
 
     @property
     def environment_world_bounds(self) -> tuple[float, float, float, float]:
-        visible_bounds = self.layout.environment
-        zoom = self.config.zoom.minimum
-        half_width = visible_bounds.width / (2.0 * zoom)
-        half_height = visible_bounds.height / (2.0 * zoom)
+        half_width = self.config.environment.world_width / 2.0
+        half_height = self.config.environment.world_height / 2.0
         return (
-            visible_bounds.center_x - half_width,
-            visible_bounds.center_y - half_height,
-            visible_bounds.center_x + half_width,
-            visible_bounds.center_y + half_height,
+            -half_width,
+            -half_height,
+            half_width,
+            half_height,
         )
 
     def environment_to_screen(self, x: float, y: float) -> tuple[float, float]:
         bounds = self.layout.environment
-        center_x = bounds.center_x
-        center_y = bounds.center_y
         return (
-            center_x + (x - center_x) * self.environment_zoom + self.environment_pan_x,
-            center_y + (y - center_y) * self.environment_zoom + self.environment_pan_y,
+            bounds.center_x + x * self.environment_zoom + self.environment_pan_x,
+            bounds.center_y + y * self.environment_zoom + self.environment_pan_y,
         )
 
     def screen_to_environment(self, x: float, y: float) -> tuple[float, float]:
         bounds = self.layout.environment
-        center_x = bounds.center_x
-        center_y = bounds.center_y
-        model_x = (
-            center_x + (x - center_x - self.environment_pan_x) / self.environment_zoom
-        )
-        model_y = (
-            center_y + (y - center_y - self.environment_pan_y) / self.environment_zoom
-        )
+        model_x = (x - bounds.center_x - self.environment_pan_x) / self.environment_zoom
+        model_y = (y - bounds.center_y - self.environment_pan_y) / self.environment_zoom
         return model_x, model_y
+
+    def visible_world_bounds(self) -> tuple[float, float, float, float]:
+        bounds = self.layout.environment
+        bottom_left = self.screen_to_environment(bounds.left, bounds.bottom)
+        top_right = self.screen_to_environment(bounds.right, bounds.top)
+        visible_left = min(bottom_left[0], top_right[0])
+        visible_bottom = min(bottom_left[1], top_right[1])
+        visible_right = max(bottom_left[0], top_right[0])
+        visible_top = max(bottom_left[1], top_right[1])
+
+        world_left, world_bottom, world_right, world_top = self.environment_world_bounds
+        return (
+            max(world_left, visible_left),
+            max(world_bottom, visible_bottom),
+            min(world_right, visible_right),
+            min(world_top, visible_top),
+        )
+
+    def visible_foods_for_viewport(self) -> list[Food]:
+        left, bottom, right, top = self.visible_world_bounds()
+        margin = self.config.food.max_food_radius
+        candidate_foods = self._foods_in_world_bounds(
+            left - margin,
+            bottom - margin,
+            right + margin,
+            top + margin,
+        )
+        return [
+            food
+            for food in candidate_foods
+            if self._circle_intersects_world_bounds(
+                food.position[0],
+                food.position[1],
+                food.radius,
+                left,
+                bottom,
+                right,
+                top,
+            )
+        ]
+
+    def visible_creatures_for_viewport(self) -> list[Creature]:
+        left, bottom, right, top = self.visible_world_bounds()
+        return [
+            creature
+            for creature in self.creatures
+            if self._circle_intersects_world_bounds(
+                creature.position[0],
+                creature.position[1],
+                creature.radius,
+                left,
+                bottom,
+                right,
+                top,
+            )
+        ]
 
     @property
     def selected_creature(self) -> Creature | None:
@@ -769,10 +812,9 @@ class World:
         if selected is None:
             return
 
-        bounds = self.layout.environment
         selected_x, selected_y = selected.position
-        self.environment_pan_x = -(selected_x - bounds.center_x) * self.environment_zoom
-        self.environment_pan_y = -(selected_y - bounds.center_y) * self.environment_zoom
+        self.environment_pan_x = -selected_x * self.environment_zoom
+        self.environment_pan_y = -selected_y * self.environment_zoom
         self._clamp_environment_pan()
 
     def _creature_is_visible(self, creature: Creature) -> bool:
@@ -871,21 +913,47 @@ class World:
         return self._nearby_foods_for(creature, radius)
 
     def _nearby_foods_for(self, creature: Creature, radius: float) -> list[Food]:
-        self._ensure_food_grid()
         creature_x, creature_y = creature.position
         left = creature_x - radius
         right = creature_x + radius
         bottom = creature_y - radius
         top = creature_y + radius
+        return self._foods_in_world_bounds(left, bottom, right, top)
+
+    def _foods_in_world_bounds(
+        self,
+        left: float,
+        bottom: float,
+        right: float,
+        top: float,
+    ) -> list[Food]:
+        self._ensure_food_grid()
         min_cell_x, min_cell_y = self._food_grid_cell(left, bottom)
         max_cell_x, max_cell_y = self._food_grid_cell(right, top)
 
-        nearby_foods: list[Food] = []
+        foods: list[Food] = []
         for cell_x in range(min_cell_x, max_cell_x + 1):
             for cell_y in range(min_cell_y, max_cell_y + 1):
-                nearby_foods.extend(self._food_grid.get((cell_x, cell_y), []))
+                foods.extend(self._food_grid.get((cell_x, cell_y), []))
 
-        return nearby_foods
+        return foods
+
+    def _circle_intersects_world_bounds(
+        self,
+        x: float,
+        y: float,
+        radius: float,
+        left: float,
+        bottom: float,
+        right: float,
+        top: float,
+    ) -> bool:
+        return (
+            x + radius >= left
+            and x - radius <= right
+            and y + radius >= bottom
+            and y - radius <= top
+        )
 
     def _ensure_food_grid(self) -> None:
         if not self._food_grid_dirty:
