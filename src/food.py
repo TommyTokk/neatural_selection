@@ -19,7 +19,7 @@ class Food:
     energy_value: float = field(init=False)
 
     def __post_init__(self) -> None:
-        self.energy_value = pi * self.radius * 2 * self.energy_density
+        self.energy_value = pi * self.radius**2 * self.energy_density
         mass = 0.2 + self.radius * 0.035
         moment = pymunk.moment_for_circle(mass, 0.0, self.radius)
 

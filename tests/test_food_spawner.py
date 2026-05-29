@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import ceil
+from math import ceil, pi
 import sys
 import types
 import unittest
@@ -56,6 +56,7 @@ except ModuleNotFoundError:
     )
 
 from configs.sim_config import FoodConfig
+from src.food import Food
 from src.food_spawner import FoodSpawner
 
 
@@ -78,6 +79,33 @@ def low_food_config(**overrides: object) -> FoodConfig:
     }
     defaults.update(overrides)
     return FoodConfig(**defaults)
+
+
+class FoodEnergyValueTest(unittest.TestCase):
+    def test_food_energy_value_uses_area_formula(self) -> None:
+        food = Food(
+            id=1,
+            x=0.0,
+            y=0.0,
+            radius=8.0,
+            energy_density=0.002,
+        )
+
+        self.assertAlmostEqual(food.energy_value, pi * 8.0**2 * 0.002)
+
+    def test_average_radius_food_matches_spawner_average_energy(self) -> None:
+        config = FoodConfig(min_food_radius=6.0, max_food_radius=10.0)
+        average_radius = (config.min_food_radius + config.max_food_radius) * 0.5
+        food = Food(
+            id=1,
+            x=0.0,
+            y=0.0,
+            radius=average_radius,
+            energy_density=config.energy_density,
+        )
+        spawner = FoodSpawner(config, Random(1))
+
+        self.assertAlmostEqual(food.energy_value, spawner.average_food_energy_value())
 
 
 class FoodSpawnerLowCreatureBurstTest(unittest.TestCase):
