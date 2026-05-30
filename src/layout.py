@@ -19,43 +19,33 @@ def build_screen_layout(
     window_width: int, window_height: int, config: LayoutConfig
 ) -> ScreenLayout:
     pad = float(config.outer_padding)
-    gap = float(config.panel_gap)
+    icon_button_size = 58.0
+    icon_button_gap = 20.0
+    rail_vertical_padding = 32.0
+    rail_width = max(float(config.min_sidebar_width), float(config.left_panel_width))
+    rail_height = icon_button_size * 3 + icon_button_gap * 2 + rail_vertical_padding
+    title_width = min(292.0, max(220.0, window_width - pad * 2.0))
+    title_height = float(config.top_bar_height)
 
-    usable_left = pad
-    usable_right = max(pad, window_width - pad)
-    usable_bottom = pad
-    usable_top = max(pad, window_height - pad)
-
-    usable_width = usable_right - usable_left
-    usable_height = usable_top - usable_bottom
-
-    top_height = min(float(config.top_bar_height), max(64.0, usable_height * 0.16))
     top_bar = arcade.LBWH(
-        usable_left, usable_top - top_height, usable_width, top_height
+        pad,
+        max(pad, window_height - pad - title_height),
+        title_width,
+        title_height,
     )
-    content_bottom = usable_bottom
-    content_top = top_bar.bottom - gap
-    content_height = max(100.0, content_top - content_bottom)
-
-    sidebar_width = min(
-        float(config.left_panel_width),
-        max(float(config.min_sidebar_width), usable_width * 0.28),
-    )
-    environment_width = usable_width - sidebar_width - gap
-
-    if environment_width < config.min_environment_width:
-        sidebar_width = max(
-            float(config.min_sidebar_width),
-            usable_width - gap - float(config.min_environment_width),
-        )
-        environment_width = max(280.0, usable_width - sidebar_width - gap)
-
     left_sidebar = arcade.LBWH(
-        usable_left, content_bottom, sidebar_width, content_height
+        pad,
+        max(
+            pad,
+            min(
+                window_height - pad - rail_height,
+                window_height / 2.0 - rail_height / 2.0,
+            ),
+        ),
+        rail_width,
+        rail_height,
     )
-    environment = arcade.LBWH(
-        left_sidebar.right + gap, content_bottom, environment_width, content_height
-    )
+    environment = arcade.LBWH(0, 0, window_width, window_height)
     window = arcade.LBWH(0, 0, window_width, window_height)
 
     return ScreenLayout(

@@ -127,6 +127,15 @@ class EnvironmentRenderer:
         radius: float,
     ) -> None:
         radius = min(radius, bounds.width / 2, bounds.height / 2)
+        if radius <= 0:
+            arcade.draw_lrbt_rectangle_filled(
+                bounds.left,
+                bounds.right,
+                bounds.bottom,
+                bounds.top,
+                color,
+            )
+            return
         arcade.draw_lrbt_rectangle_filled(
             bounds.left + radius,
             bounds.right - radius,

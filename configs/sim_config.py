@@ -21,36 +21,36 @@ class DisplayConfig:
 class LayoutConfig:
     outer_padding: int = 20
     panel_gap: int = 16
-    top_bar_height: int = 76
-    left_panel_width: int = 320
+    top_bar_height: int = 62
+    left_panel_width: int = 92
     min_environment_width: int = 420
-    min_sidebar_width: int = 240
-    panel_radius: int = 18
-    card_radius: int = 14
-    environment_radius: int = 20
+    min_sidebar_width: int = 84
+    panel_radius: int = 16
+    card_radius: int = 8
+    environment_radius: int = 0
 
 
 @dataclass(slots=True)
 class ThemeConfig:
-    window_background: Color = (18, 22, 30)
-    panel_background: Color = (224, 238, 247)
-    panel_background_alt: Color = (238, 230, 248)
-    panel_border: Color = (137, 153, 180)
-    environment_background: Color = (13, 21, 27)
-    environment_grid: Color = (38, 53, 61, 95)
-    environment_border: Color = (93, 126, 122)
-    environment_text: Color = (210, 232, 226)
-    environment_text_muted: Color = (132, 163, 164)
-    accent: Color = (76, 146, 132)
-    accent_soft: Color = (174, 223, 209)
-    text_primary: Color = (29, 36, 48)
-    text_muted: Color = (87, 101, 122)
+    window_background: Color = (9, 13, 19)
+    panel_background: Color = (251, 248, 255)
+    panel_background_alt: Color = (222, 224, 238)
+    panel_border: Color = (194, 199, 206)
+    environment_background: Color = (9, 13, 19)
+    environment_grid: Color = (54, 63, 76, 72)
+    environment_border: Color = (9, 13, 19)
+    environment_text: Color = (240, 239, 255)
+    environment_text_muted: Color = (132, 139, 152)
+    accent: Color = (66, 97, 125)
+    accent_soft: Color = (167, 199, 231)
+    text_primary: Color = (22, 26, 50)
+    text_muted: Color = (66, 71, 77)
     herbivore_fill: Color = (142, 203, 161)
     herbivore_outline: Color = (44, 88, 67)
-    selected_outline: Color = (232, 63, 63)
-    food_fill: Color = (192, 226, 130)
+    selected_outline: Color = (186, 26, 26)
+    food_fill: Color = (142, 219, 114)
     vision_fill: Color = (142, 203, 161, 42)
-    card_background: Color = (248, 244, 232)
+    card_background: Color = (244, 242, 255)
 
 
 @dataclass(slots=True)
