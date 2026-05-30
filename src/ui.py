@@ -515,6 +515,7 @@ class UiRenderer:
             self._draw_scrollbar(content, scroll_offset, scroll_limit)
 
     def _draw_settings_panel(self, world: World) -> None:
+        self._control_hitboxes.pop("reset_speed", None)
         bounds = self._settings_panel_bounds(world)
         content = self._draw_floating_panel(
             bounds,
@@ -523,53 +524,65 @@ class UiRenderer:
             body_top_padding=14.0,
         )
 
-        pause_button = arcade.LBWH(content.left + 8, content.top - 58, 50, 50)
-        self._control_hitboxes["pause"] = pause_button
-        self._draw_play_pause_button(pause_button, is_paused=world.is_paused)
+        row_center_y = content.top - 33.0
         self._draw_text(
             "settings_speed_title",
             "Speed",
-            pause_button.right + 12,
-            pause_button.top - 13,
+            content.left + 8.0,
+            row_center_y + 10.0,
             self.theme.text_primary,
             13,
+            bold=True,
         )
         self._draw_text(
             "settings_speed_value",
             f"{world.simulation_speed:.2f}x",
-            pause_button.right + 12,
-            pause_button.top - 31,
+            content.left + 8.0,
+            row_center_y - 8.0,
             self.theme.text_primary,
             12,
         )
 
-        slider = arcade.LBWH(pause_button.right + 94, pause_button.center_y - 9, 72, 18)
+        control_size = 26.0
+        pause_size = 36.0
+        control_gap = 12.0
+        slider_gap = 26.0
+        controls_right_padding = 8.0
+        controls_width = control_size * 4 + pause_size + control_gap * 4
+        start_x = content.right - controls_width - controls_right_padding
+        slider_left = content.left + 90.0
+        slider_right = start_x - slider_gap
+        slider = arcade.LBWH(
+            slider_left,
+            row_center_y - 9.0,
+            max(36.0, slider_right - slider_left),
+            18,
+        )
         self._control_hitboxes["speed_slider"] = slider
         self._draw_speed_slider(slider, world)
 
-        control_size = 32.0
-        control_gap = 12.0
-        controls_width = control_size * 5 + control_gap * 4
-        start_x = min(
-            slider.right + 34.0,
-            content.right - controls_width - 8.0,
-        )
         controls = (
-            ("reset_speed", "1x"),
             ("speed_min", "<<"),
             ("speed_down", "<"),
+            ("pause", ""),
             ("speed_up", ">"),
             ("speed_max", ">>"),
         )
-        for index, (key, label) in enumerate(controls):
+        next_x = start_x
+        for key, label in controls:
+            size = pause_size if key == "pause" else control_size
             button = arcade.LBWH(
-                start_x + index * (control_size + control_gap),
-                pause_button.center_y - control_size / 2.0,
-                control_size,
-                control_size,
+                next_x,
+                row_center_y - size / 2.0,
+                size,
+                size,
             )
             self._control_hitboxes[key] = button
-            self._draw_icon_text_button(button, label, key, fill_color=None, size=17)
+            if key == "pause":
+                self._draw_play_pause_button(button, is_paused=world.is_paused)
+            else:
+                self._draw_icon_text_button(button, label, key, fill_color=None, size=14)
+            next_x += size + control_gap
 
         divider_y = content.bottom + 50
         draw_line = getattr(arcade, "draw_line", None)

@@ -654,6 +654,18 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
         self.assertEqual(calls, [0.25])
 
+    def test_speed_max_button_sets_maximum_speed(self) -> None:
+        calls = []
+        self.renderer._control_hitboxes["speed_max"] = arcade.LBWH(0, 0, 20, 20)
+        world = SimpleNamespace(
+            MAX_SIMULATION_SPEED=5.0,
+            set_simulation_speed=lambda speed: calls.append(speed),
+        )
+
+        self.assertTrue(self.renderer.handle_mouse_press(world, 10, 10))
+
+        self.assertEqual(calls, [5.0])
+
     def test_settings_panel_draws_all_speed_controls_inside_panel(self) -> None:
         world = SimpleNamespace(
             is_paused=False,
@@ -670,17 +682,19 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
         panel = self.renderer._control_hitboxes["settings_panel"]
         for key in (
+            "speed_slider",
             "speed_min",
-            "reset_speed",
             "speed_down",
+            "pause",
             "speed_up",
             "speed_max",
         ):
             bounds = self.renderer._control_hitboxes[key]
             self.assertGreaterEqual(bounds.left, panel.left)
             self.assertLessEqual(bounds.right, panel.right)
+        self.assertNotIn("reset_speed", self.renderer._control_hitboxes)
 
-    def test_settings_speed_control_order_places_reset_before_minimum(self) -> None:
+    def test_settings_speed_control_order_places_pause_between_arrows(self) -> None:
         world = SimpleNamespace(
             is_paused=False,
             simulation_speed=1.0,
@@ -694,14 +708,98 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
         self.renderer._draw_settings_panel(world)
 
-        self.assertLess(
-            self.renderer._control_hitboxes["reset_speed"].left,
-            self.renderer._control_hitboxes["speed_min"].left,
+        ordered_keys = (
+            "speed_min",
+            "speed_down",
+            "pause",
+            "speed_up",
+            "speed_max",
         )
-        self.assertLess(
-            self.renderer._control_hitboxes["speed_min"].left,
-            self.renderer._control_hitboxes["speed_down"].left,
+        for left_key, right_key in zip(ordered_keys, ordered_keys[1:]):
+            self.assertLess(
+                self.renderer._control_hitboxes[left_key].left,
+                self.renderer._control_hitboxes[right_key].left,
+            )
+
+    def test_settings_speed_controls_are_compact_and_padded(self) -> None:
+        world = SimpleNamespace(
+            is_paused=False,
+            simulation_speed=1.0,
+            MIN_SIMULATION_SPEED=0.25,
+            MAX_SIMULATION_SPEED=5.0,
+            layout=SimpleNamespace(
+                window=arcade.LBWH(0, 0, 1440, 900),
+                environment=arcade.LBWH(0, 0, 1440, 900),
+            ),
         )
+
+        self.renderer._draw_settings_panel(world)
+
+        slider = self.renderer._control_hitboxes["speed_slider"]
+        self.assertGreater(slider.width, 72.0)
+
+        ordered_keys = (
+            "speed_min",
+            "speed_down",
+            "pause",
+            "speed_up",
+            "speed_max",
+        )
+        previous = slider
+        for key in ordered_keys:
+            bounds = self.renderer._control_hitboxes[key]
+            if key == "pause":
+                self.assertGreater(bounds.width, 32.0)
+                self.assertGreater(bounds.height, 32.0)
+            else:
+                self.assertLess(bounds.width, 32.0)
+                self.assertLess(bounds.height, 32.0)
+            self.assertGreaterEqual(bounds.left - previous.right, 8.0)
+            previous = bounds
+
+    def test_settings_speed_controls_do_not_overlap_at_minimum_panel_width(self) -> None:
+        world = SimpleNamespace(
+            is_paused=False,
+            simulation_speed=1.0,
+            MIN_SIMULATION_SPEED=0.25,
+            MAX_SIMULATION_SPEED=5.0,
+            layout=SimpleNamespace(
+                window=arcade.LBWH(0, 0, 520, 720),
+                environment=arcade.LBWH(0, 0, 520, 720),
+            ),
+        )
+
+        self.renderer._draw_settings_panel(world)
+
+        ordered_keys = (
+            "speed_slider",
+            "speed_min",
+            "speed_down",
+            "pause",
+            "speed_up",
+            "speed_max",
+        )
+        for left_key, right_key in zip(ordered_keys, ordered_keys[1:]):
+            left_bounds = self.renderer._control_hitboxes[left_key]
+            right_bounds = self.renderer._control_hitboxes[right_key]
+            self.assertGreaterEqual(right_bounds.left - left_bounds.right, 8.0)
+
+    def test_settings_panel_removes_stale_reset_speed_hitbox(self) -> None:
+        world = SimpleNamespace(
+            is_paused=False,
+            simulation_speed=1.0,
+            MIN_SIMULATION_SPEED=0.25,
+            MAX_SIMULATION_SPEED=5.0,
+            layout=SimpleNamespace(
+                window=arcade.LBWH(0, 0, 1440, 900),
+                environment=arcade.LBWH(0, 0, 1440, 900),
+            ),
+        )
+        self.renderer._control_hitboxes["reset_speed"] = arcade.LBWH(0, 0, 20, 20)
+
+        self.renderer._draw_settings_panel(world)
+
+        self.assertNotIn("reset_speed", self.renderer._control_hitboxes)
 
     def test_pause_button_text_is_drawn_at_button_center(self) -> None:
         texts = []
