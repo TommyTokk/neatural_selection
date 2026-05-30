@@ -27,11 +27,8 @@ class UiRenderer:
         self._brain_window_open = False
         self._brain_window_bounds: arcade.Rect | None = None
         self._brain_window_drag_offset = (0.0, 0.0)
-        self._brain_graph_pan = (0.0, 0.0)
         self._brain_graph_zoom = 1.0
         self._active_brain_window_drag = False
-        self._active_brain_graph_drag = False
-        self._brain_graph_drag_last = (0.0, 0.0)
 
     def draw(self, world: World) -> None:
         self._control_hitboxes.clear()
@@ -643,14 +640,11 @@ class UiRenderer:
         position: tuple[float, float],
         bounds: arcade.Rect,
     ) -> tuple[float, float]:
-        pan_x, pan_y = self._brain_graph_pan
         return (
             bounds.center_x
-            + (position[0] - bounds.center_x) * self._brain_graph_zoom
-            + pan_x,
+            + (position[0] - bounds.center_x) * self._brain_graph_zoom,
             bounds.center_y
-            + (position[1] - bounds.center_y) * self._brain_graph_zoom
-            + pan_y,
+            + (position[1] - bounds.center_y) * self._brain_graph_zoom,
         )
 
     def _brain_edge_color(self, weight: float) -> arcade.Color | tuple[int, ...]:
@@ -803,7 +797,6 @@ class UiRenderer:
         if self._contains_hitbox("brain_window_close", x, y):
             self._brain_window_open = False
             self._active_brain_window_drag = False
-            self._active_brain_graph_drag = False
             return True
         if self._contains_hitbox("brain_window_title", x, y):
             bounds = self._brain_window_bounds
@@ -812,8 +805,6 @@ class UiRenderer:
                 self._brain_window_drag_offset = (x - bounds.left, y - bounds.bottom)
                 return True
         if self._contains_hitbox("brain_window_graph", x, y):
-            self._active_brain_graph_drag = True
-            self._brain_graph_drag_last = (x, y)
             return True
         if self._contains_hitbox("open_brain_window", x, y):
             if world.selected_creature is not None:
@@ -856,12 +847,6 @@ class UiRenderer:
                 bounds.height,
             )
             return True
-        if self._active_brain_graph_drag:
-            last_x, last_y = self._brain_graph_drag_last
-            pan_x, pan_y = self._brain_graph_pan
-            self._brain_graph_pan = (pan_x + x - last_x, pan_y + y - last_y)
-            self._brain_graph_drag_last = (x, y)
-            return True
         if not self._active_slider:
             return False
         self._set_speed_from_slider(world, x)
@@ -870,7 +855,6 @@ class UiRenderer:
     def handle_mouse_release(self) -> None:
         self._active_slider = False
         self._active_brain_window_drag = False
-        self._active_brain_graph_drag = False
 
     def handle_mouse_scroll(self, x: float, y: float, scroll_y: float) -> bool:
         if (

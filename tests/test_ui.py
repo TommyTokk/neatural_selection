@@ -83,6 +83,26 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertFalse(handled)
         self.assertAlmostEqual(self.renderer._brain_graph_zoom, 1.0)
 
+    def test_drag_inside_graph_is_consumed_without_moving_graph(self) -> None:
+        world = SimpleNamespace()
+        graph_bounds = self.renderer._control_hitboxes["brain_window_graph"]
+        graph_position = (graph_bounds.center_x + 40, graph_bounds.center_y - 25)
+        before = self.renderer._brain_graph_screen_position(
+            graph_position,
+            graph_bounds,
+        )
+
+        pressed = self.renderer.handle_mouse_press(world, 200, 200)
+        dragged = self.renderer.handle_mouse_drag(world, 260, 240)
+        after = self.renderer._brain_graph_screen_position(
+            graph_position,
+            graph_bounds,
+        )
+
+        self.assertTrue(pressed)
+        self.assertFalse(dragged)
+        self.assertEqual(after, before)
+
     def test_closed_brain_window_bounds_do_not_consume_scroll(self) -> None:
         self.renderer._brain_window_open = False
         self.renderer._control_hitboxes.clear()
