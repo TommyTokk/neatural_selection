@@ -13,6 +13,7 @@ class CreatureFitness:
     energy_gained: float = 0.0
     movement_effort: float = 0.0
     distance_traveled: float = 0.0
+    trait_energy_cost: float = 0.0
     last_reproduction_age: float = -1_000_000.0
     offspring_count: int = 0
     discovered_food_ids: set[int] = field(default_factory=set)
@@ -33,6 +34,9 @@ class CreatureFitness:
                 continue
             self.discovered_food_ids.add(food_id)
             self.food_discovered += 1
+
+    def record_trait_cost(self, cost_per_second: float, delta_time: float) -> None:
+        self.trait_energy_cost += max(0.0, cost_per_second) * max(0.0, delta_time)
 
     def record_reproduction(self) -> None:
         self.last_reproduction_age = self.age_seconds
@@ -59,4 +63,5 @@ class CreatureFitness:
             + energy_efficiency * config.energy_efficiency_weight
             + self.offspring_count * config.offspring_weight
             - self.movement_effort * config.movement_effort_penalty
+            - self.trait_energy_cost * config.trait_energy_cost_penalty_weight
         )

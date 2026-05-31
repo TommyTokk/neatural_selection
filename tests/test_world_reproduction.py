@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from random import Random
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -38,10 +39,10 @@ for optional_module in ("neat",):
 
 from configs.sim_config import build_sim_config
 from src.action import Action
-from src.creature import VisionTraits
+from src.creature import LineageInfo, PhysicalTraits, VisionTraits
 from src.fitness import CreatureFitness
 from src.rt_neat import RtNeatManager
-from src.world import World
+from src.world import ArchivedCreatureTraits, World
 
 
 @dataclass(slots=True)
@@ -56,6 +57,13 @@ class FakeCreature:
     vision: VisionTraits = field(
         default_factory=lambda: VisionTraits(range=100.0, angle=1.0)
     )
+    physical_traits: PhysicalTraits = field(
+        default_factory=lambda: PhysicalTraits(
+            radius=16.0,
+            movement_cost_multiplier=1.0,
+        )
+    )
+    lineage: LineageInfo = field(default_factory=LineageInfo)
 
 
 class FakeBrainController:
@@ -114,6 +122,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.foods = [SimpleNamespace(energy_value=0.01) for _ in range(5)]
         world.food_spawner = FakeFoodSpawner(food_capacity=10)
         world.total_biomass_energy = 10.0
+        world.rng = Random(7)
         world._last_actions = {
             1: Action(
                 accelerate=0.0,
@@ -134,9 +143,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.rt_neat.eligible_parent_ids = [2, 1]
         world.neat_controller = FakeBrainController()
         world._chronometers = {}
-        world._child_spawn_position = lambda parent: (1.0, 1.0)
-        world._mutated_creature_color = lambda color: color
-        world._mutated_vision = lambda vision: vision
+        world._child_spawn_position = lambda parent, child_radius: (1.0, 1.0)
         world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
             creature_id=creature_id,
             energy=kwargs["energy"],
@@ -144,6 +151,8 @@ class WorldReproductionTest(unittest.TestCase):
             position=kwargs["position"],
             color=kwargs["color"],
             vision=kwargs["vision"],
+            physical_traits=kwargs["physical_traits"],
+            lineage=kwargs["lineage"],
         )
 
         self.assertTrue(world._try_reproduce())
@@ -153,6 +162,8 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world.rt_neat.stats.normal_replacements, 1)
         self.assertEqual(len(world.creatures), 3)
         self.assertEqual(world.creatures[-1].creature_id, 3)
+        self.assertEqual(world.creatures[-1].lineage.parent_id, 1)
+        self.assertEqual(world.creatures[-1].lineage.generation, 1)
         self.assertEqual(world.fitness[1].offspring_count, 1)
         self.assertEqual(world.creatures[0].energy, 0.5)
 
@@ -243,6 +254,53 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world.rt_neat.stats.births, 3)
         self.assertEqual(world.rt_neat.stats.extinction_replacements, 3)
 
+    def test_extinction_recovery_mutates_archived_parent_traits(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.population.max_creatures = 1
+        world.config.population.extinction_recovery_creatures = 1
+        world.config.population.extinction_recovery_parent_pool = 1
+        world.config.metabolism.max_energy = 1.0
+        world.creatures = []
+        world.fitness = {}
+        world.fitness_archive = {}
+        world._chronometers = {}
+        world.rng = Random(7)
+        world.rt_neat = RtNeatManager(brain_controller=None)
+        parent_genome = SimpleNamespace(key=5)
+        world.neat_controller = SimpleNamespace(
+            best_genomes=lambda count: [parent_genome],
+            create_mutated_brain_from_genome=lambda parent_genome, child_id: True,
+        )
+        world._trait_archive_by_genome_id = {
+            5: ArchivedCreatureTraits(
+                creature_id=7,
+                vision=VisionTraits(range=120.0, angle=1.2),
+                physical_traits=PhysicalTraits(
+                    radius=18.0,
+                    movement_cost_multiplier=1.1,
+                ),
+                color=(86, 156, 214),
+                lineage=LineageInfo(parent_id=3, generation=2),
+            )
+        }
+        world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
+            creature_id=creature_id,
+            energy=kwargs["energy"],
+            color=kwargs["color"],
+            vision=kwargs["vision"],
+            physical_traits=kwargs["physical_traits"],
+            lineage=kwargs["lineage"],
+        )
+
+        world._recover_extinct_population()
+
+        recovered = world.creatures[0]
+        self.assertEqual(recovered.lineage.parent_id, 7)
+        self.assertEqual(recovered.lineage.generation, 3)
+        self.assertNotEqual(recovered.vision.range, 120.0)
+        self.assertNotEqual(recovered.physical_traits.radius, 18.0)
+
     def _world_ready_to_reproduce(self) -> World:
         world = object.__new__(World)
         world.config = build_sim_config()
@@ -257,6 +315,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.foods = [SimpleNamespace(energy_value=0.01) for _ in range(5)]
         world.food_spawner = FakeFoodSpawner(food_capacity=10)
         world.total_biomass_energy = 10.0
+        world.rng = Random(7)
         world._last_actions = {
             1: Action(0.0, 0.0, 1.0, 0.0, 0.0),
             2: Action(0.0, 0.0, 0.0, 0.0, 0.0),
@@ -265,9 +324,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.rt_neat.eligible_parent_ids = [1, 2]
         world.neat_controller = FakeBrainController()
         world._chronometers = {}
-        world._child_spawn_position = lambda parent: (1.0, 1.0)
-        world._mutated_creature_color = lambda color: color
-        world._mutated_vision = lambda vision: vision
+        world._child_spawn_position = lambda parent, child_radius: (1.0, 1.0)
         world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
             creature_id=creature_id,
             energy=kwargs["energy"],
@@ -275,6 +332,8 @@ class WorldReproductionTest(unittest.TestCase):
             position=kwargs["position"],
             color=kwargs["color"],
             vision=kwargs["vision"],
+            physical_traits=kwargs["physical_traits"],
+            lineage=kwargs["lineage"],
         )
         return world
 

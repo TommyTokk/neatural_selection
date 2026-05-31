@@ -10,7 +10,14 @@ import pymunk
 from configs.sim_config import SimConfig
 import src.utils as ut
 from src.action import Action, acceleration_force_vector
-from src.creature import Color, Creature, VisionTraits
+from src.creature import (
+    Color,
+    Creature,
+    LineageInfo,
+    PhysicalTraits,
+    TraitMutationDelta,
+    VisionTraits,
+)
 from src.fitness import CreatureFitness
 from src.food import Food
 from src.food_spawner import FoodSpawner
@@ -35,6 +42,23 @@ class WorldStats:
     plant_energy: float = 0.0
     available_biomass: float = 0.0
     plant_spawn_pressure: float = 1.0
+
+
+@dataclass(slots=True)
+class ChildCreatureTraits:
+    vision: VisionTraits
+    physical_traits: PhysicalTraits
+    color: Color
+    lineage: LineageInfo
+
+
+@dataclass(slots=True)
+class ArchivedCreatureTraits:
+    creature_id: int
+    vision: VisionTraits
+    physical_traits: PhysicalTraits
+    color: Color
+    lineage: LineageInfo
 
 
 class World:
@@ -103,7 +127,7 @@ class World:
                 config.metabolism.eating_distance,
             )
             + config.food.max_food_radius
-            + self.CREATURE_RADIUS
+            + config.trait.max_radius
         )
         self._add_foods(
             self.food_spawner.create_initial_foods(self.environment_world_bounds)
@@ -120,7 +144,7 @@ class World:
             plant_spawn_pressure=self._plant_spawn_pressure(),
         )
 
-        self.metabolism = Metabolism(config.metabolism, self.vision)
+        self.metabolism = Metabolism(config.metabolism, self.vision, config.trait)
 
         self.baseline_controller = BaselineFoodController(self.config.action)
         self.neat_controller = NeatBrainController("configs/neat_herbivore.ini")
@@ -128,6 +152,7 @@ class World:
             [creature.creature_id for creature in self.creatures]
         )
         self.rt_neat = RtNeatManager(self.neat_controller)
+        self._trait_archive_by_genome_id: dict[int, ArchivedCreatureTraits] = {}
         self.use_neat_brains = config.controller.use_neat_brains
         self.show_brain_view = False
 
@@ -426,12 +451,22 @@ class World:
         energy: float | None = None,
         color: Color | None = None,
         vision: VisionTraits | None = None,
+        physical_traits: PhysicalTraits | None = None,
+        lineage: LineageInfo | None = None,
     ) -> Creature:
         left, bottom, right, top = self.environment_world_bounds
-        margin = self.CREATURE_RADIUS + 10.0
+
+        if physical_traits is None:
+            physical_traits = self._initial_physical_traits()
+
+        if lineage is None:
+            lineage = LineageInfo()
+
+        radius = physical_traits.radius
+        margin = radius + 10.0
 
         mass = 1.0
-        moment = pymunk.moment_for_circle(mass, 0.0, self.CREATURE_RADIUS)
+        moment = pymunk.moment_for_circle(mass, 0.0, radius)
         body = pymunk.Body(mass, moment)
         if position is None:
             body.position = (
@@ -445,7 +480,7 @@ class World:
         )
         body.velocity = (0.0, 0.0)
 
-        shape = pymunk.Circle(body, self.CREATURE_RADIUS)
+        shape = pymunk.Circle(body, radius)
         shape.filter = pymunk.ShapeFilter(
             categories=CREATURE_CATEGORY,
             mask=CREATURE_CATEGORY | FOOD_CATEGORY | BOUNDARY_CATEGORY,
@@ -469,7 +504,6 @@ class World:
             name=f"Herbivore {creature_id:02d}",
             body=body,
             shape=shape,
-            radius=self.CREATURE_RADIUS,
             energy=(self.rng.uniform(0.55, 0.95) if energy is None else energy),
             vision=vision,
             color=(
@@ -477,23 +511,134 @@ class World:
                 if color is not None
                 else self._initial_creature_color(creature_id - 1)
             ),
+            physical_traits=physical_traits,
+            lineage=lineage,
         )
 
     def _initial_creature_color(self, index: int) -> Color:
         return self.CREATURE_COLOR_PALETTE[index % len(self.CREATURE_COLOR_PALETTE)]
 
+    def _initial_physical_traits(self) -> PhysicalTraits:
+        trait_config = self.config.trait
+        radius = self._clamp(
+            trait_config.default_radius
+            + self.rng.gauss(0.0, trait_config.initial_radius_jitter),
+            trait_config.min_radius,
+            trait_config.max_radius,
+        )
+        movement_cost_multiplier = self._clamp(
+            trait_config.default_movement_cost_multiplier
+            + self.rng.gauss(0.0, trait_config.initial_movement_cost_jitter),
+            trait_config.min_movement_cost_multiplier,
+            trait_config.max_movement_cost_multiplier,
+        )
+        return PhysicalTraits(
+            radius=radius,
+            movement_cost_multiplier=movement_cost_multiplier,
+        )
+
     def _mutated_vision(self, parent_vision: VisionTraits) -> VisionTraits:
+        vision, _ = self._mutated_vision_with_delta(parent_vision)
+        return vision
+
+    def _mutated_vision_with_delta(
+        self,
+        parent_vision: VisionTraits,
+    ) -> tuple[VisionTraits, TraitMutationDelta]:
         range_mutation = self.rng.gauss(0, 8)
         angle_mutation = self.rng.gauss(0, 0.08)
 
-        return VisionTraits(
-            range=max(
+        child_vision = VisionTraits(
+            range=self._clamp(
+                parent_vision.range + range_mutation,
                 self.config.vision.min_range,
-                min(self.config.vision.max_range, parent_vision.range + range_mutation),
+                self.config.vision.max_range,
             ),
-            angle=max(
+            angle=self._clamp(
+                parent_vision.angle + angle_mutation,
                 self.config.vision.min_angle,
-                min(self.config.vision.max_angle, parent_vision.angle + angle_mutation),
+                self.config.vision.max_angle,
+            ),
+        )
+        return (
+            child_vision,
+            TraitMutationDelta(
+                vision_range=child_vision.range - parent_vision.range,
+                vision_angle=child_vision.angle - parent_vision.angle,
+            ),
+        )
+
+    def _mutated_physical_traits(
+        self,
+        parent_traits: PhysicalTraits,
+    ) -> tuple[PhysicalTraits, TraitMutationDelta]:
+        trait_config = self.config.trait
+        radius_mutation = self.rng.gauss(0.0, trait_config.radius_mutation_stddev)
+        movement_mutation = self.rng.gauss(
+            0.0,
+            trait_config.movement_cost_mutation_stddev,
+        )
+
+        child_radius = self._clamp(
+            parent_traits.radius + radius_mutation,
+            trait_config.min_radius,
+            trait_config.max_radius,
+        )
+        child_movement_cost_multiplier = self._clamp(
+            parent_traits.movement_cost_multiplier + movement_mutation,
+            trait_config.min_movement_cost_multiplier,
+            trait_config.max_movement_cost_multiplier,
+        )
+
+        return (
+            PhysicalTraits(
+                radius=child_radius,
+                movement_cost_multiplier=child_movement_cost_multiplier,
+            ),
+            TraitMutationDelta(
+                radius=child_radius - parent_traits.radius,
+                movement_cost_multiplier=(
+                    child_movement_cost_multiplier
+                    - parent_traits.movement_cost_multiplier
+                ),
+            ),
+        )
+
+    def _mutated_child_traits(self, parent: Creature) -> ChildCreatureTraits:
+        return self._mutated_child_traits_from_parent_values(
+            parent_id=parent.creature_id,
+            parent_generation=parent.lineage.generation,
+            parent_vision=parent.vision,
+            parent_physical_traits=parent.physical_traits,
+            parent_color=parent.color,
+        )
+
+    def _mutated_child_traits_from_parent_values(
+        self,
+        parent_id: int | None,
+        parent_generation: int,
+        parent_vision: VisionTraits,
+        parent_physical_traits: PhysicalTraits,
+        parent_color: Color,
+    ) -> ChildCreatureTraits:
+        child_vision, vision_delta = self._mutated_vision_with_delta(parent_vision)
+        child_physical_traits, physical_delta = self._mutated_physical_traits(
+            parent_physical_traits,
+        )
+        mutation_delta = TraitMutationDelta(
+            vision_range=vision_delta.vision_range,
+            vision_angle=vision_delta.vision_angle,
+            radius=physical_delta.radius,
+            movement_cost_multiplier=physical_delta.movement_cost_multiplier,
+        )
+        return ChildCreatureTraits(
+            vision=child_vision,
+            physical_traits=child_physical_traits,
+            color=self._mutated_creature_color(parent_color),
+            lineage=LineageInfo(
+                parent_id=parent_id,
+                generation=parent_generation + 1,
+                mutation_delta=mutation_delta,
             ),
         )
 
@@ -523,14 +668,21 @@ class World:
         )
         return distance_squared < 70.0**2
 
-    def _child_spawn_position(self, parent: Creature) -> tuple[float, float]:
-        distance = self.config.population.child_spawn_distance
+    def _child_spawn_position(
+        self,
+        parent: Creature,
+        child_radius: float,
+    ) -> tuple[float, float]:
+        distance = max(
+            self.config.population.child_spawn_distance,
+            parent.radius + child_radius + 2.0,
+        )
         parent_x, parent_y = parent.position
         raw_x = parent_x - cos(parent.heading) * distance
         raw_y = parent_y - sin(parent.heading) * distance
 
         left, bottom, right, top = self.environment_world_bounds
-        radius = self.CREATURE_RADIUS + 2.0
+        radius = child_radius + 2.0
         spawn_x = max(left + radius, min(right - radius, raw_x))
         spawn_y = max(bottom + radius, min(top - radius, raw_y))
         return spawn_x, spawn_y
@@ -859,6 +1011,13 @@ class World:
             fitness = self.fitness.get(creature.creature_id)
             if fitness is not None:
                 fitness.record_tick(delta_time, creature.speed, self.MAX_SPEED)
+                fitness.record_trait_cost(
+                    self.metabolism.trait_energy_cost_per_second(
+                        creature,
+                        self.MAX_SPEED,
+                    ),
+                    delta_time,
+                )
 
     def _record_food_discoveries(
         self,
@@ -955,6 +1114,9 @@ class World:
             and y - radius <= top
         )
 
+    def _clamp(self, value: float, minimum: float, maximum: float) -> float:
+        return max(minimum, min(maximum, value))
+
     def _ensure_food_grid(self) -> None:
         if not self._food_grid_dirty:
             return
@@ -974,6 +1136,7 @@ class World:
         )
 
     def _remove_creature(self, creature: Creature) -> None:
+        self._archive_creature_traits(creature)
         fitness = self.fitness.get(creature.creature_id)
         if fitness is not None:
             self.neat_controller.archive_brain(
@@ -995,6 +1158,45 @@ class World:
             self.selected_creature_id = None
 
         self._chronometers.pop(creature.creature_id, None)
+
+    def _archive_creature_traits(self, creature: Creature) -> None:
+        genome_id_for = getattr(self.neat_controller, "genome_id_for", None)
+        if genome_id_for is None:
+            return
+
+        genome_id = genome_id_for(creature.creature_id)
+        if genome_id is None:
+            return
+
+        if not hasattr(self, "_trait_archive_by_genome_id"):
+            self._trait_archive_by_genome_id = {}
+
+        self._trait_archive_by_genome_id[genome_id] = ArchivedCreatureTraits(
+            creature_id=creature.creature_id,
+            vision=VisionTraits(
+                range=creature.vision.range,
+                angle=creature.vision.angle,
+            ),
+            physical_traits=PhysicalTraits(
+                radius=creature.physical_traits.radius,
+                movement_cost_multiplier=(
+                    creature.physical_traits.movement_cost_multiplier
+                ),
+            ),
+            color=creature.color,
+            lineage=LineageInfo(
+                parent_id=creature.lineage.parent_id,
+                generation=creature.lineage.generation,
+                mutation_delta=TraitMutationDelta(
+                    vision_range=creature.lineage.mutation_delta.vision_range,
+                    vision_angle=creature.lineage.mutation_delta.vision_angle,
+                    radius=creature.lineage.mutation_delta.radius,
+                    movement_cost_multiplier=(
+                        creature.lineage.mutation_delta.movement_cost_multiplier
+                    ),
+                ),
+            ),
+        )
 
     def _initial_total_biomass_energy(self) -> float:
         configured_total = self.config.food.total_biomass_energy
@@ -1036,11 +1238,28 @@ class World:
         recovered_count = 0
         for index in range(recovery_count):
             parent_genome = parent_genomes[index % len(parent_genomes)]
+            archived_traits = self._archived_traits_for_genome(parent_genome)
+            child_traits = (
+                self._mutated_recovery_traits(archived_traits)
+                if archived_traits is not None
+                else None
+            )
             child_id = self._next_creature_id()
             child = self._spawn_creature(
                 child_id,
                 energy=self.config.metabolism.max_energy,
-                color=self._initial_creature_color(recovered_count),
+                color=(
+                    child_traits.color
+                    if child_traits is not None
+                    else self._initial_creature_color(recovered_count)
+                ),
+                vision=child_traits.vision if child_traits is not None else None,
+                physical_traits=(
+                    child_traits.physical_traits
+                    if child_traits is not None
+                    else None
+                ),
+                lineage=child_traits.lineage if child_traits is not None else None,
             )
             if not self.neat_controller.create_mutated_brain_from_genome(
                 parent_genome,
@@ -1055,6 +1274,27 @@ class World:
             recovered_count += 1
 
         self.rt_neat.record_extinction_replacements(recovered_count)
+
+    def _archived_traits_for_genome(
+        self,
+        genome: object,
+    ) -> ArchivedCreatureTraits | None:
+        genome_id = getattr(genome, "key", None)
+        if genome_id is None:
+            return None
+        return getattr(self, "_trait_archive_by_genome_id", {}).get(genome_id)
+
+    def _mutated_recovery_traits(
+        self,
+        archived_traits: ArchivedCreatureTraits,
+    ) -> ChildCreatureTraits:
+        return self._mutated_child_traits_from_parent_values(
+            parent_id=archived_traits.creature_id,
+            parent_generation=archived_traits.lineage.generation,
+            parent_vision=archived_traits.vision,
+            parent_physical_traits=archived_traits.physical_traits,
+            parent_color=archived_traits.color,
+        )
 
     def _update_reproduction(self, delta_time: float) -> None:
         self._reproduction_accumulator += delta_time
@@ -1087,15 +1327,21 @@ class World:
 
         parent_fitness = self.fitness[parent.creature_id]
         child_id = self._next_creature_id()
-        child_position = self._child_spawn_position(parent)
+        child_traits = self._mutated_child_traits(parent)
+        child_position = self._child_spawn_position(
+            parent,
+            child_traits.physical_traits.radius,
+        )
 
         child = self._spawn_creature(
             child_id,
             position=child_position,
             heading=parent.heading,
             energy=self.config.population.reproduction_energy_cost,
-            color=self._mutated_creature_color(parent.color),
-            vision=self._mutated_vision(parent.vision),
+            color=child_traits.color,
+            vision=child_traits.vision,
+            physical_traits=child_traits.physical_traits,
+            lineage=child_traits.lineage,
         )
 
         if not self.neat_controller.create_child_brain(parent.creature_id, child_id):

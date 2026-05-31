@@ -114,7 +114,24 @@ class FitnessConfig:
     efficiency_min_age_seconds: float = 20
     movement_effort_penalty: float = 0.08
     offspring_weight: float = 12
+    trait_energy_cost_penalty_weight: float = 5.0
 
+
+@dataclass(slots=True)
+class TraitConfig:
+    default_radius: float = 16.0
+    min_radius: float = 12.0
+    max_radius: float = 22.0
+    initial_radius_jitter: float = 2.0
+    radius_mutation_stddev: float = 1.0
+
+    default_movement_cost_multiplier: float = 1.0
+    min_movement_cost_multiplier: float = 0.75
+    max_movement_cost_multiplier: float = 1.35
+    initial_movement_cost_jitter: float = 0.08
+    movement_cost_mutation_stddev: float = 0.04
+
+    body_metabolism_cost_factor: float = 0.006
 
 @dataclass(slots=True)
 class VisionConfig:
@@ -225,6 +242,9 @@ class SimConfig:
 
     # Action config
     action: ActionConfig = field(default_factory=ActionConfig)
+
+    # Trait config
+    trait: TraitConfig = field(default_factory=TraitConfig)
 
     # Vision config
     vision: VisionConfig = field(default_factory=VisionConfig)

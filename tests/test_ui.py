@@ -44,34 +44,33 @@ if not hasattr(arcade, "LBWH"):
     arcade.LBWH = fake_lbwh
     arcade.Rect = FakeRect
 
-if not hasattr(arcade, "Text"):
+class FakeText:
+    def __init__(
+        self,
+        text: str,
+        x: float,
+        y: float,
+        color: object,
+        size: float,
+        **kwargs: object,
+    ) -> None:
+        self.text = text
+        self.x = x
+        self.y = y
+        self.color = color
+        self.font_size = size
+        self.bold = kwargs.get("bold", False)
+        self.width = kwargs.get("width")
+        self.multiline = kwargs.get("multiline", False)
+        self.align = kwargs.get("align", "left")
+        self.anchor_x = kwargs.get("anchor_x", "left")
+        self.anchor_y = kwargs.get("anchor_y", "baseline")
 
-    class FakeText:
-        def __init__(
-            self,
-            text: str,
-            x: float,
-            y: float,
-            color: object,
-            size: float,
-            **kwargs: object,
-        ) -> None:
-            self.text = text
-            self.x = x
-            self.y = y
-            self.color = color
-            self.font_size = size
-            self.bold = kwargs.get("bold", False)
-            self.width = kwargs.get("width")
-            self.multiline = kwargs.get("multiline", False)
-            self.align = kwargs.get("align", "left")
-            self.anchor_x = kwargs.get("anchor_x", "left")
-            self.anchor_y = kwargs.get("anchor_y", "baseline")
+    def draw(self) -> None:
+        return None
 
-        def draw(self) -> None:
-            return None
 
-    arcade.Text = FakeText
+arcade.Text = FakeText
 
 for draw_name in (
     "draw_lrbt_rectangle_filled",
@@ -81,8 +80,7 @@ for draw_name in (
     "draw_polygon_filled",
     "draw_texture_rectangle",
 ):
-    if not hasattr(arcade, draw_name):
-        setattr(arcade, draw_name, lambda *args, **kwargs: None)
+    setattr(arcade, draw_name, lambda *args, **kwargs: None)
 
 for optional_module in ("neat", "pymunk"):
     try:
@@ -91,6 +89,7 @@ for optional_module in ("neat", "pymunk"):
         sys.modules[optional_module] = ModuleType(optional_module)
 
 from configs.sim_config import build_sim_config
+from src.creature import LineageInfo, PhysicalTraits, TraitMutationDelta
 from src.layout import build_screen_layout
 from src.ui import UiRenderer
 
@@ -548,6 +547,56 @@ class FloatingSimulationUiTest(unittest.TestCase):
             self.renderer._draw_progress_bar = original_draw_progress_bar
 
         self.assertEqual(ratios, [0.25])
+
+    def test_inspector_draws_trait_and_lineage_rows(self) -> None:
+        selected = SimpleNamespace(
+            creature_id=938,
+            name="Herbivore 938",
+            energy=0.5,
+            speed=170.0,
+            heading=1.25,
+            vision=SimpleNamespace(range=120.0, angle=1.7),
+            physical_traits=PhysicalTraits(
+                radius=18.0,
+                movement_cost_multiplier=1.12,
+            ),
+            lineage=LineageInfo(
+                parent_id=12,
+                generation=3,
+                mutation_delta=TraitMutationDelta(
+                    vision_range=2.0,
+                    vision_angle=-0.03,
+                    radius=1.0,
+                    movement_cost_multiplier=0.04,
+                ),
+            ),
+        )
+        world = self.make_inspector_world(selected=selected)
+        rows: dict[str, tuple[str, str]] = {}
+        original_metric_row = self.renderer._draw_metric_row_in_viewport
+
+        def capture_metric_row(
+            viewport: object,
+            key: str,
+            label: str,
+            value: str,
+            *args: object,
+        ) -> None:
+            del viewport, args
+            rows[key] = (label, value)
+
+        self.renderer._draw_metric_row_in_viewport = capture_metric_row
+        try:
+            self.renderer._draw_inspector_panel(world)
+        finally:
+            self.renderer._draw_metric_row_in_viewport = original_metric_row
+
+        self.assertEqual(rows["inspector_body"], ("Body", "18.0px / 1.12x move"))
+        self.assertEqual(rows["inspector_lineage"], ("Lineage", "Parent 12 / Gen 3"))
+        self.assertEqual(
+            rows["inspector_mutations"],
+            ("Mutations", "R +1.0, V +2.0/-0.03, M +0.04"),
+        )
 
     def test_progress_bar_zero_ratio_skips_fill(self) -> None:
         fills = []

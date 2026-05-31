@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import dist
 
 import pymunk
@@ -8,11 +8,32 @@ import pymunk
 
 Color = tuple[int, int, int] | tuple[int, int, int, int]
 
+
 @dataclass(slots=True)
 class VisionTraits:
     range: float
     angle: float
 
+
+@dataclass(slots=True)
+class PhysicalTraits:
+    radius: float
+    movement_cost_multiplier: float = 1.0
+
+
+@dataclass(slots=True)
+class TraitMutationDelta:
+    vision_range: float = 0.0
+    vision_angle: float = 0.0
+    radius: float = 0.0
+    movement_cost_multiplier: float = 0.0
+
+
+@dataclass(slots=True)
+class LineageInfo:
+    parent_id: int | None = None
+    generation: int = 0
+    mutation_delta: TraitMutationDelta = field(default_factory=TraitMutationDelta)
 
 
 @dataclass(slots=True)
@@ -21,10 +42,11 @@ class Creature:
     name: str
     body: pymunk.Body
     shape: pymunk.Circle
-    radius: float
     energy: float
     vision: VisionTraits
+    physical_traits: PhysicalTraits
     color: Color
+    lineage: LineageInfo = field(default_factory=LineageInfo)
 
     @property
     def position(self) -> tuple[float, float]:
@@ -40,3 +62,7 @@ class Creature:
 
     def contains_point(self, x: float, y: float) -> bool:
         return dist(self.position, (x, y)) <= self.radius + 4.0
+
+    @property
+    def radius(self) -> float:
+        return self.physical_traits.radius

@@ -75,6 +75,24 @@ class CreatureFitnessScoreTest(unittest.TestCase):
 
         self.assertAlmostEqual(fitness.score(config), -5.0)
 
+    def test_trait_energy_cost_reduces_score(self) -> None:
+        config = FitnessConfig(
+            age_weight=0.0,
+            food_discovery_weight=0.0,
+            food_eaten_weight=0.0,
+            energy_gained_weight=0.0,
+            energy_efficiency_weight=0.0,
+            movement_effort_penalty=0.0,
+            offspring_weight=0.0,
+            trait_energy_cost_penalty_weight=4.0,
+        )
+        fitness = CreatureFitness()
+
+        fitness.record_trait_cost(cost_per_second=0.25, delta_time=10.0)
+
+        self.assertAlmostEqual(fitness.trait_energy_cost, 2.5)
+        self.assertAlmostEqual(fitness.score(config), -10.0)
+
     def test_record_tick_tracks_distance_and_average_speed(self) -> None:
         fitness = CreatureFitness()
 

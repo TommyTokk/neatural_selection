@@ -37,7 +37,7 @@ for optional_module in ("neat", "pymunk"):
         sys.modules[optional_module] = ModuleType(optional_module)
 
 from configs.sim_config import build_sim_config
-from src.creature import VisionTraits
+from src.creature import PhysicalTraits, VisionTraits
 from src.world import World
 
 
@@ -82,6 +82,39 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         self.assertEqual(child_vision.range, world.config.vision.min_range)
         self.assertEqual(child_vision.angle, world.config.vision.max_angle)
+
+    def test_mutated_physical_traits_inherit_parent_values_with_small_variation(self) -> None:
+        world = self.make_world_with_mutations([2.0, -0.03])
+
+        child_traits, delta = world._mutated_physical_traits(
+            PhysicalTraits(
+                radius=16.0,
+                movement_cost_multiplier=1.0,
+            )
+        )
+
+        self.assertAlmostEqual(child_traits.radius, 18.0)
+        self.assertAlmostEqual(child_traits.movement_cost_multiplier, 0.97)
+        self.assertAlmostEqual(delta.radius, 2.0)
+        self.assertAlmostEqual(delta.movement_cost_multiplier, -0.03)
+
+    def test_mutated_physical_traits_clamp_to_config_bounds(self) -> None:
+        world = self.make_world_with_mutations([-100.0, 100.0])
+
+        child_traits, delta = world._mutated_physical_traits(
+            PhysicalTraits(
+                radius=world.config.trait.min_radius,
+                movement_cost_multiplier=world.config.trait.max_movement_cost_multiplier,
+            )
+        )
+
+        self.assertEqual(child_traits.radius, world.config.trait.min_radius)
+        self.assertEqual(
+            child_traits.movement_cost_multiplier,
+            world.config.trait.max_movement_cost_multiplier,
+        )
+        self.assertEqual(delta.radius, 0.0)
+        self.assertEqual(delta.movement_cost_multiplier, 0.0)
 
 
 if __name__ == "__main__":

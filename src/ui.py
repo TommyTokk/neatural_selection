@@ -278,13 +278,28 @@ class UiRenderer:
         fitness = world.fitness_for(selected)
         genome_id = world.neat_controller.genome_id_for(selected.creature_id)
         vision_cost = world.vision.energy_cost_per_second(selected)
+        physical_traits = getattr(selected, "physical_traits", None)
+        lineage = getattr(selected, "lineage", None)
+        mutation_delta = getattr(lineage, "mutation_delta", None)
+        radius = (
+            getattr(physical_traits, "radius", None)
+            if physical_traits is not None
+            else getattr(selected, "radius", 0.0)
+        )
+        movement_cost_multiplier = (
+            getattr(physical_traits, "movement_cost_multiplier", 1.0)
+            if physical_traits is not None
+            else 1.0
+        )
+        parent_id = getattr(lineage, "parent_id", None)
+        generation = getattr(lineage, "generation", 0)
         fitness_score = (
             fitness.score(world.config.fitness) if fitness is not None else None
         )
         energy_ratio = self._inspector_energy_ratio(world)
         padding = 18.0
         section_gap = 18.0
-        total_height = 580.0 if fitness_score is not None else 548.0
+        total_height = 680.0 if fitness_score is not None else 648.0
         scroll_limit = max(0.0, total_height - viewport.height)
         scroll_offset = max(
             0.0,
@@ -408,6 +423,36 @@ class UiRenderer:
             "inspector_vision_cost",
             "Cost",
             f"{vision_cost:.3f}/s",
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_body",
+            "Body",
+            f"{radius:.1f}px / {movement_cost_multiplier:.2f}x move",
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_lineage",
+            "Lineage",
+            f"Parent {parent_id if parent_id is not None else 'None'} / Gen {generation}",
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_mutations",
+            "Mutations",
+            self._format_mutation_delta(mutation_delta),
             left,
             y,
             width,
@@ -1482,6 +1527,12 @@ class UiRenderer:
     @contextmanager
     def _ui_clip(self, bounds: arcade.Rect):
         try:
+            arcade.get_window()
+        except (AttributeError, RuntimeError):
+            yield
+            return
+
+        try:
             from pyglet import gl
         except ImportError:
             yield
@@ -2091,6 +2142,19 @@ class UiRenderer:
         if abs(value) >= 100.0:
             return f"{value:.2f}"
         return f"{value:.2f}".rstrip("0").rstrip(".")
+
+    def _format_mutation_delta(self, mutation_delta: object | None) -> str:
+        if mutation_delta is None:
+            return "None"
+
+        vision_range = getattr(mutation_delta, "vision_range", 0.0)
+        vision_angle = getattr(mutation_delta, "vision_angle", 0.0)
+        radius = getattr(mutation_delta, "radius", 0.0)
+        movement_cost = getattr(mutation_delta, "movement_cost_multiplier", 0.0)
+        return (
+            f"R {radius:+.1f}, V {vision_range:+.1f}/"
+            f"{vision_angle:+.2f}, M {movement_cost:+.2f}"
+        )
 
     def _draw_card(self, bounds: arcade.Rect, title: str) -> None:
         self._draw_rounded_rect(

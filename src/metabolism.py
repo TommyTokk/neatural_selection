@@ -6,7 +6,7 @@ from math import cos, sin
 
 from src.food import Food
 from src.creature import Creature
-from configs.sim_config import MetabolismConfig
+from configs.sim_config import MetabolismConfig, TraitConfig
 from src.vision import VisionSystem
 
 
@@ -24,10 +24,29 @@ class MetabolismReport:
     dead_creatures: list[Creature] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class EnergyCostBreakdown:
+    base: float
+    movement: float
+    vision: float
+    body: float
+    trait: float
+
+    @property
+    def total(self) -> float:
+        return self.base + self.movement + self.vision + self.body
+
+
 class Metabolism:
-    def __init__(self, config: MetabolismConfig, vision: VisionSystem) -> None:
+    def __init__(
+        self,
+        config: MetabolismConfig,
+        vision: VisionSystem,
+        trait_config: TraitConfig | None = None,
+    ) -> None:
         self.config = config
         self.vision = vision
+        self.trait_config = trait_config or TraitConfig()
 
     def update(
         self,
@@ -80,20 +99,52 @@ class Metabolism:
     def consume_energy(
         self, creature: Creature, delta_time: float, max_speed: float
     ) -> None:
-        speed_ratio: float = 0
-
-        if max_speed > 0:
-            speed_ratio = min(creature.speed / max_speed, 1)
-
-        # Define the energy cost
         energy_cost = (
-            self.config.basic_metabolism_rate
-            + self.config.movement_energy_cost_factor * speed_ratio
-            + self.vision.energy_cost_per_second(creature)
-        ) * delta_time
+            self.energy_cost_breakdown_per_second(creature, max_speed).total
+            * delta_time
+        )
 
         # Update the creature's energy
         creature.energy = max(0.0, creature.energy - energy_cost)
+
+    def energy_cost_breakdown_per_second(
+        self,
+        creature: Creature,
+        max_speed: float,
+    ) -> EnergyCostBreakdown:
+        speed_ratio: float = 0.0
+        if max_speed > 0:
+            speed_ratio = min(max(creature.speed, 0.0) / max_speed, 1.0)
+
+        base_movement = self.config.movement_energy_cost_factor * speed_ratio
+        movement_multiplier = max(
+            0.0,
+            creature.physical_traits.movement_cost_multiplier,
+        )
+        movement = base_movement * movement_multiplier
+        vision = self.vision.energy_cost_per_second(creature)
+        body = self.body_energy_cost_per_second(creature)
+        trait = vision + body + max(0.0, movement - base_movement)
+
+        return EnergyCostBreakdown(
+            base=self.config.basic_metabolism_rate,
+            movement=movement,
+            vision=vision,
+            body=body,
+            trait=trait,
+        )
+
+    def trait_energy_cost_per_second(
+        self,
+        creature: Creature,
+        max_speed: float,
+    ) -> float:
+        return self.energy_cost_breakdown_per_second(creature, max_speed).trait
+
+    def body_energy_cost_per_second(self, creature: Creature) -> float:
+        max_radius = max(self.trait_config.max_radius, 0.0001)
+        radius_ratio = max(0.0, creature.radius) / max_radius
+        return self.trait_config.body_metabolism_cost_factor * radius_ratio**2
 
     def eat(self, creature: Creature, food: Food) -> float:
         previous_energy = creature.energy
