@@ -209,14 +209,7 @@ class UiRenderer:
             8,
             1.0,
         )
-        accent = arcade.LBWH(card.left, card.bottom, 4.0, card.height)
-        arcade.draw_lrbt_rectangle_filled(
-            accent.left,
-            accent.right,
-            accent.bottom + 8,
-            accent.top - 8,
-            self.theme.accent,
-        )
+        self._draw_inspector_page_marker(card)
 
         inner_viewport = arcade.LBWH(
             card.left + 12,
@@ -226,6 +219,55 @@ class UiRenderer:
         )
         with self._ui_clip(inner_viewport):
             self._draw_inspector_content(world, inner_viewport)
+
+    def _draw_inspector_page_marker(self, card: arcade.Rect) -> None:
+        marker = arcade.LBWH(card.left, card.bottom, 7.0, card.height)
+        self._draw_left_rounded_rect_fill(marker, self.theme.accent, 8.0)
+
+    def _draw_left_rounded_rect_fill(
+        self,
+        bounds: arcade.Rect,
+        color: arcade.Color | tuple[int, ...],
+        radius: float,
+    ) -> None:
+        if bounds.width <= 0 or bounds.height <= 0:
+            return
+        radius = min(radius, bounds.width / 2, bounds.height / 2)
+        if radius <= 0:
+            arcade.draw_lrbt_rectangle_filled(
+                bounds.left,
+                bounds.right,
+                bounds.bottom,
+                bounds.top,
+                color,
+            )
+            return
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left + radius,
+            bounds.right,
+            bounds.bottom,
+            bounds.top,
+            color,
+        )
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left,
+            bounds.right,
+            bounds.bottom + radius,
+            bounds.top - radius,
+            color,
+        )
+        arcade.draw_circle_filled(
+            bounds.left + radius,
+            bounds.bottom + radius,
+            radius,
+            color,
+        )
+        arcade.draw_circle_filled(
+            bounds.left + radius,
+            bounds.top - radius,
+            radius,
+            color,
+        )
 
     def _draw_inspector_content(self, world: World, viewport: arcade.Rect) -> None:
         selected = world.selected_creature

@@ -444,6 +444,66 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertLess(scroll_region.width, body.width)
         self.assertLess(scroll_region.height, body.height)
 
+    def test_inspector_page_marker_follows_inner_card_edge(self) -> None:
+        world = self.make_inspector_world()
+        self.renderer._panel_bounds["inspector"] = arcade.LBWH(100, 100, 368, 330)
+        marker_rectangles = []
+        marker_circles = []
+        original_rectangle = arcade.draw_lrbt_rectangle_filled
+        original_circle = arcade.draw_circle_filled
+
+        def capture_rectangle(
+            left: float,
+            right: float,
+            bottom: float,
+            top: float,
+            color: object,
+        ) -> None:
+            if color == self.renderer.theme.accent:
+                marker_rectangles.append((left, right, bottom, top))
+
+        def capture_circle(
+            x: float,
+            y: float,
+            radius: float,
+            color: object,
+        ) -> None:
+            if color == self.renderer.theme.accent:
+                marker_circles.append((x, y, radius))
+
+        arcade.draw_lrbt_rectangle_filled = capture_rectangle
+        arcade.draw_circle_filled = capture_circle
+        try:
+            self.renderer._draw_inspector_panel(world)
+        finally:
+            arcade.draw_lrbt_rectangle_filled = original_rectangle
+            arcade.draw_circle_filled = original_circle
+
+        body = self.renderer._control_hitboxes["inspector_body"]
+        marker_left = body.left + 8
+        marker_bottom = body.bottom + 10
+        marker_width = 7.0
+        marker_height = body.height - 18
+        marker_right = marker_left + marker_width
+        marker_top = marker_bottom + marker_height
+        radius = marker_width / 2.0
+
+        self.assertIn(
+            (marker_left + radius, marker_right, marker_bottom, marker_top),
+            marker_rectangles,
+        )
+        self.assertIn(
+            (marker_left, marker_right, marker_bottom + radius, marker_top - radius),
+            marker_rectangles,
+        )
+        self.assertEqual(
+            marker_circles,
+            [
+                (marker_left + radius, marker_bottom + radius, radius),
+                (marker_left + radius, marker_top - radius, radius),
+            ],
+        )
+
     def test_inspector_content_uses_clip_for_inner_viewport(self) -> None:
         world = self.make_inspector_world()
         self.renderer._panel_bounds["inspector"] = arcade.LBWH(100, 100, 368, 330)
