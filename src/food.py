@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import pi
+from math import pi, sqrt
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
 import pymunk
+
+
+@dataclass(frozen=True, slots=True)
+class FoodConsumptionResult:
+    energy_removed: float
+    depleted: bool
 
 
 @dataclass(slots=True)
@@ -17,9 +23,11 @@ class Food:
     body: pymunk.Body = field(init=False)
     shape: pymunk.Circle = field(init=False)
     energy_value: float = field(init=False)
+    original_energy_value: float = field(init=False)
 
     def __post_init__(self) -> None:
         self.energy_value = pi * self.radius**2 * self.energy_density
+        self.original_energy_value = self.energy_value
         mass = 0.2 + self.radius * 0.035
         moment = pymunk.moment_for_circle(mass, 0.0, self.radius)
 
@@ -38,3 +46,47 @@ class Food:
     @property
     def position(self) -> tuple[float, float]:
         return self.body.position.x, self.body.position.y
+
+    def consume_energy(
+        self,
+        requested_energy: float,
+        min_remainder_ratio: float,
+    ) -> FoodConsumptionResult:
+        requested_energy = max(0.0, requested_energy)
+        if requested_energy <= 0.0 or self.energy_value <= 0.0:
+            return FoodConsumptionResult(energy_removed=0.0, depleted=False)
+
+        min_remainder_ratio = max(0.0, min(1.0, min_remainder_ratio))
+        previous_energy = self.energy_value
+        remaining_energy = self.energy_value - requested_energy
+        minimum_remainder = self.original_energy_value * min_remainder_ratio
+
+        if remaining_energy <= minimum_remainder + 1e-12:
+            self.energy_value = 0.0
+            return FoodConsumptionResult(
+                energy_removed=previous_energy,
+                depleted=True,
+            )
+
+        self.energy_value = remaining_energy
+        self._resize_for_remaining_energy()
+        return FoodConsumptionResult(
+            energy_removed=previous_energy - self.energy_value,
+            depleted=False,
+        )
+
+    def _resize_for_remaining_energy(self) -> None:
+        if self.energy_density <= 0.0:
+            self.radius = 0.0
+        else:
+            self.radius = sqrt(self.energy_value / (pi * self.energy_density))
+
+        mass = 0.2 + self.radius * 0.035
+        moment = pymunk.moment_for_circle(mass, 0.0, self.radius)
+        self.body.mass = mass
+        self.body.moment = moment
+        unsafe_set_radius = getattr(self.shape, "unsafe_set_radius", None)
+        if unsafe_set_radius is None:
+            self.shape.radius = self.radius
+        else:
+            unsafe_set_radius(self.radius)

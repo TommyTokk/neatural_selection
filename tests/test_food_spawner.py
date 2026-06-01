@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import ceil, pi
+from math import ceil, pi, sqrt
 import sys
 import types
 import unittest
@@ -106,6 +106,59 @@ class FoodEnergyValueTest(unittest.TestCase):
         spawner = FoodSpawner(config, Random(1))
 
         self.assertAlmostEqual(food.energy_value, spawner.average_food_energy_value())
+
+    def test_partial_food_consumption_shrinks_remaining_pellet(self) -> None:
+        food = Food(
+            id=1,
+            x=0.0,
+            y=0.0,
+            radius=10.0,
+            energy_density=0.002,
+        )
+        original_energy = food.energy_value
+
+        result = food.consume_energy(original_energy * 0.25, min_remainder_ratio=0.10)
+
+        self.assertFalse(result.depleted)
+        self.assertAlmostEqual(result.energy_removed, original_energy * 0.25)
+        self.assertAlmostEqual(food.energy_value, original_energy * 0.75)
+        self.assertAlmostEqual(
+            food.radius,
+            sqrt(food.energy_value / (pi * food.energy_density)),
+        )
+        self.assertAlmostEqual(food.shape.radius, food.radius)
+
+    def test_micro_food_remainder_is_depleted(self) -> None:
+        food = Food(
+            id=1,
+            x=0.0,
+            y=0.0,
+            radius=10.0,
+            energy_density=0.002,
+        )
+        original_energy = food.energy_value
+
+        result = food.consume_energy(original_energy * 0.95, min_remainder_ratio=0.10)
+
+        self.assertTrue(result.depleted)
+        self.assertAlmostEqual(result.energy_removed, original_energy)
+        self.assertEqual(food.energy_value, 0.0)
+
+    def test_zero_requested_energy_does_not_consume_food(self) -> None:
+        food = Food(
+            id=1,
+            x=0.0,
+            y=0.0,
+            radius=10.0,
+            energy_density=0.002,
+        )
+        original_energy = food.energy_value
+
+        result = food.consume_energy(0.0, min_remainder_ratio=0.10)
+
+        self.assertFalse(result.depleted)
+        self.assertEqual(result.energy_removed, 0.0)
+        self.assertEqual(food.energy_value, original_energy)
 
 
 class FoodSpawnerLowCreatureBurstTest(unittest.TestCase):

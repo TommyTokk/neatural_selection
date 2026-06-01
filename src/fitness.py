@@ -24,8 +24,9 @@ class CreatureFitness:
         if max_speed > 0.0:
             self.movement_effort += min(speed / max_speed, 1.0) * delta_time
 
-    def record_food(self, energy_gained: float) -> None:
-        self.food_eaten += 1
+    def record_food(self, energy_gained: float, depleted: bool = True) -> None:
+        if depleted:
+            self.food_eaten += 1
         self.energy_gained += energy_gained
 
     def record_food_discoveries(self, food_ids: list[int]) -> None:

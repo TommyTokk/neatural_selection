@@ -15,11 +15,13 @@ class FoodConsumption:
     creature_id: int
     food: Food
     energy_gained: float
+    depleted: bool
 
 
 @dataclass(slots=True)
 class MetabolismReport:
-    eaten_foods: list[Food] = field(default_factory=list)
+    depleted_foods: list[Food] = field(default_factory=list)
+    touched_foods: list[Food] = field(default_factory=list)
     food_consumptions: list[FoodConsumption] = field(default_factory=list)
     dead_creatures: list[Creature] = field(default_factory=list)
 
@@ -57,7 +59,8 @@ class Metabolism:
         nearby_foods_for: Callable[[Creature], Sequence[Food]] | None = None,
         can_eat: Callable[[Creature], bool] | None = None,
     ) -> MetabolismReport:
-        eaten_foods: list[Food] = []
+        depleted_foods: list[Food] = []
+        touched_foods: list[Food] = []
         food_consumptions: list[FoodConsumption] = []
         dead_creatures: list[Creature] = []
 
@@ -74,24 +77,29 @@ class Metabolism:
                 if self.is_dead(creature):
                     dead_creatures.append(creature)
                 continue
-            food = self.find_eatable_food(creature, candidate_foods, eaten_foods)
+            food = self.find_eatable_food(creature, candidate_foods, touched_foods)
 
             if food is not None:
-                energy_gained = self.eat(creature, food)
-                eaten_foods.append(food)
-                food_consumptions.append(
-                    FoodConsumption(
-                        creature_id=creature.creature_id,
-                        food=food,
-                        energy_gained=energy_gained,
+                consumption = self.eat(creature, food)
+                if consumption.energy_gained > 0.0 or consumption.depleted:
+                    touched_foods.append(food)
+                    if consumption.depleted:
+                        depleted_foods.append(food)
+                    food_consumptions.append(
+                        FoodConsumption(
+                            creature_id=creature.creature_id,
+                            food=food,
+                            energy_gained=consumption.energy_gained,
+                            depleted=consumption.depleted,
+                        )
                     )
-                )
 
             if self.is_dead(creature):
                 dead_creatures.append(creature)
 
         return MetabolismReport(
-            eaten_foods=eaten_foods,
+            depleted_foods=depleted_foods,
+            touched_foods=touched_foods,
             food_consumptions=food_consumptions,
             dead_creatures=dead_creatures,
         )
@@ -146,13 +154,24 @@ class Metabolism:
         radius_ratio = max(0.0, creature.radius) / max_radius
         return self.trait_config.body_metabolism_cost_factor * radius_ratio**2
 
-    def eat(self, creature: Creature, food: Food) -> float:
+    def eat(self, creature: Creature, food: Food) -> FoodConsumption:
         previous_energy = creature.energy
+        energy_capacity = max(0.0, self.config.max_energy - creature.energy)
+        result = food.consume_energy(
+            energy_capacity,
+            self.config.micro_food_remainder_ratio,
+        )
         creature.energy = min(
             self.config.max_energy,
-            creature.energy + food.energy_value,
+            creature.energy + result.energy_removed,
         )
-        return creature.energy - previous_energy
+        energy_gained = creature.energy - previous_energy
+        return FoodConsumption(
+            creature_id=creature.creature_id,
+            food=food,
+            energy_gained=energy_gained,
+            depleted=result.depleted,
+        )
 
     def find_eatable_food(
         self,

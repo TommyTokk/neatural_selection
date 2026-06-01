@@ -1046,9 +1046,18 @@ class World:
         for consumption in report.food_consumptions:
             fitness = self.fitness.get(consumption.creature_id)
             if fitness is not None:
-                fitness.record_food(consumption.energy_gained)
+                fitness.record_food(
+                    consumption.energy_gained,
+                    depleted=consumption.depleted,
+                )
 
-        for food in report.eaten_foods:
+        for food in report.touched_foods:
+            self._food_grid_dirty = True
+            reindex_shape = getattr(self.space, "reindex_shape", None)
+            if reindex_shape is not None and food in self.foods:
+                reindex_shape(food.shape)
+
+        for food in report.depleted_foods:
             if food in self.foods:
                 self.foods.remove(food)
                 self.space.remove(food.body, food.shape)

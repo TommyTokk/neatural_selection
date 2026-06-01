@@ -84,6 +84,7 @@ class MetabolismConfig:
     basic_metabolism_rate: float = 0.01
     movement_energy_cost_factor: float = 0.02
     eating_distance: float = 8
+    micro_food_remainder_ratio: float = 0.10
     starvation_energy_threshold: float = 0.3
 
 

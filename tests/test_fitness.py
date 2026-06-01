@@ -51,6 +51,15 @@ class CreatureFitnessScoreTest(unittest.TestCase):
 
         self.assertAlmostEqual(fitness.score(config), 56.0)
 
+    def test_partial_food_bite_records_energy_without_counting_food_eaten(self) -> None:
+        fitness = CreatureFitness()
+
+        fitness.record_food(0.2, depleted=False)
+        fitness.record_food(0.3, depleted=True)
+
+        self.assertEqual(fitness.food_eaten, 1)
+        self.assertAlmostEqual(fitness.energy_gained, 0.5)
+
     def test_offspring_bonus_increases_score(self) -> None:
         config = FitnessConfig(offspring_weight=12.0)
         without_child = CreatureFitness(age_seconds=20.0)
