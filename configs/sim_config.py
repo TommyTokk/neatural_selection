@@ -134,6 +134,7 @@ class TraitConfig:
 
     body_metabolism_cost_factor: float = 0.006
 
+
 @dataclass(slots=True)
 class VisionConfig:
     default_range: float = 98.0

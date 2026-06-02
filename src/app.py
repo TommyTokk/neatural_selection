@@ -7,6 +7,7 @@ configure_graphics()
 import arcade
 
 from configs.sim_config import SimConfig, build_sim_config
+from src.menu import StartMenuView
 from src.rendering import EnvironmentRenderer
 from src.ui import UiRenderer
 from src.world import World
@@ -127,5 +128,5 @@ def create_and_run(config: SimConfig | None = None) -> None:
         vsync=active_config.display.vsync,
     )
     log_graphics_context()
-    window.show_view(NeatGameView(active_config))
+    window.show_view(StartMenuView(active_config, lambda: NeatGameView(active_config)))
     arcade.run()
