@@ -88,14 +88,6 @@ class NeatBrainController:
     def brain_for(self, creature_id: int) -> NeatBrain | None:
         return self.brains.get(creature_id)
 
-    def update_genome_fitness(self, creature_id: int, fitness_score: float) -> bool:
-        brain = self.brains.get(creature_id)
-        if brain is None:
-            return False
-
-        brain.genome.fitness = fitness_score
-        return True
-    
     def create_child_brain(self, parent_creature_id: int, child_creature_id: int) -> bool:
         parent_brain = self.brains.get(parent_creature_id)
         if parent_brain is None:

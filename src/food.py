@@ -28,7 +28,7 @@ class Food:
     def __post_init__(self) -> None:
         self.energy_value = pi * self.radius**2 * self.energy_density
         self.original_energy_value = self.energy_value
-        mass = 0.2 + self.radius * 0.035
+        mass = self._mass_for_radius(self.radius)
         moment = pymunk.moment_for_circle(mass, 0.0, self.radius)
 
         self.body = pymunk.Body(mass, moment)
@@ -81,7 +81,7 @@ class Food:
         else:
             self.radius = sqrt(self.energy_value / (pi * self.energy_density))
 
-        mass = 0.2 + self.radius * 0.035
+        mass = self._mass_for_radius(self.radius)
         moment = pymunk.moment_for_circle(mass, 0.0, self.radius)
         self.body.mass = mass
         self.body.moment = moment
@@ -90,3 +90,6 @@ class Food:
             self.shape.radius = self.radius
         else:
             unsafe_set_radius(self.radius)
+
+    def _mass_for_radius(self, radius: float) -> float:
+        return (0.2 + radius * 0.035) * 0.9

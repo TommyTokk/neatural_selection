@@ -93,6 +93,24 @@ class FoodEnergyValueTest(unittest.TestCase):
 
         self.assertAlmostEqual(food.energy_value, pi * 8.0**2 * 0.002)
 
+    def test_food_mass_is_slightly_reduced_before_and_after_resize(self) -> None:
+        food = Food(
+            id=1,
+            x=0.0,
+            y=0.0,
+            radius=10.0,
+            energy_density=0.002,
+        )
+        expected_initial_mass = (0.2 + 10.0 * 0.035) * 0.9
+        original_energy = food.energy_value
+
+        self.assertAlmostEqual(food.body.args[0], expected_initial_mass)
+
+        food.consume_energy(original_energy * 0.25, min_remainder_ratio=0.10)
+
+        expected_resized_mass = (0.2 + food.radius * 0.035) * 0.9
+        self.assertAlmostEqual(food.body.mass, expected_resized_mass)
+
     def test_average_radius_food_matches_spawner_average_energy(self) -> None:
         config = FoodConfig(min_food_radius=6.0, max_food_radius=10.0)
         average_radius = (config.min_food_radius + config.max_food_radius) * 0.5

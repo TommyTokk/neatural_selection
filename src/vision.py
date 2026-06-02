@@ -44,6 +44,16 @@ class BoundarySnapshot:
 
 
 @dataclass(slots=True)
+class _VisionCandidate:
+    kind: str
+    source: Food | Creature
+    surface_distance: float
+    signed_angle: float
+    closeness: float
+    interval: tuple[float, float]
+
+
+@dataclass(slots=True)
 class SensorSnapshot:
     food: VisionTargetSnapshot
     creatures: VisionTargetSnapshot
@@ -108,8 +118,13 @@ class VisionSystem:
         clock_chronometer: float = 0.0,
         clock_time_alive: float = 0.0,
     ) -> SensorSnapshot:
-        food_snapshot = self._sense_food(creature, foods)
-        creature_snapshot = self._sense_creatures(creature, creatures)
+        visible_targets = self._visible_targets(creature, foods, creatures)
+        food_snapshot = self._snapshot_for_kind(creature, visible_targets, "food")
+        creature_snapshot = self._snapshot_for_kind(
+            creature,
+            visible_targets,
+            "creature",
+        )
         wall_snapshot = self._sense_walls(creature, world_bounds)
         boundary_snapshot = self.sense_boundary(creature, world_bounds)
 
@@ -168,48 +183,233 @@ class VisionSystem:
             turn=self._clamp(signed_angle / pi, -1.0, 1.0),
         )
 
-    def visible_foods(self, creature: Creature, foods: list[Food]) -> list[Food]:
+    def visible_foods(
+        self,
+        creature: Creature,
+        foods: list[Food],
+        creatures: list[Creature] | None = None,
+    ) -> list[Food]:
+        blockers = [] if creatures is None else creatures
         return [
-            food
-            for food in foods
-            if self._target_is_visible(creature, food.position, food.radius)
+            target.source
+            for target in self._visible_targets(creature, foods, blockers)
+            if target.kind == "food"
         ]
 
     def visible_creatures(
         self,
         creature: Creature,
         creatures: list[Creature],
+        foods: list[Food] | None = None,
     ) -> list[Creature]:
+        blockers = [] if foods is None else foods
         return [
-            other
-            for other in creatures
-            if other.creature_id != creature.creature_id
-            and self._target_is_visible(creature, other.position, other.radius)
+            target.source
+            for target in self._visible_targets(creature, blockers, creatures)
+            if target.kind == "creature"
         ]
 
-    def _sense_food(
+    def _visible_targets(
         self,
         creature: Creature,
         foods: list[Food],
-    ) -> VisionTargetSnapshot:
-        return self._sense_targets(
-            creature,
-            [(food.position, food.radius) for food in foods],
-        )
+        creatures: list[Creature],
+    ) -> list[_VisionCandidate]:
+        candidates: list[_VisionCandidate] = []
 
-    def _sense_creatures(
+        for food in foods:
+            if self._food_in_mouth_blind_zone(creature, food.position, food.radius):
+                continue
+            candidate = self._vision_candidate(
+                creature,
+                "food",
+                food,
+                food.position,
+                food.radius,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+        for other in creatures:
+            if other.creature_id == creature.creature_id:
+                continue
+            candidate = self._vision_candidate(
+                creature,
+                "creature",
+                other,
+                other.position,
+                other.radius,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+        blocked_intervals: list[tuple[float, float]] = []
+        visible_targets: list[_VisionCandidate] = []
+        candidates.sort(key=lambda candidate: candidate.surface_distance)
+
+        for candidate in candidates:
+            if self._interval_is_blocked(candidate.interval, blocked_intervals):
+                continue
+
+            visible_targets.append(candidate)
+            self._add_blocked_interval(candidate.interval, blocked_intervals)
+
+        return visible_targets
+
+    def _vision_candidate(
         self,
         creature: Creature,
-        creatures: list[Creature],
-    ) -> VisionTargetSnapshot:
-        return self._sense_targets(
-            creature,
-            [
-                (other.position, other.radius)
-                for other in creatures
-                if other.creature_id != creature.creature_id
-            ],
+        kind: str,
+        source: Food | Creature,
+        target_position: tuple[float, float],
+        target_radius: float,
+    ) -> _VisionCandidate | None:
+        origin_x, origin_y = self._vision_origin(creature)
+        target_x, target_y = target_position
+        vision_range = creature.vision.range
+        cone_angle = creature.vision.angle
+        if vision_range <= 0 or cone_angle <= 0:
+            return None
+
+        dx = target_x - origin_x
+        dy = target_y - origin_y
+        distance = hypot(dx, dy)
+        surface_distance = max(0.0, distance - target_radius)
+        if surface_distance > vision_range:
+            return None
+
+        angle_to_target = atan2(dy, dx)
+        signed_angle = self._signed_angle(angle_to_target - creature.heading)
+        angular_radius = pi if distance <= 0 else atan2(target_radius, distance)
+        half_cone = cone_angle / 2
+        interval = (
+            max(-half_cone, signed_angle - angular_radius),
+            min(half_cone, signed_angle + angular_radius),
         )
+        if interval[0] > interval[1]:
+            return None
+
+        closeness = 1.0 - (surface_distance / vision_range)
+        return _VisionCandidate(
+            kind=kind,
+            source=source,
+            surface_distance=surface_distance,
+            signed_angle=signed_angle,
+            closeness=closeness,
+            interval=interval,
+        )
+
+    def _vision_origin(self, creature: Creature) -> tuple[float, float]:
+        creature_x, creature_y = creature.position
+        return (
+            creature_x + cos(creature.heading) * creature.radius * 0.35,
+            creature_y + sin(creature.heading) * creature.radius * 0.35,
+        )
+
+    def _food_in_mouth_blind_zone(
+        self,
+        creature: Creature,
+        food_position: tuple[float, float],
+        food_radius: float,
+    ) -> bool:
+        creature_x, creature_y = creature.position
+        food_x, food_y = food_position
+        dx = food_x - creature_x
+        dy = food_y - creature_y
+
+        forward_x = cos(creature.heading)
+        forward_y = sin(creature.heading)
+        lateral_x = -forward_y
+        lateral_y = forward_x
+
+        forward_distance = dx * forward_x + dy * forward_y
+        lateral_distance = abs(dx * lateral_x + dy * lateral_y)
+        mouth_local_forward = forward_distance - creature.radius
+
+        if mouth_local_forward > 0.0:
+            return False
+
+        rear_length = max(4.0, creature.radius * 0.45) + food_radius
+        half_width = max(2.0, creature.radius * 0.35) + food_radius
+        half_width += max(1.0, creature.radius * 0.2)
+
+        return (
+            mouth_local_forward >= -rear_length
+            and lateral_distance <= half_width
+        )
+
+    def _snapshot_for_kind(
+        self,
+        creature: Creature,
+        targets: list[_VisionCandidate],
+        kind: str,
+    ) -> VisionTargetSnapshot:
+        visible = [target for target in targets if target.kind == kind]
+        if not visible:
+            return self._empty_target_snapshot()
+
+        nearest = min(visible, key=lambda target: target.surface_distance)
+        normalized_angle = nearest.signed_angle / (creature.vision.angle / 2)
+
+        return VisionTargetSnapshot(
+            visible=1.0,
+            nearest_closeness=self._clamp01(nearest.closeness),
+            nearest_angle=self._clamp(normalized_angle, -1.0, 1.0),
+            density=self._clamp01(sum(target.closeness for target in visible)),
+            count=len(visible),
+        )
+
+    def _interval_is_blocked(
+        self,
+        interval: tuple[float, float],
+        blocked_intervals: list[tuple[float, float]],
+    ) -> bool:
+        epsilon = 1e-9
+        if interval[1] - interval[0] <= epsilon:
+            return any(
+                start - epsilon <= interval[0] <= end + epsilon
+                for start, end in blocked_intervals
+            )
+
+        cursor = interval[0]
+        for start, end in blocked_intervals:
+            if end <= cursor + epsilon:
+                continue
+            if start > cursor + epsilon:
+                return False
+            cursor = max(cursor, end)
+            if cursor >= interval[1] - epsilon:
+                return True
+
+        return cursor >= interval[1] - epsilon
+
+    def _add_blocked_interval(
+        self,
+        interval: tuple[float, float],
+        blocked_intervals: list[tuple[float, float]],
+    ) -> None:
+        start, end = interval
+        merged: list[tuple[float, float]] = []
+        inserted = False
+
+        for current_start, current_end in blocked_intervals:
+            if current_end < start:
+                merged.append((current_start, current_end))
+                continue
+            if end < current_start:
+                if not inserted:
+                    merged.append((start, end))
+                    inserted = True
+                merged.append((current_start, current_end))
+                continue
+
+            start = min(start, current_start)
+            end = max(end, current_end)
+
+        if not inserted:
+            merged.append((start, end))
+
+        blocked_intervals[:] = merged
 
     def _sense_walls(
         self,
@@ -342,86 +542,6 @@ class VisionSystem:
             return None
 
         return origin_x + ray_x * ray_scale, origin_y + ray_y * ray_scale
-
-    def _sense_targets(
-        self,
-        creature: Creature,
-        targets: list[tuple[tuple[float, float], float]],
-    ) -> VisionTargetSnapshot:
-        creature_x, creature_y = creature.position
-        vision_range = creature.vision.range
-        cone_angle = creature.vision.angle
-        if vision_range <= 0 or cone_angle <= 0:
-            return self._empty_target_snapshot()
-
-        nearest_distance = vision_range
-        nearest_angle = 0.0
-        density = 0.0
-        visible_count = 0
-
-        for (target_x, target_y), target_radius in targets:
-            dx = target_x - creature_x
-            dy = target_y - creature_y
-            distance = hypot(dx, dy)
-            surface_distance = max(0.0, distance - target_radius)
-
-            if surface_distance > vision_range:
-                continue
-
-            angle_to_target = atan2(dy, dx)
-            signed_angle = self._signed_angle(angle_to_target - creature.heading)
-            angular_radius = pi if distance <= 0 else atan2(target_radius, distance)
-
-            if abs(signed_angle) > cone_angle / 2 + angular_radius:
-                continue
-
-            closeness = 1.0 - (surface_distance / vision_range)
-
-            density += closeness
-            visible_count += 1
-
-            if surface_distance < nearest_distance:
-                nearest_distance = surface_distance
-                nearest_angle = signed_angle
-
-        if visible_count == 0:
-            return self._empty_target_snapshot()
-
-        nearest_closeness = 1.0 - (nearest_distance / vision_range)
-        normalized_angle = nearest_angle / (cone_angle / 2)
-
-        return VisionTargetSnapshot(
-            visible=1.0,
-            nearest_closeness=self._clamp01(nearest_closeness),
-            nearest_angle=self._clamp(normalized_angle, -1.0, 1.0),
-            density=self._clamp01(density),
-            count=visible_count,
-        )
-
-    def _target_is_visible(
-        self,
-        creature: Creature,
-        target_position: tuple[float, float],
-        target_radius: float,
-    ) -> bool:
-        creature_x, creature_y = creature.position
-        target_x, target_y = target_position
-        vision_range = creature.vision.range
-        cone_angle = creature.vision.angle
-        if vision_range <= 0 or cone_angle <= 0:
-            return False
-
-        dx = target_x - creature_x
-        dy = target_y - creature_y
-        distance = hypot(dx, dy)
-        surface_distance = max(0.0, distance - target_radius)
-        if surface_distance > vision_range:
-            return False
-
-        angle_to_target = atan2(dy, dx)
-        signed_angle = self._signed_angle(angle_to_target - creature.heading)
-        angular_radius = pi if distance <= 0 else atan2(target_radius, distance)
-        return abs(signed_angle) <= cone_angle / 2 + angular_radius
 
     def energy_cost_per_second(self, creature: Creature) -> float:
         range_ratio = creature.vision.range / self.config.max_range

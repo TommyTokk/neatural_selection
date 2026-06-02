@@ -1051,6 +1051,21 @@ class FloatingSimulationUiTest(unittest.TestCase):
         play_pause_right = play_pause[2] + len(play_pause[1]) * 7.0
         self.assertGreaterEqual(a_key[2] - play_pause_right, 20.0)
 
+    def test_selected_fitness_label_uses_live_creature_fitness(self) -> None:
+        selected = SimpleNamespace(creature_id=938)
+        live_fitness = SimpleNamespace(score=lambda fitness_config: 7.25)
+        world = SimpleNamespace(
+            config=SimpleNamespace(fitness=object()),
+            fitness_for=lambda creature: live_fitness
+            if creature is selected
+            else None,
+        )
+
+        self.assertEqual(
+            self.renderer._selected_fitness_label(world, selected),
+            "7.25",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

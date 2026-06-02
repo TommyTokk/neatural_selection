@@ -930,7 +930,7 @@ class UiRenderer:
             self._brain_output_readout(brain.last_outputs),
             f"Nodes: {len(brain.genome.nodes)}",
             f"Connections: {enabled_connections}/{len(brain.genome.connections)} enabled",
-            f"Fitness: {self._format_genome_fitness(brain.genome.fitness)}",
+            f"Fitness: {self._selected_fitness_label(world, selected)}",
         ]
         self._draw_scrollable_lines_in_bounds(
             "brain_details",
@@ -1035,7 +1035,7 @@ class UiRenderer:
                 f"Connections: {enabled_connections}/{len(brain.genome.connections)} enabled"
             ),
             (
-                f"Fitness: {self._format_genome_fitness(brain.genome.fitness)}  "
+                f"Fitness: {self._selected_fitness_label(world, selected)}  "
                 f"Signed action: {action_label}"
             ),
         ]
@@ -2343,6 +2343,12 @@ class UiRenderer:
             return f"{float(fitness):.2f}"
         except (TypeError, ValueError):
             return str(fitness)
+
+    def _selected_fitness_label(self, world: World, selected: object) -> str:
+        fitness = world.fitness_for(selected)
+        if fitness is None:
+            return "None"
+        return self._format_genome_fitness(fitness.score(world.config.fitness))
 
     def _brain_value_readout(
         self,

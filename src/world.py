@@ -380,10 +380,14 @@ class World:
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
-        return self.vision.visible_foods(creature, nearby_foods)
+        return self.vision.visible_foods(creature, nearby_foods, self.creatures)
 
     def visible_creatures_for(self, creature: Creature) -> list[Creature]:
-        return self.vision.visible_creatures(creature, self.creatures)
+        nearby_foods = self._nearby_foods_for(
+            creature,
+            creature.vision.range + self.config.food.max_food_radius,
+        )
+        return self.vision.visible_creatures(creature, self.creatures, nearby_foods)
 
     def fitness_for(self, creature: Creature) -> CreatureFitness | None:
         return self.fitness.get(creature.creature_id)
@@ -988,7 +992,6 @@ class World:
         self.stats.plant_energy = self._plant_energy()
         self.stats.available_biomass = self._available_biomass()
         self.stats.plant_spawn_pressure = self._plant_spawn_pressure()
-        self._update_genome_fitness_scores()
         self.rt_neat.update_stats(
             self.creatures,
             self.fitness,
@@ -996,15 +999,6 @@ class World:
             self.config.fitness,
             self.elapsed_time,
         )
-
-    def _update_genome_fitness_scores(self) -> None:
-        for creature in self.creatures:
-            fitness = self.fitness.get(creature.creature_id)
-            if fitness is not None:
-                self.neat_controller.update_genome_fitness(
-                    creature.creature_id,
-                    fitness.score(self.config.fitness),
-                )
 
     def _update_fitness_survival(self, delta_time: float) -> None:
         for creature in self.creatures:
@@ -1029,7 +1023,12 @@ class World:
             return
 
         visible_food_ids = [
-            food.id for food in self.vision.visible_foods(creature, nearby_foods)
+            food.id
+            for food in self.vision.visible_foods(
+                creature,
+                nearby_foods,
+                self.creatures,
+            )
         ]
         fitness.record_food_discoveries(visible_food_ids)
 

@@ -101,7 +101,8 @@ class FakeFoodSpawner:
 
 
 class FakeGenome:
-    pass
+    def __init__(self, fitness: float | None = None) -> None:
+        self.fitness = fitness
 
 
 class WorldReproductionTest(unittest.TestCase):
@@ -300,6 +301,63 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(recovered.lineage.generation, 3)
         self.assertNotEqual(recovered.vision.range, 120.0)
         self.assertNotEqual(recovered.physical_traits.radius, 18.0)
+
+    def test_extinction_recovery_refresh_does_not_score_newborn_genomes(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.population.max_creatures = 1
+        world.config.population.extinction_recovery_creatures = 1
+        world.config.population.extinction_recovery_parent_pool = 1
+        world.config.metabolism.max_energy = 1.0
+        world.creatures = []
+        world.fitness = {}
+        world.fitness_archive = {}
+        world.foods = []
+        world.total_biomass_energy = 1.0
+        world.elapsed_time = 0.0
+        world.stats = SimpleNamespace()
+        world._chronometers = {}
+        world.food_spawner = FakeFoodSpawner(food_capacity=10)
+        world.rt_neat = RtNeatManager(brain_controller=None)
+        world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
+            creature_id=creature_id,
+            energy=kwargs["energy"],
+            color=kwargs["color"],
+        )
+        world._initial_creature_color = lambda index: (86, 156, 214)
+
+        parent_genome = FakeGenome(fitness=12.0)
+        newborn_genomes: dict[int, FakeGenome] = {}
+
+        class RecoveryBrainController:
+            def best_genomes(self, count: int) -> list[FakeGenome]:
+                del count
+                return [parent_genome]
+
+            def create_mutated_brain_from_genome(
+                self,
+                parent: FakeGenome,
+                child_id: int,
+            ) -> bool:
+                del parent
+                newborn_genomes[child_id] = FakeGenome(fitness=None)
+                return True
+
+            def update_genome_fitness(
+                self,
+                creature_id: int,
+                fitness_score: float,
+            ) -> bool:
+                newborn_genomes[creature_id].fitness = fitness_score
+                return True
+
+        world.neat_controller = RecoveryBrainController()
+
+        world._recover_extinct_population()
+        world._refresh_stats()
+
+        recovered_id = world.creatures[0].creature_id
+        self.assertIsNone(newborn_genomes[recovered_id].fitness)
 
     def _world_ready_to_reproduce(self) -> World:
         world = object.__new__(World)
