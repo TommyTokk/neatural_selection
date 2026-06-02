@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import cos, sin
 
-ACTION_OUTPUT_COUNT = 5
+ACTION_OUTPUT_COUNT = 7
 ACTION_OUTPUT_NAMES = (
     "accelerate",
     "rotate",
     "want_reproduce",
     "want_eat",
     "reset_chronometer",
+    "want_grab",
+    "want_release",
 )
 NEUTRAL_NETWORK_OUTPUT = 0.5
 
@@ -21,6 +23,8 @@ class Action:
     want_reproduce: float
     want_eat: float
     reset_chronometer: float
+    want_grab: float
+    want_release: float
 
     def clamped(self) -> Action:
         return Action(
@@ -29,6 +33,8 @@ class Action:
             want_reproduce=max(0.0, min(1.0, self.want_reproduce)),
             want_eat=max(0.0, min(1.0, self.want_eat)),
             reset_chronometer=max(0.0, min(1.0, self.reset_chronometer)),
+            want_grab=max(0.0, min(1.0, self.want_grab)),
+            want_release=max(0.0, min(1.0, self.want_release)),
         )
 
 

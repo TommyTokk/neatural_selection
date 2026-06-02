@@ -119,6 +119,8 @@ class World:
         self.fitness_archive: dict[int, CreatureFitness] = {}
         self.food_spawner = FoodSpawner(config.food, self.rng)
         self.foods: list[Food] = []
+        self._held_food_by_creature_id: dict[int, int] = {}
+        self._carrier_by_food_id: dict[int, int] = {}
         self._food_grid: dict[tuple[int, int], list[Food]] = {}
         self._food_grid_dirty = True
         self._food_grid_cell_size = (
@@ -188,6 +190,7 @@ class World:
             self._food_grid_dirty = True
             self._apply_top_down_motion()
             self._limit_creature_motion()
+            self._sync_carried_foods()
             self._update_fitness_survival(self.FIXED_TIMESTEP)
             self._update_chronometers(self.FIXED_TIMESTEP)
             self._update_metabolism(self.FIXED_TIMESTEP)
@@ -373,6 +376,7 @@ class World:
             clock_tik_tok=clock_tik_tok,
             clock_chronometer=clock_chronometer,
             clock_time_alive=clock_time_alive,
+            ignored_food_ids=self._ignored_food_ids_for(creature),
         )
 
     def visible_foods_for(self, creature: Creature) -> list[Food]:
@@ -380,14 +384,24 @@ class World:
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
-        return self.vision.visible_foods(creature, nearby_foods, self.creatures)
+        return self.vision.visible_foods(
+            creature,
+            nearby_foods,
+            self.creatures,
+            ignored_food_ids=self._ignored_food_ids_for(creature),
+        )
 
     def visible_creatures_for(self, creature: Creature) -> list[Creature]:
         nearby_foods = self._nearby_foods_for(
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
-        return self.vision.visible_creatures(creature, self.creatures, nearby_foods)
+        return self.vision.visible_creatures(
+            creature,
+            self.creatures,
+            nearby_foods,
+            ignored_food_ids=self._ignored_food_ids_for(creature),
+        )
 
     def fitness_for(self, creature: Creature) -> CreatureFitness | None:
         return self.fitness.get(creature.creature_id)
@@ -754,6 +768,7 @@ class World:
                 if action.reset_chronometer >= 0.5:
                     self._chronometers[creature.creature_id] = 0.0
 
+                self._apply_carry_intent(creature, action)
                 self._apply_action(
                     creature,
                     action,
@@ -767,6 +782,7 @@ class World:
                 if action.reset_chronometer >= 0.5:
                     self._chronometers[creature.creature_id] = 0.0
 
+                self._apply_carry_intent(creature, action)
                 self._apply_action(
                     creature,
                     action,
@@ -1028,9 +1044,116 @@ class World:
                 creature,
                 nearby_foods,
                 self.creatures,
+                ignored_food_ids=self._ignored_food_ids_for(creature),
             )
         ]
         fitness.record_food_discoveries(visible_food_ids)
+
+    def _apply_carry_intent(self, creature: Creature, action: Action) -> None:
+        if action.want_release > 0.5:
+            self._release_food_for(creature)
+            return
+
+        if action.want_grab <= 0.5:
+            return
+
+        if creature.creature_id in self._held_food_by_creature_id:
+            return
+
+        food = self._nearest_grabbable_food_for(creature)
+        if food is None:
+            return
+
+        self._held_food_by_creature_id[creature.creature_id] = food.id
+        self._carrier_by_food_id[food.id] = creature.creature_id
+        self._sync_carried_food(creature, food)
+
+    def _nearest_grabbable_food_for(self, creature: Creature) -> Food | None:
+        mouth_x, mouth_y = self.metabolism.mouth_position(creature)
+        candidates = [
+            food
+            for food in self._eatable_foods_for(creature)
+            if food.id not in self._carrier_by_food_id
+            and self.metabolism.food_overlaps_mouth(creature, food)
+        ]
+        if not candidates:
+            return None
+
+        return min(
+            candidates,
+            key=lambda food: (
+                (food.position[0] - mouth_x) ** 2
+                + (food.position[1] - mouth_y) ** 2
+            ),
+        )
+
+    def _sync_carried_foods(self) -> None:
+        held_foods = getattr(self, "_held_food_by_creature_id", None)
+        carriers = getattr(self, "_carrier_by_food_id", None)
+        if held_foods is None or carriers is None:
+            return
+
+        creatures_by_id = {
+            creature.creature_id: creature
+            for creature in self.creatures
+        }
+
+        for creature_id, food_id in list(held_foods.items()):
+            creature = creatures_by_id.get(creature_id)
+            food = self._food_by_id(food_id)
+            if creature is None or food is None:
+                held_foods.pop(creature_id, None)
+                carriers.pop(food_id, None)
+                continue
+
+            self._sync_carried_food(creature, food)
+
+    def _sync_carried_food(self, creature: Creature, food: Food) -> None:
+        offset = creature.radius + food.radius * 0.5
+        food.body.position = (
+            creature.position[0] + cos(creature.heading) * offset,
+            creature.position[1] + sin(creature.heading) * offset,
+        )
+        food.body.velocity = creature.body.velocity
+        food.body.angular_velocity = creature.body.angular_velocity
+        self._food_grid_dirty = True
+        reindex_shape = getattr(self.space, "reindex_shape", None)
+        if reindex_shape is not None:
+            reindex_shape(food.shape)
+
+    def _release_food_for(self, creature: Creature) -> None:
+        held_foods = getattr(self, "_held_food_by_creature_id", None)
+        carriers = getattr(self, "_carrier_by_food_id", None)
+        if held_foods is None or carriers is None:
+            return
+
+        food_id = held_foods.pop(creature.creature_id, None)
+        if food_id is None:
+            return
+        carriers.pop(food_id, None)
+
+    def _clear_food_carry(self, food: Food) -> None:
+        held_foods = getattr(self, "_held_food_by_creature_id", None)
+        carriers = getattr(self, "_carrier_by_food_id", None)
+        if held_foods is None or carriers is None:
+            return
+
+        carrier_id = carriers.pop(food.id, None)
+        if carrier_id is not None:
+            held_foods.pop(carrier_id, None)
+
+    def _ignored_food_ids_for(self, creature: Creature) -> set[int]:
+        held_foods = getattr(self, "_held_food_by_creature_id", None)
+        if held_foods is None:
+            return set()
+        food_id = held_foods.get(creature.creature_id)
+        return set() if food_id is None else {food_id}
+
+    def _food_by_id(self, food_id: int) -> Food | None:
+        for food in self.foods:
+            if food.id == food_id:
+                return food
+        return None
 
     def _update_metabolism(self, delta_time: float) -> None:
         report = self.metabolism.update(
@@ -1058,6 +1181,7 @@ class World:
 
         for food in report.depleted_foods:
             if food in self.foods:
+                self._clear_food_carry(food)
                 self.foods.remove(food)
                 self.space.remove(food.body, food.shape)
                 self._food_grid_dirty = True
@@ -1145,6 +1269,7 @@ class World:
 
     def _remove_creature(self, creature: Creature) -> None:
         self._archive_creature_traits(creature)
+        self._release_food_for(creature)
         fitness = self.fitness.get(creature.creature_id)
         if fitness is not None:
             self.neat_controller.archive_brain(

@@ -50,6 +50,8 @@ class NeatBrain:
             want_reproduce=outputs[2],
             want_eat=outputs[3],
             reset_chronometer=outputs[4],
+            want_grab=outputs[5],
+            want_release=outputs[6],
         ).clamped()
         return self.last_action
 

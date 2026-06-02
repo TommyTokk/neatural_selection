@@ -117,8 +117,14 @@ class VisionSystem:
         clock_tik_tok: float = 0.0,
         clock_chronometer: float = 0.0,
         clock_time_alive: float = 0.0,
+        ignored_food_ids: set[int] | None = None,
     ) -> SensorSnapshot:
-        visible_targets = self._visible_targets(creature, foods, creatures)
+        visible_targets = self._visible_targets(
+            creature,
+            foods,
+            creatures,
+            ignored_food_ids=ignored_food_ids,
+        )
         food_snapshot = self._snapshot_for_kind(creature, visible_targets, "food")
         creature_snapshot = self._snapshot_for_kind(
             creature,
@@ -188,11 +194,17 @@ class VisionSystem:
         creature: Creature,
         foods: list[Food],
         creatures: list[Creature] | None = None,
+        ignored_food_ids: set[int] | None = None,
     ) -> list[Food]:
         blockers = [] if creatures is None else creatures
         return [
             target.source
-            for target in self._visible_targets(creature, foods, blockers)
+            for target in self._visible_targets(
+                creature,
+                foods,
+                blockers,
+                ignored_food_ids=ignored_food_ids,
+            )
             if target.kind == "food"
         ]
 
@@ -201,11 +213,17 @@ class VisionSystem:
         creature: Creature,
         creatures: list[Creature],
         foods: list[Food] | None = None,
+        ignored_food_ids: set[int] | None = None,
     ) -> list[Creature]:
         blockers = [] if foods is None else foods
         return [
             target.source
-            for target in self._visible_targets(creature, blockers, creatures)
+            for target in self._visible_targets(
+                creature,
+                blockers,
+                creatures,
+                ignored_food_ids=ignored_food_ids,
+            )
             if target.kind == "creature"
         ]
 
@@ -214,10 +232,14 @@ class VisionSystem:
         creature: Creature,
         foods: list[Food],
         creatures: list[Creature],
+        ignored_food_ids: set[int] | None = None,
     ) -> list[_VisionCandidate]:
         candidates: list[_VisionCandidate] = []
+        ignored_food_ids = set() if ignored_food_ids is None else ignored_food_ids
 
         for food in foods:
+            if food.id in ignored_food_ids:
+                continue
             if self._food_in_mouth_blind_zone(creature, food.position, food.radius):
                 continue
             candidate = self._vision_candidate(

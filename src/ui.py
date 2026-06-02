@@ -2333,6 +2333,8 @@ class UiRenderer:
             "want_reproduce": "repr",
             "want_eat": "eat",
             "reset_chronometer": "reset",
+            "want_grab": "grab",
+            "want_release": "drop",
         }
         return replacements.get(label, label)
 
@@ -2375,7 +2377,8 @@ class UiRenderer:
         return (
             f"Raw outputs: {value(0, outputs):.2f}/{value(1, outputs):.2f}  "
             f"Intent: {value(2, outputs):.2f}/{value(3, outputs):.2f}/"
-            f"{value(4, outputs):.2f}"
+            f"{value(4, outputs):.2f}  "
+            f"Carry: {value(5, outputs):.2f}/{value(6, outputs):.2f}"
         )
 
     def _contains_hitbox(self, key: str, x: float, y: float) -> bool:

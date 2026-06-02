@@ -161,6 +161,43 @@ class VisionOcclusionTest(unittest.TestCase):
             [],
         )
 
+    def test_food_behind_food_is_occluded(self) -> None:
+        observer = creature_at((0.0, 0.0), radius=5.0)
+        blocker_food = FakeFood(id=1, position=(30.0, 0.0), radius=10.0)
+        hidden_food = FakeFood(id=2, position=(60.0, 0.0), radius=5.0)
+
+        snapshot = self.sense_snapshot(observer, foods=[blocker_food, hidden_food])
+
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertEqual(
+            self.vision.visible_foods(observer, [blocker_food, hidden_food]),
+            [blocker_food],
+        )
+
+    def test_ignored_food_does_not_occlude_food_behind_it(self) -> None:
+        observer = creature_at((0.0, 0.0), radius=5.0)
+        carried_food = FakeFood(id=1, position=(30.0, 0.0), radius=10.0)
+        visible_food = FakeFood(id=2, position=(60.0, 0.0), radius=5.0)
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[carried_food, visible_food],
+            creatures=[],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+            ignored_food_ids={carried_food.id},
+        )
+
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertEqual(
+            self.vision.visible_foods(
+                observer,
+                [carried_food, visible_food],
+                ignored_food_ids={carried_food.id},
+            ),
+            [visible_food],
+        )
+
 
 class VisionEyeOriginBlindZoneTest(unittest.TestCase):
     def setUp(self) -> None:

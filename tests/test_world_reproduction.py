@@ -131,6 +131,8 @@ class WorldReproductionTest(unittest.TestCase):
                 want_reproduce=1.0,
                 want_eat=0.0,
                 reset_chronometer=0.0,
+                want_grab=0.0,
+                want_release=0.0,
             ),
             2: Action(
                 accelerate=0.0,
@@ -138,6 +140,8 @@ class WorldReproductionTest(unittest.TestCase):
                 want_reproduce=0.0,
                 want_eat=0.0,
                 reset_chronometer=0.0,
+                want_grab=0.0,
+                want_release=0.0,
             ),
         }
         world.rt_neat = RtNeatManager(brain_controller=None)
@@ -178,7 +182,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.selected_creature_id = 1
         world.neat_controller = FakeBrainController()
         world.rt_neat = RtNeatManager(brain_controller=None)
-        world._last_actions = {1: Action(0.0, 0.0, 0.0, 0.0, 0.0)}
+        world._last_actions = {1: Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)}
         world._chronometers = {1: 4.0}
         world.space = SimpleNamespace(remove=lambda *args: None)
         world._recover_extinct_population = lambda: None
@@ -375,8 +379,8 @@ class WorldReproductionTest(unittest.TestCase):
         world.total_biomass_energy = 10.0
         world.rng = Random(7)
         world._last_actions = {
-            1: Action(0.0, 0.0, 1.0, 0.0, 0.0),
-            2: Action(0.0, 0.0, 0.0, 0.0, 0.0),
+            1: Action(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
+            2: Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         }
         world.rt_neat = RtNeatManager(brain_controller=None)
         world.rt_neat.eligible_parent_ids = [1, 2]

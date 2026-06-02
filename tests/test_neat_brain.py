@@ -86,36 +86,48 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         return brain.decide(sensor_snapshot())
 
     def test_neutral_movement_outputs_map_to_stillness(self) -> None:
-        action = self.decide_with_outputs([0.5, 0.5, 0.0, 0.0, 0.0])
+        action = self.decide_with_outputs([0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
 
         self.assertAlmostEqual(action.accelerate, 0.0)
         self.assertAlmostEqual(action.rotate, 0.0)
 
     def test_acceleration_output_is_signed(self) -> None:
-        action = self.decide_with_outputs([0.25, 0.5, 0.0, 0.0, 0.0])
+        action = self.decide_with_outputs([0.25, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
 
         self.assertAlmostEqual(action.accelerate, -0.5)
         self.assertAlmostEqual(action.rotate, 0.0)
 
     def test_rotation_output_is_signed(self) -> None:
-        left_action = self.decide_with_outputs([0.5, 0.25, 0.0, 0.0, 0.0])
-        right_action = self.decide_with_outputs([0.5, 0.75, 0.0, 0.0, 0.0])
+        left_action = self.decide_with_outputs(
+            [0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0]
+        )
+        right_action = self.decide_with_outputs(
+            [0.5, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0]
+        )
 
         self.assertAlmostEqual(left_action.rotate, -0.5)
         self.assertAlmostEqual(right_action.rotate, 0.5)
 
     def test_intent_outputs_remain_normalized(self) -> None:
-        action = self.decide_with_outputs([0.5, 0.5, 1.2, -0.2, 0.75])
+        action = self.decide_with_outputs([0.5, 0.5, 1.2, -0.2, 0.75, 0.25, 1.2])
 
         self.assertEqual(action.want_reproduce, 1.0)
         self.assertEqual(action.want_eat, 0.0)
         self.assertEqual(action.reset_chronometer, 0.75)
+        self.assertEqual(action.want_grab, 0.25)
+        self.assertEqual(action.want_release, 1.0)
+
+    def test_missing_carry_outputs_default_to_neutral(self) -> None:
+        action = self.decide_with_outputs([0.5, 0.5, 0.0, 0.0, 0.0])
+
+        self.assertEqual(action.want_grab, 0.5)
+        self.assertEqual(action.want_release, 0.5)
 
 
 class NeatBrainNetworkCachingTest(unittest.TestCase):
     def test_from_genome_compiles_network_once_and_reuses_it(self) -> None:
         created_networks: list[FakeNetwork] = []
-        fake_network = FakeNetwork([0.5, 0.5, 0.0, 0.0, 0.0])
+        fake_network = FakeNetwork([0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
 
         class FakeFeedForwardNetwork:
             @staticmethod
@@ -128,7 +140,7 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
 
         try:
             config = SimpleNamespace(
-                genome_config=SimpleNamespace(output_keys=[0, 1, 2, 3, 4])
+                genome_config=SimpleNamespace(output_keys=[0, 1, 2, 3, 4, 5, 6])
             )
             genome = SimpleNamespace(nodes={})
 
