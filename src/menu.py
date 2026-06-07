@@ -32,6 +32,7 @@ class RibbonLayout:
     points: tuple[tuple[float, float], ...]
     label_x: float
     label_y: float
+    label_width: float
     label_size: float
     rotation: float
 
@@ -516,20 +517,26 @@ class StartMenuView(arcade.View):
         arcade.draw_polygon_filled(ribbon.points, self.RIBBON_FILL)
         self._draw_text(
             "load_ribbon",
-            "COMING SOON",
+            "COMING\nSOON",
             ribbon.label_x,
             ribbon.label_y,
             self.RIBBON_TEXT,
             ribbon.label_size,
             bold=True,
+            width=ribbon.label_width,
+            multiline=True,
+            align="center",
             anchor_x="center",
             anchor_y="center",
             rotation=ribbon.rotation,
         )
 
     def _ribbon_layout(self, bounds: arcade.Rect) -> RibbonLayout:
-        width = min(112.0, max(92.0, bounds.width * 0.24))
-        height = min(96.0, max(78.0, bounds.height * 0.34))
+        width = min(132.0, max(110.0, bounds.width * 0.28))
+        height = min(104.0, max(88.0, bounds.height * 0.38))
+        label_size = 8.5
+        label_x = bounds.right - width * 0.28
+        label_y = bounds.top - height * 0.42
         points = (
             (bounds.right - width, bounds.top),
             (bounds.right, bounds.top),
@@ -537,10 +544,11 @@ class StartMenuView(arcade.View):
         )
         return RibbonLayout(
             points=points,
-            label_x=bounds.right - width * 0.38,
-            label_y=bounds.top - height * 0.40,
-            label_size=7.0,
-            rotation=-45.0,
+            label_x=label_x,
+            label_y=label_y,
+            label_width=width * 0.64,
+            label_size=label_size,
+            rotation=45.0,
         )
 
     def _draw_icon(

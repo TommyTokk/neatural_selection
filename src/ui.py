@@ -2328,6 +2328,7 @@ class UiRenderer:
             "creature_angle": "n_ang",
             "wall_proximity": "wall",
             "wall_angle": "w_ang",
+            "is_grabbing": "holding",
             "accelerate": "acc",
             "rotate": "rot",
             "want_reproduce": "repr",

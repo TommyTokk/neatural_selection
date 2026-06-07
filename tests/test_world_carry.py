@@ -153,6 +153,33 @@ class WorldCarryTest(unittest.TestCase):
         world._eatable_foods_for = lambda creature: foods
         return world, metabolism, removed
 
+    def test_sensor_snapshot_reports_current_carry_state(self) -> None:
+        creature = SimpleNamespace(
+            creature_id=1,
+            vision=SimpleNamespace(range=100.0),
+        )
+        world = object.__new__(World)
+        world.config = SimpleNamespace(
+            food=SimpleNamespace(max_food_radius=10.0),
+            population=SimpleNamespace(min_reproduction_age=10.0),
+            environment=SimpleNamespace(world_width=100.0, world_height=100.0),
+        )
+        world.MAX_SPEED = 100.0
+        world.creatures = [creature]
+        world.fitness = {}
+        world._chronometers = {}
+        world._held_food_by_creature_id = {}
+        world._nearby_foods_for = lambda creature, distance: []
+        world.vision = SimpleNamespace(
+            sense=lambda *args, **kwargs: kwargs["is_grabbing"],
+        )
+
+        self.assertEqual(world.sensor_snapshot_for(creature), 0.0)
+
+        world._held_food_by_creature_id[creature.creature_id] = 7
+
+        self.assertEqual(world.sensor_snapshot_for(creature), 1.0)
+
     def test_grab_assigns_nearest_mouth_overlapping_food(self) -> None:
         creature = FakeCreature(1, FakeBody(FakePoint(0.0, 0.0)))
         far_food = FakeFood(1, FakeBody(FakePoint(30.0, 0.0)), overlaps_mouth=True)

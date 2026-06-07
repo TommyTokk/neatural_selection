@@ -334,19 +334,33 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.walls.nearest_closeness, 0.0)
         self.assertEqual(snapshot.walls.nearest_angle, 0.0)
 
-    def test_sensor_input_contract_includes_wall_inputs(self) -> None:
+    def test_sensor_input_contract_includes_wall_and_grabbing_inputs(self) -> None:
         inputs = self.sense_inputs(
             creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
             (0.0, 0.0, 100.0, 100.0),
         )
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 16)
+        self.assertEqual(SENSOR_INPUT_COUNT, 17)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertAlmostEqual(inputs[0], 1.0)
         self.assertAlmostEqual(inputs[1], 0.25)
         self.assertAlmostEqual(inputs[3], 0.75)
         self.assertAlmostEqual(inputs[14], 0.2)
         self.assertAlmostEqual(inputs[15], 0.0)
+        self.assertAlmostEqual(inputs[16], 0.0)
+
+    def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:
+        snapshot = self.vision.sense(
+            creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
+            foods=[],
+            creatures=[],
+            world_bounds=(0.0, 0.0, 100.0, 100.0),
+            max_speed=100.0,
+            is_grabbing=True,
+        )
+
+        self.assertEqual(snapshot.is_grabbing, 1.0)
+        self.assertEqual(snapshot.as_inputs()[-1], 1.0)
 
 
 if __name__ == "__main__":

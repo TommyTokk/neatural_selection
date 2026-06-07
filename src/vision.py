@@ -7,7 +7,7 @@ from configs.sim_config import VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 16
+SENSOR_INPUT_COUNT = 17
 SENSOR_INPUT_NAMES = (
     "constant",
     "hungriness",
@@ -25,6 +25,7 @@ SENSOR_INPUT_NAMES = (
     "creature_angle",
     "wall_proximity",
     "wall_angle",
+    "is_grabbing",
 )
 
 
@@ -70,6 +71,7 @@ class SensorSnapshot:
     clock_tik_tok: float
     clock_chronometer: float
     clock_time_alive: float
+    is_grabbing: float
 
     def as_inputs(self) -> list[float]:
         return [
@@ -89,6 +91,7 @@ class SensorSnapshot:
             self._target_angle(self.creatures),
             self._target_proximity(self.walls),
             self._target_angle(self.walls),
+            self.is_grabbing,
         ]
 
     def _target_proximity(self, target: VisionTargetSnapshot) -> float:
@@ -117,6 +120,7 @@ class VisionSystem:
         clock_tik_tok: float = 0.0,
         clock_chronometer: float = 0.0,
         clock_time_alive: float = 0.0,
+        is_grabbing: bool = False,
         ignored_food_ids: set[int] | None = None,
     ) -> SensorSnapshot:
         visible_targets = self._visible_targets(
@@ -150,6 +154,7 @@ class VisionSystem:
             clock_tik_tok=clock_tik_tok,
             clock_chronometer=clock_chronometer,
             clock_time_alive=clock_time_alive,
+            is_grabbing=1.0 if is_grabbing else 0.0,
         )
 
     def sense_boundary(

@@ -376,6 +376,7 @@ class World:
             clock_tik_tok=clock_tik_tok,
             clock_chronometer=clock_chronometer,
             clock_time_alive=clock_time_alive,
+            is_grabbing=creature.creature_id in self._held_food_by_creature_id,
             ignored_food_ids=self._ignored_food_ids_for(creature),
         )
 

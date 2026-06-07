@@ -235,15 +235,49 @@ class StartMenuViewTest(unittest.TestCase):
         left_top, right_top, right_bottom = ribbon.points
         width = right_top[0] - left_top[0]
         height = right_top[1] - right_bottom[1]
-        dx = (ribbon.label_x - left_top[0]) / width
-        dy = (right_top[1] - ribbon.label_y) / height
+        label_dx = (ribbon.label_x - left_top[0]) / width
+        label_dy = (right_top[1] - ribbon.label_y) / height
 
-        self.assertGreaterEqual(dx, 0.0)
-        self.assertLessEqual(dx, 1.0)
-        self.assertGreaterEqual(dy, 0.0)
-        self.assertLessEqual(dy, 1.0)
-        self.assertLessEqual(dy, dx)
-        self.assertLessEqual(ribbon.label_size, 7.0)
+        self.assertGreaterEqual(label_dx, 0.0)
+        self.assertLessEqual(label_dx, 1.0)
+        self.assertGreaterEqual(label_dy, 0.0)
+        self.assertLessEqual(label_dy, 1.0)
+        self.assertLessEqual(label_dy, label_dx)
+        self.assertLess(label_dx, 0.75)
+        self.assertGreater(label_dx - label_dy, 0.25)
+        self.assertGreaterEqual(ribbon.label_size, 8.0)
+        self.assertGreater(ribbon.label_width, ribbon.label_size * 6.0)
+        self.assertEqual(ribbon.rotation, 45.0)
+
+    def test_ribbon_draws_centered_multiline_label(self) -> None:
+        view = self.make_view()
+        layout = view.layout()
+        calls: list[dict[str, object]] = []
+        original_draw_text = view._draw_text
+
+        def capture_text(
+            key: str,
+            text: str,
+            x: float,
+            y: float,
+            color: object,
+            size: float,
+            **kwargs: object,
+        ) -> None:
+            del x, y, color, size
+            calls.append({"key": key, "text": text, **kwargs})
+
+        view._draw_text = capture_text
+        try:
+            view._draw_coming_soon_ribbon(layout.right_card)
+        finally:
+            view._draw_text = original_draw_text
+
+        ribbon_call = next(call for call in calls if call["key"] == "load_ribbon")
+        self.assertEqual(ribbon_call["text"], "COMING\nSOON")
+        self.assertTrue(ribbon_call["multiline"])
+        self.assertEqual(ribbon_call["align"], "center")
+        self.assertEqual(ribbon_call["anchor_x"], "center")
 
     def test_hover_only_tracks_icon_badges(self) -> None:
         view = self.make_view()

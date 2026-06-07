@@ -73,6 +73,7 @@ def sensor_snapshot() -> SensorSnapshot:
         clock_tik_tok=0.0,
         clock_chronometer=0.0,
         clock_time_alive=0.0,
+        is_grabbing=0.0,
     )
 
 
