@@ -4,13 +4,20 @@ from math import ceil, exp, pi
 from random import Random
 
 from configs.sim_config import FoodConfig
+from src.biome import BiomeMap
 from src.food import Food
 
 
 class FoodSpawner:
-    def __init__(self, config: FoodConfig, rng: Random) -> None:
+    def __init__(
+        self,
+        config: FoodConfig,
+        rng: Random,
+        biome_map: BiomeMap | None = None,
+    ) -> None:
         self.config = config
         self.rng = rng
+        self.biome_map = biome_map
         self._next_food_id = 1
         self._spawn_credit = 0.0
         self._burst_credit = 0.0
@@ -85,17 +92,50 @@ class FoodSpawner:
         return [self.create_food(bounds) for _ in range(spawn_count)]
 
     def create_food(self, bounds: tuple[float, float, float, float]) -> Food:
-        left, bottom, right, top = bounds
         radius = self.rng.uniform(
             self.config.min_food_radius,
             self.config.max_food_radius,
         )
+        x, y = self._spawn_position(bounds, radius)
         return Food(
             id=self._claim_food_id(),
-            x=self.rng.uniform(left + radius, right - radius),
-            y=self.rng.uniform(bottom + radius, top - radius),
+            x=x,
+            y=y,
             radius=radius,
             energy_density=self.config.energy_density,
+        )
+
+    def _spawn_position(
+        self,
+        bounds: tuple[float, float, float, float],
+        radius: float,
+    ) -> tuple[float, float]:
+        biome_map = self.biome_map
+        if biome_map is None or self.rng.random() < biome_map.uniform_spawn_chance:
+            return self._uniform_spawn_position(bounds, radius)
+
+        weights = tuple(max(0.0, weight) for weight in biome_map.spawn_weights.values())
+        max_weight = max(weights, default=0.0)
+        if max_weight <= 0.0:
+            return self._uniform_spawn_position(bounds, radius)
+
+        for _ in range(biome_map.max_spawn_attempts):
+            x, y = self._uniform_spawn_position(bounds, radius)
+            acceptance = biome_map.spawn_weight_at(x, y) / max_weight
+            if self.rng.random() <= acceptance:
+                return x, y
+
+        return self._uniform_spawn_position(bounds, radius)
+
+    def _uniform_spawn_position(
+        self,
+        bounds: tuple[float, float, float, float],
+        radius: float,
+    ) -> tuple[float, float]:
+        left, bottom, right, top = bounds
+        return (
+            self.rng.uniform(left + radius, right - radius),
+            self.rng.uniform(bottom + radius, top - radius),
         )
 
     def _claim_food_id(self) -> int:

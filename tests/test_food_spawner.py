@@ -104,7 +104,10 @@ class FoodEnergyValueTest(unittest.TestCase):
         expected_initial_mass = (0.2 + 10.0 * 0.035) * 0.9
         original_energy = food.energy_value
 
-        self.assertAlmostEqual(food.body.args[0], expected_initial_mass)
+        initial_mass = (
+            food.body.mass if hasattr(food.body, "mass") else food.body.args[0]
+        )
+        self.assertAlmostEqual(initial_mass, expected_initial_mass)
 
         food.consume_energy(original_energy * 0.25, min_remainder_ratio=0.10)
 

@@ -67,24 +67,52 @@ class UiRenderer:
         )
         self._control_hitboxes["icon_rail"] = bounds
 
+        button_count = 4
         button_size = self.ICON_BUTTON_SIZE
+        button_gap = self.ICON_BUTTON_GAP
+        available_height = max(0.0, bounds.height - self.RAIL_VERTICAL_PADDING)
+        preferred_buttons_height = (
+            button_size * button_count + button_gap * (button_count - 1)
+        )
+        if preferred_buttons_height > available_height:
+            button_gap = min(button_gap, max(4.0, available_height * 0.05))
+            button_size = min(
+                button_size,
+                max(
+                    24.0,
+                    (available_height - button_gap * (button_count - 1))
+                    / button_count,
+                ),
+            )
         top = bounds.top - self.RAIL_VERTICAL_PADDING / 2.0 - button_size / 2.0
+        step = button_size + button_gap
         icon_buttons = (
-            ("panel_toggle_inspector", "search", "inspector", top),
+            (
+                "panel_toggle_inspector",
+                "search",
+                self._panel_open["inspector"],
+                top,
+            ),
             (
                 "panel_toggle_stats",
                 "analytics",
-                "stats",
-                top - button_size - self.ICON_BUTTON_GAP,
+                self._panel_open["stats"],
+                top - step,
             ),
             (
                 "panel_toggle_settings",
                 "tune",
-                "settings",
-                top - (button_size + self.ICON_BUTTON_GAP) * 2,
+                self._panel_open["settings"],
+                top - step * 2,
+            ),
+            (
+                "toggle_biome_background",
+                "globe",
+                getattr(world, "show_biome_background", False),
+                top - step * 3,
             ),
         )
-        for key, icon_name, panel_name, center_y in icon_buttons:
+        for key, icon_name, active, center_y in icon_buttons:
             button = arcade.LBWH(
                 bounds.center_x - button_size / 2.0,
                 center_y - button_size / 2.0,
@@ -96,7 +124,7 @@ class UiRenderer:
                 button,
                 icon_name,
                 key,
-                active=self._panel_open[panel_name],
+                active=active,
             )
 
     def _draw_floating_panels(self, world: World) -> None:
@@ -534,6 +562,11 @@ class UiRenderer:
                 self.theme.text_primary,
             ),
             ("FOOD", str(world.stats.food_count), self.theme.text_primary),
+            (
+                "BIOMES",
+                self._biome_food_summary(world),
+                self.theme.text_primary,
+            ),
             (
                 "BIOMASS",
                 self._format_decimal(world.stats.available_biomass),
@@ -1287,6 +1320,8 @@ class UiRenderer:
         lines = [
             f"Population: {world.stats.herbivore_count}/{world.config.population.max_creatures}",
             f"Food nodes: {world.stats.food_count}",
+            f"Biome food: {self._biome_food_summary(world)}",
+            f"Biome area: {self._biome_area_summary(world)}",
             f"Biomass: {world.stats.available_biomass:.1f} available",
             f"Plant pressure: {world.stats.plant_spawn_pressure:.0%}",
             f"Plants: {world.stats.plant_energy:.1f} energy",
@@ -1384,6 +1419,9 @@ class UiRenderer:
             return True
         if self._contains_hitbox("panel_toggle_settings", x, y):
             self._panel_open["settings"] = not self._panel_open["settings"]
+            return True
+        if self._contains_hitbox("toggle_biome_background", x, y):
+            world.toggle_biome_background()
             return True
         if self._contains_hitbox("brain_window_close", x, y):
             self._brain_window_open = False
@@ -1687,6 +1725,7 @@ class UiRenderer:
             "tune": "=",
             "brain": "@",
             "kill": "x",
+            "globe": "O",
         }.get(icon_name, "*")
         self._draw_text(
             f"icon_fallback_{key}",
@@ -1804,6 +1843,22 @@ class UiRenderer:
             return 0.0
         max_energy = max(0.0001, float(world.config.metabolism.max_energy))
         return max(0.0, min(1.0, selected.energy / max_energy))
+
+    def _biome_food_summary(self, world: World) -> str:
+        counts = world.stats.biome_food_counts
+        return (
+            f"F:{counts.get('Forest', 0)} "
+            f"B:{counts.get('Bushes', 0)} "
+            f"P:{counts.get('Prairie', 0)}"
+        )
+
+    def _biome_area_summary(self, world: World) -> str:
+        shares = world.stats.biome_area_shares
+        return (
+            f"F:{shares.get('Forest', 0.0):.0%} "
+            f"B:{shares.get('Bushes', 0.0):.0%} "
+            f"P:{shares.get('Prairie', 0.0):.0%}"
+        )
 
     def _inspector_energy_color(
         self,

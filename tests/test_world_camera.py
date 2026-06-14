@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
+
+import numpy as np
 
 if "arcade" not in sys.modules:
     arcade = ModuleType("arcade")
@@ -103,8 +106,8 @@ class FakeCreature:
 class CapturingFoodSpawner:
     captured_bounds: tuple[float, float, float, float] | None = None
 
-    def __init__(self, config: object, rng: object) -> None:
-        del config, rng
+    def __init__(self, config: object, rng: object, biome_map: object = None) -> None:
+        del config, rng, biome_map
 
     def create_initial_foods(
         self,
@@ -261,6 +264,99 @@ class WorldCameraTest(unittest.TestCase):
             arcade.draw_circle_outline = original_draw_circle_outline
 
         self.assertEqual(len(draw_calls), 1)
+
+    def test_renderer_skips_biome_background_when_toggle_is_off(self) -> None:
+        world = self.make_world_shell()
+        world.show_biome_background = False
+        renderer = EnvironmentRenderer(world.config)
+        draw_calls: list[object] = []
+        self._stub_renderer_draw_dependencies(renderer, world)
+        renderer._draw_biomes = lambda bounds, active_world: draw_calls.append(bounds)
+
+        renderer.draw(world)
+
+        self.assertEqual(draw_calls, [])
+
+    def test_renderer_draws_biome_background_when_toggle_is_on(self) -> None:
+        world = self.make_world_shell()
+        world.show_biome_background = True
+        renderer = EnvironmentRenderer(world.config)
+        draw_calls: list[object] = []
+        self._stub_renderer_draw_dependencies(renderer, world)
+        renderer._draw_biomes = lambda bounds, active_world: draw_calls.append(bounds)
+
+        renderer.draw(world)
+
+        self.assertEqual(draw_calls, [world.layout.environment])
+
+    def test_renderer_reuses_biome_texture_across_view_changes(self) -> None:
+        world = self.make_world_shell()
+        world.biome_map = SimpleNamespace(
+            render_rgba=np.zeros((2, 2, 4), dtype=np.uint8),
+        )
+        renderer = EnvironmentRenderer(world.config)
+        created_textures: list[object] = []
+        draw_calls: list[object] = []
+        original_texture = getattr(arcade, "Texture", None)
+        original_draw_texture_rect = getattr(arcade, "draw_texture_rect", None)
+
+        class FakeTexture:
+            def __init__(self, image: object, hash: str | None = None) -> None:
+                self.image = image
+                self.hash = hash
+
+        def fake_texture(image: object, hash: str | None = None) -> FakeTexture:
+            texture = FakeTexture(image, hash)
+            created_textures.append(texture)
+            return texture
+
+        def fake_draw_texture_rect(texture: object, rect: object, **kwargs: object) -> None:
+            del rect, kwargs
+            draw_calls.append(texture)
+
+        arcade.Texture = fake_texture
+        arcade.draw_texture_rect = fake_draw_texture_rect
+
+        try:
+            renderer._draw_biomes(world.layout.environment, world)
+            world.environment_zoom = 1.5
+            world.environment_pan_x = -120.0
+            renderer._draw_biomes(world.layout.environment, world)
+        finally:
+            if original_texture is None:
+                delattr(arcade, "Texture")
+            else:
+                arcade.Texture = original_texture
+            if original_draw_texture_rect is None:
+                delattr(arcade, "draw_texture_rect")
+            else:
+                arcade.draw_texture_rect = original_draw_texture_rect
+
+        self.assertEqual(len(created_textures), 1)
+        self.assertEqual(draw_calls, [created_textures[0], created_textures[0]])
+
+    def _stub_renderer_draw_dependencies(
+        self,
+        renderer: EnvironmentRenderer,
+        world: World,
+    ) -> None:
+        @contextmanager
+        def no_clip(bounds: object):
+            del bounds
+            yield
+
+        world.visible_foods_for_viewport = lambda: []
+        world.visible_creatures_for_viewport = lambda: []
+        world.selected_creature_id = None
+        renderer._environment_clip = no_clip
+        renderer._draw_panel = lambda bounds: None
+        renderer._draw_grid = lambda bounds, zoom, pan_x, pan_y: None
+        renderer._draw_food = lambda foods, bounds, active_world: None
+        renderer._draw_creatures = (
+            lambda creatures, bounds, active_world, selected_creature_id: None
+        )
+        renderer._draw_selected_overlay = lambda active_world, bounds: None
+        renderer._draw_environment_header = lambda bounds, active_world: None
 
 
 if __name__ == "__main__":

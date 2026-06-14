@@ -15,6 +15,8 @@ class EnvironmentRenderer:
         self.config = config
         self.theme = config.theme
         self._text_cache: dict[str, arcade.Text] = {}
+        self._biome_texture: object | None = None
+        self._biome_texture_key: int | None = None
 
     def draw(self, world: World) -> None:
         bounds = world.layout.environment
@@ -23,6 +25,8 @@ class EnvironmentRenderer:
         pan_y = world.environment_pan_y
 
         with self._environment_clip(bounds):
+            if getattr(world, "show_biome_background", False):
+                self._draw_biomes(bounds, world)
             self._draw_grid(bounds, world.environment_zoom, pan_x, pan_y)
             self._draw_food(world.visible_foods_for_viewport(), bounds, world)
             self._draw_creatures(
@@ -185,6 +189,64 @@ class EnvironmentRenderer:
         while y <= end_y:
             arcade.draw_line(bounds.left, y, bounds.right, y, self.theme.environment_grid, 1)
             y += step
+
+    def _draw_biomes(self, bounds: arcade.Rect, world: World) -> None:
+        biome_map = getattr(world, "biome_map", None)
+        if biome_map is None:
+            return
+
+        texture = self._texture_for_biome_map(biome_map)
+        draw_texture_rect = getattr(arcade, "draw_texture_rect", None)
+        if texture is None or draw_texture_rect is None:
+            return
+
+        world_left, world_bottom, world_right, world_top = world.environment_world_bounds
+        screen_left, screen_bottom = world.environment_to_screen(world_left, world_bottom)
+        screen_right, screen_top = world.environment_to_screen(world_right, world_top)
+        rect = arcade.LBWH(
+            min(screen_left, screen_right),
+            min(screen_bottom, screen_top),
+            abs(screen_right - screen_left),
+            abs(screen_top - screen_bottom),
+        )
+        if not self._rect_intersects_visible_bounds(
+            bounds,
+            rect.left,
+            rect.bottom,
+            rect.right,
+            rect.top,
+        ):
+            return
+
+        try:
+            draw_texture_rect(texture, rect, pixelated=False)
+        except TypeError:
+            draw_texture_rect(texture, rect)
+
+    def _texture_for_biome_map(self, biome_map: object) -> object | None:
+        render_rgba = getattr(biome_map, "render_rgba", None)
+        texture_key = id(render_rgba)
+        if self._biome_texture is not None and self._biome_texture_key == texture_key:
+            return self._biome_texture
+
+        texture_factory = getattr(arcade, "Texture", None)
+        if texture_factory is None or render_rgba is None:
+            return None
+
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+
+        image = Image.fromarray(render_rgba[::-1])
+        try:
+            texture = texture_factory(image, hash=f"biomes-{texture_key}")
+        except TypeError:
+            texture = texture_factory(image)
+
+        self._biome_texture = texture
+        self._biome_texture_key = texture_key
+        return texture
 
     def _draw_environment_header(self, bounds: arcade.Rect, world: World) -> None:
         self._draw_text(
@@ -523,4 +585,19 @@ class EnvironmentRenderer:
             and right <= bounds.right
             and bottom >= bounds.bottom
             and top <= bounds.top
+        )
+
+    def _rect_intersects_visible_bounds(
+        self,
+        bounds: arcade.Rect,
+        left: float,
+        bottom: float,
+        right: float,
+        top: float,
+    ) -> bool:
+        return (
+            right >= bounds.left
+            and left <= bounds.right
+            and top >= bounds.bottom
+            and bottom <= bounds.top
         )

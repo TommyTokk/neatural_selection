@@ -23,7 +23,16 @@ def build_screen_layout(
     icon_button_gap = 20.0
     rail_vertical_padding = 32.0
     rail_width = max(float(config.min_sidebar_width), float(config.left_panel_width))
-    rail_height = icon_button_size * 3 + icon_button_gap * 2 + rail_vertical_padding
+    rail_button_count = 4
+    preferred_rail_height = (
+        icon_button_size * rail_button_count
+        + icon_button_gap * (rail_button_count - 1)
+        + rail_vertical_padding
+    )
+    rail_height = min(
+        preferred_rail_height,
+        max(icon_button_size, window_height - pad * 2.0),
+    )
     title_width = min(292.0, max(220.0, window_width - pad * 2.0))
     title_height = float(config.top_bar_height)
 

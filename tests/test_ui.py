@@ -227,8 +227,8 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
         layout = build_screen_layout(1440, 900, config.layout)
         expected_rail_height = (
-            UiRenderer.ICON_BUTTON_SIZE * 3
-            + UiRenderer.ICON_BUTTON_GAP * 2
+            UiRenderer.ICON_BUTTON_SIZE * 4
+            + UiRenderer.ICON_BUTTON_GAP * 3
             + UiRenderer.RAIL_VERTICAL_PADDING
         )
 
@@ -320,6 +320,55 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertTrue(self.renderer._panel_open["inspector"])
         self.assertTrue(self.renderer._panel_open["stats"])
         self.assertFalse(self.renderer._panel_open["settings"])
+
+    def test_left_rail_registers_biome_toggle_button(self) -> None:
+        world = SimpleNamespace(
+            layout=build_screen_layout(1440, 900, build_sim_config().layout),
+            show_biome_background=False,
+        )
+
+        self.renderer._draw_icon_rail(world)
+
+        self.assertIn("toggle_biome_background", self.renderer._control_hitboxes)
+
+    def test_biome_toggle_button_flips_world_visibility(self) -> None:
+        world = SimpleNamespace(show_biome_background=False)
+
+        def toggle_biome_background() -> None:
+            world.show_biome_background = not world.show_biome_background
+
+        world.toggle_biome_background = toggle_biome_background
+        self.renderer._control_hitboxes["toggle_biome_background"] = arcade.LBWH(
+            0,
+            0,
+            20,
+            20,
+        )
+
+        self.assertTrue(self.renderer.handle_mouse_press(world, 10, 10))
+        self.assertTrue(world.show_biome_background)
+        self.assertTrue(self.renderer.handle_mouse_press(world, 10, 10))
+        self.assertFalse(world.show_biome_background)
+
+    def test_biome_toggle_button_active_state_follows_world(self) -> None:
+        world = SimpleNamespace(
+            layout=build_screen_layout(1440, 900, build_sim_config().layout),
+            show_biome_background=True,
+        )
+        calls: list[tuple[str, str, bool]] = []
+        original_draw_icon_button = self.renderer._draw_icon_button
+        self.renderer._draw_icon_button = (
+            lambda bounds, icon_name, key, active: calls.append(
+                (key, icon_name, active)
+            )
+        )
+
+        try:
+            self.renderer._draw_icon_rail(world)
+        finally:
+            self.renderer._draw_icon_button = original_draw_icon_button
+
+        self.assertIn(("toggle_biome_background", "globe", True), calls)
 
     def test_floating_panel_hitbox_consumes_click(self) -> None:
         self.renderer._control_hitboxes["stats_panel"] = arcade.LBWH(100, 100, 200, 120)

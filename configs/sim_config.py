@@ -71,6 +71,31 @@ class EnvironmentConfig:
 
 
 @dataclass(slots=True)
+class BiomeConfig:
+    seed: int = 42
+    grid_width: int = 64
+    grid_height: int = 44
+    noise_scale: float = 800.0
+    octaves: int = 3
+    persistence: float = 0.5
+    lacunarity: float = 2.0
+
+    forest_target_share: float = 0.25
+    bushes_target_share: float = 0.40
+    prairie_target_share: float = 0.35
+
+    forest_spawn_weight: float = 2.75
+    bushes_spawn_weight: float = 1.25
+    prairie_spawn_weight: float = 0.25
+    uniform_spawn_chance: float = 0.10
+    max_spawn_attempts: int = 32
+
+    forest_color: Color = (20, 58, 43, 255)
+    bushes_color: Color = (43, 74, 49, 255)
+    prairie_color: Color = (75, 80, 47, 255)
+
+
+@dataclass(slots=True)
 class ZoomConfig:
     default: float = 1.0
     minimum: float = 0.3
@@ -231,6 +256,7 @@ class SimConfig:
     debug: DebugConfig = field(default_factory=DebugConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
+    biome: BiomeConfig = field(default_factory=BiomeConfig)
     zoom: ZoomConfig = field(default_factory=ZoomConfig)
 
     # Metabolism config

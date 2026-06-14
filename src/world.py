@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from colorsys import hsv_to_rgb, rgb_to_hsv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import cos, floor, sin
 from random import Random
 
@@ -10,6 +10,7 @@ import pymunk
 from configs.sim_config import SimConfig
 import src.utils as ut
 from src.action import Action, acceleration_force_vector
+from src.biome import Biome, BiomeGenerationHandler
 from src.creature import (
     Color,
     Creature,
@@ -42,6 +43,8 @@ class WorldStats:
     plant_energy: float = 0.0
     available_biomass: float = 0.0
     plant_spawn_pressure: float = 1.0
+    biome_area_shares: dict[str, float] = field(default_factory=dict)
+    biome_food_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -92,6 +95,7 @@ class World:
         self.fps = 0.0
         self.is_paused = False
         self.simulation_speed = 1.0
+        self.show_biome_background = False
         self._physics_accumulator = 0.0
         self._reproduction_accumulator = 0.0
         self._last_actions: dict[int, Action] = {}
@@ -117,7 +121,10 @@ class World:
             creature.creature_id: CreatureFitness() for creature in self.creatures
         }
         self.fitness_archive: dict[int, CreatureFitness] = {}
-        self.food_spawner = FoodSpawner(config.food, self.rng)
+        self.biome_map = BiomeGenerationHandler(config.biome).generate(
+            self.environment_world_bounds
+        )
+        self.food_spawner = FoodSpawner(config.food, self.rng, self.biome_map)
         self.foods: list[Food] = []
         self._held_food_by_creature_id: dict[int, int] = {}
         self._carrier_by_food_id: dict[int, int] = {}
@@ -144,6 +151,8 @@ class World:
             plant_energy=self._plant_energy(),
             available_biomass=self._available_biomass(),
             plant_spawn_pressure=self._plant_spawn_pressure(),
+            biome_area_shares=self._biome_area_shares(),
+            biome_food_counts=self._biome_food_counts(),
         )
 
         self.metabolism = Metabolism(config.metabolism, self.vision, config.trait)
@@ -233,6 +242,9 @@ class World:
 
     def toggle_brain_view(self) -> None:
         self.show_brain_view = not self.show_brain_view
+
+    def toggle_biome_background(self) -> None:
+        self.show_biome_background = not self.show_biome_background
 
     def set_simulation_speed(self, speed: float) -> None:
         clamped_speed = max(
@@ -1009,6 +1021,8 @@ class World:
         self.stats.plant_energy = self._plant_energy()
         self.stats.available_biomass = self._available_biomass()
         self.stats.plant_spawn_pressure = self._plant_spawn_pressure()
+        self.stats.biome_area_shares = self._biome_area_shares()
+        self.stats.biome_food_counts = self._biome_food_counts()
         self.rt_neat.update_stats(
             self.creatures,
             self.fitness,
@@ -1350,6 +1364,24 @@ class World:
 
     def _plant_spawn_pressure(self) -> float:
         return self.food_spawner.creature_pressure_factor(len(self.creatures))
+
+    def _biome_area_shares(self) -> dict[str, float]:
+        biome_map = getattr(self, "biome_map", None)
+        if biome_map is None:
+            return {biome.label: 0.0 for biome in Biome}
+        return {
+            biome.label: biome_map.area_shares.get(biome, 0.0)
+            for biome in Biome
+        }
+
+    def _biome_food_counts(self) -> dict[str, int]:
+        counts = {biome.label: 0 for biome in Biome}
+        biome_map = getattr(self, "biome_map", None)
+        if biome_map is None:
+            return counts
+        for food in self.foods:
+            counts[biome_map.biome_at(*food.position).label] += 1
+        return counts
 
     def _recover_extinct_population(self) -> None:
         parent_pool_size = max(

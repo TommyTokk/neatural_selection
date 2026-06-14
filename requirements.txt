@@ -1,3 +1,6 @@
 arcade
 pymunk
 neat-python
+numpy
+opensimplex
+Pillow
