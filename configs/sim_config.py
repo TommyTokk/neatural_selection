@@ -239,7 +239,6 @@ class ActionConfig:
     boundary_angular_velocity_retention: float = 0.72
     food_turn_factor: float = 0.25
     min_food_acceleration: float = 0.7
-    centered_food_angle_threshold: float = 0.12
     centered_food_angular_damping: float = 0.65
     centered_food_angular_velocity_retention: float = 0.15
     food_tracking_lateral_velocity_retention: float = 0.35

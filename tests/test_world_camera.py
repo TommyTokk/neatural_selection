@@ -55,10 +55,29 @@ if not hasattr(arcade, "draw_circle_filled"):
     arcade.draw_circle_filled = lambda *args, **kwargs: None
 if not hasattr(arcade, "draw_circle_outline"):
     arcade.draw_circle_outline = lambda *args, **kwargs: None
+if not hasattr(arcade, "draw_polygon_filled"):
+    arcade.draw_polygon_filled = lambda *args, **kwargs: None
+if not hasattr(arcade, "draw_polygon_outline"):
+    arcade.draw_polygon_outline = lambda *args, **kwargs: None
 
 for optional_module in ("neat",):
     if optional_module not in sys.modules:
         sys.modules[optional_module] = ModuleType(optional_module)
+
+try:
+    import opensimplex  # noqa: F401
+except ModuleNotFoundError:
+    opensimplex = ModuleType("opensimplex")
+
+    class _OpenSimplex:
+        def __init__(self, seed: int | None = None) -> None:
+            del seed
+
+        def noise2array(self, xs: object, ys: object) -> object:
+            return np.zeros((len(ys), len(xs)), dtype=np.float32)
+
+    opensimplex.OpenSimplex = _OpenSimplex
+    sys.modules["opensimplex"] = opensimplex
 
 try:
     import pymunk  # noqa: F401
@@ -99,6 +118,9 @@ class FakeCreature:
     heading: float = 0.0
     energy: float = 1.0
     color: tuple[int, int, int] = (86, 156, 214)
+    vision: object = field(
+        default_factory=lambda: SimpleNamespace(range=120.0, angle=1.5)
+    )
     body: object = field(default_factory=object)
     shape: object = field(default_factory=object)
 
@@ -288,6 +310,35 @@ class WorldCameraTest(unittest.TestCase):
         renderer.draw(world)
 
         self.assertEqual(draw_calls, [world.layout.environment])
+
+    def test_debug_vision_cone_draws_three_colored_sectors(self) -> None:
+        world = self.make_world_shell()
+        renderer = EnvironmentRenderer(world.config)
+        creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        fills: list[tuple[object, object]] = []
+        original_draw_polygon_filled = arcade.draw_polygon_filled
+        original_draw_polygon_outline = arcade.draw_polygon_outline
+        arcade.draw_polygon_filled = (
+            lambda points, color: fills.append((points, color))
+        )
+        arcade.draw_polygon_outline = lambda *args, **kwargs: None
+
+        try:
+            renderer._draw_vision_cone(creature, world.layout.environment, world)
+        finally:
+            arcade.draw_polygon_filled = original_draw_polygon_filled
+            arcade.draw_polygon_outline = original_draw_polygon_outline
+
+        sector_colors = [color for _, color in fills[:3]]
+        self.assertEqual(
+            sector_colors,
+            [
+                (91, 160, 255, 44),
+                (111, 220, 128, 52),
+                (246, 190, 86, 44),
+            ],
+        )
+        self.assertEqual(len({tuple(color) for color in sector_colors}), 3)
 
     def test_renderer_reuses_biome_texture_across_view_changes(self) -> None:
         world = self.make_world_shell()

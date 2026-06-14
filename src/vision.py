@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import atan2, cos, hypot, pi, sin
 
-from configs.sim_config import VisionConfig
+from configs.sim_config import MetabolismConfig, VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 17
+SENSOR_INPUT_COUNT = 20
 SENSOR_INPUT_NAMES = (
     "constant",
     "hungriness",
@@ -19,12 +19,15 @@ SENSOR_INPUT_NAMES = (
     "clock_tik_tok",
     "clock_chronometer",
     "clock_time_alive",
-    "food_proximity",
-    "food_angle",
-    "creature_proximity",
-    "creature_angle",
-    "wall_proximity",
-    "wall_angle",
+    "food_proximity_left",
+    "food_proximity_center",
+    "food_proximity_right",
+    "creature_proximity_left",
+    "creature_proximity_center",
+    "creature_proximity_right",
+    "wall_proximity_left",
+    "wall_proximity_center",
+    "wall_proximity_right",
     "is_grabbing",
 )
 
@@ -32,8 +35,9 @@ SENSOR_INPUT_NAMES = (
 @dataclass(slots=True)
 class VisionTargetSnapshot:
     visible: float
-    nearest_closeness: float
-    nearest_angle: float
+    proximity_left: float
+    proximity_center: float
+    proximity_right: float
     density: float
     count: int
 
@@ -85,29 +89,27 @@ class SensorSnapshot:
             self.clock_tik_tok,
             self.clock_chronometer,
             self.clock_time_alive,
-            self._target_proximity(self.food),
-            self._target_angle(self.food),
-            self._target_proximity(self.creatures),
-            self._target_angle(self.creatures),
-            self._target_proximity(self.walls),
-            self._target_angle(self.walls),
+            self.food.proximity_left,
+            self.food.proximity_center,
+            self.food.proximity_right,
+            self.creatures.proximity_left,
+            self.creatures.proximity_center,
+            self.creatures.proximity_right,
+            self.walls.proximity_left,
+            self.walls.proximity_center,
+            self.walls.proximity_right,
             self.is_grabbing,
         ]
 
-    def _target_proximity(self, target: VisionTargetSnapshot) -> float:
-        if target.visible <= 0.0:
-            return 0.0
-        return target.nearest_closeness
-
-    def _target_angle(self, target: VisionTargetSnapshot) -> float:
-        if target.visible <= 0.0:
-            return 0.0
-        return target.nearest_angle
-
 
 class VisionSystem:
-    def __init__(self, config: VisionConfig) -> None:
+    def __init__(
+        self,
+        config: VisionConfig,
+        eating_distance: float = MetabolismConfig().eating_distance,
+    ) -> None:
         self.config = config
+        self.eating_distance = eating_distance
 
     def sense(
         self,
@@ -245,6 +247,11 @@ class VisionSystem:
         for food in foods:
             if food.id in ignored_food_ids:
                 continue
+            if self._food_touches_mouth(creature, food.position, food.radius):
+                candidates.append(
+                    self._mouth_contact_candidate(creature, "food", food)
+                )
+                continue
             if self._food_in_mouth_blind_zone(creature, food.position, food.radius):
                 continue
             candidate = self._vision_candidate(
@@ -326,6 +333,22 @@ class VisionSystem:
             interval=interval,
         )
 
+    def _mouth_contact_candidate(
+        self,
+        creature: Creature,
+        kind: str,
+        source: Food,
+    ) -> _VisionCandidate:
+        half_cone = creature.vision.angle / 2.0
+        return _VisionCandidate(
+            kind=kind,
+            source=source,
+            surface_distance=0.0,
+            signed_angle=0.0,
+            closeness=1.0,
+            interval=(-half_cone, half_cone),
+        )
+
     def _vision_origin(self, creature: Creature) -> tuple[float, float]:
         creature_x, creature_y = creature.position
         return (
@@ -343,6 +366,9 @@ class VisionSystem:
         food_x, food_y = food_position
         dx = food_x - creature_x
         dy = food_y - creature_y
+
+        if self._food_touches_mouth(creature, food_position, food_radius):
+            return False
 
         forward_x = cos(creature.heading)
         forward_y = sin(creature.heading)
@@ -365,6 +391,34 @@ class VisionSystem:
             and lateral_distance <= half_width
         )
 
+    def _food_touches_mouth(
+        self,
+        creature: Creature,
+        food_position: tuple[float, float],
+        food_radius: float,
+    ) -> bool:
+        creature_x, creature_y = creature.position
+        food_x, food_y = food_position
+        dx = food_x - creature_x
+        dy = food_y - creature_y
+
+        contact_slop = max(1.0, min(3.0, self.eating_distance * 0.25))
+        contact_range = creature.radius + food_radius + contact_slop
+        if dx * dx + dy * dy > contact_range * contact_range:
+            return False
+
+        forward_x = cos(creature.heading)
+        forward_y = sin(creature.heading)
+        forward_distance = dx * forward_x + dy * forward_y
+        if forward_distance < creature.radius - contact_slop:
+            return False
+
+        lateral_x = -forward_y
+        lateral_y = forward_x
+        lateral_distance = abs(dx * lateral_x + dy * lateral_y)
+        mouth_half_width = max(2.0, creature.radius * 0.35)
+        return lateral_distance <= food_radius + mouth_half_width
+
     def _snapshot_for_kind(
         self,
         creature: Creature,
@@ -375,13 +429,17 @@ class VisionSystem:
         if not visible:
             return self._empty_target_snapshot()
 
-        nearest = min(visible, key=lambda target: target.surface_distance)
-        normalized_angle = nearest.signed_angle / (creature.vision.angle / 2)
+        left, center, right = self._sector_proximities_from_intervals(
+            [target.interval for target in visible],
+            [target.closeness for target in visible],
+            creature.vision.angle,
+        )
 
         return VisionTargetSnapshot(
             visible=1.0,
-            nearest_closeness=self._clamp01(nearest.closeness),
-            nearest_angle=self._clamp(normalized_angle, -1.0, 1.0),
+            proximity_left=left,
+            proximity_center=center,
+            proximity_right=right,
             density=self._clamp01(sum(target.closeness for target in visible)),
             count=len(visible),
         )
@@ -457,11 +515,10 @@ class VisionSystem:
             ((left, top), (left, bottom)),
         ]
 
-        nearest_distance = vision_range
-        nearest_angle = 0.0
-        best_closeness = 0.0
         visible_count = 0
         density = 0.0
+        wall_intervals: list[tuple[float, float]] = []
+        closenesses: list[float] = []
 
         for start, end in wall_segments:
             for point in self._wall_candidate_points(creature, start, end):
@@ -478,22 +535,30 @@ class VisionSystem:
                     continue
 
                 closeness = 1.0 - (surface_distance / vision_range)
+                proximity = self._clamp01(closeness)
+                fuzziness = 0.05 + (0.1 * proximity)
                 visible_count += 1
                 density += closeness
-
-                if surface_distance < nearest_distance:
-                    nearest_distance = surface_distance
-                    nearest_angle = signed_angle
-                    best_closeness = closeness
+                wall_intervals.append(
+                    (signed_angle - fuzziness, signed_angle + fuzziness)
+                )
+                closenesses.append(proximity)
 
         if visible_count == 0:
             return self._empty_target_snapshot()
 
-        normalized_angle = nearest_angle / (cone_angle / 2)
+        left_proximity, center_proximity, right_proximity = (
+            self._sector_proximities_from_intervals(
+                wall_intervals,
+                closenesses,
+                cone_angle,
+            )
+        )
         return VisionTargetSnapshot(
             visible=1.0,
-            nearest_closeness=self._clamp01(best_closeness),
-            nearest_angle=self._clamp(normalized_angle, -1.0, 1.0),
+            proximity_left=left_proximity,
+            proximity_center=center_proximity,
+            proximity_right=right_proximity,
             density=self._clamp01(density),
             count=visible_count,
         )
@@ -616,9 +681,55 @@ class VisionSystem:
             angle += 2 * pi
         return angle
 
+    def _intervals_overlap(
+        self,
+        start1: float,
+        end1: float,
+        start2: float,
+        end2: float,
+    ) -> bool:
+        return start1 <= end2 and end1 >= start2
+
+    def _sector_proximities_from_intervals(
+        self,
+        intervals: list[tuple[float, float]],
+        closenesses: list[float],
+        cone_angle: float,
+    ) -> tuple[float, float, float]:
+        if cone_angle <= 0.0:
+            return 0.0, 0.0, 0.0
+
+        left_bounds = (-cone_angle / 2.0, -cone_angle / 6.0)
+        center_bounds = (-cone_angle / 6.0, cone_angle / 6.0)
+        right_bounds = (cone_angle / 6.0, cone_angle / 2.0)
+
+        left = 0.0
+        center = 0.0
+        right = 0.0
+
+        for (start, end), closeness in zip(intervals, closenesses):
+            proximity = self._clamp01(closeness)
+            if self._intervals_overlap(start, end, *left_bounds):
+                left = max(left, proximity)
+            if self._intervals_overlap(start, end, *center_bounds):
+                center = max(center, proximity)
+            if self._intervals_overlap(start, end, *right_bounds):
+                right = max(right, proximity)
+
+        return (
+            left,
+            center,
+            right,
+        )
+
     def _empty_target_snapshot(self) -> VisionTargetSnapshot:
         return VisionTargetSnapshot(
-            visible=0.0, nearest_closeness=0.0, nearest_angle=0.0, density=0.0, count=0
+            visible=0.0,
+            proximity_left=0.0,
+            proximity_center=0.0,
+            proximity_right=0.0,
+            density=0.0,
+            count=0,
         )
 
     def _cross(self, ax: float, ay: float, bx: float, by: float) -> float:

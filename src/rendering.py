@@ -433,26 +433,64 @@ class EnvironmentRenderer:
         eye_cone_points = self._vision_cone_points(creature, eye_origin, zoom)
         blind_zone_points = self._mouth_blind_zone_points(creature, world)
 
-        arcade.draw_polygon_filled(eye_cone_points, (111, 220, 128, 48))
+        for sector_points, color in self._vision_sector_polygons(
+            creature,
+            eye_origin,
+            zoom,
+        ):
+            arcade.draw_polygon_filled(sector_points, color)
+
         arcade.draw_polygon_filled(blind_zone_points, (224, 74, 74, 76))
         arcade.draw_polygon_outline(eye_cone_points, (111, 220, 128, 132), 1)
         arcade.draw_polygon_outline(blind_zone_points, (224, 74, 74, 142), 2)
+
+    def _vision_sector_polygons(
+        self,
+        creature: Creature,
+        origin: tuple[float, float],
+        zoom: float,
+    ) -> list[tuple[list[tuple[float, float]], tuple[int, int, int, int]]]:
+        return [
+            (
+                self._vision_cone_points(creature, origin, zoom, 0.0, 1.0 / 3.0),
+                (91, 160, 255, 44),
+            ),
+            (
+                self._vision_cone_points(
+                    creature,
+                    origin,
+                    zoom,
+                    1.0 / 3.0,
+                    2.0 / 3.0,
+                ),
+                (111, 220, 128, 52),
+            ),
+            (
+                self._vision_cone_points(creature, origin, zoom, 2.0 / 3.0, 1.0),
+                (246, 190, 86, 44),
+            ),
+        ]
 
     def _vision_cone_points(
         self,
         creature: Creature,
         origin: tuple[float, float],
         zoom: float,
+        start_factor: float = 0.0,
+        end_factor: float = 1.0,
     ) -> list[tuple[float, float]]:
         heading = creature.heading
         cone_radius = creature.vision.range * zoom
         cone_angle = creature.vision.angle
-        steps = 18
+        start_factor = max(0.0, min(1.0, start_factor))
+        end_factor = max(start_factor, min(1.0, end_factor))
+        steps = max(3, ceil(18 * (end_factor - start_factor)))
 
         points: list[tuple[float, float]] = [origin]
         for index in range(steps + 1):
             factor = index / steps
-            angle = heading - cone_angle / 2 + cone_angle * factor
+            cone_factor = start_factor + (end_factor - start_factor) * factor
+            angle = heading - cone_angle / 2 + cone_angle * cone_factor
             points.append(
                 (
                     origin[0] + cos(angle) * cone_radius,

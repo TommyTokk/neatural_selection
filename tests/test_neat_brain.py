@@ -49,8 +49,9 @@ class FakeNetwork:
 def empty_target() -> VisionTargetSnapshot:
     return VisionTargetSnapshot(
         visible=0.0,
-        nearest_closeness=0.0,
-        nearest_angle=0.0,
+        proximity_left=0.0,
+        proximity_center=0.0,
+        proximity_right=0.0,
         density=0.0,
         count=0,
     )

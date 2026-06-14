@@ -46,16 +46,26 @@ class BaselineFoodController:
             accelerate = self.config.search_acceleration
         else:
             self._scavenge_states.pop(state_id, None)
-            # Food is visible, move towards the closest one
-            food_angle = snapshot.food.nearest_angle
-            if abs(food_angle) <= self.config.centered_food_angle_threshold:
+            # Food is visible, move toward the strongest sector.
+            left = snapshot.food.proximity_left
+            center = snapshot.food.proximity_center
+            right = snapshot.food.proximity_right
+            if center >= left and center >= right:
                 rotate = 0.0
                 accelerate = 1.0
-            else:
-                rotate = food_angle * self.config.food_turn_factor
+            elif left >= right:
+                turn_strength = max(0.0, left - center)
+                rotate = -turn_strength * self.config.food_turn_factor
                 accelerate = max(
                     self.config.min_food_acceleration,
-                    1 - abs(food_angle) * 0.3,
+                    1.0 - turn_strength * 0.3,
+                )
+            else:
+                turn_strength = max(0.0, right - center)
+                rotate = turn_strength * self.config.food_turn_factor
+                accelerate = max(
+                    self.config.min_food_acceleration,
+                    1.0 - turn_strength * 0.3,
                 )
 
         # Eval conservation of energy

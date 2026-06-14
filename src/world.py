@@ -106,7 +106,7 @@ class World:
         self.environment_zoom = config.zoom.default
         self.environment_pan_x = 0.0
         self.environment_pan_y = 0.0
-        self.vision = VisionSystem(config.vision)
+        self.vision = VisionSystem(config.vision, config.metabolism.eating_distance)
         self.space = pymunk.Space()
         self.space.gravity = (0.0, 0.0)
         self.space.damping = 0.94

@@ -2377,12 +2377,15 @@ class UiRenderer:
             "clock_tik_tok": "tik",
             "clock_chronometer": "chrono",
             "clock_time_alive": "age",
-            "food_proximity": "food",
-            "food_angle": "f_ang",
-            "creature_proximity": "near",
-            "creature_angle": "n_ang",
-            "wall_proximity": "wall",
-            "wall_angle": "w_ang",
+            "food_proximity_left": "f_l",
+            "food_proximity_center": "f_c",
+            "food_proximity_right": "f_r",
+            "creature_proximity_left": "n_l",
+            "creature_proximity_center": "n_c",
+            "creature_proximity_right": "n_r",
+            "wall_proximity_left": "w_l",
+            "wall_proximity_center": "w_c",
+            "wall_proximity_right": "w_r",
             "is_grabbing": "holding",
             "accelerate": "acc",
             "rotate": "rot",
@@ -2420,10 +2423,13 @@ class UiRenderer:
             return values[index] if index < len(values) else 0.0
 
         return (
-            f"F {value(0, inputs):.2f}/{value(1, inputs):.2f}  "
-            f"C {value(2, inputs):.2f}/{value(3, inputs):.2f}  "
-            f"W {value(4, inputs):.2f}/{value(5, inputs):.2f}  "
-            f"E {value(6, inputs):.2f}"
+            f"F {value(10, inputs):.2f}/{value(11, inputs):.2f}/"
+            f"{value(12, inputs):.2f}  "
+            f"C {value(13, inputs):.2f}/{value(14, inputs):.2f}/"
+            f"{value(15, inputs):.2f}  "
+            f"W {value(16, inputs):.2f}/{value(17, inputs):.2f}/"
+            f"{value(18, inputs):.2f}  "
+            f"E {value(3, inputs):.2f}"
         )
 
     def _brain_output_readout(self, outputs: list[float]) -> str:
