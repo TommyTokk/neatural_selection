@@ -190,6 +190,10 @@ class FoodSpawnerLowCreatureBurstTest(unittest.TestCase):
             config.low_creature_burst_items
             * spawner.low_creature_shortage_ratio(9)
         )
+        expected_first_frame_items = min(
+            expected_burst_items,
+            spawner._burst_spawn_cap(),
+        )
 
         early_foods = spawner.update(
             config.low_creature_burst_interval - 0.01,
@@ -207,7 +211,7 @@ class FoodSpawnerLowCreatureBurstTest(unittest.TestCase):
         )
 
         self.assertEqual(len(early_foods), 0)
-        self.assertEqual(len(burst_foods), expected_burst_items)
+        self.assertEqual(len(burst_foods), expected_first_frame_items)
 
     def test_burst_size_scales_with_low_creature_shortage(self) -> None:
         config = low_creature_config()
@@ -236,14 +240,31 @@ class FoodSpawnerLowCreatureBurstTest(unittest.TestCase):
                 * nine_creature_spawner.low_creature_shortage_ratio(9)
             ),
         )
+        five_creature_expected_burst = ceil(
+            config.low_creature_burst_items
+            * five_creature_spawner.low_creature_shortage_ratio(5)
+        )
         self.assertEqual(
             len(five_creature_foods),
-            ceil(
-                config.low_creature_burst_items
-                * five_creature_spawner.low_creature_shortage_ratio(5)
+            min(
+                five_creature_expected_burst,
+                five_creature_spawner._burst_spawn_cap(),
             ),
         )
         self.assertGreater(len(five_creature_foods), len(nine_creature_foods))
+
+        carried_foods = five_creature_spawner.update(
+            0.0,
+            BOUNDS,
+            current_food_count=config.max_food_items + len(five_creature_foods),
+            creature_count=5,
+            available_biomass=10_000.0,
+        )
+
+        self.assertEqual(
+            len(five_creature_foods) + len(carried_foods),
+            five_creature_expected_burst,
+        )
 
     def test_no_low_creature_burst_at_threshold(self) -> None:
         spawner = FoodSpawner(low_creature_config(), Random(1))
@@ -302,7 +323,21 @@ class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
             available_biomass=10_000.0,
         )
 
-        self.assertEqual(len(foods), emergency_target - current_food_count)
+        expected_deficit = emergency_target - current_food_count
+        self.assertEqual(
+            len(foods),
+            min(expected_deficit, spawner._burst_spawn_cap()),
+        )
+
+        carried_foods = spawner.update(
+            0.0,
+            BOUNDS,
+            current_food_count=current_food_count + len(foods),
+            creature_count=12,
+            available_biomass=10_000.0,
+        )
+
+        self.assertEqual(len(foods) + len(carried_foods), expected_deficit)
 
     def test_lower_food_count_gets_larger_immediate_refill(self) -> None:
         config = low_food_config()

@@ -102,6 +102,12 @@ class SensorSnapshot:
         ]
 
 
+@dataclass(slots=True)
+class VisionSenseResult:
+    snapshot: SensorSnapshot
+    visible_food_ids: list[int]
+
+
 class VisionSystem:
     def __init__(
         self,
@@ -125,12 +131,73 @@ class VisionSystem:
         is_grabbing: bool = False,
         ignored_food_ids: set[int] | None = None,
     ) -> SensorSnapshot:
+        return self.sense_with_visible_food_ids(
+            creature,
+            foods,
+            creatures,
+            world_bounds,
+            max_speed,
+            maturity=maturity,
+            clock_tik_tok=clock_tik_tok,
+            clock_chronometer=clock_chronometer,
+            clock_time_alive=clock_time_alive,
+            is_grabbing=is_grabbing,
+            ignored_food_ids=ignored_food_ids,
+        ).snapshot
+
+    def sense_with_visible_food_ids(
+        self,
+        creature: Creature,
+        foods: list[Food],
+        creatures: list[Creature],
+        world_bounds: tuple[float, float, float, float],
+        max_speed: float,
+        maturity: float = 0.0,
+        clock_tik_tok: float = 0.0,
+        clock_chronometer: float = 0.0,
+        clock_time_alive: float = 0.0,
+        is_grabbing: bool = False,
+        ignored_food_ids: set[int] | None = None,
+    ) -> VisionSenseResult:
         visible_targets = self._visible_targets(
             creature,
             foods,
             creatures,
             ignored_food_ids=ignored_food_ids,
         )
+        snapshot = self._sensor_snapshot_from_visible_targets(
+            creature,
+            visible_targets,
+            world_bounds,
+            max_speed,
+            maturity=maturity,
+            clock_tik_tok=clock_tik_tok,
+            clock_chronometer=clock_chronometer,
+            clock_time_alive=clock_time_alive,
+            is_grabbing=is_grabbing,
+        )
+        visible_food_ids = [
+            target.source.id
+            for target in visible_targets
+            if target.kind == "food" and isinstance(target.source, Food)
+        ]
+        return VisionSenseResult(
+            snapshot=snapshot,
+            visible_food_ids=visible_food_ids,
+        )
+
+    def _sensor_snapshot_from_visible_targets(
+        self,
+        creature: Creature,
+        visible_targets: list[_VisionCandidate],
+        world_bounds: tuple[float, float, float, float],
+        max_speed: float,
+        maturity: float = 0.0,
+        clock_tik_tok: float = 0.0,
+        clock_chronometer: float = 0.0,
+        clock_time_alive: float = 0.0,
+        is_grabbing: bool = False,
+    ) -> SensorSnapshot:
         food_snapshot = self._snapshot_for_kind(creature, visible_targets, "food")
         creature_snapshot = self._snapshot_for_kind(
             creature,

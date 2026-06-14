@@ -129,7 +129,8 @@ class World:
         self._held_food_by_creature_id: dict[int, int] = {}
         self._carrier_by_food_id: dict[int, int] = {}
         self._food_grid: dict[tuple[int, int], list[Food]] = {}
-        self._food_grid_dirty = True
+        self._food_grid_cells_by_id: dict[int, tuple[int, int]] = {}
+        self._food_grid_dirty = False
         self._food_grid_cell_size = (
             max(
                 config.vision.max_range,
@@ -196,7 +197,6 @@ class World:
             self._apply_creature_intents()
             self.space.step(self.FIXED_TIMESTEP)
             self._settle_food_motion()
-            self._food_grid_dirty = True
             self._apply_top_down_motion()
             self._limit_creature_motion()
             self._sync_carried_foods()
@@ -362,8 +362,6 @@ class World:
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
-        if record_food_discoveries:
-            self._record_food_discoveries(creature, nearby_foods)
 
         fitness = self.fitness.get(creature.creature_id)
         age_seconds = 0.0 if fitness is None else fitness.age_seconds
@@ -377,6 +375,25 @@ class World:
         clock_tik_tok = 1.0 if int(age_seconds) % 2 == 0 else 0.0
         clock_chronometer = min(chronometer / 20.0, 1.0)
         clock_time_alive = min(age_seconds / 120.0, 1.0)
+        ignored_food_ids = self._ignored_food_ids_for(creature)
+        is_grabbing = creature.creature_id in self._held_food_by_creature_id
+
+        if record_food_discoveries:
+            result = self.vision.sense_with_visible_food_ids(
+                creature,
+                nearby_foods,
+                self.creatures,
+                self.environment_world_bounds,
+                self.MAX_SPEED,
+                maturity=maturity,
+                clock_tik_tok=clock_tik_tok,
+                clock_chronometer=clock_chronometer,
+                clock_time_alive=clock_time_alive,
+                is_grabbing=is_grabbing,
+                ignored_food_ids=ignored_food_ids,
+            )
+            self._record_food_discoveries(creature, result.visible_food_ids)
+            return result.snapshot
 
         return self.vision.sense(
             creature,
@@ -388,8 +405,8 @@ class World:
             clock_tik_tok=clock_tik_tok,
             clock_chronometer=clock_chronometer,
             clock_time_alive=clock_time_alive,
-            is_grabbing=creature.creature_id in self._held_food_by_creature_id,
-            ignored_food_ids=self._ignored_food_ids_for(creature),
+            is_grabbing=is_grabbing,
+            ignored_food_ids=ignored_food_ids,
         )
 
     def visible_foods_for(self, creature: Creature) -> list[Food]:
@@ -742,8 +759,7 @@ class World:
         for food in foods:
             self.foods.append(food)
             self.space.add(food.body, food.shape)
-        if foods:
-            self._food_grid_dirty = True
+            self._index_food(food)
 
     def _rebuild_boundaries(self) -> None:
         if self._boundary_shapes:
@@ -1047,21 +1063,12 @@ class World:
     def _record_food_discoveries(
         self,
         creature: Creature,
-        nearby_foods: list[Food],
+        visible_food_ids: list[int],
     ) -> None:
         fitness = self.fitness.get(creature.creature_id)
         if fitness is None:
             return
 
-        visible_food_ids = [
-            food.id
-            for food in self.vision.visible_foods(
-                creature,
-                nearby_foods,
-                self.creatures,
-                ignored_food_ids=self._ignored_food_ids_for(creature),
-            )
-        ]
         fitness.record_food_discoveries(visible_food_ids)
 
     def _apply_carry_intent(self, creature: Creature, action: Action) -> None:
@@ -1131,7 +1138,7 @@ class World:
         )
         food.body.velocity = creature.body.velocity
         food.body.angular_velocity = creature.body.angular_velocity
-        self._food_grid_dirty = True
+        self._reindex_food(food)
         reindex_shape = getattr(self.space, "reindex_shape", None)
         if reindex_shape is not None:
             reindex_shape(food.shape)
@@ -1189,7 +1196,6 @@ class World:
                 )
 
         for food in report.touched_foods:
-            self._food_grid_dirty = True
             reindex_shape = getattr(self.space, "reindex_shape", None)
             if reindex_shape is not None and food in self.foods:
                 reindex_shape(food.shape)
@@ -1198,8 +1204,8 @@ class World:
             if food in self.foods:
                 self._clear_food_carry(food)
                 self.foods.remove(food)
+                self._unindex_food(food)
                 self.space.remove(food.body, food.shape)
-                self._food_grid_dirty = True
 
         for creature in report.dead_creatures:
             self._remove_creature(creature)
@@ -1269,12 +1275,60 @@ class World:
             return
 
         self._food_grid.clear()
+        self._food_grid_cells_by_id = {}
         for food in self.foods:
-            self._food_grid.setdefault(
-                self._food_grid_cell(*food.position),
-                [],
-            ).append(food)
+            self._index_food(food)
         self._food_grid_dirty = False
+
+    def _index_food(self, food: Food) -> None:
+        self._ensure_food_grid_storage()
+        cell = self._food_grid_cell(*food.position)
+        self._food_grid.setdefault(cell, []).append(food)
+        self._food_grid_cells_by_id[self._food_grid_key(food)] = cell
+
+    def _reindex_food(self, food: Food) -> None:
+        self._ensure_food_grid_storage()
+        if self._food_grid_dirty:
+            return
+
+        updated_cell = self._food_grid_cell(*food.position)
+        food_key = self._food_grid_key(food)
+        current_cell = self._food_grid_cells_by_id.get(food_key)
+        if current_cell == updated_cell:
+            return
+
+        self._unindex_food(food)
+        self._food_grid.setdefault(updated_cell, []).append(food)
+        self._food_grid_cells_by_id[food_key] = updated_cell
+
+    def _unindex_food(self, food: Food) -> None:
+        self._ensure_food_grid_storage()
+        cell = self._food_grid_cells_by_id.pop(self._food_grid_key(food), None)
+        if cell is None:
+            return
+
+        foods = self._food_grid.get(cell)
+        if foods is None:
+            return
+        try:
+            foods.remove(food)
+        except ValueError:
+            return
+        if not foods:
+            self._food_grid.pop(cell, None)
+
+    def _ensure_food_grid_storage(self) -> None:
+        if not hasattr(self, "_food_grid"):
+            self._food_grid = {}
+        if not hasattr(self, "_food_grid_cells_by_id"):
+            self._food_grid_cells_by_id = {}
+        if not hasattr(self, "_food_grid_dirty"):
+            self._food_grid_dirty = True
+        if not hasattr(self, "_food_grid_cell_size"):
+            self._food_grid_cell_size = 100.0
+
+    def _food_grid_key(self, food: Food) -> int:
+        return getattr(food, "id", id(food))
 
     def _food_grid_cell(self, x: float, y: float) -> tuple[int, int]:
         return (
@@ -1575,3 +1629,5 @@ class World:
 
             if abs(food.body.angular_velocity) < 0.2:
                 food.body.angular_velocity = 0.0
+
+            self._reindex_food(food)

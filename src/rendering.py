@@ -11,12 +11,18 @@ from src.food import Food
 
 
 class EnvironmentRenderer:
+    FOOD_SPRITE_TEXTURE_DIAMETER = 64
+
     def __init__(self, config: SimConfig) -> None:
         self.config = config
         self.theme = config.theme
         self._text_cache: dict[str, arcade.Text] = {}
         self._biome_texture: object | None = None
         self._biome_texture_key: int | None = None
+        self._food_sprite_list: object | None = None
+        self._food_sprite_cache: dict[int, object] = {}
+        self._food_sprite_texture: object | None = None
+        self._food_batch_disabled = False
 
     def draw(self, world: World) -> None:
         bounds = world.layout.environment
@@ -293,13 +299,20 @@ class EnvironmentRenderer:
     ) -> None:
         zoom = world.environment_zoom
         draw_outlines = len(foods) <= 250 or zoom >= 1.25
+        visible_foods: list[tuple[Food, float, float, float]] = []
         for food in foods:
             pos_x, pos_y = food.position
             draw_x, draw_y = world.environment_to_screen(pos_x, pos_y)
             radius = max(2.0, food.radius * zoom)
             if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
-            arcade.draw_circle_filled(draw_x, draw_y, radius, self.theme.food_fill)
+            visible_foods.append((food, draw_x, draw_y, radius))
+
+        if not self._draw_food_sprite_batch(visible_foods):
+            for _food, draw_x, draw_y, radius in visible_foods:
+                arcade.draw_circle_filled(draw_x, draw_y, radius, self.theme.food_fill)
+
+        for _food, draw_x, draw_y, radius in visible_foods:
             if not draw_outlines:
                 continue
             arcade.draw_circle_outline(
@@ -309,6 +322,110 @@ class EnvironmentRenderer:
                 self.theme.environment_border,
                 1,
             )
+
+    def _draw_food_sprite_batch(
+        self,
+        visible_foods: list[tuple[Food, float, float, float]],
+    ) -> bool:
+        if self._food_batch_disabled or not visible_foods:
+            return False
+
+        if not self._has_active_window():
+            return False
+
+        sprite_list = self._food_sprite_list
+        if sprite_list is None:
+            sprite_list_cls = getattr(arcade, "SpriteList", None)
+            if sprite_list_cls is None:
+                self._food_batch_disabled = True
+                return False
+            try:
+                sprite_list = sprite_list_cls(
+                    use_spatial_hash=False,
+                    capacity=max(100, len(visible_foods)),
+                )
+            except Exception:
+                self._food_batch_disabled = True
+                return False
+            self._food_sprite_list = sprite_list
+
+        try:
+            sprite_list.clear()
+            visible_keys: set[int] = set()
+            for food, draw_x, draw_y, radius in visible_foods:
+                food_key = self._food_sprite_key(food)
+                visible_keys.add(food_key)
+                sprite = self._food_sprite_cache.get(food_key)
+                if sprite is None:
+                    sprite = self._create_food_sprite()
+                    self._food_sprite_cache[food_key] = sprite
+
+                sprite.center_x = draw_x
+                sprite.center_y = draw_y
+                sprite.width = radius * 2
+                sprite.height = radius * 2
+                sprite_list.append(sprite)
+
+            self._prune_food_sprite_cache(visible_keys)
+            sprite_list.draw()
+        except Exception:
+            self._food_batch_disabled = True
+            return False
+
+        return True
+
+    def _has_active_window(self) -> bool:
+        try:
+            return arcade.get_window() is not None
+        except (AttributeError, RuntimeError):
+            return False
+
+    def _create_food_sprite(self) -> object:
+        sprite_cls = getattr(arcade, "Sprite", None)
+        if sprite_cls is None:
+            raise RuntimeError("Arcade Sprite is unavailable.")
+        return sprite_cls(self._food_circle_texture())
+
+    def _food_circle_texture(self) -> object:
+        if self._food_sprite_texture is not None:
+            return self._food_sprite_texture
+
+        make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        if make_circle_texture is None:
+            raise RuntimeError("Arcade circle texture factory is unavailable.")
+
+        self._food_sprite_texture = make_circle_texture(
+            self.FOOD_SPRITE_TEXTURE_DIAMETER,
+            self._rgba_color(self.theme.food_fill),
+            name=f"food-fill-{self.theme.food_fill}",
+        )
+        return self._food_sprite_texture
+
+    def _rgba_color(
+        self,
+        color: arcade.Color | tuple[int, ...],
+    ) -> tuple[int, int, int, int]:
+        channels = tuple(color)
+        if len(channels) >= 4:
+            return (
+                int(channels[0]),
+                int(channels[1]),
+                int(channels[2]),
+                int(channels[3]),
+            )
+        return (int(channels[0]), int(channels[1]), int(channels[2]), 255)
+
+    def _food_sprite_key(self, food: Food) -> int:
+        return getattr(food, "id", id(food))
+
+    def _prune_food_sprite_cache(self, visible_keys: set[int]) -> None:
+        if len(self._food_sprite_cache) <= max(2000, len(visible_keys) * 3):
+            return
+        self._food_sprite_cache = {
+            key: sprite
+            for key, sprite in self._food_sprite_cache.items()
+            if key in visible_keys
+        }
 
     def _draw_creatures(
         self,

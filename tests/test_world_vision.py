@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import sys
 import unittest
 
@@ -23,6 +23,14 @@ if "arcade" not in sys.modules:
         def top(self) -> float:
             return self.bottom + self.height
 
+        @property
+        def center_x(self) -> float:
+            return self.left + self.width / 2.0
+
+        @property
+        def center_y(self) -> float:
+            return self.bottom + self.height / 2.0
+
     def fake_lbwh(left: float, bottom: float, width: float, height: float) -> FakeRect:
         return FakeRect(left, bottom, width, height)
 
@@ -38,6 +46,12 @@ for optional_module in ("neat", "pymunk"):
 
 from configs.sim_config import build_sim_config
 from src.creature import PhysicalTraits, VisionTraits
+from src.vision import (
+    BoundarySnapshot,
+    SensorSnapshot,
+    VisionSenseResult,
+    VisionTargetSnapshot,
+)
 from src.world import World
 
 
@@ -48,6 +62,65 @@ class FakeRng:
     def gauss(self, mean: float, deviation: float) -> float:
         del mean, deviation
         return self.gaussian_values.pop(0)
+
+
+class FakeFitness:
+    def __init__(self) -> None:
+        self.age_seconds = 0.0
+        self.discovered_food_ids: list[int] = []
+
+    def record_food_discoveries(self, food_ids: list[int]) -> None:
+        self.discovered_food_ids.extend(food_ids)
+
+
+class FakeVisionSystem:
+    def __init__(self) -> None:
+        self.sense_with_visible_food_ids_calls = 0
+        self.sense_calls = 0
+
+    def sense_with_visible_food_ids(self, *args: object, **kwargs: object) -> VisionSenseResult:
+        del args, kwargs
+        self.sense_with_visible_food_ids_calls += 1
+        return VisionSenseResult(
+            snapshot=self._snapshot(),
+            visible_food_ids=[101, 202],
+        )
+
+    def sense(self, *args: object, **kwargs: object) -> SensorSnapshot:
+        del args, kwargs
+        self.sense_calls += 1
+        return self._snapshot()
+
+    def visible_foods(self, *args: object, **kwargs: object) -> list[object]:
+        raise AssertionError("visible_foods should not be called during hot sensing.")
+
+    def _snapshot(self) -> SensorSnapshot:
+        empty = VisionTargetSnapshot(
+            visible=0.0,
+            proximity_left=0.0,
+            proximity_center=0.0,
+            proximity_right=0.0,
+            density=0.0,
+            count=0,
+        )
+        return SensorSnapshot(
+            food=empty,
+            creatures=empty,
+            walls=empty,
+            boundary=BoundarySnapshot(pressure=0.0, turn=0.0),
+            energy=1.0,
+            speed=0.0,
+            vision_range=1.0,
+            vision_angle=1.0,
+            vision_energy_cost=0.0,
+            maturity=0.0,
+            visible_food_count=0.0,
+            visible_creature_count=0.0,
+            clock_tik_tok=1.0,
+            clock_chronometer=0.0,
+            clock_time_alive=0.0,
+            is_grabbing=0.0,
+        )
 
 
 class WorldVisionMutationTest(unittest.TestCase):
@@ -115,6 +188,34 @@ class WorldVisionMutationTest(unittest.TestCase):
         )
         self.assertEqual(delta.radius, 0.0)
         self.assertEqual(delta.movement_cost_multiplier, 0.0)
+
+    def test_sensor_snapshot_records_food_discoveries_from_single_vision_pass(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.creatures = []
+        world._held_food_by_creature_id = {}
+        world._chronometers = {}
+        world._nearby_foods_for = lambda creature, radius: []
+        world._ignored_food_ids_for = lambda creature: set()
+        world.MAX_SPEED = 170.0
+        world.vision = FakeVisionSystem()
+        fitness = FakeFitness()
+        creature = SimpleNamespace(
+            creature_id=1,
+            vision=SimpleNamespace(range=120.0),
+            energy=1.0,
+        )
+        world.fitness = {1: fitness}
+
+        snapshot = world._sensor_snapshot_for(
+            creature,
+            record_food_discoveries=True,
+        )
+
+        self.assertIsInstance(snapshot, SensorSnapshot)
+        self.assertEqual(fitness.discovered_food_ids, [101, 202])
+        self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 1)
+        self.assertEqual(world.vision.sense_calls, 0)
 
 
 if __name__ == "__main__":

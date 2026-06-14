@@ -23,6 +23,14 @@ if "arcade" not in sys.modules:
         def top(self) -> float:
             return self.bottom + self.height
 
+        @property
+        def center_x(self) -> float:
+            return self.left + self.width / 2.0
+
+        @property
+        def center_y(self) -> float:
+            return self.bottom + self.height / 2.0
+
     def fake_lbwh(left: float, bottom: float, width: float, height: float) -> FakeRect:
         return FakeRect(left, bottom, width, height)
 
@@ -232,7 +240,30 @@ class WorldCarryTest(unittest.TestCase):
         self.assertEqual(food.position, (17.0, 3.0))
         self.assertEqual(food.body.velocity, creature.body.velocity)
         self.assertEqual(food.body.angular_velocity, creature.body.angular_velocity)
-        self.assertTrue(world._food_grid_dirty)
+        self.assertFalse(world._food_grid_dirty)
+        self.assertEqual(world._food_grid_cells_by_id[food.id], (0, 0))
+        self.assertEqual(world._food_grid[(0, 0)], [food])
+
+    def test_food_grid_reindex_moves_food_between_cells_without_dirty_rebuild(self) -> None:
+        world = object.__new__(World)
+        food = FakeFood(1, FakeBody(FakePoint(3.0, 3.0)))
+        world.foods = [food]
+        world._food_grid = {}
+        world._food_grid_cells_by_id = {}
+        world._food_grid_dirty = False
+        world._food_grid_cell_size = 10.0
+
+        world._index_food(food)
+        food.body.position = FakePoint(25.0, 3.0)
+        world._reindex_food(food)
+
+        self.assertFalse(world._food_grid_dirty)
+        self.assertNotIn((0, 0), world._food_grid)
+        self.assertEqual(world._food_grid_cells_by_id[food.id], (2, 0))
+        self.assertEqual(
+            world._foods_in_world_bounds(20.0, 0.0, 30.0, 10.0),
+            [food],
+        )
 
     def test_depleted_carried_food_clears_ownership_before_removal(self) -> None:
         creature = FakeCreature(1, FakeBody(FakePoint(0.0, 0.0)))

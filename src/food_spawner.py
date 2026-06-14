@@ -22,6 +22,8 @@ class FoodSpawner:
         self._spawn_credit = 0.0
         self._burst_credit = 0.0
         self._low_food_burst_credit = 0.0
+        self._pending_burst_items = 0
+        self._pending_low_food_burst_items = 0
 
     def create_initial_foods(
         self, bounds: tuple[float, float, float, float]
@@ -66,16 +68,21 @@ class FoodSpawner:
         self._spawn_credit += max(0.0, delta_time) * spawn_rate
         regular_spawn_count = min(allowed_spawns, int(self._spawn_credit))
 
+        burst_spawn_budget = self._burst_spawn_cap()
         burst_count = self._low_creature_burst_count(
             delta_time,
             creature_count,
-            allowed_spawns - regular_spawn_count,
+            min(allowed_spawns - regular_spawn_count, burst_spawn_budget),
         )
 
         burst_count += self._low_food_burst_count(
             delta_time,
             current_food_count,
             food_capacity,
+            min(
+                allowed_spawns - regular_spawn_count - burst_count,
+                burst_spawn_budget - burst_count,
+            ),
             allowed_spawns - regular_spawn_count - burst_count,
         )
 
@@ -205,22 +212,20 @@ class FoodSpawner:
         shortage_ratio = self.low_creature_shortage_ratio(creature_count)
         if shortage_ratio <= 0.0:
             self._burst_credit = 0.0
+            self._pending_burst_items = 0
             return 0
 
         burst_interval = max(0.001, self.config.low_creature_burst_interval)
         scaled_burst_items = max(1, ceil(burst_items * shortage_ratio))
         self._burst_credit += max(0.0, delta_time) / burst_interval
         burst_events = int(self._burst_credit)
-        if burst_events <= 0:
-            return 0
+        if burst_events > 0:
+            self._pending_burst_items += burst_events * scaled_burst_items
+            self._burst_credit -= burst_events
+            self._burst_credit = min(self._burst_credit, 1.0)
 
-        burst_count = min(remaining_spawns, burst_events * scaled_burst_items)
-        used_events = min(
-            burst_events,
-            max(1, (burst_count + scaled_burst_items - 1) // scaled_burst_items),
-        )
-        self._burst_credit -= used_events
-        self._burst_credit = min(self._burst_credit, 1.0)
+        burst_count = min(remaining_spawns, self._pending_burst_items)
+        self._pending_burst_items -= burst_count
         return burst_count
 
     def _low_food_burst_count(
@@ -229,13 +234,17 @@ class FoodSpawner:
         current_food_count: int,
         food_capacity: int,
         remaining_spawns: int,
+        refill_limit: int | None = None,
     ) -> int:
         burst_items = max(0, self.config.low_food_burst_items)
         if burst_items <= 0 or remaining_spawns <= 0:
             return 0
 
         food_ratio = current_food_count / max(1, food_capacity)
-        if food_ratio > self.config.critical_food_ratio:
+        if (
+            food_ratio > self.config.critical_food_ratio
+            and self._pending_low_food_burst_items <= 0
+        ):
             self._low_food_burst_credit = 0.0
             return 0
 
@@ -245,33 +254,33 @@ class FoodSpawner:
         )
         if shortage_ratio <= 0.0:
             self._low_food_burst_credit = 0.0
+            self._pending_low_food_burst_items = 0
             return 0
+
+        if self._pending_low_food_burst_items > 0:
+            return self._spend_pending_low_food_burst(remaining_spawns)
 
         burst_count = self._immediate_low_food_refill_count(
             current_food_count,
             food_capacity,
-            remaining_spawns,
+            remaining_spawns if refill_limit is None else refill_limit,
         )
         if burst_count > 0:
             self._low_food_burst_credit = 0.0
-            return burst_count
+            self._pending_low_food_burst_items += burst_count
+            return self._spend_pending_low_food_burst(remaining_spawns)
 
         burst_interval = max(0.001, self.config.low_food_burst_interval)
         self._low_food_burst_credit += (
             max(0.0, delta_time) * shortage_ratio / burst_interval
         )
         burst_events = int(self._low_food_burst_credit)
-        if burst_events <= 0:
-            return 0
+        if burst_events > 0:
+            self._pending_low_food_burst_items += burst_events * burst_items
+            self._low_food_burst_credit -= burst_events
+            self._low_food_burst_credit = min(self._low_food_burst_credit, 1.0)
 
-        burst_count = min(remaining_spawns, burst_events * burst_items)
-        used_events = min(
-            burst_events,
-            max(1, (burst_count + burst_items - 1) // burst_items),
-        )
-        self._low_food_burst_credit -= used_events
-        self._low_food_burst_credit = min(self._low_food_burst_credit, 1.0)
-        return burst_count
+        return self._spend_pending_low_food_burst(remaining_spawns)
 
     def _immediate_low_food_refill_count(
         self,
@@ -289,7 +298,21 @@ class FoodSpawner:
         burst_items = max(0, self.config.low_food_burst_items)
         return min(remaining_spawns, emergency_deficit, burst_items)
 
+    def _spend_pending_low_food_burst(self, remaining_spawns: int) -> int:
+        burst_count = min(remaining_spawns, self._pending_low_food_burst_items)
+        self._pending_low_food_burst_items -= burst_count
+        return burst_count
+
+    def _burst_spawn_cap(self) -> int:
+        max_burst_items = max(
+            self.config.low_creature_burst_items,
+            self.config.low_food_burst_items,
+        )
+        return max(1, ceil(max(1, max_burst_items) * 0.25))
+
     def _reset_spawn_credits(self) -> None:
         self._spawn_credit = 0.0
         self._burst_credit = 0.0
         self._low_food_burst_credit = 0.0
+        self._pending_burst_items = 0
+        self._pending_low_food_burst_items = 0

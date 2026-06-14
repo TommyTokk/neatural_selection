@@ -287,6 +287,123 @@ class WorldCameraTest(unittest.TestCase):
 
         self.assertEqual(len(draw_calls), 1)
 
+    def test_food_sprite_uses_large_circle_texture(self) -> None:
+        world = self.make_world_shell()
+        renderer = EnvironmentRenderer(world.config)
+        created_textures: list[object] = []
+
+        class FakeSprite:
+            def __init__(self, texture: object) -> None:
+                self.texture = texture
+
+        original_make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        original_sprite = getattr(arcade, "Sprite", None)
+        arcade.make_circle_texture = (
+            lambda diameter, color, **kwargs: created_textures.append(
+                SimpleNamespace(diameter=diameter, color=color, kwargs=kwargs)
+            )
+            or created_textures[-1]
+        )
+        arcade.Sprite = FakeSprite
+
+        try:
+            sprite = renderer._create_food_sprite()
+        finally:
+            if original_make_circle_texture is None:
+                delattr(arcade, "make_circle_texture")
+            else:
+                arcade.make_circle_texture = original_make_circle_texture
+            if original_sprite is None:
+                delattr(arcade, "Sprite")
+            else:
+                arcade.Sprite = original_sprite
+
+        self.assertEqual(
+            created_textures[0].diameter,
+            renderer.FOOD_SPRITE_TEXTURE_DIAMETER,
+        )
+        self.assertGreater(created_textures[0].diameter, 2)
+        self.assertIs(sprite.texture, created_textures[0])
+
+    def test_food_batch_draws_sprites_without_immediate_fill(self) -> None:
+        world = self.make_world_shell()
+        renderer = EnvironmentRenderer(world.config)
+        foods = [
+            FakeFood(position=(0.0, 0.0)),
+            FakeFood(position=(1500.0, 1000.0)),
+        ]
+        fill_calls: list[object] = []
+        outline_calls: list[object] = []
+
+        class FakeSprite:
+            def __init__(self, texture: object) -> None:
+                self.texture = texture
+                self.center_x = 0.0
+                self.center_y = 0.0
+                self.width = 0.0
+                self.height = 0.0
+
+        class FakeSpriteList:
+            last_instance: "FakeSpriteList | None" = None
+
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+                self.sprites: list[FakeSprite] = []
+                self.draw_count = 0
+                FakeSpriteList.last_instance = self
+
+            def clear(self) -> None:
+                self.sprites.clear()
+
+            def append(self, sprite: FakeSprite) -> None:
+                self.sprites.append(sprite)
+
+            def draw(self) -> None:
+                self.draw_count += 1
+
+        original_get_window = getattr(arcade, "get_window", None)
+        original_make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        original_sprite = getattr(arcade, "Sprite", None)
+        original_sprite_list = getattr(arcade, "SpriteList", None)
+        original_draw_circle_filled = arcade.draw_circle_filled
+        original_draw_circle_outline = arcade.draw_circle_outline
+
+        arcade.get_window = lambda: object()
+        arcade.make_circle_texture = lambda *args, **kwargs: object()
+        arcade.Sprite = FakeSprite
+        arcade.SpriteList = FakeSpriteList
+        arcade.draw_circle_filled = lambda *args, **kwargs: fill_calls.append(args)
+        arcade.draw_circle_outline = lambda *args, **kwargs: outline_calls.append(args)
+
+        try:
+            renderer._draw_food(foods, world.layout.environment, world)
+        finally:
+            if original_get_window is None:
+                delattr(arcade, "get_window")
+            else:
+                arcade.get_window = original_get_window
+            if original_make_circle_texture is None:
+                delattr(arcade, "make_circle_texture")
+            else:
+                arcade.make_circle_texture = original_make_circle_texture
+            if original_sprite is None:
+                delattr(arcade, "Sprite")
+            else:
+                arcade.Sprite = original_sprite
+            if original_sprite_list is None:
+                delattr(arcade, "SpriteList")
+            else:
+                arcade.SpriteList = original_sprite_list
+            arcade.draw_circle_filled = original_draw_circle_filled
+            arcade.draw_circle_outline = original_draw_circle_outline
+
+        sprite_list = FakeSpriteList.last_instance
+        self.assertIsNotNone(sprite_list)
+        self.assertEqual(fill_calls, [])
+        self.assertEqual(len(outline_calls), 1)
+        self.assertEqual(len(sprite_list.sprites), 1)
+        self.assertEqual(sprite_list.draw_count, 1)
+
     def test_renderer_skips_biome_background_when_toggle_is_off(self) -> None:
         world = self.make_world_shell()
         world.show_biome_background = False
