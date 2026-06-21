@@ -612,20 +612,26 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.walls.proximity, 0.0)
         self.assertEqual(snapshot.walls.angle, 0.0)
 
-    def test_sensor_input_contract_includes_wall_and_grabbing_inputs(self) -> None:
+    def test_sensor_input_contract_includes_wall_grabbing_and_biome_inputs(self) -> None:
         inputs = self.sense_inputs(
             creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
             (0.0, 0.0, 100.0, 100.0),
         )
+        first_seventeen_inputs = inputs[:17]
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 17)
+        self.assertEqual(SENSOR_INPUT_COUNT, 21)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
-        self.assertAlmostEqual(inputs[0], 1.0)
-        self.assertAlmostEqual(inputs[1], 0.25)
-        self.assertAlmostEqual(inputs[3], 0.75)
-        self.assertAlmostEqual(inputs[14], 0.2)
-        self.assertAlmostEqual(inputs[15], 0.0)
-        self.assertAlmostEqual(inputs[16], 0.0)
+        self.assertAlmostEqual(first_seventeen_inputs[0], 1.0)
+        self.assertAlmostEqual(first_seventeen_inputs[1], 0.25)
+        self.assertAlmostEqual(first_seventeen_inputs[3], 0.75)
+        self.assertAlmostEqual(first_seventeen_inputs[14], 0.2)
+        self.assertAlmostEqual(first_seventeen_inputs[15], 0.0)
+        self.assertAlmostEqual(first_seventeen_inputs[16], 0.0)
+        for biome_value in inputs[17:20]:
+            self.assertGreaterEqual(biome_value, 0.0)
+            self.assertLessEqual(biome_value, 1.0)
+        self.assertGreaterEqual(inputs[20], -1.0)
+        self.assertLessEqual(inputs[20], 1.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:
         snapshot = self.vision.sense(
@@ -638,7 +644,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.is_grabbing, 1.0)
-        self.assertEqual(snapshot.as_inputs()[-1], 1.0)
+        self.assertEqual(snapshot.as_inputs()[16], 1.0)
 
 
 if __name__ == "__main__":

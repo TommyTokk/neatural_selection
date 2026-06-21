@@ -49,6 +49,20 @@ class BiomeMap:
     def spawn_weight_at(self, x: float, y: float) -> float:
         return self.spawn_weights[self.biome_at(x, y)]
 
+    def fertility_at(self, x: float, y: float) -> float:
+        weights = [max(0.0, weight) for weight in self.spawn_weights.values()]
+        min_weight = min(weights, default=0.0)
+        max_weight = max(weights, default=0.0)
+        current_weight = max(0.0, self.spawn_weight_at(x, y))
+        denominator = max_weight - min_weight
+
+        if denominator <= 0.0:
+            normalized_fertility = 1.0
+        else:
+            normalized_fertility = (current_weight - min_weight) / denominator
+
+        return max(0.0, min(1.0, normalized_fertility))
+
     def _cell_for_world_position(self, x: float, y: float) -> tuple[int, int]:
         left, bottom, right, top = self.world_bounds
         width = max(0.0001, right - left)

@@ -23,7 +23,7 @@ from src.fitness import CreatureFitness
 from src.food import Food
 from src.food_spawner import FoodSpawner
 from src.metabolism import Metabolism
-from src.vision import SensorSnapshot, VisionSystem
+from src.vision import BiomeSensorSnapshot, SensorSnapshot, VisionSystem
 from src.controller import BaselineFoodController
 from src.neat_controller import NeatBrainController
 from src.rt_neat import RtNeatManager
@@ -124,6 +124,9 @@ class World:
         self.biome_map = BiomeGenerationHandler(config.biome).generate(
             self.environment_world_bounds
         )
+        self._previous_biome_here_by_creature_id: dict[int, float] = {}
+        for creature in self.creatures:
+            self._activate_creature_biome_memory(creature)
         self.food_spawner = FoodSpawner(config.food, self.rng, self.biome_map)
         self.foods: list[Food] = []
         self._held_food_by_creature_id: dict[int, int] = {}
@@ -349,6 +352,33 @@ class World:
                 return creature
         return None
 
+    def biome_sensor_positions_for(
+        self,
+        creature: Creature,
+    ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+        center_x, center_y = creature.position
+        heading_x = cos(creature.heading)
+        heading_y = sin(creature.heading)
+        left_x = -heading_y
+        left_y = heading_x
+        right_x = heading_y
+        right_y = -heading_x
+        forward_distance = max(0.0, self.config.biome_sensor.forward_distance)
+        side_offset = max(0.0, self.config.biome_sensor.side_offset)
+
+        here = (center_x, center_y)
+        forward_x = heading_x * forward_distance
+        forward_y = heading_y * forward_distance
+        forward_left = (
+            center_x + forward_x + left_x * side_offset,
+            center_y + forward_y + left_y * side_offset,
+        )
+        forward_right = (
+            center_x + forward_x + right_x * side_offset,
+            center_y + forward_y + right_y * side_offset,
+        )
+        return here, forward_left, forward_right
+
     def sensor_snapshot_for(self, creature: Creature) -> SensorSnapshot:
         return self._sensor_snapshot_for(creature, record_food_discoveries=False)
 
@@ -393,21 +423,69 @@ class World:
                 ignored_food_ids=ignored_food_ids,
             )
             self._record_food_discoveries(creature, result.visible_food_ids)
-            return result.snapshot
+            snapshot = result.snapshot
+        else:
+            snapshot = self.vision.sense(
+                creature,
+                nearby_foods,
+                self.creatures,
+                self.environment_world_bounds,
+                self.MAX_SPEED,
+                maturity=maturity,
+                clock_tik_tok=clock_tik_tok,
+                clock_chronometer=clock_chronometer,
+                clock_time_alive=clock_time_alive,
+                is_grabbing=is_grabbing,
+                ignored_food_ids=ignored_food_ids,
+            )
 
-        return self.vision.sense(
-            creature,
-            nearby_foods,
-            self.creatures,
-            self.environment_world_bounds,
-            self.MAX_SPEED,
-            maturity=maturity,
-            clock_tik_tok=clock_tik_tok,
-            clock_chronometer=clock_chronometer,
-            clock_time_alive=clock_time_alive,
-            is_grabbing=is_grabbing,
-            ignored_food_ids=ignored_food_ids,
+        snapshot.biome = self._biome_sensor_snapshot_for(creature)
+        return snapshot
+
+    def _biome_sensor_snapshot_for(self, creature: Creature) -> BiomeSensorSnapshot:
+        here, forward_left, forward_right = self.biome_sensor_positions_for(creature)
+        biome_here = self._biome_fertility_at(*here)
+        previous_by_id = getattr(self, "_previous_biome_here_by_creature_id", {})
+        previous_biome_here = previous_by_id.get(creature.creature_id)
+        raw_delta = (
+            0.0 if previous_biome_here is None else biome_here - previous_biome_here
         )
+        biome_delta = self._clamp(
+            raw_delta * self.config.biome_sensor.delta_scale,
+            -1.0,
+            1.0,
+        )
+
+        return BiomeSensorSnapshot(
+            here=biome_here,
+            forward_left=self._biome_fertility_at(*forward_left),
+            forward_right=self._biome_fertility_at(*forward_right),
+            delta=biome_delta,
+        )
+
+    def _activate_creature_biome_memory(self, creature: Creature) -> None:
+        if not hasattr(self, "_previous_biome_here_by_creature_id"):
+            self._previous_biome_here_by_creature_id = {}
+        self._previous_biome_here_by_creature_id[creature.creature_id] = (
+            self._biome_fertility_at(*creature.position)
+        )
+
+    def _advance_biome_memory(
+        self,
+        creature: Creature,
+        snapshot: SensorSnapshot,
+    ) -> None:
+        if not hasattr(self, "_previous_biome_here_by_creature_id"):
+            self._previous_biome_here_by_creature_id = {}
+        self._previous_biome_here_by_creature_id[creature.creature_id] = (
+            snapshot.biome.here
+        )
+
+    def _biome_fertility_at(self, x: float, y: float) -> float:
+        biome_map = getattr(self, "biome_map", None)
+        if biome_map is None:
+            return 0.0
+        return self._clamp(float(biome_map.fertility_at(x, y)), 0.0, 1.0)
 
     def visible_foods_for(self, creature: Creature) -> list[Food]:
         nearby_foods = self._nearby_foods_for(
@@ -818,6 +896,8 @@ class World:
                     stabilize_velocity=snapshot.food.visible > 0.0,
                     apply_stabilizers=True,
                 )
+
+            self._advance_biome_memory(creature, snapshot)
 
     def _apply_action(
         self,
@@ -1360,6 +1440,9 @@ class World:
             self.selected_creature_id = None
 
         self._chronometers.pop(creature.creature_id, None)
+        previous_biome = getattr(self, "_previous_biome_here_by_creature_id", None)
+        if previous_biome is not None:
+            previous_biome.pop(creature.creature_id, None)
 
     def _archive_creature_traits(self, creature: Creature) -> None:
         genome_id_for = getattr(self.neat_controller, "genome_id_for", None)
@@ -1489,6 +1572,7 @@ class World:
                 continue
 
             self.creatures.append(child)
+            self._activate_creature_biome_memory(child)
             self.fitness[child_id] = CreatureFitness()
             self._chronometers[child_id] = 0.0
             recovered_count += 1
@@ -1569,6 +1653,7 @@ class World:
             return False
 
         self.creatures.append(child)
+        self._activate_creature_biome_memory(child)
         self.fitness[child_id] = CreatureFitness()
         self._chronometers[child_id] = 0.0
 

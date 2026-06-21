@@ -96,6 +96,13 @@ class BiomeConfig:
 
 
 @dataclass(slots=True)
+class BiomeSensorConfig:
+    forward_distance: float = 48.0
+    side_offset: float = 24.0
+    delta_scale: float = 10.0
+
+
+@dataclass(slots=True)
 class ZoomConfig:
     default: float = 1.0
     minimum: float = 0.3
@@ -279,6 +286,9 @@ class SimConfig:
 
     # Food config
     food: FoodConfig = field(default_factory=FoodConfig)
+
+    # Biome smell sensor config
+    biome_sensor: BiomeSensorConfig = field(default_factory=BiomeSensorConfig)
 
 
 def build_sim_config() -> SimConfig:

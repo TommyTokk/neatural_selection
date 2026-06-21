@@ -18,7 +18,9 @@ class BaselineFoodController:
         self.rng = rng if rng is not None else Random(17)
         self._scavenge_states: dict[int, ScavengeState] = {}
 
-    def decide(self, snapshot: SensorSnapshot, creature_id: int | None = None) -> Action:
+    def decide(
+        self, snapshot: SensorSnapshot, creature_id: int | None = None
+    ) -> Action:
         state_id = 0 if creature_id is None else creature_id
 
         # Get the visible foods

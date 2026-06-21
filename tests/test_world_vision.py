@@ -45,6 +45,7 @@ for optional_module in ("neat", "pymunk"):
         sys.modules[optional_module] = ModuleType(optional_module)
 
 from configs.sim_config import build_sim_config
+from src.action import Action
 from src.creature import PhysicalTraits, VisionTraits
 from src.vision import (
     BoundarySnapshot,
@@ -120,6 +121,15 @@ class FakeVisionSystem:
             clock_time_alive=0.0,
             is_grabbing=0.0,
         )
+
+
+class FakeBiomeMap:
+    def __init__(self, fertility: float = 0.0) -> None:
+        self.fertility = fertility
+
+    def fertility_at(self, x: float, y: float) -> float:
+        del x, y
+        return self.fertility
 
 
 class WorldVisionMutationTest(unittest.TestCase):
@@ -201,6 +211,8 @@ class WorldVisionMutationTest(unittest.TestCase):
         fitness = FakeFitness()
         creature = SimpleNamespace(
             creature_id=1,
+            position=(0.0, 0.0),
+            heading=0.0,
             vision=SimpleNamespace(range=120.0),
             energy=1.0,
         )
@@ -215,6 +227,108 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertEqual(fitness.discovered_food_ids, [101, 202])
         self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 1)
         self.assertEqual(world.vision.sense_calls, 0)
+
+    def test_biome_memory_activation_overwrites_reused_creature_id(self) -> None:
+        world = self.make_world_for_biome_sensors(fertility=0.7)
+        world._previous_biome_here_by_creature_id = {1: 0.1}
+        creature = self.biome_sensor_creature()
+
+        world._activate_creature_biome_memory(creature)
+
+        self.assertAlmostEqual(world._previous_biome_here_by_creature_id[1], 0.7)
+
+    def test_first_biome_sensor_tick_delta_is_zero(self) -> None:
+        world = self.make_world_for_biome_sensors(fertility=0.8)
+        creature = self.biome_sensor_creature()
+        world._activate_creature_biome_memory(creature)
+
+        snapshot = world._sensor_snapshot_for(
+            creature,
+            record_food_discoveries=False,
+        )
+
+        self.assertAlmostEqual(snapshot.biome.here, 0.8)
+        self.assertAlmostEqual(snapshot.biome.delta, 0.0)
+
+    def test_read_only_biome_sensor_snapshot_does_not_mutate_memory(self) -> None:
+        world = self.make_world_for_biome_sensors(fertility=0.9)
+        creature = self.biome_sensor_creature()
+        world._previous_biome_here_by_creature_id = {1: 0.2}
+
+        first_snapshot = world._sensor_snapshot_for(
+            creature,
+            record_food_discoveries=False,
+        )
+        second_snapshot = world._sensor_snapshot_for(
+            creature,
+            record_food_discoveries=False,
+        )
+
+        self.assertAlmostEqual(world._previous_biome_here_by_creature_id[1], 0.2)
+        self.assertAlmostEqual(first_snapshot.biome.delta, 1.0)
+        self.assertAlmostEqual(second_snapshot.biome.delta, 1.0)
+
+    def test_creature_intent_tick_advances_biome_memory_once(self) -> None:
+        world = self.make_world_for_biome_sensors(fertility=0.85)
+        creature = self.biome_sensor_creature()
+        world.creatures = [creature]
+        world._previous_biome_here_by_creature_id = {1: 0.2}
+        world.use_neat_brains = True
+        world.neat_controller = SimpleNamespace(
+            decide=lambda creature_id, snapshot: Action(
+                accelerate=0.0,
+                rotate=0.0,
+                want_reproduce=0.0,
+                want_eat=0.0,
+                reset_chronometer=0.0,
+                want_grab=0.0,
+                want_release=0.0,
+            )
+        )
+        world._last_actions = {}
+        world._apply_carry_intent = lambda creature, action: None
+        world._apply_action = lambda *args, **kwargs: None
+
+        world._apply_creature_intents()
+
+        self.assertAlmostEqual(world._previous_biome_here_by_creature_id[1], 0.85)
+
+    def test_east_facing_biome_sensors_use_y_up_left_right_orientation(self) -> None:
+        world = self.make_world_for_biome_sensors()
+        creature = self.biome_sensor_creature(position=(0.0, 0.0), heading=0.0)
+
+        _here, forward_left, forward_right = world.biome_sensor_positions_for(creature)
+
+        self.assertGreater(forward_left[1], forward_right[1])
+
+    def make_world_for_biome_sensors(self, fertility: float = 0.0) -> World:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.creatures = []
+        world._held_food_by_creature_id = {}
+        world._chronometers = {}
+        world._nearby_foods_for = lambda creature, radius: []
+        world._ignored_food_ids_for = lambda creature: set()
+        world.MAX_SPEED = 170.0
+        world.vision = FakeVisionSystem()
+        world.fitness = {1: FakeFitness()}
+        world.biome_map = FakeBiomeMap(fertility)
+        world._previous_biome_here_by_creature_id = {}
+        return world
+
+    def biome_sensor_creature(
+        self,
+        *,
+        position: tuple[float, float] = (0.0, 0.0),
+        heading: float = 0.0,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            creature_id=1,
+            position=position,
+            heading=heading,
+            vision=SimpleNamespace(range=120.0),
+            energy=1.0,
+        )
 
 
 if __name__ == "__main__":

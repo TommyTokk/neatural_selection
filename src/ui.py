@@ -2420,12 +2420,12 @@ class UiRenderer:
             return values[index] if index < len(values) else 0.0
 
         return (
-            f"F {value(10, inputs):.2f}/{value(11, inputs):.2f}/"
-            f"{value(12, inputs):.2f}  "
-            f"C {value(13, inputs):.2f}/{value(14, inputs):.2f}/"
-            f"{value(15, inputs):.2f}  "
-            f"W {value(16, inputs):.2f}/{value(17, inputs):.2f}/"
-            f"{value(18, inputs):.2f}  "
+            f"F {value(10, inputs):.2f}/{value(11, inputs):.2f}  "
+            f"C {value(12, inputs):.2f}/{value(13, inputs):.2f}  "
+            f"W {value(14, inputs):.2f}/{value(15, inputs):.2f}  "
+            f"G {value(16, inputs):.2f}  "
+            f"B {value(17, inputs):.2f}/{value(18, inputs):.2f}/"
+            f"{value(19, inputs):.2f}/{value(20, inputs):.2f}  "
             f"E {value(3, inputs):.2f}"
         )
 

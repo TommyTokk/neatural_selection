@@ -521,6 +521,7 @@ class EnvironmentRenderer:
 
         if world.debug_vision_enabled:
             self._draw_vision_cone(selected, bounds, world)
+            self._draw_biome_sensor_markers(selected, bounds, world)
             self._draw_visible_food_highlights(
                 world.visible_foods_for(selected),
                 bounds,
@@ -551,6 +552,30 @@ class EnvironmentRenderer:
 
         arcade.draw_polygon_filled(eye_cone_points, self.theme.vision_fill)
         arcade.draw_polygon_outline(eye_cone_points, (111, 220, 128, 132), 1)
+
+    def _draw_biome_sensor_markers(
+        self,
+        creature: Creature,
+        bounds: arcade.Rect,
+        world: World,
+    ) -> None:
+        sensor_positions_for = getattr(world, "biome_sensor_positions_for", None)
+        if sensor_positions_for is None:
+            return
+
+        colors = (
+            (255, 255, 255, 210),
+            (110, 220, 180, 210),
+            (110, 180, 255, 210),
+        )
+        zoom = world.environment_zoom
+        radius = max(3.0, 4.5 * zoom)
+        for position, color in zip(sensor_positions_for(creature), colors):
+            draw_x, draw_y = world.environment_to_screen(*position)
+            if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
+                continue
+            arcade.draw_circle_filled(draw_x, draw_y, radius, color)
+            arcade.draw_circle_outline(draw_x, draw_y, radius + 2.0, color, 1)
 
     def _vision_cone_points(
         self,

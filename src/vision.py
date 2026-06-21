@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import atan2, cos, hypot, pi, sin
 
 from configs.sim_config import MetabolismConfig, VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 17
+SENSOR_INPUT_COUNT = 21
 SENSOR_INPUT_NAMES = (
     "constant",
     "hungriness",
@@ -26,6 +26,10 @@ SENSOR_INPUT_NAMES = (
     "wall_proximity",
     "wall_angle",
     "is_grabbing",
+    "biome_fertility_here",
+    "biome_fertility_forward_left",
+    "biome_fertility_forward_right",
+    "biome_fertility_delta",
 )
 
 
@@ -42,6 +46,14 @@ class VisionTargetSnapshot:
 class BoundarySnapshot:
     pressure: float
     turn: float
+
+
+@dataclass(slots=True)
+class BiomeSensorSnapshot:
+    here: float = 0.0
+    forward_left: float = 0.0
+    forward_right: float = 0.0
+    delta: float = 0.0
 
 
 @dataclass(slots=True)
@@ -72,8 +84,11 @@ class SensorSnapshot:
     clock_chronometer: float
     clock_time_alive: float
     is_grabbing: float
+    biome: BiomeSensorSnapshot = field(default_factory=BiomeSensorSnapshot)
 
     def as_inputs(self) -> list[float]:
+        # Inputs 18-21 are body-relative biome smell samples, not a direct
+        # mathematical gradient.
         return [
             1.0,  # constant
             1.0 - self.energy,  # hungriness
@@ -92,6 +107,10 @@ class SensorSnapshot:
             self.walls.proximity,
             self.walls.angle,
             self.is_grabbing,
+            self.biome.here,
+            self.biome.forward_left,
+            self.biome.forward_right,
+            self.biome.delta,
         ]
 
 

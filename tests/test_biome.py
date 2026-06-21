@@ -64,6 +64,51 @@ class BiomeGenerationHandlerTest(unittest.TestCase):
         self.assertEqual(biome_map.biome_at(100.0, 100.0), Biome.BUSHES)
         self.assertEqual(biome_map.biome_at(5.0, 8.0), Biome.FOREST)
 
+    def test_fertility_uses_resource_spawn_weights(self) -> None:
+        biome_map = self._three_vertical_biome_map()
+
+        prairie = biome_map.fertility_at(-1000.0, 0.0)
+        bushes = biome_map.fertility_at(0.0, 0.0)
+        forest = biome_map.fertility_at(1000.0, 0.0)
+
+        self.assertGreaterEqual(prairie, 0.0)
+        self.assertLessEqual(forest, 1.0)
+        self.assertLess(prairie, bushes)
+        self.assertLess(bushes, forest)
+
+    def test_fertility_equal_spawn_weights_use_safe_fallback(self) -> None:
+        biome_map = replace(
+            self._three_vertical_biome_map(),
+            spawn_weights={biome: 1.0 for biome in Biome},
+        )
+
+        self.assertEqual(biome_map.fertility_at(-1000.0, 0.0), 1.0)
+        self.assertEqual(biome_map.fertility_at(0.0, 0.0), 1.0)
+        self.assertEqual(biome_map.fertility_at(1000.0, 0.0), 1.0)
+
+    def _three_vertical_biome_map(self) -> BiomeMap:
+        biome_ids = np.array(
+            [[Biome.PRAIRIE, Biome.BUSHES, Biome.FOREST]],
+            dtype=np.uint8,
+        )
+        return BiomeMap(
+            biome_ids=biome_ids,
+            render_rgba=np.zeros((1, 3, 4), dtype=np.uint8),
+            world_bounds=WORLD_BOUNDS,
+            area_shares={
+                Biome.PRAIRIE: 1.0 / 3.0,
+                Biome.BUSHES: 1.0 / 3.0,
+                Biome.FOREST: 1.0 / 3.0,
+            },
+            spawn_weights={
+                Biome.FOREST: 2.75,
+                Biome.BUSHES: 1.25,
+                Biome.PRAIRIE: 0.25,
+            },
+            uniform_spawn_chance=0.0,
+            max_spawn_attempts=32,
+        )
+
 
 class FoodSpawnerBiomePlacementTest(unittest.TestCase):
     def test_biome_weighted_spawn_positions_favor_food_rich_regions(self) -> None:

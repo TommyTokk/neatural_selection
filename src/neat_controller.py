@@ -92,7 +92,9 @@ class NeatBrainController:
     def brain_for(self, creature_id: int) -> NeatBrain | None:
         return self.brains.get(creature_id)
 
-    def create_child_brain(self, parent_creature_id: int, child_creature_id: int) -> bool:
+    def create_child_brain(
+        self, parent_creature_id: int, child_creature_id: int
+    ) -> bool:
         parent_brain = self.brains.get(parent_creature_id)
         if parent_brain is None:
             return False
@@ -131,12 +133,9 @@ class NeatBrainController:
             key=lambda genome: genome.fitness,
             reverse=True,
         )[:count]
-    
+
     def _next_genome_id(self) -> int:
-        genome_ids = [
-            brain.genome_id
-            for brain in self.brains.values()
-        ]
+        genome_ids = [brain.genome_id for brain in self.brains.values()]
         population_ids = list(self.population.population.keys())
         return max([0, *genome_ids, *population_ids]) + 1
 
