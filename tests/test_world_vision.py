@@ -97,9 +97,8 @@ class FakeVisionSystem:
     def _snapshot(self) -> SensorSnapshot:
         empty = VisionTargetSnapshot(
             visible=0.0,
-            proximity_left=0.0,
-            proximity_center=0.0,
-            proximity_right=0.0,
+            proximity=0.0,
+            angle=0.0,
             density=0.0,
             count=0,
         )

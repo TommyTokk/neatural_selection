@@ -428,7 +428,7 @@ class WorldCameraTest(unittest.TestCase):
 
         self.assertEqual(draw_calls, [world.layout.environment])
 
-    def test_debug_vision_cone_draws_three_colored_sectors(self) -> None:
+    def test_debug_vision_cone_draws_single_unified_cone(self) -> None:
         world = self.make_world_shell()
         renderer = EnvironmentRenderer(world.config)
         creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
@@ -446,16 +446,8 @@ class WorldCameraTest(unittest.TestCase):
             arcade.draw_polygon_filled = original_draw_polygon_filled
             arcade.draw_polygon_outline = original_draw_polygon_outline
 
-        sector_colors = [color for _, color in fills[:3]]
-        self.assertEqual(
-            sector_colors,
-            [
-                (91, 160, 255, 44),
-                (111, 220, 128, 52),
-                (246, 190, 86, 44),
-            ],
-        )
-        self.assertEqual(len({tuple(color) for color in sector_colors}), 3)
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0][1], world.config.theme.vision_fill)
 
     def test_renderer_reuses_biome_texture_across_view_changes(self) -> None:
         world = self.make_world_shell()

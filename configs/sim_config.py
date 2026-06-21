@@ -164,6 +164,7 @@ class TraitConfig:
 class VisionConfig:
     default_range: float = 98.0
     default_angle: float = 0.95
+    fovea_ratio: float = 0.33
 
     min_range: float = 90.0
     max_range: float = 160.0

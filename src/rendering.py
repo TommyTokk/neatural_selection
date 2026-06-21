@@ -548,45 +548,9 @@ class EnvironmentRenderer:
         )
 
         eye_cone_points = self._vision_cone_points(creature, eye_origin, zoom)
-        blind_zone_points = self._mouth_blind_zone_points(creature, world)
 
-        for sector_points, color in self._vision_sector_polygons(
-            creature,
-            eye_origin,
-            zoom,
-        ):
-            arcade.draw_polygon_filled(sector_points, color)
-
-        arcade.draw_polygon_filled(blind_zone_points, (224, 74, 74, 76))
+        arcade.draw_polygon_filled(eye_cone_points, self.theme.vision_fill)
         arcade.draw_polygon_outline(eye_cone_points, (111, 220, 128, 132), 1)
-        arcade.draw_polygon_outline(blind_zone_points, (224, 74, 74, 142), 2)
-
-    def _vision_sector_polygons(
-        self,
-        creature: Creature,
-        origin: tuple[float, float],
-        zoom: float,
-    ) -> list[tuple[list[tuple[float, float]], tuple[int, int, int, int]]]:
-        return [
-            (
-                self._vision_cone_points(creature, origin, zoom, 0.0, 1.0 / 3.0),
-                (91, 160, 255, 44),
-            ),
-            (
-                self._vision_cone_points(
-                    creature,
-                    origin,
-                    zoom,
-                    1.0 / 3.0,
-                    2.0 / 3.0,
-                ),
-                (111, 220, 128, 52),
-            ),
-            (
-                self._vision_cone_points(creature, origin, zoom, 2.0 / 3.0, 1.0),
-                (246, 190, 86, 44),
-            ),
-        ]
 
     def _vision_cone_points(
         self,
@@ -616,47 +580,6 @@ class EnvironmentRenderer:
             )
 
         return points
-
-    def _mouth_blind_zone_points(
-        self,
-        creature: Creature,
-        world: World,
-    ) -> list[tuple[float, float]]:
-        center_x, center_y = creature.position
-        heading = creature.heading
-        zoom = world.environment_zoom
-
-        mouth_x = center_x + cos(heading) * creature.radius
-        mouth_y = center_y + sin(heading) * creature.radius
-        origin_x, origin_y = world.environment_to_screen(mouth_x, mouth_y)
-
-        forward_x = cos(heading) * zoom
-        forward_y = sin(heading) * zoom
-        lateral_x = -sin(heading) * zoom
-        lateral_y = cos(heading) * zoom
-
-        rear_length = max(4.0, creature.radius * 0.45)
-        half_width = max(2.0, creature.radius * 0.35)
-        half_width += max(1.0, creature.radius * 0.2)
-
-        return [
-            (
-                origin_x + lateral_x * half_width,
-                origin_y + lateral_y * half_width,
-            ),
-            (
-                origin_x - lateral_x * half_width,
-                origin_y - lateral_y * half_width,
-            ),
-            (
-                origin_x - forward_x * rear_length - lateral_x * half_width,
-                origin_y - forward_y * rear_length - lateral_y * half_width,
-            ),
-            (
-                origin_x - forward_x * rear_length + lateral_x * half_width,
-                origin_y - forward_y * rear_length + lateral_y * half_width,
-            ),
-        ]
 
     def _draw_visible_food_highlights(
         self,

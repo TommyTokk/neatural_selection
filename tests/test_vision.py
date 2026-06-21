@@ -73,7 +73,7 @@ def creature_at(
     )
 
 
-class VisionOcclusionTest(unittest.TestCase):
+class VisionVisibilityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.vision = VisionSystem(VisionConfig())
 
@@ -92,7 +92,7 @@ class VisionOcclusionTest(unittest.TestCase):
             max_speed=100.0,
         )
 
-    def test_creature_directly_behind_creature_is_occluded(self) -> None:
+    def test_creature_directly_behind_creature_remains_visible(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
         front = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         behind = creature_at((60.0, 0.0), radius=10.0, creature_id=3)
@@ -102,13 +102,12 @@ class VisionOcclusionTest(unittest.TestCase):
             creatures=[observer, front, behind],
         )
 
-        self.assertEqual(snapshot.creatures.count, 1)
-        self.assertGreater(snapshot.creatures.proximity_center, 0.0)
-        self.assertGreater(snapshot.creatures.proximity_left, 0.0)
-        self.assertGreater(snapshot.creatures.proximity_right, 0.0)
+        self.assertEqual(snapshot.creatures.count, 2)
+        self.assertGreater(snapshot.creatures.proximity, 0.0)
+        self.assertAlmostEqual(snapshot.creatures.angle, 0.0)
         self.assertEqual(
             self.vision.visible_creatures(observer, [observer, front, behind]),
-            [front],
+            [front, behind],
         )
 
     def test_partly_exposed_creature_remains_visible(self) -> None:
@@ -127,7 +126,7 @@ class VisionOcclusionTest(unittest.TestCase):
             [front, offset],
         )
 
-    def test_food_behind_creature_is_occluded(self) -> None:
+    def test_food_behind_creature_remains_visible(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         hidden_food = FakeFood(id=1, position=(60.0, 0.0), radius=5.0)
@@ -138,13 +137,13 @@ class VisionOcclusionTest(unittest.TestCase):
             creatures=[observer, blocker],
         )
 
-        self.assertEqual(snapshot.food.count, 0)
+        self.assertEqual(snapshot.food.count, 1)
         self.assertEqual(
             self.vision.visible_foods(observer, [hidden_food], [observer, blocker]),
-            [],
+            [hidden_food],
         )
 
-    def test_creature_behind_food_is_occluded(self) -> None:
+    def test_creature_behind_food_remains_visible(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker_food = FakeFood(id=1, position=(30.0, 0.0), radius=10.0)
         hidden_creature = creature_at((60.0, 0.0), radius=5.0, creature_id=2)
@@ -155,30 +154,30 @@ class VisionOcclusionTest(unittest.TestCase):
             creatures=[observer, hidden_creature],
         )
 
-        self.assertEqual(snapshot.creatures.count, 0)
+        self.assertEqual(snapshot.creatures.count, 1)
         self.assertEqual(
             self.vision.visible_creatures(
                 observer,
                 [observer, hidden_creature],
                 [blocker_food],
             ),
-            [],
+            [hidden_creature],
         )
 
-    def test_food_behind_food_is_occluded(self) -> None:
+    def test_food_behind_food_remains_visible(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker_food = FakeFood(id=1, position=(30.0, 0.0), radius=10.0)
         hidden_food = FakeFood(id=2, position=(60.0, 0.0), radius=5.0)
 
         snapshot = self.sense_snapshot(observer, foods=[blocker_food, hidden_food])
 
-        self.assertEqual(snapshot.food.count, 1)
+        self.assertEqual(snapshot.food.count, 2)
         self.assertEqual(
             self.vision.visible_foods(observer, [blocker_food, hidden_food]),
-            [blocker_food],
+            [blocker_food, hidden_food],
         )
 
-    def test_ignored_food_does_not_occlude_food_behind_it(self) -> None:
+    def test_ignored_food_is_not_reported(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
         carried_food = FakeFood(id=1, position=(30.0, 0.0), radius=10.0)
         visible_food = FakeFood(id=2, position=(60.0, 0.0), radius=5.0)
@@ -203,7 +202,7 @@ class VisionOcclusionTest(unittest.TestCase):
         )
 
 
-class VisionEyeOriginBlindZoneTest(unittest.TestCase):
+class VisionEyeOriginTest(unittest.TestCase):
     def setUp(self) -> None:
         self.metabolism_config = MetabolismConfig()
         self.vision = VisionSystem(
@@ -225,14 +224,14 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
             max_speed=100.0,
         )
 
-    def test_side_body_food_inside_blind_zone_is_not_visible(self) -> None:
+    def test_side_body_food_inside_cone_is_visible(self) -> None:
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         side_food = FakeFood(id=1, position=(10.0, 8.0), radius=3.0)
 
         snapshot = self.sense_snapshot(creature, [side_food])
 
-        self.assertEqual(snapshot.food.count, 0)
-        self.assertEqual(self.vision.visible_foods(creature, [side_food]), [])
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertEqual(self.vision.visible_foods(creature, [side_food]), [side_food])
 
     def test_food_directly_in_mouth_path_remains_visible(self) -> None:
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
@@ -247,12 +246,11 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.food.count, 1)
-        self.assertGreater(snapshot.food.proximity_center, 0.0)
-        self.assertGreater(snapshot.food.proximity_left, 0.0)
-        self.assertGreater(snapshot.food.proximity_right, 0.0)
+        self.assertAlmostEqual(snapshot.food.proximity, 1.0)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
         self.assertEqual(self.vision.visible_foods(creature, [mouth_food]), [mouth_food])
 
-    def test_food_at_mouth_threshold_bypasses_blind_zone(self) -> None:
+    def test_food_at_mouth_threshold_remains_visible(self) -> None:
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         mouth_food = FakeFood(id=1, position=(10.0, 0.0), radius=3.0)
 
@@ -265,16 +263,8 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.food.count, 1)
-        self.assertGreater(snapshot.food.proximity_left, 0.0)
-        self.assertGreater(snapshot.food.proximity_center, 0.0)
-        self.assertGreater(snapshot.food.proximity_right, 0.0)
-        self.assertFalse(
-            self.vision._food_in_mouth_blind_zone(
-                creature,
-                mouth_food.position,
-                mouth_food.radius,
-            )
-        )
+        self.assertAlmostEqual(snapshot.food.proximity, 1.0)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
     def test_touch_exemption_matches_metabolism_mouth_overlap(self) -> None:
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
@@ -299,7 +289,7 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
                     self.metabolism.food_overlaps_mouth(creature, food),
                 )
 
-    def test_lateral_mouth_contact_activates_all_food_sectors(self) -> None:
+    def test_lateral_mouth_contact_drives_straight(self) -> None:
         creature = creature_at(
             (0.0, 0.0),
             radius=16.0,
@@ -312,11 +302,10 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
 
         self.assertEqual(snapshot.food.count, 1)
         self.assertEqual(self.vision.visible_foods(creature, [mouth_food]), [mouth_food])
-        self.assertAlmostEqual(snapshot.food.proximity_left, 1.0)
-        self.assertAlmostEqual(snapshot.food.proximity_center, 1.0)
-        self.assertAlmostEqual(snapshot.food.proximity_right, 1.0)
+        self.assertAlmostEqual(snapshot.food.proximity, 1.0)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
-    def test_narrow_fov_mouth_contact_activates_all_food_sectors(self) -> None:
+    def test_narrow_fov_mouth_contact_drives_straight(self) -> None:
         creature = creature_at(
             (0.0, 0.0),
             radius=22.0,
@@ -329,9 +318,8 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
 
         self.assertEqual(snapshot.food.count, 1)
         self.assertEqual(self.vision.visible_foods(creature, [mouth_food]), [mouth_food])
-        self.assertAlmostEqual(snapshot.food.proximity_left, 1.0)
-        self.assertAlmostEqual(snapshot.food.proximity_center, 1.0)
-        self.assertAlmostEqual(snapshot.food.proximity_right, 1.0)
+        self.assertAlmostEqual(snapshot.food.proximity, 1.0)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
     def test_baseline_controller_drives_straight_for_mouth_contact_food(self) -> None:
         creature = creature_at(
@@ -357,6 +345,77 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
         self.assertAlmostEqual(action.rotate, 0.0)
         self.assertAlmostEqual(action.accelerate, 1.0)
 
+    def test_mouth_contact_food_does_not_hide_farther_food(self) -> None:
+        creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
+        mouth_food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
+        farther_food = FakeFood(id=2, position=(40.0, 0.0), radius=4.0)
+
+        snapshot = self.sense_snapshot(creature, [mouth_food, farther_food])
+
+        self.assertEqual(snapshot.food.count, 2)
+        self.assertAlmostEqual(snapshot.food.proximity, 1.0)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
+        self.assertEqual(
+            self.vision.visible_foods(creature, [mouth_food, farther_food]),
+            [mouth_food, farther_food],
+        )
+
+    def test_mouth_contact_food_does_not_hide_farther_creature(self) -> None:
+        creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
+        mouth_food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
+        farther_creature = creature_at((40.0, 0.0), radius=5.0, creature_id=2)
+
+        snapshot = self.vision.sense(
+            creature,
+            foods=[mouth_food],
+            creatures=[creature, farther_creature],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertEqual(snapshot.creatures.count, 1)
+        self.assertEqual(
+            self.vision.visible_creatures(
+                creature,
+                [creature, farther_creature],
+                [mouth_food],
+            ),
+            [farther_creature],
+        )
+
+    def test_zero_vision_range_returns_empty_targets(self) -> None:
+        creature = creature_at((0.0, 0.0), radius=10.0, vision_range=0.0)
+        food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
+        other = creature_at((10.0, 0.0), radius=3.0, creature_id=2)
+
+        snapshot = self.vision.sense(
+            creature,
+            foods=[food],
+            creatures=[creature, other],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertEqual(snapshot.food.count, 0)
+        self.assertEqual(snapshot.creatures.count, 0)
+
+    def test_zero_vision_angle_returns_empty_targets(self) -> None:
+        creature = creature_at((0.0, 0.0), radius=10.0, vision_angle=0.0)
+        food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
+        other = creature_at((10.0, 0.0), radius=3.0, creature_id=2)
+
+        snapshot = self.vision.sense(
+            creature,
+            foods=[food],
+            creatures=[creature, other],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertEqual(snapshot.food.count, 0)
+        self.assertEqual(snapshot.creatures.count, 0)
+
     def test_forward_food_near_mouth_remains_visible(self) -> None:
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         forward_food = FakeFood(id=1, position=(17.0, 0.0), radius=3.0)
@@ -364,9 +423,8 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
         snapshot = self.sense_snapshot(creature, [forward_food])
 
         self.assertEqual(snapshot.food.count, 1)
-        self.assertGreater(snapshot.food.proximity_center, 0.0)
-        self.assertEqual(snapshot.food.proximity_left, 0.0)
-        self.assertEqual(snapshot.food.proximity_right, 0.0)
+        self.assertGreater(snapshot.food.proximity, 0.0)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
         self.assertEqual(
             self.vision.visible_foods(creature, [forward_food]),
             [forward_food],
@@ -379,57 +437,95 @@ class VisionEyeOriginBlindZoneTest(unittest.TestCase):
         snapshot = self.sense_snapshot(creature, [front_food])
 
         self.assertEqual(snapshot.food.count, 1)
-        self.assertGreater(snapshot.food.proximity_center, 0.0)
-        self.assertEqual(snapshot.food.proximity_left, 0.0)
-        self.assertEqual(snapshot.food.proximity_right, 0.0)
+        self.assertGreater(snapshot.food.proximity, 0.0)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
         self.assertEqual(self.vision.visible_foods(creature, [front_food]), [front_food])
 
-    def test_sector_proximities_use_max_closeness_per_sector(self) -> None:
+    def test_centered_food_reports_proximity_and_zero_angle(self) -> None:
+        creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
+        center_food = FakeFood(
+            id=1,
+            position=(50.0, 0.0),
+            radius=0.0,
+        )
+
+        snapshot = self.sense_snapshot(creature, [center_food])
+
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertAlmostEqual(snapshot.food.proximity, 0.5)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
+
+    def test_right_food_reports_positive_angle(self) -> None:
+        creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
+        right_food = FakeFood(
+            id=1,
+            position=(50.0 * cos(0.35), 50.0 * sin(0.35)),
+            radius=1.0,
+        )
+
+        snapshot = self.sense_snapshot(creature, [right_food])
+
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertAlmostEqual(snapshot.food.proximity, 0.51)
+        self.assertAlmostEqual(snapshot.food.angle, 0.35 / (pi / 4))
+
+    def test_left_food_reports_negative_angle(self) -> None:
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         left_food = FakeFood(
             id=1,
-            position=(40.0 * cos(-pi / 6), 40.0 * sin(-pi / 6)),
-            radius=0.0,
+            position=(50.0 * cos(-0.35), 50.0 * sin(-0.35)),
+            radius=1.0,
         )
-        center_food = FakeFood(id=2, position=(70.0, 0.0), radius=0.0)
+
+        snapshot = self.sense_snapshot(creature, [left_food])
+
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertAlmostEqual(snapshot.food.proximity, 0.51)
+        self.assertAlmostEqual(snapshot.food.angle, -0.35 / (pi / 4))
+
+    def test_potential_field_uses_max_proximity_and_weighted_angle(self) -> None:
+        creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
+        left_food = FakeFood(
+            id=1,
+            position=(50.0 * cos(-0.4), 50.0 * sin(-0.4)),
+            radius=5.0,
+        )
+        center_food = FakeFood(id=2, position=(50.0, 0.0), radius=5.0)
         right_food = FakeFood(
             id=3,
-            position=(20.0 * cos(pi / 6), 20.0 * sin(pi / 6)),
-            radius=0.0,
+            position=(50.0 * cos(0.2), 50.0 * sin(0.2)),
+            radius=5.0,
         )
 
         snapshot = self.sense_snapshot(creature, [left_food, center_food, right_food])
 
         self.assertEqual(snapshot.food.count, 3)
-        self.assertAlmostEqual(snapshot.food.proximity_left, 0.6)
-        self.assertAlmostEqual(snapshot.food.proximity_center, 0.3)
-        self.assertAlmostEqual(snapshot.food.proximity_right, 0.8)
+        self.assertAlmostEqual(snapshot.food.proximity, 0.55)
+        self.assertAlmostEqual(snapshot.food.angle, (-0.2 / 3.0) / (pi / 4))
 
-    def test_close_food_interval_activates_all_sectors(self) -> None:
+    def test_close_food_reports_max_proximity_and_center_angle(self) -> None:
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         close_food = FakeFood(id=1, position=(10.0, 0.0), radius=10.0)
 
         snapshot = self.sense_snapshot(creature, [close_food])
 
         self.assertEqual(snapshot.food.count, 1)
-        self.assertAlmostEqual(snapshot.food.proximity_left, 1.0)
-        self.assertAlmostEqual(snapshot.food.proximity_center, 1.0)
-        self.assertAlmostEqual(snapshot.food.proximity_right, 1.0)
+        self.assertAlmostEqual(snapshot.food.proximity, 1.0)
+        self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
-    def test_food_interval_overlap_can_activate_two_adjacent_sectors(self) -> None:
+    def test_food_angle_is_continuous_near_old_sector_boundary(self) -> None:
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         food = FakeFood(
             id=1,
-            position=(50.0 * cos(-0.35), 50.0 * sin(-0.35)),
+            position=(50.0 * cos(-0.3), 50.0 * sin(-0.3)),
             radius=6.0,
         )
 
         snapshot = self.sense_snapshot(creature, [food])
 
         self.assertEqual(snapshot.food.count, 1)
-        self.assertAlmostEqual(snapshot.food.proximity_left, 0.56)
-        self.assertAlmostEqual(snapshot.food.proximity_center, 0.56)
-        self.assertAlmostEqual(snapshot.food.proximity_right, 0.0)
+        self.assertAlmostEqual(snapshot.food.proximity, 0.56)
+        self.assertAlmostEqual(snapshot.food.angle, -0.3 / (pi / 4))
 
 
 class VisionWallSensorTest(unittest.TestCase):
@@ -462,10 +558,9 @@ class VisionWallSensorTest(unittest.TestCase):
             (0.0, 0.0, 100.0, 100.0),
         )
 
-        self.assertGreater(snapshot.walls.proximity_center, 0.0)
-        self.assertAlmostEqual(snapshot.walls.proximity_center, 0.2)
-        self.assertEqual(snapshot.walls.proximity_left, 0.0)
-        self.assertEqual(snapshot.walls.proximity_right, 0.0)
+        self.assertGreater(snapshot.walls.proximity, 0.0)
+        self.assertAlmostEqual(snapshot.walls.proximity, 0.2)
+        self.assertAlmostEqual(snapshot.walls.angle, 0.0)
 
     def test_wall_outside_vision_cone_is_not_visible(self) -> None:
         snapshot = self.sense_snapshot(
@@ -478,37 +573,35 @@ class VisionWallSensorTest(unittest.TestCase):
             (0.0, 0.0, 100.0, 200.0),
         )
 
-        self.assertEqual(snapshot.walls.proximity_left, 0.0)
-        self.assertEqual(snapshot.walls.proximity_center, 0.0)
-        self.assertEqual(snapshot.walls.proximity_right, 0.0)
+        self.assertEqual(snapshot.walls.proximity, 0.0)
+        self.assertEqual(snapshot.walls.angle, 0.0)
 
-    def test_wall_at_left_edge_reports_left_sector(self) -> None:
+    def test_wall_below_heading_reports_negative_angle(self) -> None:
         snapshot = self.sense_snapshot(
             creature_at((50.0, 50.0), vision_range=100.0),
             (0.0, 0.0, 150.0, 300.0),
         )
 
-        self.assertGreater(snapshot.walls.proximity_left, 0.0)
-        self.assertEqual(snapshot.walls.proximity_right, 0.0)
+        self.assertGreater(snapshot.walls.proximity, 0.0)
+        self.assertLess(snapshot.walls.angle, 0.0)
 
-    def test_wall_at_right_edge_reports_right_sector(self) -> None:
+    def test_wall_above_heading_reports_positive_angle(self) -> None:
         snapshot = self.sense_snapshot(
             creature_at((50.0, 50.0), vision_range=100.0),
             (0.0, -200.0, 150.0, 100.0),
         )
 
-        self.assertEqual(snapshot.walls.proximity_left, 0.0)
-        self.assertGreater(snapshot.walls.proximity_right, 0.0)
+        self.assertGreater(snapshot.walls.proximity, 0.0)
+        self.assertGreater(snapshot.walls.angle, 0.0)
 
-    def test_wall_fuzzy_interval_activates_adjacent_sector_boundary(self) -> None:
+    def test_wall_angle_is_continuous_near_old_sector_boundary(self) -> None:
         snapshot = self.sense_snapshot(
             creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2),
             (50.0, 13.0, 51.0, 14.0),
         )
 
-        self.assertEqual(snapshot.walls.proximity_left, 0.0)
-        self.assertGreater(snapshot.walls.proximity_center, 0.0)
-        self.assertGreater(snapshot.walls.proximity_right, 0.0)
+        self.assertGreater(snapshot.walls.proximity, 0.0)
+        self.assertGreater(snapshot.walls.angle, 0.0)
 
     def test_wall_farther_than_vision_range_is_not_visible(self) -> None:
         snapshot = self.sense_snapshot(
@@ -516,9 +609,8 @@ class VisionWallSensorTest(unittest.TestCase):
             (0.0, 0.0, 200.0, 200.0),
         )
 
-        self.assertEqual(snapshot.walls.proximity_left, 0.0)
-        self.assertEqual(snapshot.walls.proximity_center, 0.0)
-        self.assertEqual(snapshot.walls.proximity_right, 0.0)
+        self.assertEqual(snapshot.walls.proximity, 0.0)
+        self.assertEqual(snapshot.walls.angle, 0.0)
 
     def test_sensor_input_contract_includes_wall_and_grabbing_inputs(self) -> None:
         inputs = self.sense_inputs(
@@ -526,15 +618,14 @@ class VisionWallSensorTest(unittest.TestCase):
             (0.0, 0.0, 100.0, 100.0),
         )
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 20)
+        self.assertEqual(SENSOR_INPUT_COUNT, 17)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertAlmostEqual(inputs[0], 1.0)
         self.assertAlmostEqual(inputs[1], 0.25)
         self.assertAlmostEqual(inputs[3], 0.75)
+        self.assertAlmostEqual(inputs[14], 0.2)
+        self.assertAlmostEqual(inputs[15], 0.0)
         self.assertAlmostEqual(inputs[16], 0.0)
-        self.assertAlmostEqual(inputs[17], 0.2)
-        self.assertAlmostEqual(inputs[18], 0.0)
-        self.assertAlmostEqual(inputs[19], 0.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:
         snapshot = self.vision.sense(
