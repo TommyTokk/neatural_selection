@@ -130,6 +130,9 @@ class PopulationConfig:
     reproduction_cooldown: float = 12.0
     reproduction_energy_threshold: float = 0.8
     reproduction_energy_cost: float = 0.5
+    infant_energy_spawn: float = 0.15
+    infant_maturity_age: float = 5.0
+    nursing_energy_transfer_rate: float = 0.05
     child_spawn_distance: float = 34.0
     reproduction_min_food_ratio: float = 0.2
     reproduction_min_available_biomass_ratio: float = 0.02
@@ -146,7 +149,8 @@ class FitnessConfig:
     energy_efficiency_weight: float = 120
     efficiency_min_age_seconds: float = 20
     movement_effort_penalty: float = 0.08
-    offspring_weight: float = 12
+    offspring_weight: float = 2.0
+    matured_offspring_weight: float = 30.0
     trait_energy_cost_penalty_weight: float = 5.0
 
 

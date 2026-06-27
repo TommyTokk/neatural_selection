@@ -19,6 +19,7 @@ FALLBACK_ACTION = Action(
     reset_chronometer=0.0,
     want_grab=0.0,
     want_release=0.0,
+    want_nurse=0.0,
 )
 
 
@@ -69,6 +70,7 @@ class NeatBrainController:
             reset_chronometer=FALLBACK_ACTION.reset_chronometer,
             want_grab=FALLBACK_ACTION.want_grab,
             want_release=FALLBACK_ACTION.want_release,
+            want_nurse=FALLBACK_ACTION.want_nurse,
         )
 
     def remove_brain(self, creature_id: int) -> None:

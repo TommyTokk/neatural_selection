@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import cos, sin
 
-ACTION_OUTPUT_COUNT = 7
+ACTION_OUTPUT_COUNT = 8
 ACTION_OUTPUT_NAMES = (
     "accelerate",
     "rotate",
@@ -12,6 +12,7 @@ ACTION_OUTPUT_NAMES = (
     "reset_chronometer",
     "want_grab",
     "want_release",
+    "want_nurse",
 )
 NEUTRAL_NETWORK_OUTPUT = 0.5
 
@@ -25,6 +26,7 @@ class Action:
     reset_chronometer: float
     want_grab: float
     want_release: float
+    want_nurse: float = 0.0
 
     def clamped(self) -> Action:
         return Action(
@@ -35,6 +37,7 @@ class Action:
             reset_chronometer=max(0.0, min(1.0, self.reset_chronometer)),
             want_grab=max(0.0, min(1.0, self.want_grab)),
             want_release=max(0.0, min(1.0, self.want_release)),
+            want_nurse=max(0.0, min(1.0, self.want_nurse)),
         )
 
 

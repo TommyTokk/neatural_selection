@@ -110,19 +110,23 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertAlmostEqual(right_action.rotate, 0.5)
 
     def test_intent_outputs_remain_normalized(self) -> None:
-        action = self.decide_with_outputs([0.5, 0.5, 1.2, -0.2, 0.75, 0.25, 1.2])
+        action = self.decide_with_outputs(
+            [0.5, 0.5, 1.2, -0.2, 0.75, 0.25, 1.2, 0.8]
+        )
 
         self.assertEqual(action.want_reproduce, 1.0)
         self.assertEqual(action.want_eat, 0.0)
         self.assertEqual(action.reset_chronometer, 0.75)
         self.assertEqual(action.want_grab, 0.25)
         self.assertEqual(action.want_release, 1.0)
+        self.assertEqual(action.want_nurse, 0.8)
 
     def test_missing_carry_outputs_default_to_neutral(self) -> None:
         action = self.decide_with_outputs([0.5, 0.5, 0.0, 0.0, 0.0])
 
         self.assertEqual(action.want_grab, 0.5)
         self.assertEqual(action.want_release, 0.5)
+        self.assertEqual(action.want_nurse, 0.5)
 
 
 class NeatBrainNetworkCachingTest(unittest.TestCase):

@@ -52,6 +52,7 @@ class NeatBrain:
             reset_chronometer=outputs[4],
             want_grab=outputs[5],
             want_release=outputs[6],
+            want_nurse=outputs[7],
         ).clamped()
         return self.last_action
 

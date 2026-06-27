@@ -7,7 +7,7 @@ from configs.sim_config import MetabolismConfig, VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 21
+SENSOR_INPUT_COUNT = 23
 SENSOR_INPUT_NAMES = (
     "constant",
     "hungriness",
@@ -30,6 +30,8 @@ SENSOR_INPUT_NAMES = (
     "biome_fertility_forward_left",
     "biome_fertility_forward_right",
     "biome_fertility_delta",
+    "own_infant_proximity",
+    "own_infant_angle",
 )
 
 
@@ -84,6 +86,15 @@ class SensorSnapshot:
     clock_chronometer: float
     clock_time_alive: float
     is_grabbing: float
+    own_infants: VisionTargetSnapshot = field(
+        default_factory=lambda: VisionTargetSnapshot(
+            visible=0.0,
+            proximity=0.0,
+            angle=0.0,
+            density=0.0,
+            count=0,
+        )
+    )
     biome: BiomeSensorSnapshot = field(default_factory=BiomeSensorSnapshot)
 
     def as_inputs(self) -> list[float]:
@@ -111,6 +122,8 @@ class SensorSnapshot:
             self.biome.forward_left,
             self.biome.forward_right,
             self.biome.delta,
+            self.own_infants.proximity,
+            self.own_infants.angle,
         ]
 
 
@@ -142,6 +155,7 @@ class VisionSystem:
         clock_time_alive: float = 0.0,
         is_grabbing: bool = False,
         ignored_food_ids: set[int] | None = None,
+        own_infants: list[Creature] | None = None,
     ) -> SensorSnapshot:
         return self.sense_with_visible_food_ids(
             creature,
@@ -155,6 +169,7 @@ class VisionSystem:
             clock_time_alive=clock_time_alive,
             is_grabbing=is_grabbing,
             ignored_food_ids=ignored_food_ids,
+            own_infants=own_infants,
         ).snapshot
 
     def sense_with_visible_food_ids(
@@ -170,12 +185,14 @@ class VisionSystem:
         clock_time_alive: float = 0.0,
         is_grabbing: bool = False,
         ignored_food_ids: set[int] | None = None,
+        own_infants: list[Creature] | None = None,
     ) -> VisionSenseResult:
         visible_targets = self._visible_targets(
             creature,
             foods,
             creatures,
             ignored_food_ids=ignored_food_ids,
+            own_infants=own_infants,
         )
         snapshot = self._sensor_snapshot_from_visible_targets(
             creature,
@@ -217,11 +234,17 @@ class VisionSystem:
             "creature",
         )
         wall_snapshot = self._sense_walls(creature, world_bounds)
+        own_infant_snapshot = self._snapshot_for_kind(
+            creature,
+            visible_targets,
+            "own_infant",
+        )
         boundary_snapshot = self.sense_boundary(creature, world_bounds)
 
         return SensorSnapshot(
             food=food_snapshot,
             creatures=creature_snapshot,
+            own_infants=own_infant_snapshot,
             walls=wall_snapshot,
             boundary=boundary_snapshot,
             energy=self._clamp01(creature.energy),
@@ -319,6 +342,7 @@ class VisionSystem:
         foods: list[Food],
         creatures: list[Creature],
         ignored_food_ids: set[int] | None = None,
+        own_infants: list[Creature] | None = None,
     ) -> list[_VisionCandidate]:
         if creature.vision.range <= 0 or creature.vision.angle <= 0:
             return []
@@ -353,6 +377,19 @@ class VisionSystem:
                 other,
                 other.position,
                 other.radius,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+        for infant in [] if own_infants is None else own_infants:
+            if infant.creature_id == creature.creature_id:
+                continue
+            candidate = self._vision_candidate(
+                creature,
+                "own_infant",
+                infant,
+                infant.position,
+                infant.radius,
             )
             if candidate is not None:
                 candidates.append(candidate)

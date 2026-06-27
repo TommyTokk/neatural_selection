@@ -2384,6 +2384,8 @@ class UiRenderer:
             "wall_proximity": "w_p",
             "wall_angle": "w_a",
             "is_grabbing": "holding",
+            "own_infant_proximity": "baby_p",
+            "own_infant_angle": "baby_a",
             "accelerate": "acc",
             "rotate": "rot",
             "want_reproduce": "repr",
@@ -2391,6 +2393,7 @@ class UiRenderer:
             "reset_chronometer": "reset",
             "want_grab": "grab",
             "want_release": "drop",
+            "want_nurse": "nurse",
         }
         return replacements.get(label, label)
 

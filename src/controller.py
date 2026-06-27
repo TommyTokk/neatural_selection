@@ -68,6 +68,7 @@ class BaselineFoodController:
             reset_chronometer=0.0,
             want_grab=0.0,
             want_release=0.0,
+            want_nurse=0.0,
         ).clamped()
 
     def _scavenge_turn(self, creature_id: int) -> float:

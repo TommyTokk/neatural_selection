@@ -421,6 +421,7 @@ class World:
                 clock_time_alive=clock_time_alive,
                 is_grabbing=is_grabbing,
                 ignored_food_ids=ignored_food_ids,
+                own_infants=self._own_infant_children_for(creature),
             )
             self._record_food_discoveries(creature, result.visible_food_ids)
             snapshot = result.snapshot
@@ -437,6 +438,7 @@ class World:
                 clock_time_alive=clock_time_alive,
                 is_grabbing=is_grabbing,
                 ignored_food_ids=ignored_food_ids,
+                own_infants=self._own_infant_children_for(creature),
             )
 
         snapshot.biome = self._biome_sensor_snapshot_for(creature)
@@ -1131,6 +1133,7 @@ class World:
         for creature in self.creatures:
             fitness = self.fitness.get(creature.creature_id)
             if fitness is not None:
+                previous_age = fitness.age_seconds
                 fitness.record_tick(delta_time, creature.speed, self.MAX_SPEED)
                 fitness.record_trait_cost(
                     self.metabolism.trait_energy_cost_per_second(
@@ -1139,6 +1142,7 @@ class World:
                     ),
                     delta_time,
                 )
+                self._record_maturity_if_crossed(creature, previous_age, fitness)
 
     def _record_food_discoveries(
         self,
@@ -1258,14 +1262,19 @@ class World:
         return None
 
     def _update_metabolism(self, delta_time: float) -> None:
-        report = self.metabolism.update(
-            self.creatures,
-            self.foods,
-            delta_time,
-            self.MAX_SPEED,
-            self._eatable_foods_for,
-            self._creature_want_to_eat,
-        )
+        self._apply_nursing(delta_time)
+        with_infant_penalties = self._apply_infant_movement_penalties()
+        try:
+            report = self.metabolism.update(
+                self.creatures,
+                self.foods,
+                delta_time,
+                self.MAX_SPEED,
+                self._eatable_foods_for,
+                self._creature_want_to_eat,
+            )
+        finally:
+            self._restore_movement_multipliers(with_infant_penalties)
 
         for consumption in report.food_consumptions:
             fitness = self.fitness.get(consumption.creature_id)
@@ -1311,6 +1320,126 @@ class World:
         bottom = creature_y - radius
         top = creature_y + radius
         return self._foods_in_world_bounds(left, bottom, right, top)
+
+    def _creature_age_seconds(self, creature: Creature) -> float:
+        fitness = self.fitness.get(creature.creature_id)
+        return 0.0 if fitness is None else fitness.age_seconds
+
+    def _is_infant(self, creature: Creature) -> bool:
+        population_config = getattr(getattr(self, "config", None), "population", None)
+        if population_config is None:
+            return False
+
+        return (
+            self._creature_age_seconds(creature)
+            < population_config.infant_maturity_age
+        )
+
+    def _own_infant_children_for(self, parent: Creature) -> list[Creature]:
+        parent_id = getattr(parent, "creature_id", None)
+        return [
+            creature
+            for creature in self.creatures
+            if getattr(getattr(creature, "lineage", None), "parent_id", None)
+            == parent_id
+            and self._is_infant(creature)
+        ]
+
+    def _record_maturity_if_crossed(
+        self,
+        creature: Creature,
+        previous_age: float,
+        fitness: CreatureFitness,
+    ) -> None:
+        maturity_age = self.config.population.infant_maturity_age
+        if previous_age >= maturity_age or fitness.age_seconds < maturity_age:
+            return
+
+        parent_id = creature.lineage.parent_id
+        if parent_id is None:
+            return
+
+        parent_fitness = self.fitness.get(parent_id)
+        if parent_fitness is None:
+            parent_fitness = self.fitness_archive.get(parent_id)
+        if parent_fitness is None:
+            return
+
+        if creature.creature_id not in parent_fitness.matured_offspring_ids:
+            parent_fitness.matured_offspring_ids.append(creature.creature_id)
+
+    def _apply_nursing(self, delta_time: float) -> None:
+        if delta_time <= 0.0:
+            return
+
+        population_config = getattr(getattr(self, "config", None), "population", None)
+        if population_config is None:
+            return
+
+        transfer = population_config.nursing_energy_transfer_rate * delta_time
+        if transfer <= 0.0:
+            return
+
+        for parent in list(self.creatures):
+            action = self._last_actions.get(parent.creature_id)
+            if action is None or action.want_nurse < 0.5:
+                continue
+
+            infant = self._nearest_nursable_infant_for(parent)
+            if infant is None or parent.energy <= transfer:
+                continue
+
+            parent.energy -= transfer
+            infant.energy = min(
+                self.config.metabolism.max_energy,
+                infant.energy + transfer,
+            )
+
+    def _nearest_nursable_infant_for(self, parent: Creature) -> Creature | None:
+        max_distance = parent.radius * 2.5
+        max_distance_squared = max_distance * max_distance
+        candidates: list[tuple[float, Creature]] = []
+        parent_x, parent_y = parent.position
+
+        for infant in self._own_infant_children_for(parent):
+            dx = infant.position[0] - parent_x
+            dy = infant.position[1] - parent_y
+            distance_squared = dx * dx + dy * dy
+            if distance_squared <= max_distance_squared:
+                candidates.append((distance_squared, infant))
+
+        if not candidates:
+            return None
+
+        return min(candidates, key=lambda item: item[0])[1]
+
+    def _apply_infant_movement_penalties(self) -> dict[int, float]:
+        if getattr(getattr(self, "config", None), "population", None) is None:
+            return {}
+
+        original_multipliers: dict[int, float] = {}
+        for creature in self.creatures:
+            if not self._is_infant(creature):
+                continue
+
+            original_multipliers[creature.creature_id] = (
+                creature.physical_traits.movement_cost_multiplier
+            )
+            creature.physical_traits.movement_cost_multiplier *= 3.0
+
+        return original_multipliers
+
+    def _restore_movement_multipliers(
+        self,
+        original_multipliers: dict[int, float],
+    ) -> None:
+        if not original_multipliers:
+            return
+
+        for creature in self.creatures:
+            original = original_multipliers.get(creature.creature_id)
+            if original is not None:
+                creature.physical_traits.movement_cost_multiplier = original
 
     def _foods_in_world_bounds(
         self,
@@ -1641,7 +1770,7 @@ class World:
             child_id,
             position=child_position,
             heading=parent.heading,
-            energy=self.config.population.reproduction_energy_cost,
+            energy=self.config.population.infant_energy_spawn,
             color=child_traits.color,
             vision=child_traits.vision,
             physical_traits=child_traits.physical_traits,

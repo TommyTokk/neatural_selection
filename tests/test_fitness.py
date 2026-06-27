@@ -70,6 +70,22 @@ class CreatureFitnessScoreTest(unittest.TestCase):
             12.0,
         )
 
+    def test_matured_offspring_bonus_increases_score(self) -> None:
+        config = FitnessConfig(
+            offspring_weight=0.0,
+            matured_offspring_weight=30.0,
+        )
+        without_matured_child = CreatureFitness(age_seconds=20.0)
+        with_matured_child = CreatureFitness(
+            age_seconds=20.0,
+            matured_offspring_ids=[7, 8],
+        )
+
+        self.assertAlmostEqual(
+            with_matured_child.score(config) - without_matured_child.score(config),
+            60.0,
+        )
+
     def test_movement_effort_reduces_score(self) -> None:
         config = FitnessConfig(
             age_weight=0.0,

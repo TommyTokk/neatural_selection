@@ -16,6 +16,7 @@ class CreatureFitness:
     trait_energy_cost: float = 0.0
     last_reproduction_age: float = -1_000_000.0
     offspring_count: int = 0
+    matured_offspring_ids: list[int] = field(default_factory=list)
     discovered_food_ids: set[int] = field(default_factory=set)
 
     def record_tick(self, delta_time: float, speed: float, max_speed: float) -> None:
@@ -63,6 +64,7 @@ class CreatureFitness:
             + self.energy_gained * config.energy_gained_weight
             + energy_efficiency * config.energy_efficiency_weight
             + self.offspring_count * config.offspring_weight
+            + len(self.matured_offspring_ids) * config.matured_offspring_weight
             - self.movement_effort * config.movement_effort_penalty
             - self.trait_energy_cost * config.trait_energy_cost_penalty_weight
         )

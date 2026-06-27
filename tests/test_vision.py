@@ -83,6 +83,7 @@ class VisionVisibilityTest(unittest.TestCase):
         *,
         foods: list[FakeFood] | None = None,
         creatures: list[FakeCreature] | None = None,
+        own_infants: list[FakeCreature] | None = None,
     ):
         return self.vision.sense(
             creature,
@@ -90,6 +91,7 @@ class VisionVisibilityTest(unittest.TestCase):
             creatures=[] if creatures is None else creatures,
             world_bounds=(-100.0, -100.0, 100.0, 100.0),
             max_speed=100.0,
+            own_infants=own_infants,
         )
 
     def test_creature_directly_behind_creature_remains_visible(self) -> None:
@@ -142,6 +144,27 @@ class VisionVisibilityTest(unittest.TestCase):
             self.vision.visible_foods(observer, [hidden_food], [observer, blocker]),
             [hidden_food],
         )
+
+    def test_own_infant_snapshot_uses_target_proximity_and_angle(self) -> None:
+        observer = creature_at((0.0, 0.0), radius=5.0)
+        infant = creature_at((46.75, 0.0), radius=5.0, creature_id=2)
+
+        snapshot = self.sense_snapshot(observer, own_infants=[infant])
+
+        self.assertEqual(snapshot.own_infants.count, 1)
+        self.assertAlmostEqual(snapshot.own_infants.proximity, 0.6)
+        self.assertAlmostEqual(snapshot.own_infants.angle, 0.0)
+
+    def test_own_infant_snapshot_ignores_unlisted_infants(self) -> None:
+        observer = creature_at((0.0, 0.0), radius=5.0)
+        unrelated_infant = creature_at((45.0, 0.0), radius=5.0, creature_id=2)
+
+        snapshot = self.sense_snapshot(observer, creatures=[observer, unrelated_infant])
+
+        self.assertEqual(snapshot.creatures.count, 1)
+        self.assertEqual(snapshot.own_infants.count, 0)
+        self.assertAlmostEqual(snapshot.own_infants.proximity, 0.0)
+        self.assertAlmostEqual(snapshot.own_infants.angle, 0.0)
 
     def test_creature_behind_food_remains_visible(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
@@ -619,7 +642,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
         first_seventeen_inputs = inputs[:17]
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 21)
+        self.assertEqual(SENSOR_INPUT_COUNT, 23)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertAlmostEqual(first_seventeen_inputs[0], 1.0)
         self.assertAlmostEqual(first_seventeen_inputs[1], 0.25)
@@ -632,6 +655,8 @@ class VisionWallSensorTest(unittest.TestCase):
             self.assertLessEqual(biome_value, 1.0)
         self.assertGreaterEqual(inputs[20], -1.0)
         self.assertLessEqual(inputs[20], 1.0)
+        self.assertAlmostEqual(inputs[21], 0.0)
+        self.assertAlmostEqual(inputs[22], 0.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:
         snapshot = self.vision.sense(

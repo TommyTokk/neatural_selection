@@ -51,6 +51,7 @@ class FakeCreature:
     energy: float = 1.0
     heading: float = 0.0
     position: tuple[float, float] = (0.0, 0.0)
+    speed: float = 0.0
     color: tuple[int, int, int] = (86, 156, 214)
     body: object = field(default_factory=object)
     shape: object = field(default_factory=object)
@@ -64,6 +65,28 @@ class FakeCreature:
         )
     )
     lineage: LineageInfo = field(default_factory=LineageInfo)
+
+    @property
+    def radius(self) -> float:
+        return self.physical_traits.radius
+
+
+class FakeMetabolism:
+    def __init__(self) -> None:
+        self.movement_multipliers_seen: dict[int, float] = {}
+
+    def update(self, creatures, *args, **kwargs):
+        del args, kwargs
+        self.movement_multipliers_seen = {
+            creature.creature_id: creature.physical_traits.movement_cost_multiplier
+            for creature in creatures
+        }
+        return SimpleNamespace(
+            food_consumptions=[],
+            touched_foods=[],
+            depleted_foods=[],
+            dead_creatures=[],
+        )
 
 
 class FakeBrainController:
@@ -167,6 +190,10 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world.rt_neat.stats.normal_replacements, 1)
         self.assertEqual(len(world.creatures), 3)
         self.assertEqual(world.creatures[-1].creature_id, 3)
+        self.assertEqual(
+            world.creatures[-1].energy,
+            world.config.population.infant_energy_spawn,
+        )
         self.assertEqual(world.creatures[-1].lineage.parent_id, 1)
         self.assertEqual(world.creatures[-1].lineage.generation, 1)
         self.assertEqual(world.fitness[1].offspring_count, 1)
@@ -199,6 +226,116 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world.neat_controller.removed, [1])
         self.assertEqual(world.rt_neat.stats.deaths, 1)
         self.assertAlmostEqual(world.rt_neat.stats.average_lifespan_at_death, 10.0)
+
+    def test_own_infant_children_filters_to_direct_infant_children(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        parent = FakeCreature(creature_id=1)
+        own_infant = FakeCreature(
+            creature_id=2,
+            lineage=LineageInfo(parent_id=1),
+        )
+        unrelated_infant = FakeCreature(
+            creature_id=3,
+            lineage=LineageInfo(parent_id=99),
+        )
+        mature_child = FakeCreature(
+            creature_id=4,
+            lineage=LineageInfo(parent_id=1),
+        )
+        world.creatures = [parent, own_infant, unrelated_infant, mature_child]
+        world.fitness = {
+            1: CreatureFitness(age_seconds=30.0),
+            2: CreatureFitness(age_seconds=1.0),
+            3: CreatureFitness(age_seconds=1.0),
+            4: CreatureFitness(age_seconds=6.0),
+        }
+
+        self.assertEqual(world._own_infant_children_for(parent), [own_infant])
+
+    def test_maturity_reward_is_recorded_once_for_parent(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        parent = FakeCreature(creature_id=1)
+        child = FakeCreature(creature_id=2, lineage=LineageInfo(parent_id=1))
+        world.creatures = [parent, child]
+        world.fitness = {
+            1: CreatureFitness(age_seconds=30.0),
+            2: CreatureFitness(age_seconds=4.9),
+        }
+        child_fitness = world.fitness[2]
+
+        world._record_maturity_if_crossed(child, 4.9, child_fitness)
+        self.assertEqual(world.fitness[1].matured_offspring_ids, [])
+
+        child_fitness.age_seconds = 5.0
+        world._record_maturity_if_crossed(child, 4.9, child_fitness)
+        world._record_maturity_if_crossed(child, 4.9, child_fitness)
+
+        self.assertEqual(world.fitness[1].matured_offspring_ids, [2])
+
+    def test_nursing_transfers_energy_to_nearest_own_infant(self) -> None:
+        world = self._world_ready_for_parenting()
+        parent, own_infant, farther_infant, unrelated_infant = world.creatures
+
+        world._apply_nursing(2.0)
+
+        self.assertAlmostEqual(parent.energy, 0.9)
+        self.assertAlmostEqual(own_infant.energy, 0.3)
+        self.assertAlmostEqual(farther_infant.energy, 0.2)
+        self.assertAlmostEqual(unrelated_infant.energy, 0.2)
+
+    def test_nursing_respects_parent_energy_and_infant_capacity(self) -> None:
+        world = self._world_ready_for_parenting()
+        parent, own_infant = world.creatures[0], world.creatures[1]
+        parent.energy = 0.05
+
+        world._apply_nursing(2.0)
+
+        self.assertAlmostEqual(parent.energy, 0.05)
+        self.assertAlmostEqual(own_infant.energy, 0.2)
+
+        parent.energy = 1.0
+        own_infant.energy = 0.98
+        world._apply_nursing(2.0)
+
+        self.assertAlmostEqual(parent.energy, 0.9)
+        self.assertAlmostEqual(own_infant.energy, 1.0)
+
+    def test_infant_movement_penalty_is_temporary_during_metabolism(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.population.infant_maturity_age = 5.0
+        infant = FakeCreature(
+            creature_id=1,
+            physical_traits=PhysicalTraits(
+                radius=16.0,
+                movement_cost_multiplier=1.25,
+            ),
+        )
+        adult = FakeCreature(
+            creature_id=2,
+            physical_traits=PhysicalTraits(
+                radius=16.0,
+                movement_cost_multiplier=1.1,
+            ),
+        )
+        world.creatures = [infant, adult]
+        world.fitness = {
+            1: CreatureFitness(age_seconds=1.0),
+            2: CreatureFitness(age_seconds=6.0),
+        }
+        world._last_actions = {}
+        world.foods = []
+        world.metabolism = FakeMetabolism()
+        world.MAX_SPEED = 170.0
+        world.selected_creature_id = None
+
+        world._update_metabolism(1.0)
+
+        self.assertAlmostEqual(world.metabolism.movement_multipliers_seen[1], 3.75)
+        self.assertAlmostEqual(world.metabolism.movement_multipliers_seen[2], 1.1)
+        self.assertAlmostEqual(infant.physical_traits.movement_cost_multiplier, 1.25)
 
     def test_kill_selected_creature_without_selection_is_noop(self) -> None:
         world = object.__new__(World)
@@ -397,6 +534,49 @@ class WorldReproductionTest(unittest.TestCase):
             physical_traits=kwargs["physical_traits"],
             lineage=kwargs["lineage"],
         )
+        return world
+
+    def _world_ready_for_parenting(self) -> World:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.population.nursing_energy_transfer_rate = 0.05
+        world.config.population.infant_maturity_age = 5.0
+        parent = FakeCreature(creature_id=1, energy=1.0)
+        own_infant = FakeCreature(
+            creature_id=2,
+            energy=0.2,
+            position=(10.0, 0.0),
+            lineage=LineageInfo(parent_id=1),
+        )
+        farther_infant = FakeCreature(
+            creature_id=3,
+            energy=0.2,
+            position=(20.0, 0.0),
+            lineage=LineageInfo(parent_id=1),
+        )
+        unrelated_infant = FakeCreature(
+            creature_id=4,
+            energy=0.2,
+            position=(5.0, 0.0),
+            lineage=LineageInfo(parent_id=99),
+        )
+        world.creatures = [parent, own_infant, farther_infant, unrelated_infant]
+        world.fitness = {
+            creature.creature_id: CreatureFitness(age_seconds=1.0)
+            for creature in world.creatures
+        }
+        world._last_actions = {
+            1: Action(
+                accelerate=0.0,
+                rotate=0.0,
+                want_reproduce=0.0,
+                want_eat=0.0,
+                reset_chronometer=0.0,
+                want_grab=0.0,
+                want_release=0.0,
+                want_nurse=1.0,
+            )
+        }
         return world
 
 
