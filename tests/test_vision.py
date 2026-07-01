@@ -44,6 +44,7 @@ class FakeCreature:
     vision: VisionTraits
     speed: float = 0.0
     creature_id: int = 1
+    species_id: int = 1
 
 
 @dataclass(slots=True)
@@ -62,6 +63,7 @@ def creature_at(
     vision_range: float = 100.0,
     vision_angle: float = pi / 2,
     creature_id: int = 1,
+    species_id: int = 1,
 ) -> FakeCreature:
     return FakeCreature(
         position=position,
@@ -70,6 +72,7 @@ def creature_at(
         energy=energy,
         vision=VisionTraits(range=vision_range, angle=vision_angle),
         creature_id=creature_id,
+        species_id=species_id,
     )
 
 
@@ -642,7 +645,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
         first_seventeen_inputs = inputs[:17]
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 23)
+        self.assertEqual(SENSOR_INPUT_COUNT, 26)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertAlmostEqual(first_seventeen_inputs[0], 1.0)
         self.assertAlmostEqual(first_seventeen_inputs[1], 0.25)
@@ -657,6 +660,62 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertLessEqual(inputs[20], 1.0)
         self.assertAlmostEqual(inputs[21], 0.0)
         self.assertAlmostEqual(inputs[22], 0.0)
+        self.assertEqual(inputs[23:26], [0.0, 0.0, 0.0])
+
+    def test_flock_inputs_use_same_species_but_separation_uses_nearest_creature(
+        self,
+    ) -> None:
+        observer = creature_at((0.0, 0.0), vision_range=100.0)
+        flockmate = creature_at(
+            (40.0, 10.0),
+            heading=pi / 2,
+            creature_id=2,
+            species_id=1,
+        )
+        other_species = creature_at(
+            (20.0, -2.0),
+            heading=-pi / 2,
+            creature_id=3,
+            species_id=2,
+        )
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, flockmate, other_species],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertEqual(snapshot.flock.flockmate_count, 1)
+        self.assertAlmostEqual(
+            snapshot.flock.center_proximity,
+            1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 100.0),
+        )
+        self.assertGreater(snapshot.flock.center_angle, 0.0)
+        self.assertAlmostEqual(snapshot.flock.average_relative_heading, 0.5)
+        self.assertGreater(snapshot.flock.nearest_neighbor_proximity, 0.0)
+        self.assertLess(snapshot.flock.nearest_neighbor_angle, 0.0)
+
+    def test_flock_inputs_are_zero_without_same_species_flockmates(self) -> None:
+        observer = creature_at((0.0, 0.0), vision_range=100.0)
+        stranger = creature_at(
+            (20.0, 0.0),
+            creature_id=2,
+            species_id=2,
+        )
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, stranger],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertEqual(snapshot.as_inputs()[23:26], [0.0, 0.0, 0.0])
+        self.assertEqual(snapshot.flock.flockmate_count, 0)
+        self.assertGreater(snapshot.flock.nearest_neighbor_proximity, 0.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:
         snapshot = self.vision.sense(

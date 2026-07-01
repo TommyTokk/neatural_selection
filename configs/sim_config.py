@@ -123,6 +123,7 @@ class MetabolismConfig:
     max_energy: float = 1
     basic_metabolism_rate: float = 0.01
     movement_energy_cost_factor: float = 0.02
+    sprint_energy_cost_per_second: float = 0.04
     eating_distance: float = 8
     micro_food_remainder_ratio: float = 0.10
     starvation_energy_threshold: float = 0.3
@@ -241,6 +242,8 @@ class ActionConfig:
     max_forward_force: float = 125.0
     max_backward_force: float = 70.0
     max_turn_torque: float = 260.0
+    max_sprint_multiplier: float = 0.5
+    max_flock_turn_bias: float = 0.65
     turn_response: float = 0.72
     turn_damping: float = 0.88
     turn_deadzone: float = 0.03

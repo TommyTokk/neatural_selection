@@ -20,6 +20,10 @@ FALLBACK_ACTION = Action(
     want_grab=0.0,
     want_release=0.0,
     want_nurse=0.0,
+    flee_panic_intensity=0.0,
+    weight_separation=0.0,
+    weight_alignment=0.0,
+    weight_cohesion=0.0,
 )
 
 
@@ -104,6 +108,10 @@ class NeatBrainController:
             want_grab=FALLBACK_ACTION.want_grab,
             want_release=FALLBACK_ACTION.want_release,
             want_nurse=FALLBACK_ACTION.want_nurse,
+            flee_panic_intensity=FALLBACK_ACTION.flee_panic_intensity,
+            weight_separation=FALLBACK_ACTION.weight_separation,
+            weight_alignment=FALLBACK_ACTION.weight_alignment,
+            weight_cohesion=FALLBACK_ACTION.weight_cohesion,
         )
 
     def remove_brain(self, creature_id: int) -> None:
@@ -137,6 +145,33 @@ class NeatBrainController:
         brain = NeatBrain.from_genome(genome_id, genome, self.config)
         self.brains[creature_id] = brain
         return brain
+
+    def migrate_legacy_brain_contract(self) -> None:
+        """Add inert output nodes required by the current brain contract."""
+        genomes = list(self.population.population.values())
+        genomes.extend(self.species_manager.representatives.values())
+        seen: set[int] = set()
+        for genome in genomes:
+            identity = id(genome)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            self._ensure_current_output_nodes(genome)
+
+    def _ensure_current_output_nodes(self, genome: Any) -> None:
+        genome_config = self.config.genome_config
+        nodes = getattr(genome, "nodes", None)
+        if nodes is None:
+            return
+
+        for output_key in genome_config.output_keys:
+            if output_key in nodes:
+                continue
+            node = genome_config.node_gene_type(output_key)
+            node.init_attributes(genome_config)
+            if hasattr(node, "bias"):
+                node.bias = float(getattr(genome_config, "bias_min_value", -5.0))
+            nodes[output_key] = node
 
     def create_child_brain(
         self,

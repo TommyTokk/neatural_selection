@@ -69,6 +69,37 @@ class MetabolismTraitCostTest(unittest.TestCase):
         self.assertGreater(costly_cost.total, efficient_cost.total)
         self.assertGreater(costly_cost.trait, efficient_cost.trait)
 
+    def test_full_sprint_adds_configured_energy_cost(self) -> None:
+        metabolism = Metabolism(
+            MetabolismConfig(
+                basic_metabolism_rate=0.0,
+                movement_energy_cost_factor=0.0,
+                sprint_energy_cost_per_second=0.04,
+            ),
+            FakeVision(cost=0.0),
+            TraitConfig(body_metabolism_cost_factor=0.0),
+        )
+        creature = FakeCreature(
+            radius=16.0,
+            speed=0.0,
+            energy=1.0,
+            physical_traits=PhysicalTraits(radius=16.0),
+        )
+
+        normal = metabolism.energy_cost_breakdown_per_second(
+            creature,
+            max_speed=100.0,
+        )
+        sprinting = metabolism.energy_cost_breakdown_per_second(
+            creature,
+            max_speed=100.0,
+            sprint_intensity=1.0,
+        )
+
+        self.assertAlmostEqual(normal.sprint, 0.0)
+        self.assertAlmostEqual(sprinting.sprint, 0.04)
+        self.assertAlmostEqual(sprinting.total - normal.total, 0.04)
+
 
 if __name__ == "__main__":
     unittest.main()

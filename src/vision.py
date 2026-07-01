@@ -7,7 +7,7 @@ from configs.sim_config import MetabolismConfig, VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 23
+SENSOR_INPUT_COUNT = 26
 SENSOR_INPUT_NAMES = (
     "constant",
     "hungriness",
@@ -32,6 +32,9 @@ SENSOR_INPUT_NAMES = (
     "biome_fertility_delta",
     "own_infant_proximity",
     "own_infant_angle",
+    "flock_center_proximity",
+    "flock_center_angle",
+    "flock_average_relative_heading",
 )
 
 
@@ -56,6 +59,16 @@ class BiomeSensorSnapshot:
     forward_left: float = 0.0
     forward_right: float = 0.0
     delta: float = 0.0
+
+
+@dataclass(slots=True)
+class FlockSensorSnapshot:
+    center_proximity: float = 0.0
+    center_angle: float = 0.0
+    average_relative_heading: float = 0.0
+    flockmate_count: int = 0
+    nearest_neighbor_proximity: float = 0.0
+    nearest_neighbor_angle: float = 0.0
 
 
 @dataclass(slots=True)
@@ -96,6 +109,7 @@ class SensorSnapshot:
         )
     )
     biome: BiomeSensorSnapshot = field(default_factory=BiomeSensorSnapshot)
+    flock: FlockSensorSnapshot = field(default_factory=FlockSensorSnapshot)
 
     def as_inputs(self) -> list[float]:
         # Inputs 18-21 are body-relative biome smell samples, not a direct
@@ -124,6 +138,9 @@ class SensorSnapshot:
             self.biome.delta,
             self.own_infants.proximity,
             self.own_infants.angle,
+            self.flock.center_proximity,
+            self.flock.center_angle,
+            self.flock.average_relative_heading,
         ]
 
 
@@ -240,6 +257,7 @@ class VisionSystem:
             "own_infant",
         )
         boundary_snapshot = self.sense_boundary(creature, world_bounds)
+        flock_snapshot = self._flock_snapshot(creature, visible_targets)
 
         return SensorSnapshot(
             food=food_snapshot,
@@ -259,6 +277,90 @@ class VisionSystem:
             clock_chronometer=clock_chronometer,
             clock_time_alive=clock_time_alive,
             is_grabbing=1.0 if is_grabbing else 0.0,
+            flock=flock_snapshot,
+        )
+
+    def _flock_snapshot(
+        self,
+        creature: Creature,
+        visible_targets: list[_VisionCandidate],
+    ) -> FlockSensorSnapshot:
+        visible_creatures = [
+            target
+            for target in visible_targets
+            if target.kind == "creature" and target.source is not None
+        ]
+        nearest = visible_creatures[0] if visible_creatures else None
+        nearest_proximity = 0.0 if nearest is None else self._clamp01(nearest.closeness)
+        nearest_angle = (
+            0.0
+            if nearest is None
+            else self._normalized_view_angle(
+                nearest.signed_angle,
+                creature.vision.angle,
+            )
+        )
+
+        species_id = self._species_id(creature)
+        flockmates = [
+            target.source
+            for target in visible_creatures
+            if self._species_id(target.source) == species_id
+        ]
+        if not flockmates:
+            return FlockSensorSnapshot(
+                nearest_neighbor_proximity=nearest_proximity,
+                nearest_neighbor_angle=nearest_angle,
+            )
+
+        center_x = sum(flockmate.position[0] for flockmate in flockmates) / len(
+            flockmates
+        )
+        center_y = sum(flockmate.position[1] for flockmate in flockmates) / len(
+            flockmates
+        )
+        dx = center_x - creature.position[0]
+        dy = center_y - creature.position[1]
+        center_distance = hypot(dx, dy)
+        center_proximity = (
+            0.0
+            if creature.vision.range <= 0.0
+            else self._clamp01(1.0 - center_distance / creature.vision.range)
+        )
+        center_relative_angle = self._signed_angle(atan2(dy, dx) - creature.heading)
+
+        heading_x = sum(cos(flockmate.heading) for flockmate in flockmates)
+        heading_y = sum(sin(flockmate.heading) for flockmate in flockmates)
+        average_heading = (
+            creature.heading
+            if abs(heading_x) <= 1e-12 and abs(heading_y) <= 1e-12
+            else atan2(heading_y, heading_x)
+        )
+        relative_heading = self._signed_angle(average_heading - creature.heading)
+
+        return FlockSensorSnapshot(
+            center_proximity=center_proximity,
+            center_angle=self._normalized_view_angle(
+                center_relative_angle,
+                creature.vision.angle,
+            ),
+            average_relative_heading=self._clamp(relative_heading / pi, -1.0, 1.0),
+            flockmate_count=len(flockmates),
+            nearest_neighbor_proximity=nearest_proximity,
+            nearest_neighbor_angle=nearest_angle,
+        )
+
+    def _normalized_view_angle(self, angle: float, field_of_view: float) -> float:
+        if field_of_view <= 0.0:
+            return 0.0
+        return self._clamp(angle / (field_of_view / 2.0), -1.0, 1.0)
+
+    def _species_id(self, creature: Creature) -> int | None:
+        lineage = getattr(creature, "lineage", None)
+        return getattr(
+            lineage,
+            "species_id",
+            getattr(creature, "species_id", None),
         )
 
     def sense_boundary(

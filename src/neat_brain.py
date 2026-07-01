@@ -14,7 +14,10 @@ from src.action import (
 )
 from src.vision import SensorSnapshot
 
-DEFAULT_ACTION_OUTPUTS = [NEUTRAL_NETWORK_OUTPUT] * ACTION_OUTPUT_COUNT
+DEFAULT_ACTION_OUTPUTS = [
+    *([NEUTRAL_NETWORK_OUTPUT] * 8),
+    *([0.0] * (ACTION_OUTPUT_COUNT - 8)),
+]
 
 
 @dataclass(slots=True)
@@ -53,6 +56,10 @@ class NeatBrain:
             want_grab=outputs[5],
             want_release=outputs[6],
             want_nurse=outputs[7],
+            flee_panic_intensity=outputs[8],
+            weight_separation=outputs[9],
+            weight_alignment=outputs[10],
+            weight_cohesion=outputs[11],
         ).clamped()
         return self.last_action
 
@@ -69,7 +76,7 @@ class NeatBrain:
 
         missing_outputs = ACTION_OUTPUT_COUNT - len(normalized)
         if missing_outputs > 0:
-            normalized.extend(DEFAULT_ACTION_OUTPUTS[:missing_outputs])
+            normalized.extend(DEFAULT_ACTION_OUTPUTS[len(normalized) :])
 
         return normalized
 

@@ -33,6 +33,7 @@ except ModuleNotFoundError:
     import neat
 
 from src.neat_brain import NeatBrain
+from src.neat_controller import NeatBrainController
 from src.vision import BoundarySnapshot, SensorSnapshot, VisionTargetSnapshot
 
 
@@ -127,6 +128,20 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.want_grab, 0.5)
         self.assertEqual(action.want_release, 0.5)
         self.assertEqual(action.want_nurse, 0.5)
+        self.assertEqual(action.flee_panic_intensity, 0.0)
+        self.assertEqual(action.weight_separation, 0.0)
+        self.assertEqual(action.weight_alignment, 0.0)
+        self.assertEqual(action.weight_cohesion, 0.0)
+
+    def test_flocking_outputs_are_appended_and_clamped(self) -> None:
+        action = self.decide_with_outputs(
+            [0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.2, 0.25, -0.2, 0.75]
+        )
+
+        self.assertEqual(action.flee_panic_intensity, 1.0)
+        self.assertEqual(action.weight_separation, 0.25)
+        self.assertEqual(action.weight_alignment, 0.0)
+        self.assertEqual(action.weight_cohesion, 0.75)
 
 
 class NeatBrainNetworkCachingTest(unittest.TestCase):
@@ -164,6 +179,38 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         self.assertEqual(created_networks, [fake_network])
         self.assertIs(brain.network, first_network)
         self.assertEqual(fake_network.activate_count, 3)
+
+
+class LegacyBrainContractMigrationTest(unittest.TestCase):
+    def test_missing_output_nodes_are_added_inert_and_disconnected(self) -> None:
+        class FakeNode:
+            def __init__(self, key: int) -> None:
+                self.key = key
+                self.bias = 0.0
+
+            def init_attributes(self, config: object) -> None:
+                del config
+
+        genome = SimpleNamespace(
+            nodes={key: FakeNode(key) for key in range(8)},
+            connections={},
+        )
+        genome_config = SimpleNamespace(
+            output_keys=list(range(12)),
+            node_gene_type=FakeNode,
+            bias_min_value=-5.0,
+        )
+        controller = NeatBrainController.__new__(NeatBrainController)
+        controller.config = SimpleNamespace(genome_config=genome_config)
+        controller.population = SimpleNamespace(population={1: genome})
+        controller.species_manager = SimpleNamespace(representatives={1: genome})
+
+        controller.migrate_legacy_brain_contract()
+
+        self.assertEqual(set(genome.nodes), set(range(12)))
+        for key in range(8, 12):
+            self.assertEqual(genome.nodes[key].bias, -5.0)
+        self.assertEqual(genome.connections, {})
 
 
 if __name__ == "__main__":

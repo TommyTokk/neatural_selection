@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field
-from math import cos, floor, sin
+from math import atan2, cos, floor, hypot, pi, sin
 from random import Random
 
 import pymunk
@@ -66,6 +66,13 @@ class ArchivedCreatureTraits:
     lineage: LineageInfo
 
 
+@dataclass(slots=True)
+class MotionCommand:
+    effective_rotate: float
+    max_speed: float
+    max_angular_speed: float
+
+
 class World:
     CREATURE_COLOR_PALETTE: tuple[Color, ...] = (
         (86, 156, 214),
@@ -107,6 +114,7 @@ class World:
         self._physics_accumulator = 0.0
         self._reproduction_accumulator = 0.0
         self._last_actions: dict[int, Action] = {}
+        self._motion_commands: dict[int, MotionCommand] = {}
         self.debug_vision_enabled = config.debug.show_debug_vision_by_default
         self.layout = build_screen_layout(
             config.display.width, config.display.height, config.layout
@@ -1023,6 +1031,7 @@ class World:
                 self._apply_action(
                     creature,
                     action,
+                    snapshot,
                     stabilize_velocity=False,
                     apply_stabilizers=False,
                 )
@@ -1037,6 +1046,7 @@ class World:
                 self._apply_action(
                     creature,
                     action,
+                    snapshot,
                     stabilize_velocity=snapshot.food.visible > 0.0,
                     apply_stabilizers=True,
                 )
@@ -1047,23 +1057,66 @@ class World:
         self,
         creature: Creature,
         action: Action,
+        snapshot: SensorSnapshot | None = None,
         stabilize_velocity: bool = False,
         apply_stabilizers: bool = True,
     ) -> None:
         thrust = action.accelerate
-        turn = action.rotate
+        panic = self._clamp(
+            getattr(action, "flee_panic_intensity", 0.0),
+            0.0,
+            1.0,
+        )
+        sprint_multiplier = 1.0 + (
+            panic * max(0.0, self.config.action.max_sprint_multiplier)
+        )
+        current_max_forward_force = (
+            self.config.action.max_forward_force * sprint_multiplier
+        )
+        current_max_backward_force = (
+            self.config.action.max_backward_force * sprint_multiplier
+        )
+        current_max_speed = self.MAX_SPEED * sprint_multiplier
+        current_max_angular_speed = self.MAX_ANGULAR_SPEED * sprint_multiplier
 
         if apply_stabilizers and stabilize_velocity and thrust > 0.0:
             self._stabilize_food_tracking_velocity(creature)
 
-        force_vector = acceleration_force_vector(
+        voluntary_force = acceleration_force_vector(
             thrust,
             creature.heading,
-            self.config.action.max_forward_force,
-            self.config.action.max_backward_force,
+            current_max_forward_force,
+            current_max_backward_force,
+        )
+        flock_force = self._flock_steering_force(
+            creature,
+            action,
+            snapshot,
+            current_max_speed,
+            current_max_forward_force,
+        )
+        total_force = self._limit_vector(
+            (
+                voluntary_force[0] + flock_force[0],
+                voluntary_force[1] + flock_force[1],
+            ),
+            current_max_forward_force,
+        )
+        flock_turn_bias = self._flock_turn_bias(
+            creature,
+            flock_force,
+            current_max_forward_force,
+        )
+        turn = self._clamp(action.rotate + flock_turn_bias, -1.0, 1.0)
+        if not hasattr(self, "_motion_commands"):
+            self._motion_commands = {}
+        self._motion_commands[creature.creature_id] = MotionCommand(
+            effective_rotate=turn,
+            max_speed=current_max_speed,
+            max_angular_speed=current_max_angular_speed,
         )
         creature.body.apply_force_at_world_point(
-            force_vector,
+            total_force,
             creature.body.position,
         )
 
@@ -1083,7 +1136,11 @@ class World:
             )
             creature.body.torque += damping_torque
 
-        self._apply_turn_control(creature, turn)
+        self._apply_turn_control(
+            creature,
+            turn,
+            max_angular_speed=current_max_angular_speed,
+        )
 
         if apply_stabilizers and thrust < 0.0:
             creature.body.angular_velocity *= (
@@ -1095,12 +1152,132 @@ class World:
                 self.config.action.search_angular_velocity_retention
             )
 
+    def _flock_steering_force(
+        self,
+        creature: Creature,
+        action: Action,
+        snapshot: SensorSnapshot | None,
+        max_speed: float,
+        max_force: float,
+    ) -> tuple[float, float]:
+        if snapshot is None:
+            return 0.0, 0.0
+
+        flock = snapshot.flock
+        separation = self._steering_toward_relative_angle(
+            creature,
+            flock.nearest_neighbor_angle * (creature.vision.angle / 2.0) + pi,
+            max_speed,
+            max_force,
+            flock.nearest_neighbor_proximity,
+        )
+
+        if flock.flockmate_count <= 0:
+            alignment = (0.0, 0.0)
+            cohesion = (0.0, 0.0)
+        else:
+            alignment = self._steering_toward_relative_angle(
+                creature,
+                flock.average_relative_heading * pi,
+                max_speed,
+                max_force,
+                1.0,
+            )
+            cohesion = self._steering_toward_relative_angle(
+                creature,
+                flock.center_angle * (creature.vision.angle / 2.0),
+                max_speed,
+                max_force,
+                1.0 - flock.center_proximity,
+            )
+
+        return (
+            separation[0] * getattr(action, "weight_separation", 0.0)
+            + alignment[0] * getattr(action, "weight_alignment", 0.0)
+            + cohesion[0] * getattr(action, "weight_cohesion", 0.0),
+            separation[1] * getattr(action, "weight_separation", 0.0)
+            + alignment[1] * getattr(action, "weight_alignment", 0.0)
+            + cohesion[1] * getattr(action, "weight_cohesion", 0.0),
+        )
+
+    def _steering_toward_relative_angle(
+        self,
+        creature: Creature,
+        relative_angle: float,
+        max_speed: float,
+        max_force: float,
+        strength: float,
+    ) -> tuple[float, float]:
+        strength = self._clamp(strength, 0.0, 1.0)
+        if strength <= 0.0:
+            return 0.0, 0.0
+
+        desired_heading = creature.heading + relative_angle
+        desired_velocity = (
+            cos(desired_heading) * max_speed,
+            sin(desired_heading) * max_speed,
+        )
+        steering = (
+            desired_velocity[0] - creature.body.velocity.x,
+            desired_velocity[1] - creature.body.velocity.y,
+        )
+        limited = self._limit_vector(steering, max_force)
+        return limited[0] * strength, limited[1] * strength
+
+    def _flock_turn_bias(
+        self,
+        creature: Creature,
+        flock_force: tuple[float, float],
+        max_force: float,
+    ) -> float:
+        magnitude = hypot(*flock_force)
+        if magnitude <= 1e-12 or max_force <= 0.0:
+            return 0.0
+
+        relative_angle = self._signed_angle(
+            atan2(flock_force[1], flock_force[0]) - creature.heading
+        )
+        magnitude_ratio = self._clamp(magnitude / max_force, 0.0, 1.0)
+        return self._clamp(
+            (relative_angle / pi)
+            * magnitude_ratio
+            * self.config.action.max_flock_turn_bias,
+            -self.config.action.max_flock_turn_bias,
+            self.config.action.max_flock_turn_bias,
+        )
+
+    @staticmethod
+    def _limit_vector(
+        vector: tuple[float, float],
+        maximum: float,
+    ) -> tuple[float, float]:
+        magnitude = hypot(*vector)
+        if maximum <= 0.0 or magnitude <= 1e-12:
+            return 0.0, 0.0
+        if magnitude <= maximum:
+            return vector
+        scale = maximum / magnitude
+        return vector[0] * scale, vector[1] * scale
+
+    @staticmethod
+    def _signed_angle(angle: float) -> float:
+        while angle > pi:
+            angle -= 2.0 * pi
+        while angle < -pi:
+            angle += 2.0 * pi
+        return angle
+
     def _apply_top_down_motion(self) -> None:
+        motion_commands = getattr(self, "_motion_commands", {})
         for creature in self.creatures:
             self._apply_planar_drag(creature)
-            action = self._last_actions.get(creature.creature_id)
-            if action is not None:
-                self._apply_turn_control(creature, action.rotate)
+            command = motion_commands.get(creature.creature_id)
+            if command is not None:
+                self._apply_turn_control(
+                    creature,
+                    command.effective_rotate,
+                    max_angular_speed=command.max_angular_speed,
+                )
 
     def _apply_planar_drag(self, creature: Creature) -> None:
         velocity = creature.body.velocity
@@ -1126,11 +1303,22 @@ class World:
             forward_y * forward_speed + lateral_y * lateral_speed,
         )
 
-    def _apply_turn_control(self, creature: Creature, rotate: float) -> None:
+    def _apply_turn_control(
+        self,
+        creature: Creature,
+        rotate: float,
+        *,
+        max_angular_speed: float | None = None,
+    ) -> None:
         if abs(rotate) < self.config.action.turn_deadzone:
             rotate = 0.0
 
-        target_angular_velocity = rotate * self.MAX_ANGULAR_SPEED
+        angular_speed_limit = (
+            self.MAX_ANGULAR_SPEED
+            if max_angular_speed is None
+            else max(0.0, max_angular_speed)
+        )
+        target_angular_velocity = rotate * angular_speed_limit
         current_angular_velocity = creature.body.angular_velocity
         response = (
             self.config.action.turn_damping
@@ -1176,13 +1364,21 @@ class World:
         )
 
     def _limit_creature_motion(self) -> None:
+        motion_commands = getattr(self, "_motion_commands", {})
         for creature in self.creatures:
+            command = motion_commands.get(creature.creature_id)
+            max_speed = self.MAX_SPEED if command is None else command.max_speed
+            max_angular_speed = (
+                self.MAX_ANGULAR_SPEED
+                if command is None
+                else command.max_angular_speed
+            )
             velocity = creature.body.velocity
-            if velocity.length > self.MAX_SPEED:
-                creature.body.velocity = velocity.normalized() * self.MAX_SPEED
+            if velocity.length > max_speed:
+                creature.body.velocity = velocity.normalized() * max_speed
             creature.body.angular_velocity = max(
-                -self.MAX_ANGULAR_SPEED,
-                min(self.MAX_ANGULAR_SPEED, creature.body.angular_velocity),
+                -max_angular_speed,
+                min(max_angular_speed, creature.body.angular_velocity),
             )
 
     def _keep_creatures_inside_bounds(self) -> None:
@@ -1414,6 +1610,16 @@ class World:
                 self.MAX_SPEED,
                 self._eatable_foods_for,
                 self._creature_want_to_eat,
+                {
+                    creature.creature_id: getattr(
+                        action,
+                        "flee_panic_intensity",
+                        0.0,
+                    )
+                    for creature in self.creatures
+                    if (action := self._last_actions.get(creature.creature_id))
+                    is not None
+                },
             )
         finally:
             self._restore_movement_multipliers(with_infant_penalties)
@@ -1712,6 +1918,9 @@ class World:
             self.space.remove(creature.body, creature.shape)
             self.neat_controller.remove_brain(creature.creature_id)
             self._last_actions.pop(creature.creature_id, None)
+            motion_commands = getattr(self, "_motion_commands", None)
+            if motion_commands is not None:
+                motion_commands.pop(creature.creature_id, None)
 
         fitness = self.fitness.pop(creature.creature_id, None)
         self.rt_neat.record_death(fitness)

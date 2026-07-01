@@ -33,10 +33,11 @@ class EnergyCostBreakdown:
     vision: float
     body: float
     trait: float
+    sprint: float = 0.0
 
     @property
     def total(self) -> float:
-        return self.base + self.movement + self.vision + self.body
+        return self.base + self.movement + self.sprint + self.vision + self.body
 
 
 class Metabolism:
@@ -58,6 +59,7 @@ class Metabolism:
         max_speed: float,
         nearby_foods_for: Callable[[Creature], Sequence[Food]] | None = None,
         can_eat: Callable[[Creature], bool] | None = None,
+        sprint_intensities: dict[int, float] | None = None,
     ) -> MetabolismReport:
         depleted_foods: list[Food] = []
         touched_foods: list[Food] = []
@@ -66,7 +68,17 @@ class Metabolism:
 
         for creature in creatures:
             # Consume the energy from the creatures
-            self.consume_energy(creature, delta_time, max_speed)
+            sprint_intensity = (
+                0.0
+                if sprint_intensities is None
+                else sprint_intensities.get(creature.creature_id, 0.0)
+            )
+            self.consume_energy(
+                creature,
+                delta_time,
+                max_speed,
+                sprint_intensity=sprint_intensity,
+            )
 
             # Calculate the eatble food
             candidate_foods = (
@@ -105,10 +117,18 @@ class Metabolism:
         )
 
     def consume_energy(
-        self, creature: Creature, delta_time: float, max_speed: float
+        self,
+        creature: Creature,
+        delta_time: float,
+        max_speed: float,
+        sprint_intensity: float = 0.0,
     ) -> None:
         energy_cost = (
-            self.energy_cost_breakdown_per_second(creature, max_speed).total
+            self.energy_cost_breakdown_per_second(
+                creature,
+                max_speed,
+                sprint_intensity=sprint_intensity,
+            ).total
             * delta_time
         )
 
@@ -119,6 +139,7 @@ class Metabolism:
         self,
         creature: Creature,
         max_speed: float,
+        sprint_intensity: float = 0.0,
     ) -> EnergyCostBreakdown:
         speed_ratio: float = 0.0
         if max_speed > 0:
@@ -130,6 +151,10 @@ class Metabolism:
             creature.physical_traits.movement_cost_multiplier,
         )
         movement = base_movement * movement_multiplier
+        sprint = getattr(self.config, "sprint_energy_cost_per_second", 0.04) * min(
+            max(sprint_intensity, 0.0),
+            1.0,
+        )
         vision = self.vision.energy_cost_per_second(creature)
         body = self.body_energy_cost_per_second(creature)
         trait = vision + body + max(0.0, movement - base_movement)
@@ -137,6 +162,7 @@ class Metabolism:
         return EnergyCostBreakdown(
             base=self.config.basic_metabolism_rate,
             movement=movement,
+            sprint=sprint,
             vision=vision,
             body=body,
             trait=trait,

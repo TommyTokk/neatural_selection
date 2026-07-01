@@ -2386,6 +2386,9 @@ class UiRenderer:
             "is_grabbing": "holding",
             "own_infant_proximity": "baby_p",
             "own_infant_angle": "baby_a",
+            "flock_center_proximity": "flock_p",
+            "flock_center_angle": "flock_a",
+            "flock_average_relative_heading": "flock_h",
             "accelerate": "acc",
             "rotate": "rot",
             "want_reproduce": "repr",
@@ -2394,6 +2397,10 @@ class UiRenderer:
             "want_grab": "grab",
             "want_release": "drop",
             "want_nurse": "nurse",
+            "flee_panic_intensity": "panic",
+            "weight_separation": "sep",
+            "weight_alignment": "align",
+            "weight_cohesion": "cohere",
         }
         return replacements.get(label, label)
 
@@ -2429,6 +2436,8 @@ class UiRenderer:
             f"G {value(16, inputs):.2f}  "
             f"B {value(17, inputs):.2f}/{value(18, inputs):.2f}/"
             f"{value(19, inputs):.2f}/{value(20, inputs):.2f}  "
+            f"FL {value(23, inputs):.2f}/{value(24, inputs):.2f}/"
+            f"{value(25, inputs):.2f}  "
             f"E {value(3, inputs):.2f}"
         )
 
@@ -2440,7 +2449,9 @@ class UiRenderer:
             f"Raw outputs: {value(0, outputs):.2f}/{value(1, outputs):.2f}  "
             f"Intent: {value(2, outputs):.2f}/{value(3, outputs):.2f}/"
             f"{value(4, outputs):.2f}  "
-            f"Carry: {value(5, outputs):.2f}/{value(6, outputs):.2f}"
+            f"Carry: {value(5, outputs):.2f}/{value(6, outputs):.2f}  "
+            f"Flock: {value(8, outputs):.2f}/{value(9, outputs):.2f}/"
+            f"{value(10, outputs):.2f}/{value(11, outputs):.2f}"
         )
 
     def _contains_hitbox(self, key: str, x: float, y: float) -> bool:

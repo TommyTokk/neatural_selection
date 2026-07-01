@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import cos, sin
 
-ACTION_OUTPUT_COUNT = 8
+ACTION_OUTPUT_COUNT = 12
 ACTION_OUTPUT_NAMES = (
     "accelerate",
     "rotate",
@@ -13,6 +13,10 @@ ACTION_OUTPUT_NAMES = (
     "want_grab",
     "want_release",
     "want_nurse",
+    "flee_panic_intensity",
+    "weight_separation",
+    "weight_alignment",
+    "weight_cohesion",
 )
 NEUTRAL_NETWORK_OUTPUT = 0.5
 
@@ -27,6 +31,10 @@ class Action:
     want_grab: float
     want_release: float
     want_nurse: float = 0.0
+    flee_panic_intensity: float = 0.0
+    weight_separation: float = 0.0
+    weight_alignment: float = 0.0
+    weight_cohesion: float = 0.0
 
     def clamped(self) -> Action:
         return Action(
@@ -38,6 +46,13 @@ class Action:
             want_grab=max(0.0, min(1.0, self.want_grab)),
             want_release=max(0.0, min(1.0, self.want_release)),
             want_nurse=max(0.0, min(1.0, self.want_nurse)),
+            flee_panic_intensity=max(
+                0.0,
+                min(1.0, self.flee_panic_intensity),
+            ),
+            weight_separation=max(0.0, min(1.0, self.weight_separation)),
+            weight_alignment=max(0.0, min(1.0, self.weight_alignment)),
+            weight_cohesion=max(0.0, min(1.0, self.weight_cohesion)),
         )
 
 

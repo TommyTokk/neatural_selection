@@ -18,7 +18,8 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 2
+CHECKPOINT_VERSION = 3
+LEGACY_CHECKPOINT_VERSIONS = {2}
 
 
 class CheckpointError(RuntimeError):
@@ -369,8 +370,19 @@ class PersistenceManager:
                 "representatives": species_manager.representatives,
             }
         )
+        genome_config = getattr(
+            getattr(neat_controller, "config", None),
+            "genome_config",
+            None,
+        )
+        input_count = 26 if genome_config is None else len(genome_config.input_keys)
+        output_count = 12 if genome_config is None else len(genome_config.output_keys)
         return {
             "version": CHECKPOINT_VERSION,
+            "brain_contract": {
+                "inputs": input_count,
+                "outputs": output_count,
+            },
             "simulation_id": world.simulation_paths.simulation_id,
             "sim_time": world.elapsed_time,
             "rng_state": world.rng.getstate(),
@@ -478,10 +490,11 @@ class PersistenceManager:
         if not isinstance(state, dict):
             raise TypeError("Checkpoint root must be a dictionary.")
         version = state.get("version")
-        if version != CHECKPOINT_VERSION:
+        if version != CHECKPOINT_VERSION and version not in LEGACY_CHECKPOINT_VERSIONS:
             raise ValueError(
                 f"Unsupported checkpoint version {version!r}; "
-                f"expected {CHECKPOINT_VERSION}."
+                f"expected one of "
+                f"{sorted({CHECKPOINT_VERSION, *LEGACY_CHECKPOINT_VERSIONS})}."
             )
 
     @staticmethod
@@ -536,6 +549,16 @@ class PersistenceManager:
             controller.species_manager.next_species_id = species_state[
                 "next_species_id"
             ]
+            contract = state.get("brain_contract", {"inputs": 23, "outputs": 8})
+            if (
+                int(contract.get("inputs", 23)) < len(
+                    controller.config.genome_config.input_keys
+                )
+                or int(contract.get("outputs", 8)) < len(
+                    controller.config.genome_config.output_keys
+                )
+            ):
+                controller.migrate_legacy_brain_contract()
 
             world.fitness = {}
             world._chronometers = {}
