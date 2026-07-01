@@ -15,6 +15,7 @@ from src.persistence import (
     CHECKPOINT_VERSION,
     CheckpointError,
     PersistenceManager,
+    SavePriority,
     SimulationPaths,
 )
 from src.telemetry import TelemetryDatabase
@@ -223,7 +224,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 self.assertEqual(pickle.load(stream), state)
         self.assertFalse(Path(f"{archive.path}.bak").exists())
 
-    def test_coalescing_retains_pending_hourly_target(self) -> None:
+    def test_manual_save_takes_precedence_and_retains_hourly_target(self) -> None:
         manager = PersistenceManager()
         writer_started = Event()
         release_writer = Event()
@@ -248,6 +249,7 @@ class PersistenceManagerTest(unittest.TestCase):
             {"version": CHECKPOINT_VERSION, "marker": 1},
             {"version": CHECKPOINT_VERSION, "marker": 2},
             {"version": CHECKPOINT_VERSION, "marker": 3},
+            {"version": CHECKPOINT_VERSION, "marker": 4},
         ]
         try:
             with (
@@ -260,11 +262,19 @@ class PersistenceManagerTest(unittest.TestCase):
                     (self.simulation_paths.quick_target(),),
                 )
                 self.assertTrue(writer_started.wait(timeout=2.0))
+                self.assertTrue(manager.is_busy)
                 manager.save_simulation(object(), object(), (archive,))
                 manager.save_simulation(
                     object(),
                     object(),
                     (self.simulation_paths.quick_target(),),
+                    priority=SavePriority.MANUAL,
+                )
+                manager.save_simulation(
+                    object(),
+                    object(),
+                    (self.simulation_paths.quick_target(),),
+                    priority=SavePriority.AUTO,
                 )
                 release_writer.set()
                 manager.flush()
@@ -280,6 +290,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 (3, self.simulation_paths.quick_checkpoint),
             ],
         )
+        self.assertFalse(manager.is_busy)
 
     def test_capture_excludes_brains_and_records_tier_timers(self) -> None:
         body = SimpleNamespace(

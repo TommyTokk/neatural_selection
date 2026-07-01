@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 from configs.sim_config import build_sim_config
-from src.persistence import CheckpointTarget
+from src.persistence import CheckpointTarget, SavePriority
 from src.world import World
 
 
@@ -32,9 +32,19 @@ class _Telemetry:
 class _Persistence:
     def __init__(self) -> None:
         self.saves: list[tuple[object, ...]] = []
+        self.priorities: list[SavePriority] = []
+        self.is_busy = False
+        self.error: Exception | None = None
 
-    def save_simulation(self, *values: object) -> None:
+    def save_simulation(
+        self,
+        *values: object,
+        priority: SavePriority = SavePriority.AUTO,
+    ) -> None:
+        if self.error is not None:
+            raise self.error
         self.saves.append(values)
+        self.priorities.append(priority)
 
 
 class WorldPersistenceTimerTest(unittest.TestCase):
@@ -83,6 +93,10 @@ class WorldPersistenceTimerTest(unittest.TestCase):
         self.world._update_persistence_timer(1.0)
 
         self.assertEqual(len(self.world.persistence_manager.saves), 1)
+        self.assertEqual(
+            self.world.persistence_manager.priorities,
+            [SavePriority.AUTO],
+        )
         self.assertEqual(len(self.world.telemetry.metrics), 1)
         self.assertEqual(self.world.time_since_last_quick_save, 1.0)
         self.assertEqual(self.world.time_since_last_archive_save, 11.0)
@@ -114,6 +128,47 @@ class WorldPersistenceTimerTest(unittest.TestCase):
         )
         self.assertEqual(self.world.time_since_last_quick_save, 0.0)
         self.assertEqual(self.world.time_since_last_archive_save, 0.0)
+
+    def test_manual_save_uses_quick_target_and_resets_only_quick_timer(
+        self,
+    ) -> None:
+        self.world.time_since_last_quick_save = 8.0
+        self.world.time_since_last_archive_save = 21.0
+
+        self.world.save_now()
+
+        self.assertEqual(self.world.time_since_last_quick_save, 0.0)
+        self.assertEqual(self.world.time_since_last_archive_save, 21.0)
+        self.assertEqual(len(self.world.persistence_manager.saves), 1)
+        targets = self.world.persistence_manager.saves[0][2]
+        self.assertEqual(
+            [target.path for target in targets],
+            [Path("checkpoint.pkl")],
+        )
+        self.assertEqual(
+            self.world.persistence_manager.priorities,
+            [SavePriority.MANUAL],
+        )
+        self.assertEqual(len(self.world.telemetry.metrics), 1)
+
+    def test_manual_save_restores_quick_timer_when_capture_fails(self) -> None:
+        self.world.time_since_last_quick_save = 8.0
+        self.world.time_since_last_archive_save = 21.0
+        self.world.persistence_manager.error = RuntimeError("capture failed")
+
+        with self.assertRaisesRegex(RuntimeError, "capture failed"):
+            self.world.save_now()
+
+        self.assertEqual(self.world.time_since_last_quick_save, 8.0)
+        self.assertEqual(self.world.time_since_last_archive_save, 21.0)
+        self.assertEqual(self.world.telemetry.metrics, [])
+
+    def test_save_in_progress_reflects_persistence_manager(self) -> None:
+        self.assertFalse(self.world.save_in_progress)
+
+        self.world.persistence_manager.is_busy = True
+
+        self.assertTrue(self.world.save_in_progress)
 
     def test_birth_and_species_helpers_forward_phylogeny(self) -> None:
         creature = SimpleNamespace(

@@ -26,7 +26,7 @@ from src.metabolism import Metabolism
 from src.vision import BiomeSensorSnapshot, SensorSnapshot, VisionSystem
 from src.controller import BaselineFoodController
 from src.neat_controller import NeatBrainController
-from src.persistence import PersistenceManager, SimulationPaths
+from src.persistence import PersistenceManager, SavePriority, SimulationPaths
 from src.rt_neat import RtNeatManager
 from src.telemetry import TelemetryDatabase
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
@@ -260,6 +260,25 @@ class World:
             if self.telemetry is not None:
                 self.telemetry.close()
 
+    @property
+    def save_in_progress(self) -> bool:
+        return self.persistence_manager.is_busy
+
+    def save_now(self) -> None:
+        previous_quick_timer = self.time_since_last_quick_save
+        self.time_since_last_quick_save = 0.0
+        try:
+            self.persistence_manager.save_simulation(
+                self,
+                self.neat_controller,
+                (self.simulation_paths.quick_target(),),
+                priority=SavePriority.MANUAL,
+            )
+        except BaseException:
+            self.time_since_last_quick_save = previous_quick_timer
+            raise
+        self._log_persistence_metrics()
+
     def _update_persistence_timer(self, delta_time: float) -> None:
         quick_interval = self.config.persistence.quick_save_interval_seconds
         archive_interval = self.config.persistence.archive_save_interval_seconds
@@ -289,18 +308,23 @@ class World:
             self.time_since_last_archive_save %= archive_interval
             targets.append(self.simulation_paths.hourly_target())
 
-        telemetry = self.telemetry
-        if telemetry is not None:
-            telemetry.log_metrics(
-                self.elapsed_time,
-                len(self.creatures),
-                len(self.foods),
-                self.rt_neat.stats.best_fitness,
-            )
+        self._log_persistence_metrics()
         self.persistence_manager.save_simulation(
             self,
             self.neat_controller,
             tuple(targets),
+            priority=SavePriority.AUTO,
+        )
+
+    def _log_persistence_metrics(self) -> None:
+        telemetry = self.telemetry
+        if telemetry is None:
+            return
+        telemetry.log_metrics(
+            self.elapsed_time,
+            len(self.creatures),
+            len(self.foods),
+            self.rt_neat.stats.best_fitness,
         )
 
     def _log_initial_telemetry(self) -> None:

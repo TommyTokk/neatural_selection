@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import IntEnum
 from pathlib import Path
 import os
 import pickle
@@ -24,6 +25,11 @@ LEGACY_CHECKPOINT_VERSIONS = {2}
 
 class CheckpointError(RuntimeError):
     pass
+
+
+class SavePriority(IntEnum):
+    AUTO = 0
+    MANUAL = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,12 +132,17 @@ class SimulationPaths:
         return current.strftime("%Y%m%dT%H%M%S%fZ")
 
 
+@dataclass(slots=True)
+class _PendingSave:
+    state: dict[str, Any]
+    targets: tuple[CheckpointTarget, ...]
+    priority: SavePriority
+
+
 class PersistenceManager:
     def __init__(self) -> None:
         self._condition = Condition()
-        self._pending_save: (
-            tuple[dict[str, Any], tuple[CheckpointTarget, ...]] | None
-        ) = None
+        self._pending_save: _PendingSave | None = None
         self._saving = False
         self._closing = False
         self._last_error: BaseException | None = None
@@ -147,11 +158,18 @@ class PersistenceManager:
         with self._condition:
             return self._last_error
 
+    @property
+    def is_busy(self) -> bool:
+        with self._condition:
+            return self._saving or self._pending_save is not None
+
     def save_simulation(
         self,
         world: World,
         neat_controller: NeatBrainController,
         targets: tuple[CheckpointTarget, ...],
+        *,
+        priority: SavePriority = SavePriority.AUTO,
     ) -> None:
         if not targets:
             return
@@ -160,15 +178,24 @@ class PersistenceManager:
             if self._closing:
                 raise RuntimeError("PersistenceManager is closed.")
             pending_targets: dict[Path, CheckpointTarget] = {}
-            if self._pending_save is not None:
+            pending = self._pending_save
+            if pending is not None:
                 pending_targets.update(
                     (target.path, target)
-                    for target in self._pending_save[1]
+                    for target in pending.targets
                 )
             pending_targets.update((target.path, target) for target in targets)
-            # Coalescing uses the newest state while retaining every distinct
-            # quick/archive destination already waiting to be written.
-            self._pending_save = (state, tuple(pending_targets.values()))
+            if pending is not None and pending.priority > priority:
+                queued_state = pending.state
+                queued_priority = pending.priority
+            else:
+                queued_state = state
+                queued_priority = priority
+            self._pending_save = _PendingSave(
+                state=queued_state,
+                targets=tuple(pending_targets.values()),
+                priority=queued_priority,
+            )
             self._condition.notify_all()
 
     def flush(self) -> None:
@@ -284,7 +311,8 @@ class PersistenceManager:
                 self._saving = True
 
             assert save_request is not None
-            state, targets = save_request
+            state = save_request.state
+            targets = save_request.targets
             try:
                 target_errors: list[tuple[Path, BaseException]] = []
                 for target in targets:

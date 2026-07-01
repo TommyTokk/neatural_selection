@@ -67,7 +67,7 @@ class UiRenderer:
         )
         self._control_hitboxes["icon_rail"] = bounds
 
-        button_count = 4
+        button_count = 5
         button_size = self.ICON_BUTTON_SIZE
         button_gap = self.ICON_BUTTON_GAP
         available_height = max(0.0, bounds.height - self.RAIL_VERTICAL_PADDING)
@@ -110,6 +110,12 @@ class UiRenderer:
                 "globe",
                 getattr(world, "show_biome_background", False),
                 top - step * 3,
+            ),
+            (
+                "save_simulation",
+                "save_sim",
+                getattr(world, "save_in_progress", False),
+                top - step * 4,
             ),
         )
         for key, icon_name, active, center_y in icon_buttons:
@@ -1422,6 +1428,9 @@ class UiRenderer:
             return True
         if self._contains_hitbox("toggle_biome_background", x, y):
             world.toggle_biome_background()
+            return True
+        if self._contains_hitbox("save_simulation", x, y):
+            world.save_now()
             return True
         if self._contains_hitbox("brain_window_close", x, y):
             self._brain_window_open = False

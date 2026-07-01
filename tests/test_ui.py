@@ -331,6 +331,87 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
         self.assertIn("toggle_biome_background", self.renderer._control_hitboxes)
 
+    def test_left_rail_registers_save_button_with_save_sim_icon(self) -> None:
+        world = SimpleNamespace(
+            layout=build_screen_layout(1440, 900, build_sim_config().layout),
+            show_biome_background=False,
+            save_in_progress=False,
+        )
+        calls: list[tuple[str, str, bool]] = []
+        original_draw_icon_button = self.renderer._draw_icon_button
+        self.renderer._draw_icon_button = (
+            lambda bounds, icon_name, key, active: calls.append(
+                (key, icon_name, active)
+            )
+        )
+        try:
+            self.renderer._draw_icon_rail(world)
+        finally:
+            self.renderer._draw_icon_button = original_draw_icon_button
+
+        self.assertIn("save_simulation", self.renderer._control_hitboxes)
+        self.assertIn(("save_simulation", "save_sim", False), calls)
+        self.assertTrue(self.renderer._icon_path("save_sim").is_file())
+
+    def test_save_button_active_state_follows_world(self) -> None:
+        world = SimpleNamespace(
+            layout=build_screen_layout(1440, 900, build_sim_config().layout),
+            show_biome_background=False,
+            save_in_progress=True,
+        )
+        calls: list[tuple[str, str, bool]] = []
+        original_draw_icon_button = self.renderer._draw_icon_button
+        self.renderer._draw_icon_button = (
+            lambda bounds, icon_name, key, active: calls.append(
+                (key, icon_name, active)
+            )
+        )
+        try:
+            self.renderer._draw_icon_rail(world)
+        finally:
+            self.renderer._draw_icon_button = original_draw_icon_button
+
+        self.assertIn(("save_simulation", "save_sim", True), calls)
+
+    def test_save_button_calls_world_save_now(self) -> None:
+        calls: list[str] = []
+        world = SimpleNamespace(save_now=lambda: calls.append("save"))
+        self.renderer._control_hitboxes["save_simulation"] = arcade.LBWH(
+            0,
+            0,
+            20,
+            20,
+        )
+
+        handled = self.renderer.handle_mouse_press(world, 10, 10)
+
+        self.assertTrue(handled)
+        self.assertEqual(calls, ["save"])
+
+    def test_five_left_rail_buttons_fit_without_overlap(self) -> None:
+        world = SimpleNamespace(
+            layout=build_screen_layout(800, 600, build_sim_config().layout),
+            show_biome_background=False,
+            save_in_progress=False,
+        )
+
+        self.renderer._draw_icon_rail(world)
+
+        keys = (
+            "panel_toggle_inspector",
+            "panel_toggle_stats",
+            "panel_toggle_settings",
+            "toggle_biome_background",
+            "save_simulation",
+        )
+        buttons = [self.renderer._control_hitboxes[key] for key in keys]
+        rail = world.layout.left_sidebar
+        for button in buttons:
+            self.assertGreaterEqual(button.bottom, rail.bottom)
+            self.assertLessEqual(button.top, rail.top)
+        for upper, lower in zip(buttons, buttons[1:]):
+            self.assertGreaterEqual(upper.bottom, lower.top)
+
     def test_biome_toggle_button_flips_world_visibility(self) -> None:
         world = SimpleNamespace(show_biome_background=False)
 
