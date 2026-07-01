@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
+from src.speciation import SpeciesRecord
+
 
 class TelemetryDatabase:
     def __init__(self, database_file: str | Path) -> None:
@@ -27,6 +29,36 @@ class TelemetryDatabase:
                 death_reason TEXT,
                 vision_range REAL,
                 radius REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS species_history (
+                species_id INTEGER PRIMARY KEY,
+                parent_species_id INTEGER,
+                founder_creature_id INTEGER,
+                founder_genome_id INTEGER,
+                time_emerged REAL,
+                color_red INTEGER,
+                color_green INTEGER,
+                color_blue INTEGER,
+                data_quality TEXT NOT NULL,
+                radius REAL,
+                vision_range REAL,
+                vision_angle REAL,
+                movement_cost_multiplier REAL,
+                radius_delta REAL,
+                vision_range_delta REAL,
+                vision_angle_delta REAL,
+                movement_cost_delta REAL,
+                neat_distance REAL,
+                phenotypic_distance REAL,
+                weighted_phenotypic_distance REAL,
+                composite_distance REAL,
+                compatibility_threshold REAL,
+                phenotypic_weight REAL,
+                radius_component REAL,
+                vision_range_component REAL,
+                vision_angle_component REAL,
+                movement_cost_component REAL
             );
 
             CREATE TABLE IF NOT EXISTS population_metrics (
@@ -55,6 +87,83 @@ class TelemetryDatabase:
             (species_id, parent_species_id, time_emerged),
         )
         self.connection.commit()
+
+    def log_species_record(self, record: SpeciesRecord) -> None:
+        traits = record.founder_traits
+        deltas = record.trait_deltas
+        distances = record.distances
+        color = record.founder_color or (None, None, None)
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO species
+                (species_id, parent_species_id, time_emerged)
+            VALUES (?, ?, ?)
+            """,
+            (
+                record.species_id,
+                record.parent_species_id,
+                record.emerged_at,
+            ),
+        )
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO species_history (
+                species_id, parent_species_id, founder_creature_id,
+                founder_genome_id, time_emerged, color_red, color_green,
+                color_blue, data_quality, radius, vision_range, vision_angle,
+                movement_cost_multiplier, radius_delta, vision_range_delta,
+                vision_angle_delta, movement_cost_delta, neat_distance,
+                phenotypic_distance, weighted_phenotypic_distance,
+                composite_distance, compatibility_threshold,
+                phenotypic_weight, radius_component, vision_range_component,
+                vision_angle_component, movement_cost_component
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                record.species_id,
+                record.parent_species_id,
+                record.founder_creature_id,
+                record.founder_genome_id,
+                record.emerged_at,
+                *color,
+                record.data_quality,
+                None if traits is None else traits.radius,
+                None if traits is None else traits.vision_range,
+                None if traits is None else traits.vision_angle,
+                None if traits is None else traits.movement_cost_multiplier,
+                None if deltas is None else deltas.radius,
+                None if deltas is None else deltas.vision_range,
+                None if deltas is None else deltas.vision_angle,
+                None if deltas is None else deltas.movement_cost_multiplier,
+                distances.neat_distance,
+                distances.phenotypic_distance,
+                distances.weighted_phenotypic_distance,
+                distances.composite_distance,
+                distances.compatibility_threshold,
+                distances.phenotypic_weight,
+                distances.radius_component,
+                distances.vision_range_component,
+                distances.vision_angle_component,
+                distances.movement_cost_component,
+            ),
+        )
+        self.connection.commit()
+
+    def load_species_lineage(self) -> list[tuple[int, int | None, float | None]]:
+        rows = self.connection.execute(
+            """
+            SELECT species_id, parent_species_id, time_emerged
+            FROM species
+            ORDER BY species_id
+            """
+        ).fetchall()
+        return [
+            (int(species_id), parent_species_id, time_emerged)
+            for species_id, parent_species_id, time_emerged in rows
+        ]
 
     def log_creature_birth(
         self,

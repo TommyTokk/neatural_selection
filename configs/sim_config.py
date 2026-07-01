@@ -133,7 +133,7 @@ class MetabolismConfig:
 class PopulationConfig:
     initial_creatures: int = 50
     max_creatures: int = 100
-    extinction_recovery_creatures: int = 20
+    extinction_recovery_creatures: int = 35
     extinction_recovery_parent_pool: int = 5
     min_reproduction_age: float = 20.0
     reproduction_cooldown: float = 12.0
@@ -151,6 +151,7 @@ class PopulationConfig:
 @dataclass(slots=True)
 class SpeciationConfig:
     compatibility_threshold: float = 3.0
+    phenotypic_weight: float = 2.0
 
 
 @dataclass(slots=True)

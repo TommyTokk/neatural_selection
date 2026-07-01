@@ -42,7 +42,9 @@ from configs.sim_config import build_sim_config
 from src.action import Action
 from src.creature import LineageInfo, PhysicalTraits, VisionTraits
 from src.fitness import CreatureFitness
+from src.neat_controller import SpeciationResult
 from src.rt_neat import RtNeatManager
+from src.speciation import SpeciesDistanceBreakdown, SpeciesTraitSnapshot
 from src.world import ArchivedCreatureTraits, World
 
 
@@ -72,6 +74,33 @@ class FakeCreature:
         return self.physical_traits.radius
 
 
+def speciation_result(
+    species_id: int,
+    parent_species_id: int,
+    is_new_species: bool,
+) -> SpeciationResult:
+    zero = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+    return SpeciationResult(
+        species_id=species_id,
+        parent_species_id=parent_species_id,
+        is_new_species=is_new_species,
+        founder_traits=SpeciesTraitSnapshot(16.0, 100.0, 1.0, 1.0),
+        trait_deltas=zero,
+        distances=SpeciesDistanceBreakdown(
+            neat_distance=3.1 if is_new_species else 0.0,
+            phenotypic_distance=0.0,
+            weighted_phenotypic_distance=0.0,
+            composite_distance=3.1 if is_new_species else 0.0,
+            compatibility_threshold=3.0,
+            phenotypic_weight=2.0,
+            radius_component=0.0,
+            vision_range_component=0.0,
+            vision_angle_component=0.0,
+            movement_cost_component=0.0,
+        ),
+    )
+
+
 class FakeMetabolism:
     def __init__(self) -> None:
         self.movement_multipliers_seen: dict[int, float] = {}
@@ -93,6 +122,7 @@ class FakeMetabolism:
 class FakeBrainController:
     def __init__(self) -> None:
         self.created_children: list[tuple[int, int, int]] = []
+        self.created_child_traits: list[tuple[PhysicalTraits, VisionTraits]] = []
         self.archived: list[tuple[int, float]] = []
         self.removed: list[int] = []
 
@@ -101,11 +131,18 @@ class FakeBrainController:
         parent_creature_id: int,
         child_creature_id: int,
         parent_species_id: int,
-    ) -> tuple[object, int, bool]:
+        child_physical_traits: PhysicalTraits,
+        child_vision: VisionTraits,
+    ) -> tuple[object, SpeciationResult]:
         self.created_children.append(
             (parent_creature_id, child_creature_id, parent_species_id)
         )
-        return object(), parent_species_id, False
+        self.created_child_traits.append((child_physical_traits, child_vision))
+        return object(), speciation_result(
+            parent_species_id,
+            parent_species_id,
+            False,
+        )
 
     def archive_brain(self, creature_id: int, fitness_score: float) -> bool:
         self.archived.append((creature_id, fitness_score))
@@ -193,6 +230,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.rt_neat = RtNeatManager(brain_controller=None)
         world.rt_neat.eligible_parent_ids = [2, 1]
         world.neat_controller = FakeBrainController()
+        world.species_history = {}
         world._chronometers = {}
         world._child_spawn_position = lambda parent, child_radius: (1.0, 1.0)
         world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
@@ -209,6 +247,15 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertTrue(world._try_reproduce())
 
         self.assertEqual(world.neat_controller.created_children, [(1, 3, 1)])
+        self.assertEqual(
+            world.neat_controller.created_child_traits,
+            [
+                (
+                    world.creatures[-1].physical_traits,
+                    world.creatures[-1].vision,
+                )
+            ],
+        )
         self.assertEqual(world.rt_neat.stats.births, 1)
         self.assertEqual(world.rt_neat.stats.normal_replacements, 1)
         self.assertEqual(len(world.creatures), 3)
@@ -221,17 +268,18 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world.creatures[-1].lineage.generation, 1)
         self.assertEqual(world.fitness[1].offspring_count, 1)
         self.assertEqual(world.creatures[0].energy, 0.5)
+        self.assertEqual(world.species_history, {})
 
     def test_reproduction_assigns_new_species_and_overwrites_color(self) -> None:
         world = self._world_ready_to_reproduce()
         parent = world.creatures[0]
         parent.lineage.species_id = 7
         world.neat_controller = SimpleNamespace(
-            create_child_brain=lambda parent_id, child_id, parent_species_id: (
+            create_child_brain=lambda parent_id, child_id, parent_species_id, physical, vision: (
                 object(),
-                8,
-                True,
-            )
+                speciation_result(8, parent_species_id, True),
+            ),
+            genome_id_for=lambda creature_id: 80,
         )
         founder_color = (240, 48, 180)
         world._new_species_color = lambda parent_color: founder_color
@@ -241,6 +289,12 @@ class WorldReproductionTest(unittest.TestCase):
         child = world.creatures[-1]
         self.assertEqual(child.lineage.species_id, 8)
         self.assertEqual(child.color, founder_color)
+        record = world.species_history[8]
+        self.assertEqual(record.parent_species_id, 7)
+        self.assertEqual(record.founder_creature_id, child.creature_id)
+        self.assertEqual(record.founder_genome_id, 80)
+        self.assertEqual(record.founder_color, founder_color)
+        self.assertEqual(record.data_quality, "exact")
 
     def test_same_species_reproduction_keeps_inherited_color_jitter(self) -> None:
         world = self._world_ready_to_reproduce()
@@ -462,10 +516,13 @@ class WorldReproductionTest(unittest.TestCase):
         world.neat_controller = SimpleNamespace(
             best_genomes=lambda count: [FakeGenome(), FakeGenome()],
             create_mutated_brain_from_genome=(
-                lambda parent_genome, child_id, parent_species_id: (
+                lambda parent_genome, child_id, parent_species_id, physical, vision: (
                     object(),
-                    parent_species_id,
-                    False,
+                    speciation_result(
+                        parent_species_id,
+                        parent_species_id,
+                        False,
+                    ),
                 )
             ),
         )
@@ -496,15 +553,26 @@ class WorldReproductionTest(unittest.TestCase):
         world.rng = Random(7)
         world.rt_neat = RtNeatManager(brain_controller=None)
         parent_genome = SimpleNamespace(key=5)
+        forwarded_traits: list[tuple[PhysicalTraits, VisionTraits]] = []
+
+        def create_recovered_brain(
+            parent_genome: object,
+            child_id: int,
+            parent_species_id: int,
+            child_physical_traits: PhysicalTraits,
+            child_vision: VisionTraits,
+        ) -> tuple[object, SpeciationResult]:
+            del parent_genome, child_id
+            forwarded_traits.append((child_physical_traits, child_vision))
+            return object(), speciation_result(
+                parent_species_id,
+                parent_species_id,
+                False,
+            )
+
         world.neat_controller = SimpleNamespace(
             best_genomes=lambda count: [parent_genome],
-            create_mutated_brain_from_genome=(
-                lambda parent_genome, child_id, parent_species_id: (
-                    object(),
-                    parent_species_id,
-                    False,
-                )
-            ),
+            create_mutated_brain_from_genome=create_recovered_brain,
         )
         world._trait_archive_by_genome_id = {
             5: ArchivedCreatureTraits(
@@ -535,6 +603,10 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(recovered.lineage.species_id, 6)
         self.assertNotEqual(recovered.vision.range, 120.0)
         self.assertNotEqual(recovered.physical_traits.radius, 18.0)
+        self.assertEqual(
+            forwarded_traits,
+            [(recovered.physical_traits, recovered.vision)],
+        )
 
     def test_extinction_recovery_can_found_new_species(self) -> None:
         world = object.__new__(World)
@@ -552,13 +624,11 @@ class WorldReproductionTest(unittest.TestCase):
         parent_genome = SimpleNamespace(key=5)
         world.neat_controller = SimpleNamespace(
             best_genomes=lambda count: [parent_genome],
-            create_mutated_brain_from_genome=(
-                lambda parent, child_id, parent_species_id: (
-                    object(),
-                    10,
-                    True,
-                )
+            create_mutated_brain_from_genome=lambda parent, child_id, parent_species_id, physical, vision: (
+                object(),
+                speciation_result(10, parent_species_id, True),
             ),
+            genome_id_for=lambda creature_id: 100,
         )
         world._trait_archive_by_genome_id = {
             5: ArchivedCreatureTraits(
@@ -577,6 +647,9 @@ class WorldReproductionTest(unittest.TestCase):
             physical_traits=kwargs["physical_traits"],
             lineage=kwargs["lineage"],
         )
+        world.species_history = {}
+        world.elapsed_time = 0.0
+        world.telemetry = None
         founder_color = (220, 40, 190)
         world._new_species_color = lambda parent_color: founder_color
 
@@ -584,6 +657,7 @@ class WorldReproductionTest(unittest.TestCase):
 
         self.assertEqual(world.creatures[0].lineage.species_id, 10)
         self.assertEqual(world.creatures[0].color, founder_color)
+        self.assertEqual(world.species_history[10].parent_species_id, 6)
 
     def test_extinction_recovery_refresh_does_not_score_newborn_genomes(self) -> None:
         world = object.__new__(World)
@@ -622,10 +696,16 @@ class WorldReproductionTest(unittest.TestCase):
                 parent: FakeGenome,
                 child_id: int,
                 parent_species_id: int,
-            ) -> tuple[object, int, bool]:
-                del parent
+                child_physical_traits: PhysicalTraits,
+                child_vision: VisionTraits,
+            ) -> tuple[object, SpeciationResult]:
+                del parent, child_physical_traits, child_vision
                 newborn_genomes[child_id] = FakeGenome(fitness=None)
-                return object(), parent_species_id, False
+                return object(), speciation_result(
+                    parent_species_id,
+                    parent_species_id,
+                    False,
+                )
 
             def update_genome_fitness(
                 self,
@@ -665,6 +745,9 @@ class WorldReproductionTest(unittest.TestCase):
         world.rt_neat = RtNeatManager(brain_controller=None)
         world.rt_neat.eligible_parent_ids = [1, 2]
         world.neat_controller = FakeBrainController()
+        world.species_history = {}
+        world.elapsed_time = 0.0
+        world.telemetry = None
         world._chronometers = {}
         world._child_spawn_position = lambda parent, child_radius: (1.0, 1.0)
         world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(

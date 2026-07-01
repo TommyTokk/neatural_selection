@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import unittest
 
 from configs.sim_config import build_sim_config
+from src.neat_controller import SpeciationResult
 from src.persistence import CheckpointTarget, SavePriority
+from src.speciation import SpeciesDistanceBreakdown, SpeciesTraitSnapshot
 from src.world import World
 
 
@@ -14,6 +16,7 @@ class _Telemetry:
         self.metrics: list[tuple[object, ...]] = []
         self.births: list[tuple[object, ...]] = []
         self.species: list[tuple[object, ...]] = []
+        self.species_records: list[object] = []
         self.deaths: list[tuple[object, ...]] = []
 
     def log_metrics(self, *values: object) -> None:
@@ -24,6 +27,9 @@ class _Telemetry:
 
     def log_species(self, *values: object) -> None:
         self.species.append(values)
+
+    def log_species_record(self, record: object) -> None:
+        self.species_records.append(record)
 
     def log_creature_death(self, *values: object) -> None:
         self.deaths.append(values)
@@ -174,18 +180,78 @@ class WorldPersistenceTimerTest(unittest.TestCase):
         creature = SimpleNamespace(
             creature_id=9,
             lineage=SimpleNamespace(species_id=3),
-            vision=SimpleNamespace(range=125.0),
+            vision=SimpleNamespace(range=125.0, angle=1.0),
+            physical_traits=SimpleNamespace(
+                radius=17.0,
+                movement_cost_multiplier=1.0,
+            ),
             radius=17.0,
+            color=(10, 20, 30),
         )
+        zero = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+        result = SpeciationResult(
+            species_id=3,
+            parent_species_id=1,
+            is_new_species=True,
+            founder_traits=SpeciesTraitSnapshot(17.0, 125.0, 1.0, 1.0),
+            trait_deltas=zero,
+            distances=SpeciesDistanceBreakdown(
+                neat_distance=3.1,
+                phenotypic_distance=0.0,
+                weighted_phenotypic_distance=0.0,
+                composite_distance=3.1,
+                compatibility_threshold=3.0,
+                phenotypic_weight=2.0,
+                radius_component=0.0,
+                vision_range_component=0.0,
+                vision_angle_component=0.0,
+                movement_cost_component=0.0,
+            ),
+        )
+        self.world.neat_controller = SimpleNamespace(
+            genome_id_for=lambda creature_id: 30
+        )
+        self.world.species_history = {}
 
-        self.world._log_new_species(3, 1)
+        self.world._record_new_species(creature, result)
         self.world._log_creature_birth(creature)
 
-        self.assertEqual(self.world.telemetry.species, [(3, 1, 25.0)])
+        self.assertEqual(len(self.world.telemetry.species_records), 1)
+        self.assertEqual(self.world.species_history[3].parent_species_id, 1)
         self.assertEqual(
             self.world.telemetry.births,
             [(9, 3, 25.0, 125.0, 17.0)],
         )
+
+    def test_luca_record_uses_first_creature_and_zero_distances(self) -> None:
+        founder = SimpleNamespace(
+            creature_id=1,
+            color=(10, 20, 30),
+            physical_traits=SimpleNamespace(
+                radius=16.0,
+                movement_cost_multiplier=1.0,
+            ),
+            vision=SimpleNamespace(range=100.0, angle=1.0),
+        )
+        self.world.creatures = [founder]
+        self.world.species_history = {}
+        self.world.elapsed_time = 0.0
+        self.world.neat_controller = SimpleNamespace(
+            genome_id_for=lambda creature_id: 11,
+            species_manager=SimpleNamespace(
+                compatibility_threshold=3.0,
+                phenotypic_weight=2.0,
+            ),
+        )
+
+        self.world._initialize_luca_record()
+
+        record = self.world.species_history[1]
+        self.assertEqual(record.founder_creature_id, 1)
+        self.assertEqual(record.founder_genome_id, 11)
+        self.assertEqual(record.founder_color, (10, 20, 30))
+        self.assertEqual(record.data_quality, "exact")
+        self.assertEqual(record.distances.composite_distance, 0.0)
 
     def test_remove_creature_logs_death_reason(self) -> None:
         creature = SimpleNamespace(

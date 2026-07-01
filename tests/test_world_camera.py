@@ -148,11 +148,20 @@ class FakeNeatBrainController:
         self,
         config_path: str,
         compatibility_threshold: float = 3.0,
+        phenotypic_weight: float = 2.0,
+        trait_config: object | None = None,
+        vision_config: object | None = None,
     ) -> None:
-        del config_path, compatibility_threshold
+        del (
+            config_path,
+            compatibility_threshold,
+            phenotypic_weight,
+            trait_config,
+            vision_config,
+        )
 
-    def assign_initial_brains(self, creature_ids: list[int]) -> None:
-        del creature_ids
+    def assign_initial_brains(self, creatures: list[object]) -> None:
+        del creatures
 
 
 class WorldCameraTest(unittest.TestCase):

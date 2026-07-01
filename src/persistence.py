@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 3
-LEGACY_CHECKPOINT_VERSIONS = {2}
+CHECKPOINT_VERSION = 5
+LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4}
 
 
 class CheckpointError(RuntimeError):
@@ -453,9 +453,11 @@ class PersistenceManager:
                 "compatibility_threshold": (
                     species_manager.compatibility_threshold
                 ),
+                "phenotypic_weight": species_manager.phenotypic_weight,
                 "representatives": evolution_state["representatives"],
                 "next_species_id": species_manager.next_species_id,
             },
+            "species_history": copy.deepcopy(world.species_history),
             "fitness_archive": copy.deepcopy(world.fitness_archive),
             "archived_traits": copy.deepcopy(world._trait_archive_by_genome_id),
             "rt_neat": {
@@ -526,6 +528,194 @@ class PersistenceManager:
             )
 
     @staticmethod
+    def _migrate_species_representatives(
+        representatives: dict[int, Any],
+        creature_states: list[dict[str, Any]],
+        archived_traits: dict[int, Any],
+    ) -> dict[int, Any]:
+        living_traits = {
+            creature_state["genome_id"]: (
+                creature_state["physical_traits"],
+                creature_state["vision"],
+            )
+            for creature_state in creature_states
+            if creature_state.get("genome_id") is not None
+        }
+        migrated: dict[int, Any] = {}
+        for species_id, representative in representatives.items():
+            if isinstance(representative, tuple) and len(representative) == 3:
+                migrated[species_id] = representative
+                continue
+
+            genome_id = getattr(representative, "key", None)
+            traits = living_traits.get(genome_id)
+            if traits is None:
+                archived = archived_traits.get(genome_id)
+                if archived is not None:
+                    traits = (archived.physical_traits, archived.vision)
+            if traits is None:
+                raise CheckpointError(
+                    "Cannot migrate species "
+                    f"{species_id}: representative genome {genome_id!r} "
+                    "has no living or archived phenotype."
+                )
+
+            physical_traits, vision = traits
+            migrated[species_id] = (
+                representative,
+                copy.deepcopy(physical_traits),
+                copy.deepcopy(vision),
+            )
+        return migrated
+
+    @staticmethod
+    def _reconstruct_species_history(
+        world: World,
+        neat_controller: NeatBrainController,
+    ) -> dict[int, Any]:
+        from src.neat_controller import calculate_phenotypic_distance_components
+        from src.speciation import (
+            SpeciesDistanceBreakdown,
+            SpeciesRecord,
+            SpeciesTraitSnapshot,
+        )
+
+        telemetry = getattr(world, "telemetry", None)
+        lineage_rows = telemetry.load_species_lineage() if telemetry is not None else []
+        lineage = {
+            species_id: (parent_species_id, emerged_at)
+            for species_id, parent_species_id, emerged_at in lineage_rows
+        }
+        manager = neat_controller.species_manager
+        records: dict[int, SpeciesRecord] = {}
+        for species_id, representative in sorted(manager.representatives.items()):
+            genome, physical_traits, vision = representative
+            parent_species_id, emerged_at = lineage.get(
+                species_id,
+                (None, 0.0 if species_id == 1 else None),
+            )
+            founder_genome_id = getattr(genome, "key", None)
+            founder_creature_id = None
+            founder_color = None
+            for creature in world.creatures:
+                if (
+                    neat_controller.genome_id_for(creature.creature_id)
+                    == founder_genome_id
+                ):
+                    founder_creature_id = creature.creature_id
+                    founder_color = tuple(creature.color[:3])
+                    break
+            if founder_creature_id is None:
+                archived = world._trait_archive_by_genome_id.get(
+                    founder_genome_id
+                )
+                if archived is not None:
+                    founder_creature_id = archived.creature_id
+                    founder_color = tuple(archived.color[:3])
+
+            zero = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+            deltas = None
+            distances = SpeciesDistanceBreakdown(
+                neat_distance=None,
+                phenotypic_distance=None,
+                weighted_phenotypic_distance=None,
+                composite_distance=None,
+                compatibility_threshold=manager.compatibility_threshold,
+                phenotypic_weight=manager.phenotypic_weight,
+                radius_component=None,
+                vision_range_component=None,
+                vision_angle_component=None,
+                movement_cost_component=None,
+            )
+            can_reconstruct = (
+                parent_species_id is not None
+                and parent_species_id in manager.representatives
+            )
+            if species_id == 1:
+                deltas = zero
+                distances = SpeciesDistanceBreakdown(
+                    neat_distance=0.0,
+                    phenotypic_distance=0.0,
+                    weighted_phenotypic_distance=0.0,
+                    composite_distance=0.0,
+                    compatibility_threshold=manager.compatibility_threshold,
+                    phenotypic_weight=manager.phenotypic_weight,
+                    radius_component=0.0,
+                    vision_range_component=0.0,
+                    vision_angle_component=0.0,
+                    movement_cost_component=0.0,
+                )
+            elif can_reconstruct:
+                parent_genome, parent_physical, parent_vision = (
+                    manager.representatives[parent_species_id]
+                )
+                components = calculate_phenotypic_distance_components(
+                    physical_traits,
+                    vision,
+                    parent_physical,
+                    parent_vision,
+                    manager.trait_config,
+                    manager.vision_config,
+                )
+                phenotypic_distance = (
+                    components.radius
+                    + components.vision_range
+                    + components.vision_angle
+                    + components.movement_cost_multiplier
+                )
+                neat_distance = genome.distance(
+                    parent_genome,
+                    neat_controller.config.genome_config,
+                )
+                weighted_distance = (
+                    phenotypic_distance * manager.phenotypic_weight
+                )
+                deltas = SpeciesTraitSnapshot(
+                    radius=physical_traits.radius - parent_physical.radius,
+                    vision_range=vision.range - parent_vision.range,
+                    vision_angle=vision.angle - parent_vision.angle,
+                    movement_cost_multiplier=(
+                        physical_traits.movement_cost_multiplier
+                        - parent_physical.movement_cost_multiplier
+                    ),
+                )
+                distances = SpeciesDistanceBreakdown(
+                    neat_distance=neat_distance,
+                    phenotypic_distance=phenotypic_distance,
+                    weighted_phenotypic_distance=weighted_distance,
+                    composite_distance=neat_distance + weighted_distance,
+                    compatibility_threshold=manager.compatibility_threshold,
+                    phenotypic_weight=manager.phenotypic_weight,
+                    radius_component=components.radius,
+                    vision_range_component=components.vision_range,
+                    vision_angle_component=components.vision_angle,
+                    movement_cost_component=(
+                        components.movement_cost_multiplier
+                    ),
+                )
+
+            records[species_id] = SpeciesRecord(
+                species_id=species_id,
+                parent_species_id=parent_species_id,
+                founder_creature_id=founder_creature_id,
+                founder_genome_id=founder_genome_id,
+                emerged_at=emerged_at,
+                founder_color=founder_color,
+                data_quality=(
+                    "reconstructed"
+                    if species_id == 1 or can_reconstruct
+                    else "partial"
+                ),
+                founder_traits=SpeciesTraitSnapshot.from_traits(
+                    physical_traits,
+                    vision,
+                ),
+                trait_deltas=deltas,
+                distances=distances,
+            )
+        return records
+
+    @staticmethod
     def _restore_world(
         state: dict[str, Any],
         config: SimConfig,
@@ -571,9 +761,17 @@ class PersistenceManager:
             controller.species_manager.compatibility_threshold = species_state[
                 "compatibility_threshold"
             ]
-            controller.species_manager.representatives = species_state[
-                "representatives"
-            ]
+            controller.species_manager.phenotypic_weight = species_state.get(
+                "phenotypic_weight",
+                controller.species_manager.phenotypic_weight,
+            )
+            controller.species_manager.representatives = (
+                PersistenceManager._migrate_species_representatives(
+                    species_state["representatives"],
+                    state["creatures"],
+                    state.get("archived_traits", {}),
+                )
+            )
             controller.species_manager.next_species_id = species_state[
                 "next_species_id"
             ]
@@ -651,6 +849,18 @@ class PersistenceManager:
             world._sync_carried_foods()
             world.fitness_archive = state["fitness_archive"]
             world._trait_archive_by_genome_id = state["archived_traits"]
+            if "species_history" in state:
+                world.species_history = copy.deepcopy(state["species_history"])
+            else:
+                world.species_history = (
+                    PersistenceManager._reconstruct_species_history(
+                        world,
+                        controller,
+                    )
+                )
+            if world.telemetry is not None:
+                for record in world.species_history.values():
+                    world.telemetry.log_species_record(record)
 
             rt_state = state["rt_neat"]
             world.rt_neat.stats = rt_state["stats"]

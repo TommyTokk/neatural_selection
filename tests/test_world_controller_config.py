@@ -37,13 +37,19 @@ class FakeNeatBrainController:
         self,
         config_path: str,
         compatibility_threshold: float = 3.0,
+        phenotypic_weight: float = 2.0,
+        trait_config: object | None = None,
+        vision_config: object | None = None,
     ) -> None:
         self.config_path = config_path
         self.compatibility_threshold = compatibility_threshold
-        self.assigned_creature_ids: list[int] = []
+        self.phenotypic_weight = phenotypic_weight
+        self.trait_config = trait_config
+        self.vision_config = vision_config
+        self.assigned_creatures: list[object] = []
 
-    def assign_initial_brains(self, creature_ids: list[int]) -> None:
-        self.assigned_creature_ids = creature_ids
+    def assign_initial_brains(self, creatures: list[object]) -> None:
+        self.assigned_creatures = creatures
 
 
 class WorldControllerConfigTest(unittest.TestCase):
@@ -56,6 +62,7 @@ class WorldControllerConfigTest(unittest.TestCase):
         config = build_sim_config()
 
         self.assertEqual(config.speciation.compatibility_threshold, 3.0)
+        self.assertEqual(config.speciation.phenotypic_weight, 2.0)
         self.assertEqual(
             SpeciationConfig(compatibility_threshold=4.25).compatibility_threshold,
             4.25,
@@ -84,6 +91,9 @@ class WorldControllerConfigTest(unittest.TestCase):
 
         self.assertFalse(world.use_neat_brains)
         self.assertEqual(world.neat_controller.compatibility_threshold, 3.0)
+        self.assertEqual(world.neat_controller.phenotypic_weight, 2.0)
+        self.assertIs(world.neat_controller.trait_config, config.trait)
+        self.assertIs(world.neat_controller.vision_config, config.vision)
 
 
 if __name__ == "__main__":

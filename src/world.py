@@ -25,9 +25,14 @@ from src.food_spawner import FoodSpawner
 from src.metabolism import Metabolism
 from src.vision import BiomeSensorSnapshot, SensorSnapshot, VisionSystem
 from src.controller import BaselineFoodController
-from src.neat_controller import NeatBrainController
+from src.neat_controller import NeatBrainController, SpeciationResult
 from src.persistence import PersistenceManager, SavePriority, SimulationPaths
 from src.rt_neat import RtNeatManager
+from src.speciation import (
+    SpeciesDistanceBreakdown,
+    SpeciesRecord,
+    SpeciesTraitSnapshot,
+)
 from src.telemetry import TelemetryDatabase
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
 
@@ -182,13 +187,17 @@ class World:
         self.neat_controller = NeatBrainController(
             "configs/neat_herbivore.ini",
             compatibility_threshold=config.speciation.compatibility_threshold,
+            phenotypic_weight=config.speciation.phenotypic_weight,
+            trait_config=config.trait,
+            vision_config=config.vision,
         )
         if bootstrap:
-            self.neat_controller.assign_initial_brains(
-                [creature.creature_id for creature in self.creatures]
-            )
+            self.neat_controller.assign_initial_brains(self.creatures)
         self.rt_neat = RtNeatManager(self.neat_controller)
         self._trait_archive_by_genome_id: dict[int, ArchivedCreatureTraits] = {}
+        self.species_history: dict[int, SpeciesRecord] = {}
+        if bootstrap:
+            self._initialize_luca_record()
         self.use_neat_brains = config.controller.use_neat_brains
         self.show_brain_view = False
         self.time_since_last_quick_save = 0.0
@@ -331,7 +340,9 @@ class World:
         telemetry = self.telemetry
         if telemetry is None:
             return
-        telemetry.log_species(1, None, self.elapsed_time)
+        luca_record = self.species_history.get(1)
+        if luca_record is not None:
+            telemetry.log_species_record(luca_record)
         for creature in self.creatures:
             self._log_creature_birth(creature)
 
@@ -347,15 +358,67 @@ class World:
             creature.radius,
         )
 
-    def _log_new_species(
-        self,
-        species_id: int,
-        parent_species_id: int,
-    ) -> None:
-        telemetry = getattr(self, "telemetry", None)
-        if telemetry is None:
+    def _initialize_luca_record(self) -> None:
+        if not self.creatures:
             return
-        telemetry.log_species(species_id, parent_species_id, self.elapsed_time)
+        founder = self.creatures[0]
+        zero_traits = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+        self.species_history[1] = SpeciesRecord(
+            species_id=1,
+            parent_species_id=None,
+            founder_creature_id=founder.creature_id,
+            founder_genome_id=self.neat_controller.genome_id_for(
+                founder.creature_id
+            ),
+            emerged_at=self.elapsed_time,
+            founder_color=tuple(founder.color[:3]),
+            data_quality="exact",
+            founder_traits=SpeciesTraitSnapshot.from_traits(
+                founder.physical_traits,
+                founder.vision,
+            ),
+            trait_deltas=zero_traits,
+            distances=SpeciesDistanceBreakdown(
+                neat_distance=0.0,
+                phenotypic_distance=0.0,
+                weighted_phenotypic_distance=0.0,
+                composite_distance=0.0,
+                compatibility_threshold=(
+                    self.neat_controller.species_manager.compatibility_threshold
+                ),
+                phenotypic_weight=(
+                    self.neat_controller.species_manager.phenotypic_weight
+                ),
+                radius_component=0.0,
+                vision_range_component=0.0,
+                vision_angle_component=0.0,
+                movement_cost_component=0.0,
+            ),
+        )
+
+    def _record_new_species(
+        self,
+        founder: Creature,
+        result: SpeciationResult,
+    ) -> None:
+        record = SpeciesRecord(
+            species_id=result.species_id,
+            parent_species_id=result.parent_species_id,
+            founder_creature_id=founder.creature_id,
+            founder_genome_id=self.neat_controller.genome_id_for(
+                founder.creature_id
+            ),
+            emerged_at=self.elapsed_time,
+            founder_color=tuple(founder.color[:3]),
+            data_quality="exact",
+            founder_traits=result.founder_traits,
+            trait_deltas=result.trait_deltas,
+            distances=result.distances,
+        )
+        self.species_history[record.species_id] = record
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.log_species_record(record)
 
     def adjust_environment_zoom(self, scroll_y: float) -> None:
         if scroll_y == 0:
@@ -2090,20 +2153,22 @@ class World:
                 ),
                 lineage=child_traits.lineage if child_traits is not None else None,
             )
-            child_brain, species_id, is_new_species = (
+            child_brain, speciation_result = (
                 self.neat_controller.create_mutated_brain_from_genome(
                     parent_genome,
                     child_id,
                     parent_species_id,
+                    child.physical_traits,
+                    child.vision,
                 )
             )
             if child_brain is None:
                 self.space.remove(child.body, child.shape)
                 continue
-            child.lineage.species_id = species_id
-            if is_new_species:
+            child.lineage.species_id = speciation_result.species_id
+            if speciation_result.is_new_species:
                 child.color = self._new_species_color(parent_color)
-                self._log_new_species(species_id, parent_species_id)
+                self._record_new_species(child, speciation_result)
 
             self.creatures.append(child)
             self._activate_creature_biome_memory(child)
@@ -2184,20 +2249,23 @@ class World:
             lineage=child_traits.lineage,
         )
 
-        child_brain, species_id, is_new_species = (
+        child_brain, speciation_result = (
             self.neat_controller.create_child_brain(
                 parent.creature_id,
                 child_id,
                 parent.lineage.species_id,
+                child.physical_traits,
+                child.vision,
             )
         )
         if child_brain is None:
             self.space.remove(child.body, child.shape)
             return False
-        child.lineage.species_id = species_id
-        if is_new_species:
+        assert speciation_result is not None
+        child.lineage.species_id = speciation_result.species_id
+        if speciation_result.is_new_species:
             child.color = self._new_species_color(parent.color)
-            self._log_new_species(species_id, parent.lineage.species_id)
+            self._record_new_species(child, speciation_result)
 
         self.creatures.append(child)
         self._activate_creature_biome_memory(child)

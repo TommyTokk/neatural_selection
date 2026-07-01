@@ -11,6 +11,7 @@ import pickle
 import unittest
 
 from configs.sim_config import build_sim_config
+from src.creature import PhysicalTraits, VisionTraits
 from src.persistence import (
     CHECKPOINT_VERSION,
     CheckpointError,
@@ -346,6 +347,7 @@ class PersistenceManagerTest(unittest.TestCase):
             _held_food_by_creature_id={},
             _carrier_by_food_id={},
             food_spawner=spawner,
+            species_history={},
             fitness_archive={},
             _trait_archive_by_genome_id={},
             rt_neat=rt_neat,
@@ -355,6 +357,7 @@ class PersistenceManagerTest(unittest.TestCase):
             population=SimpleNamespace(population={17: "genome"}, generation=0),
             species_manager=SimpleNamespace(
                 compatibility_threshold=3.0,
+                phenotypic_weight=2.0,
                 representatives={1: "genome"},
                 next_species_id=2,
             ),
@@ -369,6 +372,58 @@ class PersistenceManagerTest(unittest.TestCase):
         self.assertEqual(state["world"]["time_since_last_archive_save"], 50.0)
         self.assertNotIn("brains", state)
         self.assertNotIn("brain", state["creatures"][0])
+        self.assertEqual(state["species_manager"]["phenotypic_weight"], 2.0)
+        self.assertEqual(state["species_history"], {})
+
+    def test_legacy_representative_migration_uses_living_traits(self) -> None:
+        genome = SimpleNamespace(key=17)
+        physical_traits = PhysicalTraits(radius=18.0)
+        vision = VisionTraits(range=120.0, angle=1.2)
+
+        migrated = PersistenceManager._migrate_species_representatives(
+            {2: genome},
+            [
+                {
+                    "genome_id": 17,
+                    "physical_traits": physical_traits,
+                    "vision": vision,
+                }
+            ],
+            {},
+        )
+
+        self.assertIs(migrated[2][0], genome)
+        self.assertEqual(migrated[2][1], physical_traits)
+        self.assertEqual(migrated[2][2], vision)
+        self.assertIsNot(migrated[2][1], physical_traits)
+        self.assertIsNot(migrated[2][2], vision)
+
+    def test_legacy_representative_migration_uses_archived_traits(self) -> None:
+        genome = SimpleNamespace(key=17)
+        archived = SimpleNamespace(
+            physical_traits=PhysicalTraits(radius=18.0),
+            vision=VisionTraits(range=120.0, angle=1.2),
+        )
+
+        migrated = PersistenceManager._migrate_species_representatives(
+            {2: genome},
+            [],
+            {17: archived},
+        )
+
+        self.assertEqual(migrated[2][1], archived.physical_traits)
+        self.assertEqual(migrated[2][2], archived.vision)
+
+    def test_legacy_representative_migration_requires_exact_traits(self) -> None:
+        with self.assertRaisesRegex(
+            CheckpointError,
+            "has no living or archived phenotype",
+        ):
+            PersistenceManager._migrate_species_representatives(
+                {2: SimpleNamespace(key=17)},
+                [],
+                {},
+            )
 
     def test_real_world_round_trip_reuses_simulation_directory(self) -> None:
         from src.world import World
@@ -402,6 +457,11 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.creatures[0].creature_id
             )
 
+            luca = world.species_history[1]
+            self.assertEqual(luca.data_quality, "exact")
+            self.assertEqual(luca.parent_species_id, None)
+            self.assertEqual(luca.distances.composite_distance, 0.0)
+            self.assertEqual(restored.species_history, world.species_history)
             self.assertAlmostEqual(restored.foods[0].energy_value, saved_food_energy)
             self.assertIsNot(restored_brain, original_brain)
             self.assertEqual(restored.live_brain_count(), 1)
@@ -492,6 +552,79 @@ class PersistenceManagerTest(unittest.TestCase):
             set(self.simulation_paths.hourly_directory.glob("*.pkl")),
             {first.path, second.path},
         )
+
+
+class SpeciesHistoryReconstructionTest(unittest.TestCase):
+    def _reconstruction_inputs(
+        self,
+        lineage: list[tuple[int, int | None, float | None]],
+    ) -> tuple[object, object]:
+        config = build_sim_config()
+        root_genome = SimpleNamespace(key=1)
+        child_genome = SimpleNamespace(
+            key=2,
+            distance=lambda other, genome_config: 2.0,
+        )
+        manager = SimpleNamespace(
+            representatives={
+                1: (
+                    root_genome,
+                    PhysicalTraits(radius=12.0),
+                    VisionTraits(range=90.0, angle=0.35),
+                ),
+                2: (
+                    child_genome,
+                    PhysicalTraits(radius=17.0),
+                    VisionTraits(range=104.0, angle=0.35),
+                ),
+            },
+            compatibility_threshold=3.0,
+            phenotypic_weight=2.0,
+            trait_config=config.trait,
+            vision_config=config.vision,
+        )
+        controller = SimpleNamespace(
+            species_manager=manager,
+            config=SimpleNamespace(genome_config=object()),
+            genome_id_for=lambda creature_id: 2,
+        )
+        world = SimpleNamespace(
+            telemetry=SimpleNamespace(load_species_lineage=lambda: lineage),
+            creatures=[SimpleNamespace(creature_id=9, color=(10, 20, 30))],
+            _trait_archive_by_genome_id={},
+        )
+        return world, controller
+
+    def test_reconstructs_metrics_from_topology_and_representatives(self) -> None:
+        world, controller = self._reconstruction_inputs(
+            [(1, None, 0.0), (2, 1, 12.5)]
+        )
+
+        records = PersistenceManager._reconstruct_species_history(
+            world,
+            controller,
+        )
+
+        self.assertEqual(records[2].parent_species_id, 1)
+        self.assertEqual(records[2].emerged_at, 12.5)
+        self.assertEqual(records[2].data_quality, "reconstructed")
+        self.assertAlmostEqual(records[2].distances.neat_distance, 2.0)
+        self.assertAlmostEqual(records[2].distances.phenotypic_distance, 0.7)
+        self.assertAlmostEqual(records[2].distances.composite_distance, 3.4)
+
+    def test_missing_topology_creates_partial_records(self) -> None:
+        world, controller = self._reconstruction_inputs([])
+        world.telemetry = None
+
+        records = PersistenceManager._reconstruct_species_history(
+            world,
+            controller,
+        )
+
+        self.assertEqual(records[1].data_quality, "reconstructed")
+        self.assertEqual(records[2].data_quality, "partial")
+        self.assertIsNone(records[2].parent_species_id)
+        self.assertIsNone(records[2].distances.composite_distance)
 
 
 if __name__ == "__main__":
