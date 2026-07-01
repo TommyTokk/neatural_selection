@@ -144,8 +144,12 @@ class CapturingFoodSpawner:
 
 
 class FakeNeatBrainController:
-    def __init__(self, config_path: str) -> None:
-        del config_path
+    def __init__(
+        self,
+        config_path: str,
+        compatibility_threshold: float = 3.0,
+    ) -> None:
+        del config_path, compatibility_threshold
 
     def assign_initial_brains(self, creature_ids: list[int]) -> None:
         del creature_ids

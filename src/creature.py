@@ -33,6 +33,7 @@ class TraitMutationDelta:
 class LineageInfo:
     parent_id: int | None = None
     generation: int = 0
+    species_id: int = 1
     mutation_delta: TraitMutationDelta = field(default_factory=TraitMutationDelta)
 
 

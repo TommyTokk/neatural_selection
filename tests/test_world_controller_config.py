@@ -27,14 +27,19 @@ if not hasattr(pymunk, "Space"):
 if not hasattr(pymunk, "Shape"):
     pymunk.Shape = object
 
-from configs.sim_config import build_sim_config
+from configs.sim_config import SpeciationConfig, build_sim_config
 import src.world as world_module
 from src.world import World
 
 
 class FakeNeatBrainController:
-    def __init__(self, config_path: str) -> None:
+    def __init__(
+        self,
+        config_path: str,
+        compatibility_threshold: float = 3.0,
+    ) -> None:
         self.config_path = config_path
+        self.compatibility_threshold = compatibility_threshold
         self.assigned_creature_ids: list[int] = []
 
     def assign_initial_brains(self, creature_ids: list[int]) -> None:
@@ -46,6 +51,15 @@ class WorldControllerConfigTest(unittest.TestCase):
         config = build_sim_config()
 
         self.assertTrue(config.controller.use_neat_brains)
+
+    def test_speciation_config_defaults_and_accepts_custom_threshold(self) -> None:
+        config = build_sim_config()
+
+        self.assertEqual(config.speciation.compatibility_threshold, 3.0)
+        self.assertEqual(
+            SpeciationConfig(compatibility_threshold=4.25).compatibility_threshold,
+            4.25,
+        )
 
     def test_world_honors_baseline_controller_config(self) -> None:
         config = build_sim_config()
@@ -69,6 +83,7 @@ class WorldControllerConfigTest(unittest.TestCase):
             world_module.NeatBrainController = original_neat_controller
 
         self.assertFalse(world.use_neat_brains)
+        self.assertEqual(world.neat_controller.compatibility_threshold, 3.0)
 
 
 if __name__ == "__main__":

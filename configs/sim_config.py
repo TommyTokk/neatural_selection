@@ -140,6 +140,11 @@ class PopulationConfig:
 
 
 @dataclass(slots=True)
+class SpeciationConfig:
+    compatibility_threshold: float = 3.0
+
+
+@dataclass(slots=True)
 class FitnessConfig:
     age_weight: float = 0.03
     food_discovery_weight: float = 0.2
@@ -278,6 +283,9 @@ class SimConfig:
 
     # Population config
     population: PopulationConfig = field(default_factory=PopulationConfig)
+
+    # Speciation config
+    speciation: SpeciationConfig = field(default_factory=SpeciationConfig)
 
     # Action config
     action: ActionConfig = field(default_factory=ActionConfig)

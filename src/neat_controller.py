@@ -23,8 +23,38 @@ FALLBACK_ACTION = Action(
 )
 
 
+class ContinuousSpeciesManager:
+    def __init__(self, compatibility_threshold: float) -> None:
+        self.compatibility_threshold = compatibility_threshold
+        self.representatives: dict[int, neat.DefaultGenome] = {}
+        self.next_species_id = 2
+
+    def register_initial_representative(self, genome: neat.DefaultGenome) -> None:
+        self.representatives.setdefault(1, genome)
+
+    def evaluate_species(
+        self,
+        child_genome: neat.DefaultGenome,
+        parent_species_id: int,
+        genome_config: Any,
+    ) -> tuple[int, bool]:
+        parent_representative = self.representatives[parent_species_id]
+        distance = child_genome.distance(parent_representative, genome_config)
+        if distance > self.compatibility_threshold:
+            new_species_id = self.next_species_id
+            self.representatives[new_species_id] = child_genome
+            self.next_species_id += 1
+            return new_species_id, True
+
+        return parent_species_id, False
+
+
 class NeatBrainController:
-    def __init__(self, config_path: str | Path) -> None:
+    def __init__(
+        self,
+        config_path: str | Path,
+        compatibility_threshold: float = 3.0,
+    ) -> None:
         self.config_path = Path(config_path)
         self.config = neat.Config(
             neat.DefaultGenome,
@@ -36,10 +66,13 @@ class NeatBrainController:
         self._validate_network_contract()
         self.population = neat.Population(self.config)
         self.brains: dict[int, NeatBrain] = {}
+        self.species_manager = ContinuousSpeciesManager(compatibility_threshold)
 
     def assign_initial_brains(self, creature_ids: list[int]) -> None:
         self._validate_creature_ids(creature_ids)
         genomes = self._initial_genomes()
+        if genomes:
+            self.species_manager.register_initial_representative(genomes[0][1])
 
         if len(genomes) < len(creature_ids):
             raise ValueError(
@@ -95,34 +128,45 @@ class NeatBrainController:
         return self.brains.get(creature_id)
 
     def create_child_brain(
-        self, parent_creature_id: int, child_creature_id: int
-    ) -> bool:
+        self,
+        parent_creature_id: int,
+        child_creature_id: int,
+        parent_species_id: int,
+    ) -> tuple[NeatBrain | None, int, bool]:
         parent_brain = self.brains.get(parent_creature_id)
         if parent_brain is None:
-            return False
+            return None, parent_species_id, False
 
         return self.create_mutated_brain_from_genome(
             parent_brain.genome,
             child_creature_id,
+            parent_species_id,
         )
 
     def create_mutated_brain_from_genome(
         self,
         parent_genome: Any,
         creature_id: int,
-    ) -> bool:
+        parent_species_id: int,
+    ) -> tuple[NeatBrain, int, bool]:
         child_genome = copy.deepcopy(parent_genome)
         child_genome.key = self._next_genome_id()
         child_genome.fitness = None
         child_genome.mutate(self.config.genome_config)
+        species_id, is_new_species = self.species_manager.evaluate_species(
+            child_genome,
+            parent_species_id,
+            self.config.genome_config,
+        )
         self.population.population[child_genome.key] = child_genome
 
-        self.brains[creature_id] = NeatBrain.from_genome(
+        child_brain = NeatBrain.from_genome(
             child_genome.key,
             child_genome,
             self.config,
         )
-        return True
+        self.brains[creature_id] = child_brain
+        return child_brain, species_id, is_new_species
 
     def best_genomes(self, count: int) -> list[Any]:
         scored_genomes = [

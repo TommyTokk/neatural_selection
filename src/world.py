@@ -162,7 +162,10 @@ class World:
         self.metabolism = Metabolism(config.metabolism, self.vision, config.trait)
 
         self.baseline_controller = BaselineFoodController(self.config.action)
-        self.neat_controller = NeatBrainController("configs/neat_herbivore.ini")
+        self.neat_controller = NeatBrainController(
+            "configs/neat_herbivore.ini",
+            compatibility_threshold=config.speciation.compatibility_threshold,
+        )
         self.neat_controller.assign_initial_brains(
             [creature.creature_id for creature in self.creatures]
         )
@@ -566,7 +569,7 @@ class World:
         return [
             self._spawn_creature(
                 index + 1,
-                color=self._initial_creature_color(index),
+                color=self._initial_creature_color(0),
             )
             for index in range(self.config.population.initial_creatures)
         ]
@@ -736,6 +739,7 @@ class World:
         return self._mutated_child_traits_from_parent_values(
             parent_id=parent.creature_id,
             parent_generation=parent.lineage.generation,
+            parent_species_id=parent.lineage.species_id,
             parent_vision=parent.vision,
             parent_physical_traits=parent.physical_traits,
             parent_color=parent.color,
@@ -745,6 +749,7 @@ class World:
         self,
         parent_id: int | None,
         parent_generation: int,
+        parent_species_id: int,
         parent_vision: VisionTraits,
         parent_physical_traits: PhysicalTraits,
         parent_color: Color,
@@ -766,6 +771,7 @@ class World:
             lineage=LineageInfo(
                 parent_id=parent_id,
                 generation=parent_generation + 1,
+                species_id=parent_species_id,
                 mutation_delta=mutation_delta,
             ),
         )
@@ -787,6 +793,34 @@ class World:
             hue = (hue + 0.22) % 1.0
         red, green, blue = hsv_to_rgb(hue, saturation, value)
         return (int(red * 255), int(green * 255), int(blue * 255))
+
+    def _new_species_color(self, parent_color: Color) -> Color:
+        red, green, blue = parent_color[:3]
+        parent_hue, _, _ = rgb_to_hsv(
+            red / 255.0,
+            green / 255.0,
+            blue / 255.0,
+        )
+
+        for _ in range(32):
+            hue = (parent_hue + self.rng.uniform(0.18, 0.82)) % 1.0
+            saturation = self.rng.uniform(0.7, 1.0)
+            value = self.rng.uniform(0.8, 1.0)
+            candidate = hsv_to_rgb(hue, saturation, value)
+            color = tuple(int(channel * 255) for channel in candidate)
+            normalized_color = tuple(channel / 255.0 for channel in color)
+            if not self._is_food_like_color(normalized_color):
+                return color
+
+        for hue_shift in (0.5, 1.0 / 3.0, 2.0 / 3.0):
+            candidate = hsv_to_rgb((parent_hue + hue_shift) % 1.0, 0.85, 0.9)
+            color = tuple(int(channel * 255) for channel in candidate)
+            normalized_color = tuple(channel / 255.0 for channel in color)
+            if not self._is_food_like_color(normalized_color):
+                return color
+
+        candidate = hsv_to_rgb((parent_hue + 0.5) % 1.0, 1.0, 1.0)
+        return tuple(int(channel * 255) for channel in candidate)
 
     def _is_food_like_color(self, color: tuple[float, float, float]) -> bool:
         food_red, food_green, food_blue = self.config.theme.food_fill[:3]
@@ -1601,6 +1635,7 @@ class World:
             lineage=LineageInfo(
                 parent_id=creature.lineage.parent_id,
                 generation=creature.lineage.generation,
+                species_id=creature.lineage.species_id,
                 mutation_delta=TraitMutationDelta(
                     vision_range=creature.lineage.mutation_delta.vision_range,
                     vision_angle=creature.lineage.mutation_delta.vision_angle,
@@ -1677,13 +1712,23 @@ class World:
                 else None
             )
             child_id = self._next_creature_id()
+            parent_species_id = (
+                archived_traits.lineage.species_id
+                if archived_traits is not None
+                else 1
+            )
+            parent_color = (
+                archived_traits.color
+                if archived_traits is not None
+                else self._initial_creature_color(0)
+            )
             child = self._spawn_creature(
                 child_id,
                 energy=self.config.metabolism.max_energy,
                 color=(
                     child_traits.color
                     if child_traits is not None
-                    else self._initial_creature_color(recovered_count)
+                    else self._initial_creature_color(0)
                 ),
                 vision=child_traits.vision if child_traits is not None else None,
                 physical_traits=(
@@ -1693,12 +1738,19 @@ class World:
                 ),
                 lineage=child_traits.lineage if child_traits is not None else None,
             )
-            if not self.neat_controller.create_mutated_brain_from_genome(
-                parent_genome,
-                child_id,
-            ):
+            child_brain, species_id, is_new_species = (
+                self.neat_controller.create_mutated_brain_from_genome(
+                    parent_genome,
+                    child_id,
+                    parent_species_id,
+                )
+            )
+            if child_brain is None:
                 self.space.remove(child.body, child.shape)
                 continue
+            child.lineage.species_id = species_id
+            if is_new_species:
+                child.color = self._new_species_color(parent_color)
 
             self.creatures.append(child)
             self._activate_creature_biome_memory(child)
@@ -1724,6 +1776,7 @@ class World:
         return self._mutated_child_traits_from_parent_values(
             parent_id=archived_traits.creature_id,
             parent_generation=archived_traits.lineage.generation,
+            parent_species_id=archived_traits.lineage.species_id,
             parent_vision=archived_traits.vision,
             parent_physical_traits=archived_traits.physical_traits,
             parent_color=archived_traits.color,
@@ -1777,9 +1830,19 @@ class World:
             lineage=child_traits.lineage,
         )
 
-        if not self.neat_controller.create_child_brain(parent.creature_id, child_id):
+        child_brain, species_id, is_new_species = (
+            self.neat_controller.create_child_brain(
+                parent.creature_id,
+                child_id,
+                parent.lineage.species_id,
+            )
+        )
+        if child_brain is None:
             self.space.remove(child.body, child.shape)
             return False
+        child.lineage.species_id = species_id
+        if is_new_species:
+            child.color = self._new_species_color(parent.color)
 
         self.creatures.append(child)
         self._activate_creature_biome_memory(child)
