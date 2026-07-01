@@ -65,6 +65,14 @@ class ControllerConfig:
 
 
 @dataclass(slots=True)
+class PersistenceConfig:
+    simulation_root_directory: str = "saves"
+    quick_save_interval_seconds: float = 120.0
+    archive_save_interval_seconds: float = 3600.0
+    enable_telemetry: bool = True
+
+
+@dataclass(slots=True)
 class EnvironmentConfig:
     world_width: float = 3200.0
     world_height: float = 2200.0
@@ -271,6 +279,7 @@ class SimConfig:
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
+    persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     biome: BiomeConfig = field(default_factory=BiomeConfig)
     zoom: ZoomConfig = field(default_factory=ZoomConfig)

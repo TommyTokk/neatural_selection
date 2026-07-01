@@ -2,11 +2,92 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Callable
 
 import arcade
 
 from configs.sim_config import SimConfig
+
+
+def select_checkpoint_file(initial_directory: Path) -> Path | None:
+    if sys.platform == "darwin":
+        return _select_checkpoint_file_macos(initial_directory)
+    return _select_checkpoint_file_tk(initial_directory)
+
+
+def _select_checkpoint_file_macos(initial_directory: Path) -> Path | None:
+    ObjCClass, get_NSString, cfstring_to_string = _cocoa_api()
+    panel = ObjCClass("NSOpenPanel").openPanel()
+    panel.setCanChooseFiles_(True)
+    panel.setCanChooseDirectories_(False)
+    panel.setAllowsMultipleSelection_(False)
+    panel.setResolvesAliases_(True)
+    panel.setTitle_(get_NSString("Load a saved simulation"))
+
+    if initial_directory.is_dir():
+        directory_url = ObjCClass("NSURL").fileURLWithPath_(
+            get_NSString(str(initial_directory.resolve()))
+        )
+        panel.setDirectoryURL_(directory_url)
+
+    allowed_types = ObjCClass("NSMutableArray").array()
+    allowed_types.addObject_(get_NSString("pkl"))
+    allowed_types.addObject_(get_NSString("bak"))
+    panel.setAllowedFileTypes_(allowed_types)
+
+    if panel.runModal() != 1:
+        return None
+    urls = panel.URLs()
+    if urls.count() == 0:
+        return None
+
+    selected_url = urls.objectAtIndex_(0)
+    selected_path = selected_url.path()
+    path_text = cfstring_to_string(selected_path.ptr)
+    if path_text is None:
+        raise ValueError("The selected file path could not be decoded.")
+
+    checkpoint = Path(path_text)
+    if not _is_checkpoint_file(checkpoint):
+        raise ValueError("Select a .pkl or .pkl.bak checkpoint file.")
+    return checkpoint
+
+
+def _cocoa_api() -> tuple[object, object, object]:
+    from pyglet.libs.darwin.cocoapy import (
+        ObjCClass,
+        cfstring_to_string,
+        get_NSString,
+    )
+
+    return ObjCClass, get_NSString, cfstring_to_string
+
+
+def _select_checkpoint_file_tk(initial_directory: Path) -> Path | None:
+    from tkinter import Tk, filedialog
+
+    root = Tk()
+    root.withdraw()
+    try:
+        root.update_idletasks()
+        selected = filedialog.askopenfilename(
+            parent=root,
+            title="Load a saved simulation",
+            initialdir=str(initial_directory),
+            filetypes=(
+                ("NEAT checkpoints", "*.pkl *.pkl.bak"),
+                ("All files", "*.*"),
+            ),
+        )
+    finally:
+        root.destroy()
+    return Path(selected) if selected else None
+
+
+def _is_checkpoint_file(path: Path) -> bool:
+    name = path.name.lower()
+    return name.endswith(".pkl") or name.endswith(".pkl.bak")
 
 
 @dataclass(slots=True)
@@ -27,16 +108,6 @@ class CardContentLayout:
     body_block: arcade.Rect
 
 
-@dataclass(slots=True)
-class RibbonLayout:
-    points: tuple[tuple[float, float], ...]
-    label_x: float
-    label_y: float
-    label_width: float
-    label_size: float
-    rotation: float
-
-
 class StartMenuView(arcade.View):
     BACKGROUND = (2, 30, 48)
     CARD_FILL = (43, 48, 70)
@@ -50,8 +121,7 @@ class StartMenuView(arcade.View):
     ACCENT_SOFT = (167, 199, 231)
     SECONDARY_SOFT = (188, 237, 220)
     DISABLED_BADGE = (96, 128, 137)
-    RIBBON_FILL = (186, 26, 26)
-    RIBBON_TEXT = (255, 255, 255)
+    ERROR_TEXT = (255, 178, 178)
 
     CARD_GAP = 48.0
     CARD_WIDTH = 472.0
@@ -74,16 +144,22 @@ class StartMenuView(arcade.View):
         self,
         config: SimConfig,
         start_view_factory: Callable[[], arcade.View],
+        load_view_factory: Callable[[Path], arcade.View],
+        *,
+        file_picker: Callable[[Path], Path | None] = select_checkpoint_file,
     ) -> None:
         super().__init__()
         self.config = config
         self.start_view_factory = start_view_factory
+        self.load_view_factory = load_view_factory
+        self.file_picker = file_picker
         self._text_cache: dict[str, arcade.Text] = {}
         self._texture_cache: dict[str, object | None] = {}
         self._sprite_cache: dict[str, object | None] = {}
         self._hovered_button: str | None = None
         self._pressed_button: str | None = None
         self._button_animation: dict[str, float] = {"start": 0.0, "load": 0.0}
+        self._load_error: str | None = None
 
     def on_show_view(self) -> None:
         if self.window is not None:
@@ -107,10 +183,15 @@ class StartMenuView(arcade.View):
             key="load",
             icon_name="save",
             title="Load an already existing simulation",
-            description="Restore a previous system state from your archives.",
-            disabled=True,
+            description=(
+                self._load_error
+                or "Restore a previous system state from your archives."
+            ),
+            disabled=False,
+            description_color=(
+                self.ERROR_TEXT if self._load_error is not None else None
+            ),
         )
-        self._draw_coming_soon_ribbon(layout.right_card)
 
     def on_mouse_press(
         self,
@@ -141,6 +222,8 @@ class StartMenuView(arcade.View):
             self._hovered_button = released_button
             if pressed_button == "start" and released_button == "start":
                 self._start_simulation()
+            elif pressed_button == "load" and released_button == "load":
+                self._load_simulation()
             return True
         return super().on_mouse_release(x, y, button, modifiers)
 
@@ -157,7 +240,11 @@ class StartMenuView(arcade.View):
     def on_update(self, delta_time: float) -> None:
         step = min(1.0, max(0.0, delta_time * 12.0))
         for key, current in self._button_animation.items():
-            target = 1.0 if key == self._hovered_button or key == self._pressed_button else 0.0
+            target = (
+                1.0
+                if key == self._hovered_button or key == self._pressed_button
+                else 0.0
+            )
             self._button_animation[key] = current + (target - current) * step
 
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:
@@ -250,6 +337,31 @@ class StartMenuView(arcade.View):
         if self.window is None:
             return
         view = self.start_view_factory()
+        self._show_view(view)
+
+    def _load_simulation(self) -> None:
+        if self.window is None:
+            return
+        try:
+            selected = self.file_picker(
+                Path(self.config.persistence.simulation_root_directory)
+            )
+            if selected is None:
+                return
+            view = self.load_view_factory(selected)
+        except Exception as error:
+            detail = " ".join(str(error).split())
+            if len(detail) > 120:
+                detail = f"{detail[:117]}..."
+            self._load_error = f"Unable to load checkpoint: {detail}"
+            return
+
+        self._load_error = None
+        self._show_view(view)
+
+    def _show_view(self, view: arcade.View) -> None:
+        if self.window is None:
+            return
         self.window.show_view(view)
         on_resize = getattr(view, "on_resize", None)
         if callable(on_resize):
@@ -305,11 +417,16 @@ class StartMenuView(arcade.View):
         title: str,
         description: str,
         disabled: bool,
+        description_color: arcade.Color | tuple[int, ...] | None = None,
     ) -> None:
         fill = self.CARD_FILL_DISABLED if disabled else self.CARD_FILL
         border = self.CARD_BORDER_DISABLED if disabled else self.CARD_BORDER
         title_color = self.TEXT_DISABLED if disabled else self.TEXT_PRIMARY
-        body_color = self.TEXT_DISABLED if disabled else self.TEXT_MUTED
+        body_color = (
+            description_color
+            if description_color is not None
+            else self.TEXT_DISABLED if disabled else self.TEXT_MUTED
+        )
         content = self._card_content_layout(bounds)
         badge_fill, badge_border = self._button_colors(disabled, key)
         visual_badge = self._button_visual_bounds(content.badge, key)
@@ -510,45 +627,6 @@ class StartMenuView(arcade.View):
                 + (float(end[index]) - float(start[index])) * amount
             )
             for index in range(channels)
-        )
-
-    def _draw_coming_soon_ribbon(self, bounds: arcade.Rect) -> None:
-        ribbon = self._ribbon_layout(bounds)
-        arcade.draw_polygon_filled(ribbon.points, self.RIBBON_FILL)
-        self._draw_text(
-            "load_ribbon",
-            "COMING\nSOON",
-            ribbon.label_x,
-            ribbon.label_y,
-            self.RIBBON_TEXT,
-            ribbon.label_size,
-            bold=True,
-            width=ribbon.label_width,
-            multiline=True,
-            align="center",
-            anchor_x="center",
-            anchor_y="center",
-            rotation=ribbon.rotation,
-        )
-
-    def _ribbon_layout(self, bounds: arcade.Rect) -> RibbonLayout:
-        width = min(132.0, max(110.0, bounds.width * 0.28))
-        height = min(104.0, max(88.0, bounds.height * 0.38))
-        label_size = 8.5
-        label_x = bounds.right - width * 0.28
-        label_y = bounds.top - height * 0.42
-        points = (
-            (bounds.right - width, bounds.top),
-            (bounds.right, bounds.top),
-            (bounds.right, bounds.top - height),
-        )
-        return RibbonLayout(
-            points=points,
-            label_x=label_x,
-            label_y=label_y,
-            label_width=width * 0.64,
-            label_size=label_size,
-            rotation=45.0,
         )
 
     def _draw_icon(

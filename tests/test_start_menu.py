@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 import importlib
 import sys
 import unittest
@@ -164,12 +166,200 @@ if not hasattr(pymunk, "Shape"):
 
 
 from configs.sim_config import build_sim_config
+import src.menu as menu_module
 from src.menu import StartMenuView
 
 
+class _FakeNSString:
+    def __init__(self, value: str) -> None:
+        self.value = value
+        self.ptr = value
+
+
+class _FakeArray(list[object]):
+    def addObject_(self, value: object) -> None:
+        self.append(value)
+
+
+class _FakeURLs:
+    def __init__(self, selected_path: str | None) -> None:
+        self.selected_path = selected_path
+
+    def count(self) -> int:
+        return 0 if self.selected_path is None else 1
+
+    def objectAtIndex_(self, index: int) -> object:
+        self.assert_valid_index(index)
+        selected_path = self.selected_path
+        assert selected_path is not None
+        return SimpleNamespace(
+            path=lambda: _FakeNSString(selected_path),
+        )
+
+    def assert_valid_index(self, index: int) -> None:
+        if index != 0 or self.selected_path is None:
+            raise IndexError(index)
+
+
+class _FakeOpenPanel:
+    def __init__(self, selected_path: str | None, response: int = 1) -> None:
+        self.selected_path = selected_path
+        self.response = response
+        self.can_choose_files = None
+        self.can_choose_directories = None
+        self.allows_multiple_selection = None
+        self.resolves_aliases = None
+        self.title = None
+        self.directory_url = None
+        self.allowed_types = None
+
+    def setCanChooseFiles_(self, value: bool) -> None:
+        self.can_choose_files = value
+
+    def setCanChooseDirectories_(self, value: bool) -> None:
+        self.can_choose_directories = value
+
+    def setAllowsMultipleSelection_(self, value: bool) -> None:
+        self.allows_multiple_selection = value
+
+    def setResolvesAliases_(self, value: bool) -> None:
+        self.resolves_aliases = value
+
+    def setTitle_(self, value: object) -> None:
+        self.title = value
+
+    def setDirectoryURL_(self, value: object) -> None:
+        self.directory_url = value
+
+    def setAllowedFileTypes_(self, value: object) -> None:
+        self.allowed_types = value
+
+    def runModal(self) -> int:
+        return self.response
+
+    def URLs(self) -> _FakeURLs:
+        return _FakeURLs(self.selected_path)
+
+
+def _fake_cocoa_api(
+    panel: _FakeOpenPanel,
+) -> tuple[object, object, object]:
+    class FakeNSOpenPanel:
+        @staticmethod
+        def openPanel() -> _FakeOpenPanel:
+            return panel
+
+    class FakeNSURL:
+        @staticmethod
+        def fileURLWithPath_(value: _FakeNSString) -> tuple[str, str]:
+            return "url", value.value
+
+    class FakeNSMutableArray:
+        @staticmethod
+        def array() -> _FakeArray:
+            return _FakeArray()
+
+    classes = {
+        "NSOpenPanel": FakeNSOpenPanel,
+        "NSURL": FakeNSURL,
+        "NSMutableArray": FakeNSMutableArray,
+    }
+    return (
+        lambda name: classes[name],
+        _FakeNSString,
+        lambda pointer: pointer,
+    )
+
+
+class CheckpointFilePickerTest(unittest.TestCase):
+    def test_macos_picker_configures_panel_and_returns_checkpoint(self) -> None:
+        selected = "/tmp/simulation/hourly/checkpoint_1.pkl"
+        panel = _FakeOpenPanel(selected)
+
+        with patch.object(
+            menu_module,
+            "_cocoa_api",
+            return_value=_fake_cocoa_api(panel),
+        ):
+            checkpoint = menu_module._select_checkpoint_file_macos(Path("."))
+
+        self.assertEqual(checkpoint, Path(selected))
+        self.assertTrue(panel.can_choose_files)
+        self.assertFalse(panel.can_choose_directories)
+        self.assertFalse(panel.allows_multiple_selection)
+        self.assertTrue(panel.resolves_aliases)
+        self.assertEqual(
+            panel.directory_url,
+            ("url", str(Path(".").resolve())),
+        )
+        self.assertEqual(
+            [item.value for item in panel.allowed_types],
+            ["pkl", "bak"],
+        )
+
+    def test_macos_picker_returns_none_when_cancelled(self) -> None:
+        panel = _FakeOpenPanel(None, response=0)
+
+        with patch.object(
+            menu_module,
+            "_cocoa_api",
+            return_value=_fake_cocoa_api(panel),
+        ):
+            checkpoint = menu_module._select_checkpoint_file_macos(Path("."))
+
+        self.assertIsNone(checkpoint)
+
+    def test_macos_picker_rejects_unrelated_backup_file(self) -> None:
+        panel = _FakeOpenPanel("/tmp/notes.bak")
+
+        with patch.object(
+            menu_module,
+            "_cocoa_api",
+            return_value=_fake_cocoa_api(panel),
+        ):
+            with self.assertRaisesRegex(ValueError, "pkl"):
+                menu_module._select_checkpoint_file_macos(Path("."))
+
+    def test_darwin_dispatch_never_imports_tkinter(self) -> None:
+        panel = _FakeOpenPanel("/tmp/checkpoint.pkl")
+        real_import = __import__
+
+        def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+            if name.startswith("tkinter"):
+                self.fail("Tkinter must not be imported on macOS.")
+            return real_import(name, *args, **kwargs)
+
+        with (
+            patch.object(menu_module.sys, "platform", "darwin"),
+            patch.object(
+                menu_module,
+                "_cocoa_api",
+                return_value=_fake_cocoa_api(panel),
+            ),
+            patch("builtins.__import__", side_effect=guarded_import),
+        ):
+            checkpoint = menu_module.select_checkpoint_file(Path("."))
+
+        self.assertEqual(checkpoint, Path("/tmp/checkpoint.pkl"))
+
+
 class StartMenuViewTest(unittest.TestCase):
-    def make_view(self, width: int = 1440, height: int = 900) -> StartMenuView:
-        view = StartMenuView(build_sim_config(), lambda: "simulation")
+    def make_view(
+        self,
+        width: int = 1440,
+        height: int = 900,
+        *,
+        file_picker: object | None = None,
+        load_view_factory: object | None = None,
+    ) -> StartMenuView:
+        picker = file_picker or (lambda initial_directory: None)
+        loader = load_view_factory or (lambda checkpoint: "loaded")
+        view = StartMenuView(
+            build_sim_config(),
+            lambda: "simulation",
+            loader,
+            file_picker=picker,
+        )
         view.window = FakeWindow(width, height)
         return view
 
@@ -227,57 +417,23 @@ class StartMenuViewTest(unittest.TestCase):
                     self.assertLessEqual(content.body_block.right, card.right)
                     self.assertGreaterEqual(content.body_block.bottom, card.bottom + 8.0)
 
-    def test_ribbon_label_sits_inside_red_triangle(self) -> None:
+    def test_load_card_is_drawn_enabled_without_coming_soon_ribbon(self) -> None:
         view = self.make_view()
-        layout = view.layout()
+        cards: list[dict[str, object]] = []
+        original_draw_card = view._draw_card
 
-        ribbon = view._ribbon_layout(layout.right_card)
-        left_top, right_top, right_bottom = ribbon.points
-        width = right_top[0] - left_top[0]
-        height = right_top[1] - right_bottom[1]
-        label_dx = (ribbon.label_x - left_top[0]) / width
-        label_dy = (right_top[1] - ribbon.label_y) / height
+        def capture_card(*args: object, **kwargs: object) -> None:
+            del args
+            cards.append(kwargs)
 
-        self.assertGreaterEqual(label_dx, 0.0)
-        self.assertLessEqual(label_dx, 1.0)
-        self.assertGreaterEqual(label_dy, 0.0)
-        self.assertLessEqual(label_dy, 1.0)
-        self.assertLessEqual(label_dy, label_dx)
-        self.assertLess(label_dx, 0.75)
-        self.assertGreater(label_dx - label_dy, 0.25)
-        self.assertGreaterEqual(ribbon.label_size, 8.0)
-        self.assertGreater(ribbon.label_width, ribbon.label_size * 6.0)
-        self.assertEqual(ribbon.rotation, 45.0)
-
-    def test_ribbon_draws_centered_multiline_label(self) -> None:
-        view = self.make_view()
-        layout = view.layout()
-        calls: list[dict[str, object]] = []
-        original_draw_text = view._draw_text
-
-        def capture_text(
-            key: str,
-            text: str,
-            x: float,
-            y: float,
-            color: object,
-            size: float,
-            **kwargs: object,
-        ) -> None:
-            del x, y, color, size
-            calls.append({"key": key, "text": text, **kwargs})
-
-        view._draw_text = capture_text
+        view._draw_card = capture_card
         try:
-            view._draw_coming_soon_ribbon(layout.right_card)
+            view.on_draw()
         finally:
-            view._draw_text = original_draw_text
+            view._draw_card = original_draw_card
 
-        ribbon_call = next(call for call in calls if call["key"] == "load_ribbon")
-        self.assertEqual(ribbon_call["text"], "COMING\nSOON")
-        self.assertTrue(ribbon_call["multiline"])
-        self.assertEqual(ribbon_call["align"], "center")
-        self.assertEqual(ribbon_call["anchor_x"], "center")
+        load_card = next(card for card in cards if card["key"] == "load")
+        self.assertFalse(load_card["disabled"])
 
     def test_hover_only_tracks_icon_badges(self) -> None:
         view = self.make_view()
@@ -326,8 +482,27 @@ class StartMenuViewTest(unittest.TestCase):
         self.assertIsNone(view._pressed_button)
         self.assertEqual(view.window.shown_views, ["simulation"])
 
-    def test_load_badge_click_does_not_show_view(self) -> None:
-        view = self.make_view()
+    def test_load_badge_click_opens_picker_and_shows_loaded_view(self) -> None:
+        selected = Path("saves/simulation_1/checkpoint.pkl")
+        picker_directories: list[Path] = []
+        loaded_paths: list[Path] = []
+        resize_calls: list[tuple[int, int]] = []
+        loaded_view = SimpleNamespace(
+            on_resize=lambda width, height: resize_calls.append((width, height))
+        )
+
+        def picker(initial_directory: Path) -> Path:
+            picker_directories.append(initial_directory)
+            return selected
+
+        def loader(checkpoint: Path) -> object:
+            loaded_paths.append(checkpoint)
+            return loaded_view
+
+        view = self.make_view(
+            file_picker=picker,
+            load_view_factory=loader,
+        )
         layout = view.layout()
         load_badge = view._card_content_layout(layout.right_card).badge
 
@@ -346,7 +521,68 @@ class StartMenuViewTest(unittest.TestCase):
 
         self.assertTrue(pressed)
         self.assertTrue(released)
+        self.assertEqual(picker_directories, [Path("saves")])
+        self.assertEqual(loaded_paths, [selected])
+        self.assertEqual(view.window.shown_views, [loaded_view])
+        self.assertEqual(resize_calls, [(1440, 900)])
+
+    def test_load_picker_cancel_keeps_menu_visible(self) -> None:
+        view = self.make_view(file_picker=lambda initial_directory: None)
+        layout = view.layout()
+        load_badge = view._card_content_layout(layout.right_card).badge
+
+        view.on_mouse_press(
+            int(load_badge.center_x),
+            int(load_badge.center_y),
+            arcade.MOUSE_BUTTON_LEFT,
+            0,
+        )
+        view.on_mouse_release(
+            int(load_badge.center_x),
+            int(load_badge.center_y),
+            arcade.MOUSE_BUTTON_LEFT,
+            0,
+        )
+
         self.assertEqual(view.window.shown_views, [])
+        self.assertIsNone(view._load_error)
+
+    def test_load_error_stays_on_menu_and_is_drawn_in_card(self) -> None:
+        def fail(checkpoint: Path) -> object:
+            raise ValueError(f"bad checkpoint {checkpoint}")
+
+        view = self.make_view(
+            file_picker=lambda initial_directory: Path("broken.pkl"),
+            load_view_factory=fail,
+        )
+        layout = view.layout()
+        load_badge = view._card_content_layout(layout.right_card).badge
+        view.on_mouse_press(
+            int(load_badge.center_x),
+            int(load_badge.center_y),
+            arcade.MOUSE_BUTTON_LEFT,
+            0,
+        )
+        view.on_mouse_release(
+            int(load_badge.center_x),
+            int(load_badge.center_y),
+            arcade.MOUSE_BUTTON_LEFT,
+            0,
+        )
+
+        self.assertEqual(view.window.shown_views, [])
+        self.assertIn("bad checkpoint", view._load_error)
+
+        cards: list[dict[str, object]] = []
+        original_draw_card = view._draw_card
+        view._draw_card = lambda *args, **kwargs: cards.append(kwargs)
+        try:
+            view.on_draw()
+        finally:
+            view._draw_card = original_draw_card
+        load_card = next(card for card in cards if card["key"] == "load")
+        self.assertIn("bad checkpoint", load_card["description"])
+        self.assertEqual(load_card["description_color"], view.ERROR_TEXT)
 
     def test_hover_and_press_change_badge_visual_bounds(self) -> None:
         view = self.make_view()
@@ -394,6 +630,28 @@ class StartMenuViewTest(unittest.TestCase):
 
 
 class CreateAndRunMenuTest(unittest.TestCase):
+    def test_game_view_uses_supplied_world_without_creating_fresh_world(
+        self,
+    ) -> None:
+        app = importlib.import_module("src.app")
+        config = build_sim_config()
+        restored_world = SimpleNamespace(config=config)
+        original_world = app.World
+        original_environment_renderer = app.EnvironmentRenderer
+        original_ui_renderer = app.UiRenderer
+        app.World = lambda config: self.fail("Fresh World must not be created")
+        app.EnvironmentRenderer = lambda config: "environment-renderer"
+        app.UiRenderer = lambda config: "ui-renderer"
+        try:
+            view = app.NeatGameView(world=restored_world)
+        finally:
+            app.World = original_world
+            app.EnvironmentRenderer = original_environment_renderer
+            app.UiRenderer = original_ui_renderer
+
+        self.assertIs(view.world, restored_world)
+        self.assertIs(view.config, config)
+
     def test_create_and_run_shows_start_menu_initially(self) -> None:
         created_windows: list[FakeWindow] = []
         previous_window = getattr(arcade, "Window", None)

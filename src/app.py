@@ -8,16 +8,26 @@ import arcade
 
 from configs.sim_config import SimConfig, build_sim_config
 from src.menu import StartMenuView
+from src.persistence import PersistenceManager
 from src.rendering import EnvironmentRenderer
 from src.ui import UiRenderer
 from src.world import World
 
 
 class NeatGameView(arcade.View):
-    def __init__(self, config: SimConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: SimConfig | None = None,
+        *,
+        world: World | None = None,
+    ) -> None:
         super().__init__()
-        self.config = config or build_sim_config()
-        self.world = World(self.config)
+        if world is None:
+            self.config = config or build_sim_config()
+            self.world = World(self.config)
+        else:
+            self.world = world
+            self.config = world.config
         self.environment_renderer = EnvironmentRenderer(self.config)
         self.background_color = self.config.theme.window_background
         self.ui_renderer = UiRenderer(self.config)
@@ -28,6 +38,9 @@ class NeatGameView(arcade.View):
     def on_show_view(self) -> None:
         if self.window is not None:
             self.window.background_color = self.config.theme.window_background
+
+    def on_hide_view(self) -> None:
+        self.world.close()
 
     def on_resize(self, width: int, height: int) -> bool | None:
         self.world.resize(width, height)
@@ -128,5 +141,16 @@ def create_and_run(config: SimConfig | None = None) -> None:
         vsync=active_config.display.vsync,
     )
     log_graphics_context()
-    window.show_view(StartMenuView(active_config, lambda: NeatGameView(active_config)))
+    window.show_view(
+        StartMenuView(
+            active_config,
+            lambda: NeatGameView(active_config),
+            lambda checkpoint: NeatGameView(
+                world=PersistenceManager.load_checkpoint(
+                    active_config,
+                    checkpoint,
+                )
+            ),
+        )
+    )
     arcade.run()

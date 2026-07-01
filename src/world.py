@@ -26,7 +26,9 @@ from src.metabolism import Metabolism
 from src.vision import BiomeSensorSnapshot, SensorSnapshot, VisionSystem
 from src.controller import BaselineFoodController
 from src.neat_controller import NeatBrainController
+from src.persistence import PersistenceManager, SimulationPaths
 from src.rt_neat import RtNeatManager
+from src.telemetry import TelemetryDatabase
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
 
 from src.layout import build_screen_layout
@@ -88,7 +90,13 @@ class World:
     SELECTED_CREATURE_ZOOM = 2.25
     REPRODUCTION_INTERVAL = 1.0
 
-    def __init__(self, config: SimConfig) -> None:
+    def __init__(
+        self,
+        config: SimConfig,
+        *,
+        bootstrap: bool = True,
+        simulation_paths: SimulationPaths | None = None,
+    ) -> None:
         self.config = config
         self.rng = Random(7)
         self.elapsed_time = 0.0
@@ -113,7 +121,7 @@ class World:
         self.space.iterations = 12
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
-        self.creatures = self._spawn_creatures()
+        self.creatures = self._spawn_creatures() if bootstrap else []
         self._chronometers: dict[int, float] = {
             creature.creature_id: 0.0 for creature in self.creatures
         }
@@ -142,9 +150,10 @@ class World:
             + config.food.max_food_radius
             + config.trait.max_radius
         )
-        self._add_foods(
-            self.food_spawner.create_initial_foods(self.environment_world_bounds)
-        )
+        if bootstrap:
+            self._add_foods(
+                self.food_spawner.create_initial_foods(self.environment_world_bounds)
+            )
         self.total_biomass_energy = self._initial_total_biomass_energy()
         self.selected_creature_id: int | None = None
         self.stats = WorldStats(
@@ -166,13 +175,28 @@ class World:
             "configs/neat_herbivore.ini",
             compatibility_threshold=config.speciation.compatibility_threshold,
         )
-        self.neat_controller.assign_initial_brains(
-            [creature.creature_id for creature in self.creatures]
-        )
+        if bootstrap:
+            self.neat_controller.assign_initial_brains(
+                [creature.creature_id for creature in self.creatures]
+            )
         self.rt_neat = RtNeatManager(self.neat_controller)
         self._trait_archive_by_genome_id: dict[int, ArchivedCreatureTraits] = {}
         self.use_neat_brains = config.controller.use_neat_brains
         self.show_brain_view = False
+        self.time_since_last_quick_save = 0.0
+        self.time_since_last_archive_save = 0.0
+        self.simulation_paths = simulation_paths or SimulationPaths.create_new(
+            config.persistence
+        )
+        self.telemetry = (
+            TelemetryDatabase(self.simulation_paths.telemetry_database)
+            if config.persistence.enable_telemetry
+            else None
+        )
+        self.persistence_manager = PersistenceManager()
+        self._closed = False
+        if bootstrap:
+            self._log_initial_telemetry()
 
     def resize(self, width: int, height: int) -> None:
         self.layout = build_screen_layout(width, height, self.config.layout)
@@ -216,6 +240,90 @@ class World:
         self._update_reproduction(scaled_delta_time)
         self._refresh_stats()
         self._follow_selected_creature()
+        self._update_persistence_timer(delta_time)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.persistence_manager.close()
+        finally:
+            if self.telemetry is not None:
+                self.telemetry.close()
+
+    def _update_persistence_timer(self, delta_time: float) -> None:
+        quick_interval = self.config.persistence.quick_save_interval_seconds
+        archive_interval = self.config.persistence.archive_save_interval_seconds
+        if quick_interval <= 0.0 and archive_interval <= 0.0:
+            return
+
+        elapsed = max(0.0, delta_time)
+        if quick_interval > 0.0:
+            self.time_since_last_quick_save += elapsed
+        if archive_interval > 0.0:
+            self.time_since_last_archive_save += elapsed
+        quick_due = (
+            quick_interval > 0.0
+            and self.time_since_last_quick_save >= quick_interval
+        )
+        archive_due = (
+            archive_interval > 0.0
+            and self.time_since_last_archive_save >= archive_interval
+        )
+        if not quick_due and not archive_due:
+            return
+
+        targets = [self.simulation_paths.quick_target()]
+        if quick_due:
+            self.time_since_last_quick_save %= quick_interval
+        if archive_due:
+            self.time_since_last_archive_save %= archive_interval
+            targets.append(self.simulation_paths.hourly_target())
+
+        telemetry = self.telemetry
+        if telemetry is not None:
+            telemetry.log_metrics(
+                self.elapsed_time,
+                len(self.creatures),
+                len(self.foods),
+                self.rt_neat.stats.best_fitness,
+            )
+        self.persistence_manager.save_simulation(
+            self,
+            self.neat_controller,
+            tuple(targets),
+        )
+
+    def _log_initial_telemetry(self) -> None:
+        telemetry = self.telemetry
+        if telemetry is None:
+            return
+        telemetry.log_species(1, None, self.elapsed_time)
+        for creature in self.creatures:
+            self._log_creature_birth(creature)
+
+    def _log_creature_birth(self, creature: Creature) -> None:
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return
+        telemetry.log_creature_birth(
+            creature.creature_id,
+            creature.lineage.species_id,
+            self.elapsed_time,
+            creature.vision.range,
+            creature.radius,
+        )
+
+    def _log_new_species(
+        self,
+        species_id: int,
+        parent_species_id: int,
+    ) -> None:
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return
+        telemetry.log_species(species_id, parent_species_id, self.elapsed_time)
 
     def adjust_environment_zoom(self, scroll_y: float) -> None:
         if scroll_y == 0:
@@ -553,7 +661,7 @@ class World:
         if selected is None:
             return False
 
-        self._remove_creature(selected)
+        self._remove_creature(selected, death_reason="manual")
         if not self.creatures:
             self._recover_extinct_population()
         self._refresh_stats()
@@ -1331,7 +1439,7 @@ class World:
                 self.space.remove(food.body, food.shape)
 
         for creature in report.dead_creatures:
-            self._remove_creature(creature)
+            self._remove_creature(creature, death_reason="starvation")
 
         if not self.creatures:
             self._recover_extinct_population()
@@ -1579,7 +1687,18 @@ class World:
             floor(y / self._food_grid_cell_size),
         )
 
-    def _remove_creature(self, creature: Creature) -> None:
+    def _remove_creature(
+        self,
+        creature: Creature,
+        death_reason: str = "unknown",
+    ) -> None:
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.log_creature_death(
+                creature.creature_id,
+                self.elapsed_time,
+                death_reason,
+            )
         self._archive_creature_traits(creature)
         self._release_food_for(creature)
         fitness = self.fitness.get(creature.creature_id)
@@ -1751,11 +1870,13 @@ class World:
             child.lineage.species_id = species_id
             if is_new_species:
                 child.color = self._new_species_color(parent_color)
+                self._log_new_species(species_id, parent_species_id)
 
             self.creatures.append(child)
             self._activate_creature_biome_memory(child)
             self.fitness[child_id] = CreatureFitness()
             self._chronometers[child_id] = 0.0
+            self._log_creature_birth(child)
             recovered_count += 1
 
         self.rt_neat.record_extinction_replacements(recovered_count)
@@ -1843,11 +1964,13 @@ class World:
         child.lineage.species_id = species_id
         if is_new_species:
             child.color = self._new_species_color(parent.color)
+            self._log_new_species(species_id, parent.lineage.species_id)
 
         self.creatures.append(child)
         self._activate_creature_biome_memory(child)
         self.fitness[child_id] = CreatureFitness()
         self._chronometers[child_id] = 0.0
+        self._log_creature_birth(child)
 
         self._spend_reproduction_energy(parent)
         parent_fitness.record_reproduction()

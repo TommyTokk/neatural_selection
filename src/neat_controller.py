@@ -127,6 +127,17 @@ class NeatBrainController:
     def brain_for(self, creature_id: int) -> NeatBrain | None:
         return self.brains.get(creature_id)
 
+    def restore_brain(self, creature_id: int, genome_id: int) -> NeatBrain:
+        genome = self.population.population.get(genome_id)
+        if genome is None:
+            raise ValueError(
+                f"Cannot restore creature {creature_id}: "
+                f"genome {genome_id} is missing from the population."
+            )
+        brain = NeatBrain.from_genome(genome_id, genome, self.config)
+        self.brains[creature_id] = brain
+        return brain
+
     def create_child_brain(
         self,
         parent_creature_id: int,
