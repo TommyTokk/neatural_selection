@@ -19,6 +19,7 @@ from src.persistence import (
     SavePriority,
     SimulationPaths,
 )
+from src.species_tree import build_species_tree_layout
 from src.telemetry import TelemetryDatabase
 
 
@@ -462,6 +463,11 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertEqual(luca.parent_species_id, None)
             self.assertEqual(luca.distances.composite_distance, 0.0)
             self.assertEqual(restored.species_history, world.species_history)
+            restored_layout = build_species_tree_layout(
+                restored.species_history
+            )
+            self.assertEqual(set(restored_layout.positions), {1})
+            self.assertEqual(restored_layout.roots, (1,))
             self.assertAlmostEqual(restored.foods[0].energy_value, saved_food_energy)
             self.assertIsNot(restored_brain, original_brain)
             self.assertEqual(restored.live_brain_count(), 1)
@@ -625,6 +631,9 @@ class SpeciesHistoryReconstructionTest(unittest.TestCase):
         self.assertEqual(records[2].data_quality, "partial")
         self.assertIsNone(records[2].parent_species_id)
         self.assertIsNone(records[2].distances.composite_distance)
+        layout = build_species_tree_layout(records)
+        self.assertEqual(set(layout.positions), {1, 2})
+        self.assertEqual(layout.roots, (1, 2))
 
 
 if __name__ == "__main__":

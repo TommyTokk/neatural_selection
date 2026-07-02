@@ -132,7 +132,7 @@ class MetabolismConfig:
 @dataclass(slots=True)
 class PopulationConfig:
     initial_creatures: int = 50
-    max_creatures: int = 100
+    max_creatures: int = 50 
     extinction_recovery_creatures: int = 35
     extinction_recovery_parent_pool: int = 5
     min_reproduction_age: float = 20.0

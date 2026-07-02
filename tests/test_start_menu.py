@@ -91,6 +91,20 @@ class FakeView:
         del symbol, modifiers
         return None
 
+    def on_key_release(self, symbol: int, modifiers: int) -> bool | None:
+        del symbol, modifiers
+        return None
+
+    def on_mouse_scroll(
+        self,
+        x: int,
+        y: int,
+        scroll_x: int,
+        scroll_y: int,
+    ) -> bool | None:
+        del x, y, scroll_x, scroll_y
+        return None
+
 
 class FakeText:
     def __init__(
@@ -144,7 +158,13 @@ arcade.LBWH = fake_lbwh
 arcade.View = FakeView
 arcade.Text = FakeText
 arcade.MOUSE_BUTTON_LEFT = 1
-arcade.key = SimpleNamespace(ENTER=10, SPACE=32, N=78)
+arcade.key = SimpleNamespace(
+    ENTER=10,
+    SPACE=32,
+    N=78,
+    LCOMMAND=65517,
+    RCOMMAND=65518,
+)
 arcade.draw_lrbt_rectangle_filled = lambda *args, **kwargs: None
 arcade.draw_circle_filled = lambda *args, **kwargs: None
 arcade.draw_polygon_filled = lambda *args, **kwargs: None
@@ -630,6 +650,49 @@ class StartMenuViewTest(unittest.TestCase):
 
 
 class CreateAndRunMenuTest(unittest.TestCase):
+    def _game_view_with_ui(self, ui_renderer: object) -> object:
+        app = importlib.import_module("src.app")
+        config = build_sim_config()
+        restored_world = SimpleNamespace(config=config)
+        original_environment_renderer = app.EnvironmentRenderer
+        original_ui_renderer = app.UiRenderer
+        app.EnvironmentRenderer = lambda config: "environment-renderer"
+        app.UiRenderer = lambda config: ui_renderer
+        try:
+            return app.NeatGameView(world=restored_world)
+        finally:
+            app.EnvironmentRenderer = original_environment_renderer
+            app.UiRenderer = original_ui_renderer
+
+    def test_game_view_tracks_left_and_right_command_independently(self) -> None:
+        ui = SimpleNamespace(
+            handle_key_press=lambda world, symbol, modifiers: True,
+        )
+        view = self._game_view_with_ui(ui)
+
+        view.on_key_press(arcade.key.LCOMMAND, 0)
+        view.on_key_press(arcade.key.RCOMMAND, 0)
+        self.assertEqual(
+            view._command_keys_down,
+            {arcade.key.LCOMMAND, arcade.key.RCOMMAND},
+        )
+        view.on_key_release(arcade.key.LCOMMAND, 0)
+        self.assertEqual(view._command_keys_down, {arcade.key.RCOMMAND})
+        view.on_key_release(arcade.key.RCOMMAND, 0)
+        self.assertEqual(view._command_keys_down, set())
+
+    def test_game_view_forwards_command_state_with_scroll(self) -> None:
+        calls: list[tuple[object, ...]] = []
+        ui = SimpleNamespace(
+            handle_mouse_scroll=lambda *args: calls.append(args) or True,
+        )
+        view = self._game_view_with_ui(ui)
+        view._command_keys_down.add(arcade.key.LCOMMAND)
+
+        view.on_mouse_scroll(120, 240, 0, 1)
+
+        self.assertEqual(calls, [(120, 240, 1, 0, True)])
+
     def test_game_view_uses_supplied_world_without_creating_fresh_world(
         self,
     ) -> None:

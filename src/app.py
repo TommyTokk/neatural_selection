@@ -34,6 +34,7 @@ class NeatGameView(arcade.View):
         self._is_dragging_environment = False
         self._is_dragging_ui_control = False
         self._drag_distance = 0.0
+        self._command_keys_down: set[int] = set()
 
     def on_show_view(self) -> None:
         if self.window is not None:
@@ -100,14 +101,30 @@ class NeatGameView(arcade.View):
     def on_mouse_scroll(
         self, x: int, y: int, scroll_x: int, scroll_y: int
     ) -> bool | None:
-        if self.ui_renderer.handle_mouse_scroll(x, y, scroll_y):
+        if self.ui_renderer.handle_mouse_scroll(
+            x,
+            y,
+            scroll_y,
+            scroll_x,
+            bool(self._command_keys_down),
+        ):
             return super().on_mouse_scroll(x, y, scroll_x, scroll_y)
 
         if self.world.layout.environment.left <= x <= self.world.layout.environment.right and self.world.layout.environment.bottom <= y <= self.world.layout.environment.top:
             self.world.adjust_environment_zoom(scroll_y)
         return super().on_mouse_scroll(x, y, scroll_x, scroll_y)
 
+    def on_mouse_motion(
+        self, x: int, y: int, dx: int, dy: int
+    ) -> bool | None:
+        self.ui_renderer.handle_mouse_motion(self.world, x, y, dx, dy)
+        return super().on_mouse_motion(x, y, dx, dy)
+
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:
+        if symbol in self._command_key_symbols():
+            self._command_keys_down.add(symbol)
+        if self.ui_renderer.handle_key_press(self.world, symbol, modifiers):
+            return super().on_key_press(symbol, modifiers)
         if symbol == arcade.key.SPACE:
             self.world.toggle_pause()
         if symbol == arcade.key.V:
@@ -127,6 +144,21 @@ class NeatGameView(arcade.View):
         if symbol == arcade.key.R:
             self.world.reset_environment_view()
         return super().on_key_press(symbol, modifiers)
+
+    def on_key_release(self, symbol: int, modifiers: int) -> bool | None:
+        self._command_keys_down.discard(symbol)
+        return super().on_key_release(symbol, modifiers)
+
+    @staticmethod
+    def _command_key_symbols() -> tuple[int, ...]:
+        return tuple(
+            key
+            for key in (
+                getattr(arcade.key, "LCOMMAND", None),
+                getattr(arcade.key, "RCOMMAND", None),
+            )
+            if key is not None
+        )
 
 
 def create_and_run(config: SimConfig | None = None) -> None:

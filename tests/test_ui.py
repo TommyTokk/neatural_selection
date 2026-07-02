@@ -91,6 +91,11 @@ for optional_module in ("neat", "pymunk"):
 from configs.sim_config import build_sim_config
 from src.creature import LineageInfo, PhysicalTraits, TraitMutationDelta
 from src.layout import build_screen_layout
+from src.speciation import (
+    SpeciesDistanceBreakdown,
+    SpeciesRecord,
+    SpeciesTraitSnapshot,
+)
 from src.ui import UiRenderer
 
 
@@ -388,7 +393,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(calls, ["save"])
 
-    def test_five_left_rail_buttons_fit_without_overlap(self) -> None:
+    def test_six_left_rail_buttons_fit_without_overlap(self) -> None:
         world = SimpleNamespace(
             layout=build_screen_layout(800, 600, build_sim_config().layout),
             show_biome_background=False,
@@ -403,6 +408,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
             "panel_toggle_settings",
             "toggle_biome_background",
             "save_simulation",
+            "open_species_tree",
         )
         buttons = [self.renderer._control_hitboxes[key] for key in keys]
         rail = world.layout.left_sidebar
@@ -411,6 +417,27 @@ class FloatingSimulationUiTest(unittest.TestCase):
             self.assertLessEqual(button.top, rail.top)
         for upper, lower in zip(buttons, buttons[1:]):
             self.assertGreaterEqual(upper.bottom, lower.top)
+
+    def test_left_rail_uses_supplied_speciation_icon(self) -> None:
+        world = SimpleNamespace(
+            layout=build_screen_layout(1440, 900, build_sim_config().layout),
+            show_biome_background=False,
+            save_in_progress=False,
+        )
+        calls: list[tuple[str, str, bool]] = []
+        original_draw_icon_button = self.renderer._draw_icon_button
+        self.renderer._draw_icon_button = (
+            lambda bounds, icon_name, key, active: calls.append(
+                (key, icon_name, active)
+            )
+        )
+        try:
+            self.renderer._draw_icon_rail(world)
+        finally:
+            self.renderer._draw_icon_button = original_draw_icon_button
+
+        self.assertIn(("open_species_tree", "speciation", False), calls)
+        self.assertTrue(self.renderer._icon_path("speciation").is_file())
 
     def test_biome_toggle_button_flips_world_visibility(self) -> None:
         world = SimpleNamespace(show_biome_background=False)
@@ -1195,6 +1222,676 @@ class FloatingSimulationUiTest(unittest.TestCase):
             self.renderer._selected_fitness_label(world, selected),
             "7.25",
         )
+
+
+class SpeciesTreeWindowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.renderer = UiRenderer(build_sim_config())
+
+    def make_record(
+        self,
+        species_id: int,
+        parent_species_id: int | None,
+        *,
+        exact: bool = True,
+        emerged_at: float | None = None,
+    ) -> SpeciesRecord:
+        traits = (
+            SpeciesTraitSnapshot(16.0 + species_id, 100.0, 0.9, 1.0)
+            if exact
+            else None
+        )
+        deltas = (
+            SpeciesTraitSnapshot(1.0, 2.0, 0.1, 0.02)
+            if exact
+            else None
+        )
+        return SpeciesRecord(
+            species_id=species_id,
+            parent_species_id=parent_species_id,
+            founder_creature_id=species_id * 10 if exact else None,
+            founder_genome_id=species_id * 100 if exact else None,
+            emerged_at=(
+                (float(species_id) * 60.0 if emerged_at is None else emerged_at)
+                if exact
+                else None
+            ),
+            founder_color=(100, 120, 140) if exact else None,
+            data_quality="exact" if exact else "reconstructed",
+            founder_traits=traits,
+            trait_deltas=deltas,
+            distances=SpeciesDistanceBreakdown(
+                neat_distance=2.0 if exact else None,
+                phenotypic_distance=0.6 if exact else None,
+                weighted_phenotypic_distance=1.2 if exact else None,
+                composite_distance=3.2 if exact else None,
+                compatibility_threshold=3.0 if exact else None,
+                phenotypic_weight=2.0 if exact else None,
+                radius_component=0.2 if exact else None,
+                vision_range_component=0.2 if exact else None,
+                vision_angle_component=0.1 if exact else None,
+                movement_cost_component=0.1 if exact else None,
+            ),
+        )
+
+    def make_world(
+        self,
+        records: dict[int, SpeciesRecord] | None = None,
+        *,
+        paused: bool = False,
+        width: float = 1440.0,
+        height: float = 900.0,
+    ) -> SimpleNamespace:
+        active_records = records or {}
+        emerged_times = [
+            float(record.emerged_at)
+            for record in active_records.values()
+            if record.emerged_at is not None
+        ]
+        return SimpleNamespace(
+            is_paused=paused,
+            species_history=active_records,
+            elapsed_time=max([0.0, *emerged_times]),
+            layout=SimpleNamespace(
+                window=arcade.LBWH(0, 0, width, height),
+                environment=arcade.LBWH(0, 0, width, height),
+            ),
+        )
+
+    def test_open_and_close_restore_running_state(self) -> None:
+        world = self.make_world()
+        self.renderer._control_hitboxes["open_species_tree"] = arcade.LBWH(
+            0, 0, 30, 30
+        )
+
+        self.assertTrue(self.renderer.handle_mouse_press(world, 10, 10))
+        self.assertTrue(world.is_paused)
+        self.assertTrue(self.renderer.species_tree_open)
+        self.renderer._control_hitboxes["species_tree_close"] = arcade.LBWH(
+            40, 40, 30, 30
+        )
+        self.assertTrue(self.renderer.handle_mouse_press(world, 50, 50))
+        self.assertFalse(world.is_paused)
+        self.assertFalse(self.renderer.species_tree_open)
+
+    def test_close_preserves_preexisting_pause(self) -> None:
+        world = self.make_world(paused=True)
+
+        self.renderer.open_species_tree(world)
+        self.renderer.close_species_tree(world)
+
+        self.assertTrue(world.is_paused)
+
+    def test_modal_captures_keyboard_and_underlying_controls(self) -> None:
+        calls = []
+        world = self.make_world()
+        world.toggle_pause = lambda: calls.append("pause")
+        self.renderer.open_species_tree(world)
+        self.renderer._control_hitboxes["pause"] = arcade.LBWH(0, 0, 40, 40)
+
+        self.assertTrue(self.renderer.handle_key_press(world, 1, 0))
+        self.assertTrue(self.renderer.handle_mouse_press(world, 10, 10))
+        self.assertEqual(calls, [])
+        self.assertTrue(world.is_paused)
+
+    def test_window_uses_full_inset_bounds_and_registers_nodes(self) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records)
+        self.renderer.open_species_tree(world)
+
+        self.renderer._draw_species_tree_window(world)
+
+        bounds = self.renderer._control_hitboxes["species_tree_window"]
+        self.assertEqual((bounds.left, bounds.bottom), (20, 20))
+        self.assertEqual((bounds.width, bounds.height), (1400, 860))
+        self.assertEqual(set(self.renderer._species_tree_node_bounds), {1, 2})
+
+    def test_hover_finds_node_and_legacy_tooltip_marks_unavailable_data(self) -> None:
+        record = self.make_record(1, None, exact=False)
+        world = self.make_world({1: record})
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        node = self.renderer._species_tree_node_bounds[1]
+
+        self.assertTrue(
+            self.renderer.handle_mouse_motion(
+                world, node.center_x, node.center_y
+            )
+        )
+        self.assertEqual(self.renderer._species_tree_hovered_id, 1)
+        self.assertIn(
+            "Unavailable",
+            " ".join(self.renderer._species_tree_tooltip_lines(record)),
+        )
+
+    def test_wheel_scrolls_vertically_and_clamps(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 12):
+            records[species_id] = self.make_record(species_id, species_id - 1)
+        world = self.make_world(records, width=700, height=500)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_fit_mode = False
+        self.renderer._species_tree_zoom = 1.0
+        self.renderer._draw_species_tree_window(world)
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+
+        self.assertGreater(self.renderer._species_tree_vertical_limit, 0.0)
+        self.assertTrue(
+            self.renderer.handle_mouse_scroll(
+                canvas.center_x, canvas.center_y, -3
+            )
+        )
+        self.assertGreater(self.renderer._species_tree_vertical_offset, 0.0)
+        self.renderer.handle_mouse_scroll(
+            canvas.center_x, canvas.center_y, 1000
+        )
+        self.assertEqual(self.renderer._species_tree_vertical_offset, 0.0)
+
+    def test_many_branches_expose_horizontal_overflow(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 14):
+            records[species_id] = self.make_record(
+                species_id,
+                1,
+                emerged_at=120.0,
+            )
+        world = self.make_world(records, width=700, height=420)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_fit_mode = False
+        self.renderer._species_tree_zoom = 1.0
+        self.renderer._draw_species_tree_window(world)
+
+        self.assertGreater(self.renderer._species_tree_horizontal_limit, 0.0)
+        self.assertIn(
+            "species_tree_horizontal_thumb",
+            self.renderer._control_hitboxes,
+        )
+
+    def test_horizontal_scrollbar_drag_and_resize_clamp_offset(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 12):
+            records[species_id] = self.make_record(
+                species_id,
+                1,
+                emerged_at=120.0,
+            )
+        world = self.make_world(records, width=700, height=500)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_fit_mode = False
+        self.renderer._species_tree_zoom = 1.0
+        self.renderer._draw_species_tree_window(world)
+        thumb = self.renderer._control_hitboxes["species_tree_horizontal_thumb"]
+        track = self.renderer._control_hitboxes["species_tree_horizontal_track"]
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                world, thumb.center_x, thumb.center_y
+            )
+        )
+        self.assertTrue(
+            self.renderer.handle_mouse_drag(
+                world, track.right - 1.0, track.center_y
+            )
+        )
+        self.assertGreater(self.renderer._species_tree_horizontal_offset, 0.0)
+        self.renderer.handle_mouse_release()
+
+        world.layout.window = arcade.LBWH(0, 0, 2400, 900)
+        self.renderer._draw_species_tree_window(world)
+        self.assertEqual(self.renderer._species_tree_horizontal_limit, 0.0)
+        self.assertEqual(self.renderer._species_tree_horizontal_offset, 0.0)
+
+    def test_trackpad_horizontal_axis_scrolls_tree(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 10):
+            records[species_id] = self.make_record(
+                species_id,
+                1,
+                emerged_at=120.0,
+            )
+        world = self.make_world(records, width=700, height=500)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_fit_mode = False
+        self.renderer._species_tree_zoom = 1.0
+        self.renderer._draw_species_tree_window(world)
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+
+        self.renderer.handle_mouse_scroll(
+            canvas.center_x,
+            canvas.center_y,
+            0.0,
+            -2.0,
+        )
+
+        self.assertGreater(self.renderer._species_tree_horizontal_offset, 0.0)
+
+    def test_opening_fits_wide_tree_entirely_inside_canvas(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 16):
+            records[species_id] = self.make_record(species_id, species_id - 1)
+        world = self.make_world(records, width=700, height=500)
+
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+        self.assertTrue(self.renderer._species_tree_fit_mode)
+        self.assertLess(self.renderer._species_tree_zoom, 1.0)
+        for bounds in self.renderer._species_tree_node_bounds.values():
+            self.assertGreaterEqual(bounds.left, canvas.left)
+            self.assertLessEqual(bounds.right, canvas.right)
+            self.assertGreaterEqual(bounds.bottom, canvas.bottom)
+            self.assertLessEqual(bounds.top, canvas.top)
+
+    def test_opening_fits_branched_tree_entirely_inside_canvas(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 18):
+            records[species_id] = self.make_record(species_id, 1)
+        world = self.make_world(records, width=720, height=420)
+
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+        for bounds in self.renderer._species_tree_node_bounds.values():
+            self.assertGreaterEqual(bounds.left, canvas.left)
+            self.assertLessEqual(bounds.right, canvas.right)
+            self.assertGreaterEqual(bounds.bottom, canvas.bottom)
+            self.assertLessEqual(bounds.top, canvas.top)
+
+    def test_zoom_controls_switch_to_manual_and_fit_again(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 10):
+            records[species_id] = self.make_record(species_id, species_id - 1)
+        world = self.make_world(records, width=700, height=500)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        fitted_zoom = self.renderer._species_tree_zoom
+        for key in (
+            "species_tree_zoom_out",
+            "species_tree_zoom_label",
+            "species_tree_zoom_in",
+            "species_tree_zoom_fit",
+        ):
+            self.assertIn(key, self.renderer._control_hitboxes)
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_zoom_percentage"].text,
+            f"{fitted_zoom * 100.0:.0f}%",
+        )
+        self.assertTrue(self.renderer._icon_path("zoom_in").is_file())
+        self.assertTrue(self.renderer._icon_path("zoom_out").is_file())
+        self.assertIn("zoom_in", self.renderer._texture_cache)
+        self.assertIn("zoom_out", self.renderer._texture_cache)
+        self.assertNotIn(
+            "button_species_tree_zoom_in",
+            self.renderer._text_cache,
+        )
+        self.assertNotIn(
+            "button_species_tree_zoom_out",
+            self.renderer._text_cache,
+        )
+        plus = self.renderer._control_hitboxes["species_tree_zoom_in"]
+
+        self.renderer.handle_mouse_press(world, plus.center_x, plus.center_y)
+
+        self.assertFalse(self.renderer._species_tree_fit_mode)
+        self.assertGreater(self.renderer._species_tree_zoom, fitted_zoom)
+        self.assertGreater(self.renderer._species_tree_vertical_limit, 0.0)
+        fit = self.renderer._control_hitboxes["species_tree_zoom_fit"]
+        self.renderer.handle_mouse_press(world, fit.center_x, fit.center_y)
+        self.assertTrue(self.renderer._species_tree_fit_mode)
+        self.assertAlmostEqual(self.renderer._species_tree_zoom, fitted_zoom)
+        self.assertEqual(self.renderer._species_tree_horizontal_offset, 0.0)
+        self.assertEqual(self.renderer._species_tree_vertical_offset, 0.0)
+
+    def test_manual_zoom_preserves_content_at_canvas_center(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 12):
+            records[species_id] = self.make_record(species_id, species_id - 1)
+        world = self.make_world(records, width=700, height=500)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        layout = self.renderer._species_tree_last_layout
+        canvas = self.renderer._species_tree_last_canvas
+        assert layout is not None
+        assert canvas is not None
+
+        old_zoom = self.renderer._species_tree_zoom
+        old_inset_x, old_inset_y = self.renderer._species_tree_content_insets(
+            layout, canvas, old_zoom
+        )
+        old_content_center = (
+            (
+                canvas.center_x
+                - canvas.left
+                - old_inset_x
+                + self.renderer._species_tree_horizontal_offset
+            )
+            / old_zoom,
+            (
+                canvas.top
+                - old_inset_y
+                + self.renderer._species_tree_vertical_offset
+                - canvas.center_y
+            )
+            / old_zoom,
+        )
+
+        self.renderer._adjust_species_tree_zoom(
+            self.renderer.SPECIES_TREE_ZOOM_FACTOR
+        )
+
+        new_zoom = self.renderer._species_tree_zoom
+        new_inset_x, new_inset_y = self.renderer._species_tree_content_insets(
+            layout, canvas, new_zoom
+        )
+        new_content_center = (
+            (
+                canvas.center_x
+                - canvas.left
+                - new_inset_x
+                + self.renderer._species_tree_horizontal_offset
+            )
+            / new_zoom,
+            (
+                canvas.top
+                - new_inset_y
+                + self.renderer._species_tree_vertical_offset
+                - canvas.center_y
+            )
+            / new_zoom,
+        )
+        self.assertAlmostEqual(new_content_center[0], old_content_center[0])
+        self.assertAlmostEqual(new_content_center[1], old_content_center[1])
+
+    def test_manual_zoom_limits_are_ten_to_two_hundred_percent(self) -> None:
+        world = self.make_world({1: self.make_record(1, None)})
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+
+        for _ in range(30):
+            self.renderer._adjust_species_tree_zoom(
+                self.renderer.SPECIES_TREE_ZOOM_FACTOR
+            )
+        self.assertEqual(
+            self.renderer._species_tree_zoom,
+            self.renderer.SPECIES_TREE_MAX_ZOOM,
+        )
+        for _ in range(60):
+            self.renderer._adjust_species_tree_zoom(
+                1.0 / self.renderer.SPECIES_TREE_ZOOM_FACTOR
+            )
+        self.assertEqual(
+            self.renderer._species_tree_zoom,
+            self.renderer.SPECIES_TREE_MIN_ZOOM,
+        )
+
+    def test_fit_recalculates_after_resize_and_history_change(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 10):
+            records[species_id] = self.make_record(species_id, species_id - 1)
+        world = self.make_world(records, width=700, height=500)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        small_window_zoom = self.renderer._species_tree_zoom
+
+        world.layout.window = arcade.LBWH(0, 0, 1600, 900)
+        self.renderer._draw_species_tree_window(world)
+        self.assertGreater(self.renderer._species_tree_zoom, small_window_zoom)
+
+        for species_id in range(10, 18):
+            records[species_id] = self.make_record(species_id, species_id - 1)
+        self.renderer._draw_species_tree_window(world)
+        self.assertLess(self.renderer._species_tree_zoom, 1.0)
+
+    def test_command_wheel_zoom_preserves_content_beneath_cursor(self) -> None:
+        records = {1: self.make_record(1, None)}
+        for species_id in range(2, 12):
+            records[species_id] = self.make_record(species_id, species_id - 1)
+        world = self.make_world(records, width=700, height=500)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        layout = self.renderer._species_tree_last_layout
+        canvas = self.renderer._species_tree_last_canvas
+        assert layout is not None
+        assert canvas is not None
+        cursor_x = canvas.left + canvas.width * 0.72
+        cursor_y = canvas.bottom + canvas.height * 0.38
+
+        old_zoom = self.renderer._species_tree_zoom
+        old_inset_x, old_inset_y = self.renderer._species_tree_content_insets(
+            layout, canvas, old_zoom
+        )
+        old_content_point = (
+            (
+                cursor_x
+                - canvas.left
+                - old_inset_x
+                + self.renderer._species_tree_horizontal_offset
+            )
+            / old_zoom,
+            (
+                canvas.top
+                - old_inset_y
+                + self.renderer._species_tree_vertical_offset
+                - cursor_y
+            )
+            / old_zoom,
+        )
+
+        handled = self.renderer.handle_mouse_scroll(
+            cursor_x,
+            cursor_y,
+            1.0,
+            command_down=True,
+        )
+
+        self.assertTrue(handled)
+        self.assertFalse(self.renderer._species_tree_fit_mode)
+        self.assertGreater(self.renderer._species_tree_zoom, old_zoom)
+        new_zoom = self.renderer._species_tree_zoom
+        new_inset_x, new_inset_y = self.renderer._species_tree_content_insets(
+            layout, canvas, new_zoom
+        )
+        new_content_point = (
+            (
+                cursor_x
+                - canvas.left
+                - new_inset_x
+                + self.renderer._species_tree_horizontal_offset
+            )
+            / new_zoom,
+            (
+                canvas.top
+                - new_inset_y
+                + self.renderer._species_tree_vertical_offset
+                - cursor_y
+            )
+            / new_zoom,
+        )
+        self.assertAlmostEqual(new_content_point[0], old_content_point[0])
+        self.assertAlmostEqual(new_content_point[1], old_content_point[1])
+
+        self.renderer.handle_mouse_scroll(
+            cursor_x,
+            cursor_y,
+            -1.0,
+            command_down=True,
+        )
+        self.assertAlmostEqual(self.renderer._species_tree_zoom, old_zoom)
+        self.assertFalse(self.renderer._species_tree_fit_mode)
+
+    def test_command_wheel_outside_canvas_is_consumed_without_zooming(self) -> None:
+        world = self.make_world({1: self.make_record(1, None)})
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+        old_zoom = self.renderer._species_tree_zoom
+
+        handled = self.renderer.handle_mouse_scroll(
+            canvas.center_x,
+            canvas.top + 12.0,
+            1.0,
+            command_down=True,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(self.renderer._species_tree_zoom, old_zoom)
+        self.assertTrue(self.renderer._species_tree_fit_mode)
+
+    def test_timeline_formats_ticks_and_registers_only_timed_events(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=3661.0),
+            3: self.make_record(3, 2, exact=False),
+        }
+        world = self.make_world(records)
+        world.elapsed_time = 4000.0
+        self.renderer.open_species_tree(world)
+
+        self.renderer._draw_species_tree_window(world)
+
+        self.assertEqual(
+            self.renderer._format_species_tree_time(61.0),
+            "01:01",
+        )
+        self.assertEqual(
+            self.renderer._format_species_tree_time(3661.0),
+            "1:01:01",
+        )
+        self.assertEqual(
+            set(self.renderer._species_tree_timeline_event_bounds),
+            {1, 2},
+        )
+        self.assertIn("species_tree_timeline", self.renderer._control_hitboxes)
+
+    def test_timeline_event_jumps_to_species_at_one_hundred_percent(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=300.0),
+            3: self.make_record(3, 1, emerged_at=600.0),
+        }
+        world = self.make_world(records, width=700, height=420)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        marker = self.renderer._species_tree_timeline_event_bounds[2]
+
+        handled = self.renderer.handle_mouse_press(
+            world,
+            marker.center_x,
+            marker.center_y,
+        )
+
+        self.assertTrue(handled)
+        self.assertFalse(self.renderer._species_tree_fit_mode)
+        self.assertEqual(self.renderer._species_tree_zoom, 1.0)
+        self.assertGreater(self.renderer._species_tree_vertical_offset, 0.0)
+
+    def test_timeline_ruler_jump_preserves_horizontal_offset(self) -> None:
+        records = {1: self.make_record(1, None, emerged_at=0.0)}
+        for species_id in range(2, 12):
+            records[species_id] = self.make_record(
+                species_id,
+                1,
+                emerged_at=600.0,
+            )
+        world = self.make_world(records, width=700, height=420)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_fit_mode = False
+        self.renderer._species_tree_zoom = 1.0
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_horizontal_offset = 30.0
+        timeline = self.renderer._control_hitboxes["species_tree_timeline"]
+
+        self.renderer.handle_mouse_press(
+            world,
+            timeline.left + 5.0,
+            timeline.bottom + 13.0,
+        )
+
+        self.assertAlmostEqual(
+            self.renderer._species_tree_horizontal_offset,
+            30.0,
+        )
+        self.assertGreater(self.renderer._species_tree_vertical_offset, 0.0)
+
+    def test_canvas_drag_preserves_fitted_zoom_and_pans(self) -> None:
+        records = {1: self.make_record(1, None, emerged_at=0.0)}
+        for species_id in range(2, 12):
+            records[species_id] = self.make_record(
+                species_id,
+                1,
+                emerged_at=600.0,
+            )
+        world = self.make_world(records, width=700, height=420)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+        self.assertTrue(self.renderer._species_tree_fit_mode)
+        fitted_zoom = self.renderer._species_tree_zoom
+        initial_horizontal_offset = self.renderer._species_tree_horizontal_offset
+
+        self.renderer.handle_mouse_press(
+            world,
+            canvas.center_x,
+            canvas.center_y,
+        )
+        self.renderer.handle_mouse_drag(
+            world,
+            canvas.center_x - 24.0,
+            canvas.center_y + 18.0,
+        )
+
+        self.assertFalse(self.renderer._species_tree_fit_mode)
+        self.assertEqual(self.renderer._species_tree_zoom, fitted_zoom)
+        self.assertTrue(self.renderer._species_tree_canvas_drag_started)
+        self.assertNotEqual(
+            self.renderer._species_tree_horizontal_offset,
+            initial_horizontal_offset,
+        )
+        self.renderer.handle_mouse_release()
+        self.assertFalse(self.renderer._species_tree_canvas_drag)
+
+    def test_canvas_drag_preserves_manual_zoom_and_pans_both_axes(self) -> None:
+        records = {1: self.make_record(1, None, emerged_at=0.0)}
+        for species_id in range(2, 12):
+            records[species_id] = self.make_record(
+                species_id,
+                1,
+                emerged_at=600.0,
+            )
+        world = self.make_world(records, width=700, height=420)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_fit_mode = False
+        self.renderer._species_tree_zoom = 1.25
+        self.renderer._draw_species_tree_window(world)
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+
+        self.renderer.handle_mouse_press(
+            world,
+            canvas.center_x,
+            canvas.center_y,
+        )
+        self.renderer.handle_mouse_drag(
+            world,
+            canvas.center_x - 20.0,
+            canvas.center_y + 15.0,
+        )
+
+        self.assertEqual(self.renderer._species_tree_zoom, 1.25)
+        self.assertGreater(self.renderer._species_tree_horizontal_offset, 0.0)
+        self.assertGreater(self.renderer._species_tree_vertical_offset, 0.0)
+        self.renderer.handle_mouse_release()
+        self.assertFalse(self.renderer._species_tree_canvas_drag)
 
 
 if __name__ == "__main__":
