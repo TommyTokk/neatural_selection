@@ -135,6 +135,13 @@ class World:
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
         self.creatures = self._spawn_creatures() if bootstrap else []
+        self._next_creature_id_value = (
+            max(
+                (creature.creature_id for creature in self.creatures),
+                default=0,
+            )
+            + 1
+        )
         self._chronometers: dict[int, float] = {
             creature.creature_id: 0.0 for creature in self.creatures
         }
@@ -1053,14 +1060,18 @@ class World:
         return spawn_x, spawn_y
 
     def _next_creature_id(self) -> int:
-        known_ids = [
-            *(creature.creature_id for creature in self.creatures),
-            *self.fitness.keys(),
-            *self.fitness_archive.keys(),
-        ]
-        if not known_ids:
-            return 1
-        return max(known_ids) + 1
+        if not hasattr(self, "_next_creature_id_value"):
+            self._next_creature_id_value = max(
+                [
+                    0,
+                    *(creature.creature_id for creature in self.creatures),
+                    *self.fitness,
+                    *self.fitness_archive,
+                ]
+            ) + 1
+        creature_id = self._next_creature_id_value
+        self._next_creature_id_value += 1
+        return creature_id
 
     def _spawn_foods(self, delta_time: float) -> None:
         spawned_foods = self.food_spawner.update(
@@ -2021,6 +2032,61 @@ class World:
         previous_biome = getattr(self, "_previous_biome_here_by_creature_id", None)
         if previous_biome is not None:
             previous_biome.pop(creature.creature_id, None)
+        self._prune_historical_archives()
+
+    def _prune_historical_archives(self) -> None:
+        population_config = self.config.population
+        trait_archive = getattr(self, "_trait_archive_by_genome_id", {})
+        prune_population = getattr(
+            self.neat_controller,
+            "prune_population_archive",
+            None,
+        )
+        retained_genome_ids = (
+            prune_population(population_config.elite_archive_size)
+            if prune_population is not None
+            else set(trait_archive)
+        )
+
+        retained_species_ids = {
+            creature.lineage.species_id
+            for creature in self.creatures
+        }
+        retained_species_ids.update(
+            archived.lineage.species_id
+            for genome_id, archived in trait_archive.items()
+            if genome_id in retained_genome_ids
+        )
+        self._trait_archive_by_genome_id = {
+            genome_id: archived
+            for genome_id, archived in trait_archive.items()
+            if genome_id in retained_genome_ids
+        }
+        prune_representatives = getattr(
+            self.neat_controller,
+            "prune_species_representatives",
+            None,
+        )
+        if prune_representatives is not None:
+            prune_representatives(retained_species_ids)
+
+        protected_parent_ids = {
+            creature.lineage.parent_id
+            for creature in self.creatures
+            if creature.lineage.parent_id is not None and self._is_infant(creature)
+        }
+        archive_limit = max(0, population_config.fitness_archive_size)
+        recent_ids = (
+            set(list(self.fitness_archive)[-archive_limit:])
+            if archive_limit > 0
+            else set()
+        )
+        retained_fitness_ids = recent_ids | protected_parent_ids
+        self.fitness_archive = {
+            creature_id: fitness
+            for creature_id, fitness in self.fitness_archive.items()
+            if creature_id in retained_fitness_ids
+        }
 
     def _archive_creature_traits(self, creature: Creature) -> None:
         genome_id_for = getattr(self.neat_controller, "genome_id_for", None)

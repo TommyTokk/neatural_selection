@@ -6,9 +6,11 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
+import gc
 import os
 import pickle
 import unittest
+import weakref
 
 from configs.sim_config import build_sim_config
 from src.creature import PhysicalTraits, VisionTraits
@@ -255,7 +257,11 @@ class PersistenceManagerTest(unittest.TestCase):
         ]
         try:
             with (
-                patch.object(manager, "_capture_state", side_effect=states),
+                patch.object(
+                    manager,
+                    "_capture_state",
+                    side_effect=states,
+                ) as capture_state,
                 patch.object(manager, "_write_atomic", side_effect=write),
             ):
                 manager.save_simulation(
@@ -280,6 +286,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 )
                 release_writer.set()
                 manager.flush()
+                self.assertEqual(capture_state.call_count, 3)
         finally:
             release_writer.set()
             manager.close()
@@ -293,6 +300,33 @@ class PersistenceManagerTest(unittest.TestCase):
             ],
         )
         self.assertFalse(manager.is_busy)
+
+    def test_completed_save_releases_snapshot_references(self) -> None:
+        class Payload:
+            pass
+
+        manager = PersistenceManager()
+        payload_references: list[weakref.ReferenceType[Payload]] = []
+
+        def capture_state(*args: object) -> dict[str, object]:
+            del args
+            payload = Payload()
+            payload_references.append(weakref.ref(payload))
+            return {"version": CHECKPOINT_VERSION, "payload": payload}
+
+        manager._capture_state = capture_state
+        manager._write_atomic = lambda *args, **kwargs: None
+        try:
+            manager.save_simulation(
+                object(),
+                object(),
+                (self.simulation_paths.quick_target(),),
+            )
+            manager.flush()
+            gc.collect()
+            self.assertIsNone(payload_references[0]())
+        finally:
+            manager.close()
 
     def test_capture_excludes_brains_and_records_tier_timers(self) -> None:
         body = SimpleNamespace(
@@ -371,6 +405,8 @@ class PersistenceManagerTest(unittest.TestCase):
         self.assertEqual(state["creatures"][0]["genome_id"], 17)
         self.assertEqual(state["world"]["time_since_last_quick_save"], 20.0)
         self.assertEqual(state["world"]["time_since_last_archive_save"], 50.0)
+        self.assertEqual(state["world"]["next_creature_id"], 5)
+        self.assertEqual(state["population"]["next_genome_id"], 18)
         self.assertNotIn("brains", state)
         self.assertNotIn("brain", state["creatures"][0])
         self.assertEqual(state["species_manager"]["phenotypic_weight"], 2.0)

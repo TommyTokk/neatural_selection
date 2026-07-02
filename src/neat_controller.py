@@ -262,6 +262,9 @@ class NeatBrainController:
         )
         self._validate_network_contract()
         self.population = neat.Population(self.config)
+        self._next_genome_id_value = (
+            max(self.population.population, default=0) + 1
+        )
         self.brains: dict[int, NeatBrain] = {}
         self.species_manager = ContinuousSpeciesManager(
             compatibility_threshold,
@@ -320,6 +323,48 @@ class NeatBrainController:
 
     def remove_brain(self, creature_id: int) -> None:
         self.brains.pop(creature_id, None)
+
+    def prune_population_archive(self, archive_size: int) -> set[int]:
+        live_genome_ids = {
+            brain.genome_id
+            for brain in self.brains.values()
+        }
+        scored_dead_genomes = [
+            genome
+            for genome_id, genome in self.population.population.items()
+            if genome_id not in live_genome_ids
+            and genome.fitness is not None
+        ]
+        scored_dead_genomes.sort(
+            key=lambda genome: (
+                float(genome.fitness),
+                int(genome.key),
+            ),
+            reverse=True,
+        )
+        retained_genome_ids = live_genome_ids | {
+            genome.key
+            for genome in scored_dead_genomes[:max(0, archive_size)]
+        }
+        self.population.population = {
+            genome_id: genome
+            for genome_id, genome in self.population.population.items()
+            if genome_id in retained_genome_ids
+        }
+        return retained_genome_ids
+
+    def prune_species_representatives(
+        self,
+        retained_species_ids: set[int],
+    ) -> None:
+        protected_species_ids = {1, *retained_species_ids}
+        self.species_manager.representatives = {
+            species_id: representative
+            for species_id, representative in (
+                self.species_manager.representatives.items()
+            )
+            if species_id in protected_species_ids
+        }
 
     def archive_brain(self, creature_id: int, fitness_score: float) -> bool:
         brain = self.brains.get(creature_id)
@@ -444,9 +489,23 @@ class NeatBrainController:
         )[:count]
 
     def _next_genome_id(self) -> int:
-        genome_ids = [brain.genome_id for brain in self.brains.values()]
-        population_ids = list(self.population.population.keys())
-        return max([0, *genome_ids, *population_ids]) + 1
+        if not hasattr(self, "_next_genome_id_value"):
+            representative_ids = [
+                getattr(representative[0], "key", 0)
+                for representative in self.species_manager.representatives.values()
+                if isinstance(representative, tuple)
+            ]
+            self._next_genome_id_value = max(
+                [
+                    0,
+                    *self.population.population,
+                    *(brain.genome_id for brain in self.brains.values()),
+                    *representative_ids,
+                ]
+            ) + 1
+        genome_id = self._next_genome_id_value
+        self._next_genome_id_value += 1
+        return genome_id
 
     def _initial_genomes(self) -> list[tuple[int, Any]]:
         return list(self.population.population.items())

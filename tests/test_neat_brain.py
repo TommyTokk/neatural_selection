@@ -213,5 +213,35 @@ class LegacyBrainContractMigrationTest(unittest.TestCase):
         self.assertEqual(genome.connections, {})
 
 
+class NeatArchivePruningTest(unittest.TestCase):
+    def test_population_archive_keeps_live_and_highest_fitness_genomes(self) -> None:
+        controller = NeatBrainController.__new__(NeatBrainController)
+        genomes = {
+            genome_id: SimpleNamespace(key=genome_id, fitness=float(genome_id))
+            for genome_id in range(1, 5001)
+        }
+        controller.population = SimpleNamespace(population=genomes)
+        controller.brains = {
+            101: SimpleNamespace(genome_id=1),
+            102: SimpleNamespace(genome_id=2),
+        }
+
+        retained = controller.prune_population_archive(3)
+
+        self.assertEqual(retained, {1, 2, 4998, 4999, 5000})
+        self.assertEqual(set(controller.population.population), retained)
+
+    def test_monotonic_genome_ids_do_not_depend_on_retained_population(self) -> None:
+        controller = NeatBrainController.__new__(NeatBrainController)
+        controller.population = SimpleNamespace(population={2: object()})
+        controller.brains = {}
+        controller.species_manager = SimpleNamespace(representatives={})
+        controller._next_genome_id_value = 1000
+
+        self.assertEqual(controller._next_genome_id(), 1000)
+        controller.population.population.clear()
+        self.assertEqual(controller._next_genome_id(), 1001)
+
+
 if __name__ == "__main__":
     unittest.main()

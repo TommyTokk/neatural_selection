@@ -173,6 +173,27 @@ class PersistenceManager:
     ) -> None:
         if not targets:
             return
+        with self._condition:
+            if self._closing:
+                raise RuntimeError("PersistenceManager is closed.")
+            pending = self._pending_save
+            if pending is not None and pending.priority > priority:
+                pending_targets = {
+                    target.path: target
+                    for target in pending.targets
+                }
+                pending_targets.update(
+                    (target.path, target)
+                    for target in targets
+                )
+                self._pending_save = _PendingSave(
+                    state=pending.state,
+                    targets=tuple(pending_targets.values()),
+                    priority=pending.priority,
+                )
+                self._condition.notify_all()
+                return
+
         state = self._capture_state(world, neat_controller)
         with self._condition:
             if self._closing:
@@ -339,6 +360,9 @@ class PersistenceManager:
                 with self._condition:
                     self._saving = False
                     self._condition.notify_all()
+                state = None
+                targets = ()
+                save_request = None
 
     @staticmethod
     def _capture_state(
@@ -405,6 +429,33 @@ class PersistenceManager:
         )
         input_count = 26 if genome_config is None else len(genome_config.input_keys)
         output_count = 12 if genome_config is None else len(genome_config.output_keys)
+        next_creature_id = getattr(world, "_next_creature_id_value", None)
+        if next_creature_id is None:
+            next_creature_id = max(
+                [
+                    0,
+                    *(creature.creature_id for creature in world.creatures),
+                    *world.fitness,
+                    *world.fitness_archive,
+                ]
+            ) + 1
+        next_genome_id = getattr(
+            neat_controller,
+            "_next_genome_id_value",
+            None,
+        )
+        if next_genome_id is None:
+            next_genome_id = max(
+                [
+                    0,
+                    *neat_controller.population.population,
+                    *(
+                        brain.genome_id
+                        for brain in neat_controller.brains.values()
+                        if hasattr(brain, "genome_id")
+                    ),
+                ]
+            ) + 1
         return {
             "version": CHECKPOINT_VERSION,
             "brain_contract": {
@@ -417,6 +468,7 @@ class PersistenceManager:
             "world": {
                 "physics_accumulator": world._physics_accumulator,
                 "reproduction_accumulator": world._reproduction_accumulator,
+                "next_creature_id": next_creature_id,
                 "time_since_last_quick_save": (
                     world.time_since_last_quick_save
                 ),
@@ -448,6 +500,7 @@ class PersistenceManager:
             "population": {
                 "genomes": evolution_state["genomes"],
                 "generation": neat_controller.population.generation,
+                "next_genome_id": next_genome_id,
             },
             "species_manager": {
                 "compatibility_threshold": (
@@ -871,6 +924,40 @@ class PersistenceManager:
             world.rt_neat._lifespan_at_death_count = rt_state[
                 "lifespan_at_death_count"
             ]
+            next_creature_id = runtime.get("next_creature_id")
+            if next_creature_id is None:
+                next_creature_id = max(
+                    [
+                        0,
+                        *(creature.creature_id for creature in world.creatures),
+                        *world.fitness,
+                        *world.fitness_archive,
+                        *(
+                            archived.creature_id
+                            for archived in (
+                                world._trait_archive_by_genome_id.values()
+                            )
+                        ),
+                    ]
+                ) + 1
+            world._next_creature_id_value = next_creature_id
+
+            next_genome_id = population_state.get("next_genome_id")
+            if next_genome_id is None:
+                next_genome_id = max(
+                    [
+                        0,
+                        *controller.population.population,
+                        *(
+                            getattr(representative[0], "key", 0)
+                            for representative in (
+                                controller.species_manager.representatives.values()
+                            )
+                        ),
+                    ]
+                ) + 1
+            controller._next_genome_id_value = next_genome_id
+            world._prune_historical_archives()
             world._refresh_stats()
             return world
         except BaseException:

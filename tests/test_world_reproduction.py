@@ -42,7 +42,7 @@ from configs.sim_config import build_sim_config
 from src.action import Action
 from src.creature import LineageInfo, PhysicalTraits, VisionTraits
 from src.fitness import CreatureFitness
-from src.neat_controller import SpeciationResult
+from src.neat_controller import NeatBrainController, SpeciationResult
 from src.rt_neat import RtNeatManager
 from src.speciation import SpeciesDistanceBreakdown, SpeciesTraitSnapshot
 from src.world import ArchivedCreatureTraits, World
@@ -188,6 +188,71 @@ class WorldReproductionTest(unittest.TestCase):
 
         self.assertEqual(len(set(seen_colors)), 1)
         self.assertTrue(all(creature.lineage.species_id == 1 for creature in creatures))
+
+    def test_historical_archives_are_bounded_and_keep_required_records(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.population.elite_archive_size = 2
+        world.config.population.fitness_archive_size = 2
+        infant = FakeCreature(
+            creature_id=20,
+            lineage=LineageInfo(parent_id=10, species_id=2),
+        )
+        world.creatures = [infant]
+        world.fitness = {20: CreatureFitness(age_seconds=1.0)}
+        world.fitness_archive = {
+            creature_id: CreatureFitness(age_seconds=10.0)
+            for creature_id in (10, 11, 12, 13)
+        }
+
+        controller = NeatBrainController.__new__(NeatBrainController)
+        controller.population = SimpleNamespace(
+            population={
+                genome_id: SimpleNamespace(
+                    key=genome_id,
+                    fitness=float(genome_id),
+                )
+                for genome_id in (1, 2, 3, 4, 100)
+            }
+        )
+        controller.brains = {20: SimpleNamespace(genome_id=100)}
+        controller.species_manager = SimpleNamespace(
+            representatives={
+                species_id: (SimpleNamespace(key=species_id), None, None)
+                for species_id in range(1, 7)
+            }
+        )
+        world.neat_controller = controller
+        world._trait_archive_by_genome_id = {
+            genome_id: ArchivedCreatureTraits(
+                creature_id=genome_id,
+                vision=VisionTraits(range=100.0, angle=1.0),
+                physical_traits=PhysicalTraits(radius=16.0),
+                color=(1, 2, 3),
+                lineage=LineageInfo(species_id=genome_id + 1),
+            )
+            for genome_id in (1, 2, 3, 4)
+        }
+
+        world._prune_historical_archives()
+
+        self.assertEqual(set(controller.population.population), {3, 4, 100})
+        self.assertEqual(set(world._trait_archive_by_genome_id), {3, 4})
+        self.assertEqual(
+            set(controller.species_manager.representatives),
+            {1, 2, 4, 5},
+        )
+        self.assertEqual(set(world.fitness_archive), {10, 12, 13})
+
+    def test_monotonic_creature_ids_survive_archive_pruning(self) -> None:
+        world = object.__new__(World)
+        world.creatures = []
+        world.fitness = {}
+        world.fitness_archive = {}
+        world._next_creature_id_value = 500
+
+        self.assertEqual(world._next_creature_id(), 500)
+        self.assertEqual(world._next_creature_id(), 501)
 
     def test_reproduction_skips_unwilling_top_eligible_parent(self) -> None:
         world = object.__new__(World)
