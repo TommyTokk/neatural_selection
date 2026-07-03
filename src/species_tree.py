@@ -25,6 +25,9 @@ class SpeciesTreeLayout:
     timeline_end: float
 
 
+SpeciesTreeRoute = tuple[tuple[float, float], ...]
+
+
 def build_species_tree_layout(
     records: Mapping[int, SpeciesRecordLike],
     *,
@@ -138,6 +141,248 @@ def build_species_tree_layout(
         leaf_count=leaf_count,
         timeline_start=0.0,
         timeline_end=real_timeline_end,
+    )
+
+
+def route_species_tree_edges(
+    layout: SpeciesTreeLayout,
+    node_radii: Mapping[int, float],
+    *,
+    clearance: float = 6.0,
+) -> dict[tuple[int, int], SpeciesTreeRoute]:
+    """Build deterministic orthogonal routes that avoid unrelated nodes."""
+    safe_clearance = max(0.0, float(clearance))
+    obstacles = {
+        species_id: _Obstacle.around(
+            position,
+            max(0.0, float(node_radii.get(species_id, 0.0)))
+            + safe_clearance,
+        )
+        for species_id, position in layout.positions.items()
+    }
+    if not obstacles:
+        return {}
+
+    outer_left = min(obstacle.left for obstacle in obstacles.values()) - 16.0
+    outer_right = max(obstacle.right for obstacle in obstacles.values()) + 16.0
+    outer_top = min(obstacle.top for obstacle in obstacles.values()) - 16.0
+    outer_bottom = max(obstacle.bottom for obstacle in obstacles.values()) + 16.0
+    routes: dict[tuple[int, int], SpeciesTreeRoute] = {}
+
+    for edge in layout.edges:
+        parent_id, child_id = edge
+        start = layout.positions[parent_id]
+        end = layout.positions[child_id]
+        start_radius = max(0.0, float(node_radii.get(parent_id, 0.0)))
+        end_radius = max(0.0, float(node_radii.get(child_id, 0.0)))
+        blocked = tuple(
+            obstacle
+            for species_id, obstacle in obstacles.items()
+            if species_id not in edge
+        )
+        candidates = _route_candidates(
+            start,
+            end,
+            start_radius,
+            end_radius,
+            safe_clearance,
+            obstacles,
+            outer_left,
+            outer_right,
+            outer_top,
+            outer_bottom,
+        )
+        valid = [
+            candidate
+            for candidate in candidates
+            if not _route_hits_obstacle(candidate, blocked)
+        ]
+        routes[edge] = min(
+            valid or candidates,
+            key=lambda route: (
+                _route_length(route) + max(0, len(route) - 2) * 4.0,
+                route,
+            ),
+        )
+    return routes
+
+
+@dataclass(frozen=True, slots=True)
+class _Obstacle:
+    left: float
+    right: float
+    top: float
+    bottom: float
+
+    @classmethod
+    def around(
+        cls,
+        position: tuple[float, float],
+        radius: float,
+    ) -> _Obstacle:
+        return cls(
+            position[0] - radius,
+            position[0] + radius,
+            position[1] - radius,
+            position[1] + radius,
+        )
+
+
+def _route_candidates(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    start_radius: float,
+    end_radius: float,
+    clearance: float,
+    obstacles: Mapping[int, _Obstacle],
+    outer_left: float,
+    outer_right: float,
+    outer_top: float,
+    outer_bottom: float,
+) -> list[SpeciesTreeRoute]:
+    start_x, start_y = start
+    end_x, end_y = end
+    candidates: list[SpeciesTreeRoute] = []
+
+    if end_y >= start_y:
+        start_anchor = (start_x, start_y + start_radius)
+        start_clear = (start_x, start_y + start_radius + clearance)
+        end_clear = (end_x, end_y - end_radius - clearance)
+        end_anchor = (end_x, end_y - end_radius)
+    else:
+        start_anchor = (start_x, start_y - start_radius)
+        start_clear = (start_x, start_y - start_radius - clearance)
+        end_clear = (end_x, end_y + end_radius + clearance)
+        end_anchor = (end_x, end_y + end_radius)
+
+    midpoint_y = (start_clear[1] + end_clear[1]) * 0.5
+    channel_ys = {midpoint_y, start_clear[1], end_clear[1]}
+    for obstacle in obstacles.values():
+        channel_ys.update((obstacle.top, obstacle.bottom))
+    for channel_y in sorted(
+        channel_ys,
+        key=lambda value: (abs(value - midpoint_y), value),
+    ):
+        candidates.append(
+            _compact_route(
+                (
+                    start_anchor,
+                    start_clear,
+                    (start_x, channel_y),
+                    (end_x, channel_y),
+                    end_clear,
+                    end_anchor,
+                )
+            )
+        )
+
+    for side_x, direction in ((outer_left, -1.0), (outer_right, 1.0)):
+        parent_anchor = (start_x + direction * start_radius, start_y)
+        parent_clear = (
+            start_x + direction * (start_radius + clearance),
+            start_y,
+        )
+        child_clear = (
+            end_x + direction * (end_radius + clearance),
+            end_y,
+        )
+        child_anchor = (end_x + direction * end_radius, end_y)
+        candidates.append(
+            _compact_route(
+                (
+                    parent_anchor,
+                    parent_clear,
+                    (side_x, start_y),
+                    (side_x, end_y),
+                    child_clear,
+                    child_anchor,
+                )
+            )
+        )
+
+    for side_y, direction in ((outer_top, -1.0), (outer_bottom, 1.0)):
+        parent_anchor = (start_x, start_y + direction * start_radius)
+        parent_clear = (
+            start_x,
+            start_y + direction * (start_radius + clearance),
+        )
+        child_clear = (
+            end_x,
+            end_y + direction * (end_radius + clearance),
+        )
+        child_anchor = (end_x, end_y + direction * end_radius)
+        candidates.append(
+            _compact_route(
+                (
+                    parent_anchor,
+                    parent_clear,
+                    (start_x, side_y),
+                    (end_x, side_y),
+                    child_clear,
+                    child_anchor,
+                )
+            )
+        )
+    return candidates
+
+
+def _compact_route(points: tuple[tuple[float, float], ...]) -> SpeciesTreeRoute:
+    compact: list[tuple[float, float]] = []
+    for point in points:
+        if compact and point == compact[-1]:
+            continue
+        if (
+            len(compact) >= 2
+            and (
+                compact[-2][0] == compact[-1][0] == point[0]
+                or compact[-2][1] == compact[-1][1] == point[1]
+            )
+        ):
+            compact[-1] = point
+        else:
+            compact.append(point)
+    return tuple(compact)
+
+
+def _route_hits_obstacle(
+    route: SpeciesTreeRoute,
+    obstacles: tuple[_Obstacle, ...],
+) -> bool:
+    return any(
+        _segment_hits_obstacle(start, end, obstacle)
+        for start, end in zip(route, route[1:])
+        for obstacle in obstacles
+    )
+
+
+def _segment_hits_obstacle(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    obstacle: _Obstacle,
+) -> bool:
+    if start[0] == end[0]:
+        x = start[0]
+        low, high = sorted((start[1], end[1]))
+        return (
+            obstacle.left < x < obstacle.right
+            and low < obstacle.bottom
+            and high > obstacle.top
+        )
+    if start[1] == end[1]:
+        y = start[1]
+        low, high = sorted((start[0], end[0]))
+        return (
+            obstacle.top < y < obstacle.bottom
+            and low < obstacle.right
+            and high > obstacle.left
+        )
+    return True
+
+
+def _route_length(route: SpeciesTreeRoute) -> float:
+    return sum(
+        abs(end[0] - start[0]) + abs(end[1] - start[1])
+        for start, end in zip(route, route[1:])
     )
 
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sqlite3
 
 from src.speciation import (
+    NeatChangeSummary,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
@@ -62,7 +64,8 @@ class TelemetryDatabase:
                 radius_component REAL,
                 vision_range_component REAL,
                 vision_angle_component REAL,
-                movement_cost_component REAL
+                movement_cost_component REAL,
+                neat_changes_json TEXT
             );
 
             CREATE TABLE IF NOT EXISTS population_metrics (
@@ -73,8 +76,22 @@ class TelemetryDatabase:
             );
             """
         )
+        self._ensure_species_history_columns()
         self.connection.commit()
         self._closed = False
+
+    def _ensure_species_history_columns(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self.connection.execute(
+                "PRAGMA table_info(species_history)"
+            ).fetchall()
+        }
+        if "neat_changes_json" not in columns:
+            self.connection.execute(
+                "ALTER TABLE species_history "
+                "ADD COLUMN neat_changes_json TEXT"
+            )
 
     def log_species(
         self,
@@ -120,10 +137,11 @@ class TelemetryDatabase:
                 phenotypic_distance, weighted_phenotypic_distance,
                 composite_distance, compatibility_threshold,
                 phenotypic_weight, radius_component, vision_range_component,
-                vision_angle_component, movement_cost_component
+                vision_angle_component, movement_cost_component,
+                neat_changes_json
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -152,6 +170,9 @@ class TelemetryDatabase:
                 distances.vision_range_component,
                 distances.vision_angle_component,
                 distances.movement_cost_component,
+                _serialize_neat_changes(
+                    getattr(record, "neat_changes", None)
+                ),
             ),
         )
         self.connection.commit()
@@ -184,7 +205,8 @@ class TelemetryDatabase:
                 phenotypic_distance, weighted_phenotypic_distance,
                 composite_distance, compatibility_threshold,
                 phenotypic_weight, radius_component, vision_range_component,
-                vision_angle_component, movement_cost_component
+                vision_angle_component, movement_cost_component,
+                neat_changes_json
             FROM species_history
         """
         parameters: tuple[float, ...] = ()
@@ -223,6 +245,7 @@ class TelemetryDatabase:
                 vision_range_component,
                 vision_angle_component,
                 movement_cost_component,
+                neat_changes_json,
             ) = row
             records[int(species_id)] = SpeciesRecord(
                 species_id=int(species_id),
@@ -262,6 +285,7 @@ class TelemetryDatabase:
                     vision_angle_component=vision_angle_component,
                     movement_cost_component=movement_cost_component,
                 ),
+                neat_changes=_deserialize_neat_changes(neat_changes_json),
             )
         return records
 
@@ -361,3 +385,43 @@ def _trait_snapshot(
         vision_angle=float(vision_angle),
         movement_cost_multiplier=float(movement_cost_multiplier),
     )
+
+
+def _serialize_neat_changes(summary: NeatChangeSummary | None) -> str | None:
+    if summary is None:
+        return None
+    return json.dumps(
+        {
+            "nodes_added": summary.nodes_added,
+            "nodes_removed": summary.nodes_removed,
+            "connections_added": summary.connections_added,
+            "connections_removed": summary.connections_removed,
+            "connections_enabled": summary.connections_enabled,
+            "connections_disabled": summary.connections_disabled,
+            "weights_changed": summary.weights_changed,
+            "node_parameters_changed": summary.node_parameters_changed,
+            "key_changes": list(summary.key_changes),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _deserialize_neat_changes(value: object) -> NeatChangeSummary | None:
+    if value is None:
+        return None
+    try:
+        data = json.loads(str(value))
+        return NeatChangeSummary(
+            nodes_added=int(data["nodes_added"]),
+            nodes_removed=int(data["nodes_removed"]),
+            connections_added=int(data["connections_added"]),
+            connections_removed=int(data["connections_removed"]),
+            connections_enabled=int(data["connections_enabled"]),
+            connections_disabled=int(data["connections_disabled"]),
+            weights_changed=int(data["weights_changed"]),
+            node_parameters_changed=int(data["node_parameters_changed"]),
+            key_changes=tuple(str(item) for item in data.get("key_changes", ())),
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None

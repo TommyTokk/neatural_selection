@@ -26,6 +26,7 @@ from src.neat_controller import (
     calculate_phenotypic_distance,
     calculate_phenotypic_distance_components,
 )
+from src.speciation import summarize_neat_changes
 
 
 class FakeGenome:
@@ -40,6 +41,24 @@ class FakeGenome:
 
     def mutate(self, genome_config: object) -> None:
         del genome_config
+
+
+class FakeGene:
+    def __init__(
+        self,
+        *,
+        weight: float = 0.0,
+        enabled: bool = True,
+        bias: float = 0.0,
+        activation: str = "sigmoid",
+        aggregation: str = "sum",
+    ) -> None:
+        self.weight = weight
+        self.enabled = enabled
+        self.bias = bias
+        self.response = 1.0
+        self.activation = activation
+        self.aggregation = aggregation
 
 
 def physical(radius: float = 16.0, movement: float = 1.0) -> PhysicalTraits:
@@ -311,6 +330,59 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(result.species_id, 2)
         self.assertTrue(result.is_new_species)
         self.assertIs(controller.brains[20], brain)
+
+
+class NeatChangeSummaryTest(unittest.TestCase):
+    def test_summarizes_structural_and_parameter_changes(self) -> None:
+        parent = FakeGenome()
+        parent.nodes = {0: FakeGene(bias=0.1), 1: FakeGene()}
+        parent.connections = {
+            (-1, 0): FakeGene(weight=0.5),
+            (-2, 0): FakeGene(weight=-0.2, enabled=True),
+        }
+        child = FakeGenome()
+        child.nodes = {
+            0: FakeGene(bias=0.8, aggregation="max"),
+            2: FakeGene(),
+        }
+        child.connections = {
+            (-1, 0): FakeGene(weight=1.0),
+            (-2, 0): FakeGene(weight=-0.2, enabled=False),
+            (-1, 2): FakeGene(weight=0.3),
+        }
+
+        summary = summarize_neat_changes(parent, child)
+
+        self.assertEqual(summary.nodes_added, 1)
+        self.assertEqual(summary.nodes_removed, 1)
+        self.assertEqual(summary.connections_added, 1)
+        self.assertEqual(summary.connections_disabled, 1)
+        self.assertEqual(summary.weights_changed, 1)
+        self.assertEqual(summary.node_parameters_changed, 2)
+        self.assertLessEqual(len(summary.key_changes), 6)
+
+    def test_key_changes_are_bounded_and_unchanged_genomes_are_empty(self) -> None:
+        genome = FakeGenome()
+        genome.nodes = {0: FakeGene()}
+        genome.connections = {
+            (index, 0): FakeGene(weight=float(index))
+            for index in range(10)
+        }
+        changed = FakeGenome()
+        changed.nodes = genome.nodes.copy()
+        changed.connections = {
+            key: FakeGene(weight=gene.weight + 1.0)
+            for key, gene in genome.connections.items()
+        }
+
+        self.assertEqual(
+            summarize_neat_changes(genome, genome).weights_changed,
+            0,
+        )
+        self.assertEqual(
+            len(summarize_neat_changes(genome, changed).key_changes),
+            6,
+        )
 
 
 if __name__ == "__main__":

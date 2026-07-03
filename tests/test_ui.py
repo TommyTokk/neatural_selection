@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import sys
 from types import ModuleType
 from types import SimpleNamespace
@@ -92,6 +92,7 @@ from configs.sim_config import build_sim_config
 from src.creature import LineageInfo, PhysicalTraits, TraitMutationDelta
 from src.layout import build_screen_layout
 from src.speciation import (
+    NeatChangeSummary,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
@@ -1366,6 +1367,69 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             "Unavailable",
             " ".join(self.renderer._species_tree_tooltip_lines(record)),
         )
+
+    def test_click_selects_node_and_highlights_its_ancestry(self) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+            3: self.make_record(3, 2),
+        }
+        world = self.make_world(records)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        node = self.renderer._species_tree_node_bounds[3]
+
+        self.renderer.handle_mouse_press(world, node.center_x, node.center_y)
+        self.renderer.handle_mouse_release()
+        nodes, edges = self.renderer._species_tree_highlighted_path(
+            self.renderer._species_tree_last_layout
+        )
+
+        self.assertEqual(self.renderer._species_tree_selected_id, 3)
+        self.assertEqual(nodes, {1, 2, 3})
+        self.assertEqual(edges, {(1, 2), (2, 3)})
+
+    def test_dragging_from_node_pans_without_changing_selection(self) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_selected_id = 1
+        node = self.renderer._species_tree_node_bounds[2]
+
+        self.renderer.handle_mouse_press(world, node.center_x, node.center_y)
+        self.renderer.handle_mouse_drag(
+            world,
+            node.center_x + 8.0,
+            node.center_y + 8.0,
+        )
+        self.renderer.handle_mouse_release()
+
+        self.assertEqual(self.renderer._species_tree_selected_id, 1)
+
+    def test_tooltip_lists_neat_summary_and_key_changes(self) -> None:
+        record = replace(
+            self.make_record(2, 1),
+            neat_changes=NeatChangeSummary(
+                1,
+                0,
+                2,
+                0,
+                0,
+                1,
+                3,
+                1,
+                ("Node 4 added",),
+            ),
+        )
+
+        tooltip = " ".join(self.renderer._species_tree_tooltip_lines(record))
+
+        self.assertIn("NEAT CHANGES FROM PARENT", tooltip)
+        self.assertIn("Node 4 added", tooltip)
 
     def test_wheel_scrolls_vertically_and_clamps(self) -> None:
         records = {1: self.make_record(1, None)}

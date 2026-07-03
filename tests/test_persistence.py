@@ -646,6 +646,12 @@ class PersistenceManagerTest(unittest.TestCase):
 
 
 class SpeciesHistoryReconstructionTest(unittest.TestCase):
+    def test_checkpoint_versions_two_through_six_are_supported(self) -> None:
+        for version in (2, 3, 4, 5, 6):
+            PersistenceManager._validate_state({"version": version})
+        with self.assertRaises(ValueError):
+            PersistenceManager._validate_state({"version": 1})
+
     def _record(
         self,
         species_id: int,
@@ -770,6 +776,37 @@ class SpeciesHistoryReconstructionTest(unittest.TestCase):
 
         self.assertEqual(restored, saved)
         self.assertIsNot(restored, saved)
+
+    def test_legacy_slotted_species_record_is_normalized_before_copying(
+        self,
+    ) -> None:
+        world, controller = self._reconstruction_inputs([])
+        world.elapsed_time = 8.0
+        world.creatures[0].lineage = SimpleNamespace(species_id=1)
+        current = self._record(1, None, 0.0)
+        legacy = object.__new__(SpeciesRecord)
+        legacy.__setstate__(
+            [
+                current.species_id,
+                current.parent_species_id,
+                current.founder_creature_id,
+                current.founder_genome_id,
+                current.emerged_at,
+                current.founder_color,
+                current.data_quality,
+                current.founder_traits,
+                current.trait_deltas,
+                current.distances,
+            ]
+        )
+
+        restored = PersistenceManager._restore_species_history(
+            world,
+            controller,
+            {1: legacy},
+        )
+
+        self.assertIsNone(restored[1].neat_changes)
 
     def test_incomplete_history_uses_only_telemetry_at_checkpoint_time(
         self,

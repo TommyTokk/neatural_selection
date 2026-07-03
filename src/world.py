@@ -29,6 +29,7 @@ from src.neat_controller import NeatBrainController, SpeciationResult
 from src.persistence import PersistenceManager, SavePriority, SimulationPaths
 from src.rt_neat import RtNeatManager
 from src.speciation import (
+    NeatChangeSummary,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
@@ -401,6 +402,7 @@ class World:
                 vision_angle_component=0.0,
                 movement_cost_component=0.0,
             ),
+            neat_changes=NeatChangeSummary.empty(),
         )
 
     def _record_new_species(
@@ -421,6 +423,7 @@ class World:
             founder_traits=result.founder_traits,
             trait_deltas=result.trait_deltas,
             distances=result.distances,
+            neat_changes=result.neat_changes,
         )
         self.species_history[record.species_id] = record
         telemetry = getattr(self, "telemetry", None)
@@ -1718,6 +1721,10 @@ class World:
                     if (action := self._last_actions.get(creature.creature_id))
                     is not None
                 },
+                energy_cost_multipliers={
+                    creature.creature_id: self._senescence_factor_for(creature)
+                    for creature in self.creatures
+                },
             )
         finally:
             self._restore_movement_multipliers(with_infant_penalties)
@@ -1743,7 +1750,10 @@ class World:
                 self.space.remove(food.body, food.shape)
 
         for creature in report.dead_creatures:
-            self._remove_creature(creature, death_reason="starvation")
+            death_reason = (
+                "old_age" if self._is_senescent(creature) else "starvation"
+            )
+            self._remove_creature(creature, death_reason=death_reason)
 
         if not self.creatures:
             self._recover_extinct_population()
@@ -1770,6 +1780,34 @@ class World:
     def _creature_age_seconds(self, creature: Creature) -> float:
         fitness = self.fitness.get(creature.creature_id)
         return 0.0 if fitness is None else fitness.age_seconds
+
+    def _senescence_factor_for(self, creature: Creature) -> float:
+        population_config = getattr(
+            getattr(self, "config", None),
+            "population",
+            None,
+        )
+        if population_config is None:
+            return 1.0
+        over_age = (
+            self._creature_age_seconds(creature)
+            - population_config.senescence_age_seconds
+        )
+        if over_age <= 0.0:
+            return 1.0
+        return 1.0 + over_age * population_config.senescence_cost_multiplier
+
+    def _is_senescent(self, creature: Creature) -> bool:
+        population_config = getattr(
+            getattr(self, "config", None),
+            "population",
+            None,
+        )
+        return (
+            population_config is not None
+            and self._creature_age_seconds(creature)
+            > population_config.senescence_age_seconds
+        )
 
     def _is_infant(self, creature: Creature) -> bool:
         population_config = getattr(getattr(self, "config", None), "population", None)

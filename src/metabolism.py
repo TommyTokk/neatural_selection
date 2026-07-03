@@ -60,6 +60,7 @@ class Metabolism:
         nearby_foods_for: Callable[[Creature], Sequence[Food]] | None = None,
         can_eat: Callable[[Creature], bool] | None = None,
         sprint_intensities: dict[int, float] | None = None,
+        energy_cost_multipliers: dict[int, float] | None = None,
     ) -> MetabolismReport:
         depleted_foods: list[Food] = []
         touched_foods: list[Food] = []
@@ -78,6 +79,11 @@ class Metabolism:
                 delta_time,
                 max_speed,
                 sprint_intensity=sprint_intensity,
+                energy_cost_multiplier=(
+                    1.0
+                    if energy_cost_multipliers is None
+                    else energy_cost_multipliers.get(creature.creature_id, 1.0)
+                ),
             )
 
             # Calculate the eatble food
@@ -122,6 +128,7 @@ class Metabolism:
         delta_time: float,
         max_speed: float,
         sprint_intensity: float = 0.0,
+        energy_cost_multiplier: float = 1.0,
     ) -> None:
         energy_cost = (
             self.energy_cost_breakdown_per_second(
@@ -130,6 +137,7 @@ class Metabolism:
                 sprint_intensity=sprint_intensity,
             ).total
             * delta_time
+            * energy_cost_multiplier
         )
 
         # Update the creature's energy

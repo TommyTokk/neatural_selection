@@ -12,7 +12,12 @@ from configs.sim_config import TraitConfig, VisionConfig
 from src.action import ACTION_OUTPUT_COUNT, Action
 from src.creature import Creature, PhysicalTraits, VisionTraits
 from src.neat_brain import NeatBrain
-from src.speciation import SpeciesDistanceBreakdown, SpeciesTraitSnapshot
+from src.speciation import (
+    NeatChangeSummary,
+    SpeciesDistanceBreakdown,
+    SpeciesTraitSnapshot,
+    summarize_neat_changes,
+)
 from src.vision import SENSOR_INPUT_COUNT, SensorSnapshot
 
 FALLBACK_ACTION = Action(
@@ -115,6 +120,7 @@ class SpeciationResult:
     founder_traits: SpeciesTraitSnapshot
     trait_deltas: SpeciesTraitSnapshot
     distances: SpeciesDistanceBreakdown
+    neat_changes: NeatChangeSummary | None = None
 
 
 class ContinuousSpeciesManager:
@@ -210,6 +216,10 @@ class ContinuousSpeciesManager:
                 phenotype_components.movement_cost_multiplier
             ),
         )
+        neat_changes = summarize_neat_changes(
+            representative_genome,
+            child_genome,
+        )
         if composite_distance > self.compatibility_threshold:
             new_species_id = self.next_species_id
             self.representatives[new_species_id] = (
@@ -228,6 +238,7 @@ class ContinuousSpeciesManager:
                 ),
                 trait_deltas=trait_deltas,
                 distances=distances,
+                neat_changes=neat_changes,
             )
 
         return SpeciationResult(
@@ -240,6 +251,7 @@ class ContinuousSpeciesManager:
             ),
             trait_deltas=trait_deltas,
             distances=distances,
+            neat_changes=neat_changes,
         )
 
 

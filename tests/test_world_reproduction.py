@@ -104,13 +104,17 @@ def speciation_result(
 class FakeMetabolism:
     def __init__(self) -> None:
         self.movement_multipliers_seen: dict[int, float] = {}
+        self.energy_cost_multipliers_seen: dict[int, float] = {}
 
     def update(self, creatures, *args, **kwargs):
-        del args, kwargs
+        del args
         self.movement_multipliers_seen = {
             creature.creature_id: creature.physical_traits.movement_cost_multiplier
             for creature in creatures
         }
+        self.energy_cost_multipliers_seen = dict(
+            kwargs.get("energy_cost_multipliers") or {}
+        )
         return SimpleNamespace(
             food_consumptions=[],
             touched_foods=[],
@@ -541,6 +545,94 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertAlmostEqual(world.metabolism.movement_multipliers_seen[1], 3.75)
         self.assertAlmostEqual(world.metabolism.movement_multipliers_seen[2], 1.1)
         self.assertAlmostEqual(infant.physical_traits.movement_cost_multiplier, 1.25)
+
+    def test_senescence_factor_boundaries_and_trait_preservation(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.population.senescence_age_seconds = 120.0
+        world.config.population.senescence_cost_multiplier = 0.05
+        creatures = [
+            FakeCreature(
+                creature_id=1,
+                physical_traits=PhysicalTraits(
+                    radius=16.0,
+                    movement_cost_multiplier=1.2,
+                ),
+            ),
+            FakeCreature(
+                creature_id=2,
+                physical_traits=PhysicalTraits(
+                    radius=16.0,
+                    movement_cost_multiplier=1.1,
+                ),
+            ),
+            FakeCreature(
+                creature_id=3,
+                physical_traits=PhysicalTraits(
+                    radius=16.0,
+                    movement_cost_multiplier=0.9,
+                ),
+            ),
+        ]
+        world.creatures = creatures
+        world.fitness = {
+            1: CreatureFitness(age_seconds=119.9),
+            2: CreatureFitness(age_seconds=120.0),
+            3: CreatureFitness(age_seconds=130.0),
+        }
+        world._last_actions = {}
+        world.foods = []
+        world.metabolism = FakeMetabolism()
+        world.MAX_SPEED = 170.0
+        world.selected_creature_id = None
+
+        world._update_metabolism(1.0)
+
+        self.assertEqual(
+            world.metabolism.energy_cost_multipliers_seen,
+            {1: 1.0, 2: 1.0, 3: 1.5},
+        )
+        self.assertEqual(
+            [
+                creature.physical_traits.movement_cost_multiplier
+                for creature in creatures
+            ],
+            [1.2, 1.1, 0.9],
+        )
+
+    def test_senescence_death_reason_is_strictly_above_threshold(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.population.senescence_age_seconds = 120.0
+        at_threshold = FakeCreature(creature_id=1)
+        above_threshold = FakeCreature(creature_id=2)
+        world.creatures = [at_threshold, above_threshold]
+        world.fitness = {
+            1: CreatureFitness(age_seconds=120.0),
+            2: CreatureFitness(age_seconds=120.1),
+        }
+        world._last_actions = {}
+        world.foods = []
+        world.metabolism = FakeMetabolism()
+        world.metabolism.update = lambda *args, **kwargs: SimpleNamespace(
+            food_consumptions=[],
+            touched_foods=[],
+            depleted_foods=[],
+            dead_creatures=[at_threshold, above_threshold],
+        )
+        world.MAX_SPEED = 170.0
+        world.selected_creature_id = None
+        death_reasons: list[tuple[int, str]] = []
+        world._remove_creature = lambda creature, death_reason: death_reasons.append(
+            (creature.creature_id, death_reason)
+        )
+
+        world._update_metabolism(1.0)
+
+        self.assertEqual(
+            death_reasons,
+            [(1, "starvation"), (2, "old_age")],
+        )
 
     def test_kill_selected_creature_without_selection_is_noop(self) -> None:
         world = object.__new__(World)

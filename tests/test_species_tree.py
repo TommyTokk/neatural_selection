@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unittest
 
-from src.species_tree import build_species_tree_layout
+from src.species_tree import (
+    SpeciesTreeLayout,
+    build_species_tree_layout,
+    route_species_tree_edges,
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,72 @@ class SpeciesTreeLayoutTest(unittest.TestCase):
         self.assertEqual(layout.effective_times[1], 30.0)
         self.assertEqual(layout.effective_times[2], 30.0)
         self.assertGreaterEqual(layout.positions[2][1], layout.positions[1][1])
+
+    def test_edge_routing_avoids_an_unrelated_node(self) -> None:
+        layout = SpeciesTreeLayout(
+            positions={1: (50.0, 20.0), 2: (50.0, 100.0), 3: (50.0, 180.0)},
+            edges=((1, 3),),
+            depths={1: 0, 2: 0, 3: 1},
+            effective_times={1: 0.0, 2: 40.0, 3: 80.0},
+            roots=(1, 2),
+            content_width=100.0,
+            content_height=220.0,
+            leaf_count=2,
+            timeline_start=0.0,
+            timeline_end=80.0,
+        )
+
+        route = route_species_tree_edges(
+            layout,
+            {1: 10.0, 2: 10.0, 3: 10.0},
+        )[(1, 3)]
+
+        self.assertAlmostEqual(
+            (route[0][0] - 50.0) ** 2 + (route[0][1] - 20.0) ** 2,
+            100.0,
+        )
+        self.assertAlmostEqual(
+            (route[-1][0] - 50.0) ** 2 + (route[-1][1] - 180.0) ** 2,
+            100.0,
+        )
+        self.assertTrue(
+            all(
+                not self._segment_crosses_box(
+                    start, end, 34.0, 66.0, 84.0, 116.0
+                )
+                for start, end in zip(route, route[1:])
+            )
+        )
+
+    def test_edge_routing_is_deterministic_with_equal_timestamps(self) -> None:
+        layout = build_species_tree_layout(
+            {
+                1: _Record(1, None, 10.0),
+                2: _Record(2, 1, 10.0),
+                3: _Record(3, 1, 10.0),
+            }
+        )
+        radii = {1: 12.0, 2: 12.0, 3: 12.0}
+
+        self.assertEqual(
+            route_species_tree_edges(layout, radii),
+            route_species_tree_edges(layout, radii),
+        )
+
+    @staticmethod
+    def _segment_crosses_box(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        left: float,
+        right: float,
+        top: float,
+        bottom: float,
+    ) -> bool:
+        if start[0] == end[0]:
+            low, high = sorted((start[1], end[1]))
+            return left < start[0] < right and low < bottom and high > top
+        low, high = sorted((start[0], end[0]))
+        return top < start[1] < bottom and low < right and high > left
 
 
 if __name__ == "__main__":

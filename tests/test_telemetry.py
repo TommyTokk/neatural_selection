@@ -8,6 +8,7 @@ import unittest
 
 from src.telemetry import TelemetryDatabase
 from src.speciation import (
+    NeatChangeSummary,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
@@ -36,6 +37,17 @@ def species_record() -> SpeciesRecord:
             vision_range_component=0.2,
             vision_angle_component=0.1,
             movement_cost_component=0.2,
+        ),
+        neat_changes=NeatChangeSummary(
+            nodes_added=1,
+            nodes_removed=0,
+            connections_added=2,
+            connections_removed=0,
+            connections_enabled=0,
+            connections_disabled=1,
+            weights_changed=3,
+            node_parameters_changed=1,
+            key_changes=("Node 4 added",),
         ),
     )
 
@@ -174,6 +186,42 @@ class TelemetryDatabaseTest(unittest.TestCase):
             upgraded.close()
 
         self.assertEqual(table, ("species_history",))
+
+    def test_existing_history_table_gains_neat_changes_column(self) -> None:
+        legacy_file = Path(self.temporary_directory.name) / "legacy_history.sqlite"
+        connection = sqlite3.connect(legacy_file)
+        connection.execute(
+            "CREATE TABLE species_history (species_id INTEGER PRIMARY KEY)"
+        )
+        connection.commit()
+        connection.close()
+
+        upgraded = TelemetryDatabase(legacy_file)
+        try:
+            columns = {
+                row[1]
+                for row in upgraded.connection.execute(
+                    "PRAGMA table_info(species_history)"
+                ).fetchall()
+            }
+        finally:
+            upgraded.close()
+
+        self.assertIn("neat_changes_json", columns)
+
+    def test_legacy_history_row_loads_with_unavailable_neat_changes(self) -> None:
+        self.database.connection.execute(
+            """
+            INSERT INTO species_history (species_id, data_quality)
+            VALUES (?, ?)
+            """,
+            (7, "legacy"),
+        )
+        self.database.connection.commit()
+
+        record = self.database.load_species_records()[7]
+
+        self.assertIsNone(record.neat_changes)
 
     def test_close_is_idempotent(self) -> None:
         self.database.close()

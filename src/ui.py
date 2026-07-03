@@ -15,7 +15,12 @@ from src.brain_graph import (
     build_brain_graph_layout,
 )
 from src.speciation import SpeciesRecord
-from src.species_tree import SpeciesTreeLayout, build_species_tree_layout
+from src.species_tree import (
+    SpeciesTreeLayout,
+    SpeciesTreeRoute,
+    build_species_tree_layout,
+    route_species_tree_edges,
+)
 from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
 
@@ -61,6 +66,8 @@ class UiRenderer:
         self._species_tree_previous_pause: bool | None = None
         self._species_tree_mouse = (0.0, 0.0)
         self._species_tree_hovered_id: int | None = None
+        self._species_tree_selected_id: int | None = None
+        self._species_tree_pending_selection_id: int | None = None
         self._species_tree_horizontal_offset = 0.0
         self._species_tree_vertical_offset = 0.0
         self._species_tree_horizontal_limit = 0.0
@@ -81,6 +88,11 @@ class UiRenderer:
         self._species_tree_fit_requested = True
         self._species_tree_last_layout: SpeciesTreeLayout | None = None
         self._species_tree_last_canvas: arcade.Rect | None = None
+        self._species_tree_route_signature: object | None = None
+        self._species_tree_routes: dict[
+            tuple[int, int],
+            SpeciesTreeRoute,
+        ] = {}
 
     def draw(self, world: World) -> None:
         self._control_hitboxes.clear()
@@ -1315,6 +1327,8 @@ class UiRenderer:
         world.is_paused = True
         self._species_tree_open = True
         self._species_tree_hovered_id = None
+        self._species_tree_selected_id = None
+        self._species_tree_pending_selection_id = None
         self._species_tree_scroll_drag = None
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
@@ -1323,6 +1337,8 @@ class UiRenderer:
         self._species_tree_fit_requested = True
         self._species_tree_horizontal_offset = 0.0
         self._species_tree_vertical_offset = 0.0
+        self._species_tree_route_signature = None
+        self._species_tree_routes.clear()
 
     def close_species_tree(self, world: World) -> None:
         if not self._species_tree_open:
@@ -1331,10 +1347,14 @@ class UiRenderer:
         self._species_tree_open = False
         self._species_tree_previous_pause = None
         self._species_tree_hovered_id = None
+        self._species_tree_selected_id = None
+        self._species_tree_pending_selection_id = None
         self._species_tree_scroll_drag = None
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
         self._species_tree_timeline_event_bounds.clear()
+        self._species_tree_route_signature = None
+        self._species_tree_routes.clear()
         if previous_pause is not None:
             world.is_paused = previous_pause
 
@@ -1427,6 +1447,8 @@ class UiRenderer:
             self._species_tree_last_canvas = canvas
             self._species_tree_node_bounds.clear()
             self._species_tree_timeline_event_bounds.clear()
+            self._species_tree_route_signature = None
+            self._species_tree_routes.clear()
             self._species_tree_horizontal_limit = 0.0
             self._species_tree_vertical_limit = 0.0
             self._species_tree_horizontal_offset_min = 0.0
@@ -1479,10 +1501,34 @@ class UiRenderer:
         self._update_species_tree_zoom_and_limits(layout, canvas)
         self._draw_species_tree_zoom_controls(bounds)
         positions = self._species_tree_screen_positions(layout, canvas)
+        radii = {
+            species_id: self._species_tree_node_radius(record)
+            for species_id, record in records.items()
+        }
+        routes = self._species_tree_content_routes(layout, radii)
+        screen_routes = {
+            edge: tuple(
+                self._species_tree_screen_point(point, layout, canvas)
+                for point in route
+            )
+            for edge, route in routes.items()
+        }
+        highlighted_nodes, highlighted_edges = (
+            self._species_tree_highlighted_path(layout)
+        )
 
         with self._ui_clip(canvas):
-            self._draw_species_tree_edges(layout, positions)
-            self._draw_species_tree_nodes(records, layout, positions)
+            self._draw_species_tree_edges(
+                layout,
+                screen_routes,
+                highlighted_edges,
+            )
+            self._draw_species_tree_nodes(
+                records,
+                layout,
+                positions,
+                highlighted_nodes,
+            )
 
         self._draw_species_tree_timeline(records, layout, timeline, canvas)
         self._species_tree_hovered_id = self._species_tree_node_at(
@@ -2060,39 +2106,112 @@ class UiRenderer:
             for species_id, position in layout.positions.items()
         }
 
+    def _species_tree_screen_point(
+        self,
+        point: tuple[float, float],
+        layout: SpeciesTreeLayout,
+        canvas: arcade.Rect,
+    ) -> tuple[float, float]:
+        horizontal_inset, vertical_inset = self._species_tree_content_insets(
+            layout,
+            canvas,
+            self._species_tree_zoom,
+        )
+        return (
+            canvas.left
+            + horizontal_inset
+            + point[0] * self._species_tree_zoom
+            - self._species_tree_horizontal_offset,
+            canvas.top
+            - vertical_inset
+            - point[1] * self._species_tree_zoom
+            + self._species_tree_vertical_offset,
+        )
+
+    def _species_tree_content_routes(
+        self,
+        layout: SpeciesTreeLayout,
+        radii: dict[int, float],
+    ) -> dict[tuple[int, int], SpeciesTreeRoute]:
+        signature = (
+            layout.edges,
+            tuple(sorted(layout.positions.items())),
+            tuple(sorted(radii.items())),
+        )
+        if signature != self._species_tree_route_signature:
+            self._species_tree_routes = route_species_tree_edges(layout, radii)
+            self._species_tree_route_signature = signature
+        return self._species_tree_routes
+
+    def _species_tree_highlighted_path(
+        self,
+        layout: SpeciesTreeLayout,
+    ) -> tuple[set[int], set[tuple[int, int]]]:
+        selected_id = self._species_tree_selected_id
+        if selected_id is None or selected_id not in layout.positions:
+            return set(), set()
+        parents = {child_id: parent_id for parent_id, child_id in layout.edges}
+        nodes = {selected_id}
+        edges: set[tuple[int, int]] = set()
+        current = selected_id
+        while current in parents:
+            parent = parents[current]
+            edge = (parent, current)
+            if edge in edges:
+                break
+            edges.add(edge)
+            nodes.add(parent)
+            current = parent
+        return nodes, edges
+
     def _draw_species_tree_edges(
         self,
         layout: SpeciesTreeLayout,
-        positions: dict[int, tuple[float, float]],
+        routes: dict[tuple[int, int], SpeciesTreeRoute],
+        highlighted_edges: set[tuple[int, int]],
     ) -> None:
-        for parent_id, child_id in layout.edges:
-            start = positions.get(parent_id)
-            end = positions.get(child_id)
-            if start is None or end is None:
-                continue
-            midpoint_y = (start[1] + end[1]) * 0.5
-            for line_start, line_end in (
-                (start, (start[0], midpoint_y)),
-                ((start[0], midpoint_y), (end[0], midpoint_y)),
-                ((end[0], midpoint_y), end),
-            ):
-                arcade.draw_line(
-                    line_start[0],
-                    line_start[1],
-                    line_end[0],
-                    line_end[1],
-                    self.theme.panel_border,
-                    max(0.75, 2.0 * self._species_tree_zoom),
+        for highlighted in (False, True):
+            for edge in layout.edges:
+                if (edge in highlighted_edges) != highlighted:
+                    continue
+                route = routes.get(edge)
+                if route is None:
+                    continue
+                color = (
+                    self.theme.selected_outline
+                    if highlighted
+                    else self.theme.panel_border
                 )
+                width = (
+                    3.5 if highlighted else 2.0
+                ) * self._species_tree_zoom
+                for line_start, line_end in zip(route, route[1:]):
+                    arcade.draw_line(
+                        line_start[0],
+                        line_start[1],
+                        line_end[0],
+                        line_end[1],
+                        color,
+                        max(0.75, width),
+                    )
 
     def _draw_species_tree_nodes(
         self,
         records: dict[int, SpeciesRecord],
         layout: SpeciesTreeLayout,
         positions: dict[int, tuple[float, float]],
+        highlighted_nodes: set[int],
     ) -> None:
         self._species_tree_node_bounds.clear()
-        for species_id in sorted(layout.positions):
+        ordered_ids = sorted(
+            layout.positions,
+            key=lambda species_id: (
+                species_id in highlighted_nodes,
+                species_id == self._species_tree_selected_id,
+                species_id,
+            ),
+        )
+        for species_id in ordered_ids:
             record = records[species_id]
             position = positions[species_id]
             radius = (
@@ -2105,18 +2224,25 @@ class UiRenderer:
                 radius * 2.0,
             )
             fill = record.founder_color or self.theme.herbivore_fill
-            outline = (
-                self.theme.selected_outline
-                if species_id == self._species_tree_hovered_id
-                else self.theme.herbivore_outline
-            )
+            if species_id == self._species_tree_selected_id:
+                outline = self.theme.selected_outline
+                outline_width = 4.0
+            elif species_id in highlighted_nodes:
+                outline = self.theme.accent
+                outline_width = 3.0
+            elif species_id == self._species_tree_hovered_id:
+                outline = self.theme.accent_soft
+                outline_width = 3.0
+            else:
+                outline = self.theme.herbivore_outline
+                outline_width = 2.5
             arcade.draw_circle_filled(position[0], position[1], radius, fill)
             arcade.draw_circle_outline(
                 position[0],
                 position[1],
                 radius,
                 outline,
-                max(0.75, 2.5 * self._species_tree_zoom),
+                max(0.75, outline_width * self._species_tree_zoom),
             )
 
     def _species_tree_node_radius(self, record: SpeciesRecord) -> float:
@@ -2266,7 +2392,7 @@ class UiRenderer:
         traits = record.founder_traits
         deltas = record.trait_deltas
         distances = record.distances
-        return [
+        lines = [
             (
                 f"Parent: {record.parent_species_id if record.parent_species_id is not None else 'None'}"
                 f"    Founder: {self._format_optional_number(record.founder_creature_id, 0)}"
@@ -2318,6 +2444,28 @@ class UiRenderer:
                 f"  movement {self._format_optional_number(distances.movement_cost_component)}"
             ),
         ]
+        neat_changes = getattr(record, "neat_changes", None)
+        lines.append("NEAT CHANGES FROM PARENT")
+        if neat_changes is None:
+            lines.append("Unavailable for legacy data")
+            return lines
+        lines.extend(
+            (
+                (
+                    f"Nodes +{neat_changes.nodes_added}/-{neat_changes.nodes_removed}"
+                    f"    Connections +{neat_changes.connections_added}"
+                    f"/-{neat_changes.connections_removed}"
+                ),
+                (
+                    f"Enabled +{neat_changes.connections_enabled}"
+                    f"/-{neat_changes.connections_disabled}"
+                    f"    Weights changed {neat_changes.weights_changed}"
+                    f"    Node params {neat_changes.node_parameters_changed}"
+                ),
+            )
+        )
+        lines.extend(neat_changes.key_changes)
+        return lines
 
     def _format_trait_value(
         self,
@@ -2542,6 +2690,9 @@ class UiRenderer:
                 self._jump_species_tree_from_timeline(timeline, y)
                 return True
             if self._contains_hitbox("species_tree_canvas", x, y):
+                self._species_tree_pending_selection_id = (
+                    self._species_tree_node_at(x, y)
+                )
                 self._species_tree_canvas_drag = True
                 self._species_tree_canvas_drag_started = False
                 self._species_tree_canvas_drag_last = (x, y)
@@ -2649,6 +2800,7 @@ class UiRenderer:
                     self._species_tree_fit_mode = False
                     self._species_tree_fit_requested = False
                     self._species_tree_canvas_drag_started = True
+                    self._species_tree_pending_selection_id = None
                 self._species_tree_horizontal_offset -= x - previous_x
                 self._species_tree_vertical_offset += y - previous_y
                 self._species_tree_canvas_drag_last = (x, y)
@@ -2692,6 +2844,15 @@ class UiRenderer:
         self._active_panel_drag = None
         self._active_brain_window_drag = False
         self._species_tree_scroll_drag = None
+        if (
+            self._species_tree_canvas_drag
+            and not self._species_tree_canvas_drag_started
+            and self._species_tree_pending_selection_id is not None
+        ):
+            self._species_tree_selected_id = (
+                self._species_tree_pending_selection_id
+            )
+        self._species_tree_pending_selection_id = None
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
 

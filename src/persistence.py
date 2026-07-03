@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import IntEnum
 from pathlib import Path
@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 5
-LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4}
+CHECKPOINT_VERSION = 6
+LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5}
 
 
 class CheckpointError(RuntimeError):
@@ -630,9 +630,11 @@ class PersistenceManager:
     ) -> dict[int, Any]:
         from src.neat_controller import calculate_phenotypic_distance_components
         from src.speciation import (
+            NeatChangeSummary,
             SpeciesDistanceBreakdown,
             SpeciesRecord,
             SpeciesTraitSnapshot,
+            summarize_neat_changes,
         )
 
         telemetry = getattr(world, "telemetry", None)
@@ -676,6 +678,7 @@ class PersistenceManager:
 
             zero = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
             deltas = None
+            neat_changes = None
             distances = SpeciesDistanceBreakdown(
                 neat_distance=None,
                 phenotypic_distance=None,
@@ -694,6 +697,7 @@ class PersistenceManager:
             )
             if species_id == 1:
                 deltas = zero
+                neat_changes = NeatChangeSummary.empty()
                 distances = SpeciesDistanceBreakdown(
                     neat_distance=0.0,
                     phenotypic_distance=0.0,
@@ -728,6 +732,7 @@ class PersistenceManager:
                     parent_genome,
                     neat_controller.config.genome_config,
                 )
+                neat_changes = summarize_neat_changes(parent_genome, genome)
                 weighted_distance = (
                     phenotypic_distance * manager.phenotypic_weight
                 )
@@ -773,8 +778,71 @@ class PersistenceManager:
                 ),
                 trait_deltas=deltas,
                 distances=distances,
+                neat_changes=neat_changes,
             )
         return records
+
+    @staticmethod
+    def _normalize_species_record(record: Any) -> Any:
+        from src.speciation import SpeciesRecord
+
+        if not isinstance(record, SpeciesRecord):
+            return record
+        return SpeciesRecord(
+            species_id=record.species_id,
+            parent_species_id=record.parent_species_id,
+            founder_creature_id=record.founder_creature_id,
+            founder_genome_id=record.founder_genome_id,
+            emerged_at=record.emerged_at,
+            founder_color=record.founder_color,
+            data_quality=record.data_quality,
+            founder_traits=record.founder_traits,
+            trait_deltas=record.trait_deltas,
+            distances=record.distances,
+            neat_changes=getattr(record, "neat_changes", None),
+        )
+
+    @staticmethod
+    def _enrich_species_neat_changes(
+        history: dict[int, Any],
+        neat_controller: NeatBrainController,
+    ) -> dict[int, Any]:
+        from src.speciation import (
+            SpeciesRecord,
+            summarize_neat_changes,
+        )
+
+        representatives = neat_controller.species_manager.representatives
+        enriched: dict[int, Any] = {}
+        for species_id, raw_record in history.items():
+            record = PersistenceManager._normalize_species_record(raw_record)
+            if (
+                not isinstance(record, SpeciesRecord)
+                or record.neat_changes is not None
+            ):
+                enriched[int(species_id)] = record
+                continue
+            if record.parent_species_id is None:
+                enriched[int(species_id)] = record
+                continue
+            child = representatives.get(int(species_id))
+            parent = representatives.get(int(record.parent_species_id))
+            if (
+                isinstance(child, tuple)
+                and len(child) == 3
+                and isinstance(parent, tuple)
+                and len(parent) == 3
+                and hasattr(child[0], "nodes")
+                and hasattr(child[0], "connections")
+                and hasattr(parent[0], "nodes")
+                and hasattr(parent[0], "connections")
+            ):
+                record = replace(
+                    record,
+                    neat_changes=summarize_neat_changes(parent[0], child[0]),
+                )
+            enriched[int(species_id)] = record
+        return enriched
 
     @staticmethod
     def _restore_species_history(
@@ -782,7 +850,16 @@ class PersistenceManager:
         neat_controller: NeatBrainController,
         saved_history: dict[int, Any] | None,
     ) -> dict[int, Any]:
-        history = copy.deepcopy(saved_history or {})
+        normalized_saved_history = {
+            int(species_id): PersistenceManager._normalize_species_record(
+                record
+            )
+            for species_id, record in (saved_history or {}).items()
+        }
+        history = PersistenceManager._enrich_species_neat_changes(
+            copy.deepcopy(normalized_saved_history),
+            neat_controller,
+        )
         representative_ids = {
             int(species_id)
             for species_id in neat_controller.species_manager.representatives
@@ -865,8 +942,12 @@ class PersistenceManager:
                     ),
                     trait_deltas=None,
                     distances=unknown_distances,
+                    neat_changes=None,
                 )
-        return recovered
+        return PersistenceManager._enrich_species_neat_changes(
+            recovered,
+            neat_controller,
+        )
 
     @staticmethod
     def _reconcile_next_species_id(

@@ -112,8 +112,9 @@ class FakeMetabolism:
         creatures: list[FakeCreature],
         food_items: list[FakeFood],
         *args: object,
+        **kwargs: object,
     ) -> object:
-        del creatures, args
+        del creatures, args, kwargs
         self.seen_food_items = food_items
         return self.report
 
