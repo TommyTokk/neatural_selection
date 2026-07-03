@@ -348,6 +348,11 @@ class WorldReproductionTest(unittest.TestCase):
         )
         founder_color = (240, 48, 180)
         world._new_species_color = lambda parent_color: founder_color
+        species_records: list[object] = []
+        world.telemetry = SimpleNamespace(
+            log_species_record=species_records.append,
+            log_creature_birth=lambda *args: None,
+        )
 
         self.assertTrue(world._try_reproduce())
 
@@ -360,6 +365,7 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(record.founder_genome_id, 80)
         self.assertEqual(record.founder_color, founder_color)
         self.assertEqual(record.data_quality, "exact")
+        self.assertEqual(species_records, [record])
 
     def test_same_species_reproduction_keeps_inherited_color_jitter(self) -> None:
         world = self._world_ready_to_reproduce()

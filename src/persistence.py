@@ -625,6 +625,8 @@ class PersistenceManager:
     def _reconstruct_species_history(
         world: World,
         neat_controller: NeatBrainController,
+        *,
+        up_to_time: float | None = None,
     ) -> dict[int, Any]:
         from src.neat_controller import calculate_phenotypic_distance_components
         from src.speciation import (
@@ -635,6 +637,12 @@ class PersistenceManager:
 
         telemetry = getattr(world, "telemetry", None)
         lineage_rows = telemetry.load_species_lineage() if telemetry is not None else []
+        if up_to_time is not None:
+            lineage_rows = [
+                (species_id, parent_species_id, emerged_at)
+                for species_id, parent_species_id, emerged_at in lineage_rows
+                if emerged_at is None or emerged_at <= up_to_time
+            ]
         lineage = {
             species_id: (parent_species_id, emerged_at)
             for species_id, parent_species_id, emerged_at in lineage_rows
@@ -767,6 +775,121 @@ class PersistenceManager:
                 distances=distances,
             )
         return records
+
+    @staticmethod
+    def _restore_species_history(
+        world: World,
+        neat_controller: NeatBrainController,
+        saved_history: dict[int, Any] | None,
+    ) -> dict[int, Any]:
+        history = copy.deepcopy(saved_history or {})
+        representative_ids = {
+            int(species_id)
+            for species_id in neat_controller.species_manager.representatives
+        }
+        next_species_id = max(
+            2,
+            int(
+                getattr(
+                    neat_controller.species_manager,
+                    "next_species_id",
+                    2,
+                )
+            ),
+        )
+        allocated_species_ids = set(range(1, next_species_id))
+        living_species_ids = {
+            int(creature.lineage.species_id)
+            for creature in world.creatures
+        }
+        required_species_ids = (
+            allocated_species_ids | representative_ids | living_species_ids
+        )
+        if saved_history is not None and required_species_ids <= history.keys():
+            return history
+
+        recovered = PersistenceManager._reconstruct_species_history(
+            world,
+            neat_controller,
+            up_to_time=world.elapsed_time,
+        )
+        telemetry = getattr(world, "telemetry", None)
+        load_records = getattr(telemetry, "load_species_records", None)
+        if load_records is not None:
+            recovered.update(load_records(up_to_time=world.elapsed_time))
+        recovered.update(history)
+
+        missing_living_ids = living_species_ids - recovered.keys()
+        if missing_living_ids:
+            from src.speciation import (
+                SpeciesDistanceBreakdown,
+                SpeciesRecord,
+                SpeciesTraitSnapshot,
+            )
+
+            unknown_distances = SpeciesDistanceBreakdown(
+                neat_distance=None,
+                phenotypic_distance=None,
+                weighted_phenotypic_distance=None,
+                composite_distance=None,
+                compatibility_threshold=(
+                    neat_controller.species_manager.compatibility_threshold
+                ),
+                phenotypic_weight=(
+                    neat_controller.species_manager.phenotypic_weight
+                ),
+                radius_component=None,
+                vision_range_component=None,
+                vision_angle_component=None,
+                movement_cost_component=None,
+            )
+            for species_id in sorted(missing_living_ids):
+                founder = next(
+                    creature
+                    for creature in world.creatures
+                    if int(creature.lineage.species_id) == species_id
+                )
+                recovered[species_id] = SpeciesRecord(
+                    species_id=species_id,
+                    parent_species_id=None,
+                    founder_creature_id=founder.creature_id,
+                    founder_genome_id=neat_controller.genome_id_for(
+                        founder.creature_id
+                    ),
+                    emerged_at=None,
+                    founder_color=tuple(founder.color[:3]),
+                    data_quality="partial",
+                    founder_traits=SpeciesTraitSnapshot.from_traits(
+                        founder.physical_traits,
+                        founder.vision,
+                    ),
+                    trait_deltas=None,
+                    distances=unknown_distances,
+                )
+        return recovered
+
+    @staticmethod
+    def _reconcile_next_species_id(
+        neat_controller: NeatBrainController,
+        species_history: dict[int, Any],
+        creatures: list[Any],
+    ) -> None:
+        manager = neat_controller.species_manager
+        known_species_ids = {
+            int(species_id) for species_id in manager.representatives
+        }
+        known_species_ids.update(
+            int(species_id) for species_id in species_history
+        )
+        known_species_ids.update(
+            int(creature.lineage.species_id) for creature in creatures
+        )
+        minimum_next_id = max(known_species_ids, default=1) + 1
+        manager.next_species_id = max(
+            2,
+            int(manager.next_species_id),
+            minimum_next_id,
+        )
 
     @staticmethod
     def _restore_world(
@@ -902,15 +1025,16 @@ class PersistenceManager:
             world._sync_carried_foods()
             world.fitness_archive = state["fitness_archive"]
             world._trait_archive_by_genome_id = state["archived_traits"]
-            if "species_history" in state:
-                world.species_history = copy.deepcopy(state["species_history"])
-            else:
-                world.species_history = (
-                    PersistenceManager._reconstruct_species_history(
-                        world,
-                        controller,
-                    )
-                )
+            world.species_history = PersistenceManager._restore_species_history(
+                world,
+                controller,
+                state.get("species_history"),
+            )
+            PersistenceManager._reconcile_next_species_id(
+                controller,
+                world.species_history,
+                world.creatures,
+            )
             if world.telemetry is not None:
                 for record in world.species_history.values():
                     world.telemetry.log_species_record(record)

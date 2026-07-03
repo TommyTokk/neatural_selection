@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +22,11 @@ from src.persistence import (
     PersistenceManager,
     SavePriority,
     SimulationPaths,
+)
+from src.speciation import (
+    SpeciesDistanceBreakdown,
+    SpeciesRecord,
+    SpeciesTraitSnapshot,
 )
 from src.species_tree import build_species_tree_layout
 from src.telemetry import TelemetryDatabase
@@ -479,6 +486,18 @@ class PersistenceManagerTest(unittest.TestCase):
                 min_remainder_ratio=0.0,
             )
             saved_food_energy = world.foods[0].energy_value
+            luca = world.species_history[1]
+            second_species = replace(
+                luca,
+                species_id=2,
+                parent_species_id=1,
+                founder_creature_id=20,
+                founder_genome_id=20,
+                emerged_at=7.5,
+                founder_color=(210, 40, 90),
+            )
+            world.species_history[2] = second_species
+            world.neat_controller.species_manager.next_species_id = 2
             world.persistence_manager.save_simulation(
                 world,
                 world.neat_controller,
@@ -494,7 +513,6 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.creatures[0].creature_id
             )
 
-            luca = world.species_history[1]
             self.assertEqual(luca.data_quality, "exact")
             self.assertEqual(luca.parent_species_id, None)
             self.assertEqual(luca.distances.composite_distance, 0.0)
@@ -502,8 +520,39 @@ class PersistenceManagerTest(unittest.TestCase):
             restored_layout = build_species_tree_layout(
                 restored.species_history
             )
-            self.assertEqual(set(restored_layout.positions), {1})
+            self.assertEqual(set(restored_layout.positions), {1, 2})
             self.assertEqual(restored_layout.roots, (1,))
+            self.assertIn((1, 2), restored_layout.edges)
+            self.assertEqual(
+                restored.species_history[2].founder_color,
+                (210, 40, 90),
+            )
+            self.assertEqual(
+                restored.neat_controller.species_manager.next_species_id,
+                3,
+            )
+
+            species_manager = restored.neat_controller.species_manager
+            representative_genome, physical_traits, vision = (
+                species_manager.representatives[1]
+            )
+            species_manager.compatibility_threshold = -1.0
+            result = species_manager.evaluate_species(
+                copy.deepcopy(representative_genome),
+                copy.deepcopy(physical_traits),
+                copy.deepcopy(vision),
+                1,
+                restored.neat_controller.config.genome_config,
+            )
+            founder = restored.creatures[0]
+            founder.lineage.species_id = result.species_id
+            founder.color = restored._new_species_color(founder.color)
+            restored._record_new_species(founder, result)
+            post_load_layout = build_species_tree_layout(
+                restored.species_history
+            )
+            self.assertEqual(result.species_id, 3)
+            self.assertIn((1, 3), post_load_layout.edges)
             self.assertAlmostEqual(restored.foods[0].energy_value, saved_food_energy)
             self.assertIsNot(restored_brain, original_brain)
             self.assertEqual(restored.live_brain_count(), 1)
@@ -597,6 +646,37 @@ class PersistenceManagerTest(unittest.TestCase):
 
 
 class SpeciesHistoryReconstructionTest(unittest.TestCase):
+    def _record(
+        self,
+        species_id: int,
+        parent_species_id: int | None,
+        emerged_at: float,
+    ) -> SpeciesRecord:
+        zero = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+        return SpeciesRecord(
+            species_id=species_id,
+            parent_species_id=parent_species_id,
+            founder_creature_id=species_id * 10,
+            founder_genome_id=species_id,
+            emerged_at=emerged_at,
+            founder_color=(species_id * 10, 20, 30),
+            data_quality="exact",
+            founder_traits=SpeciesTraitSnapshot(12.0, 90.0, 0.35, 1.0),
+            trait_deltas=zero,
+            distances=SpeciesDistanceBreakdown(
+                neat_distance=0.0,
+                phenotypic_distance=0.0,
+                weighted_phenotypic_distance=0.0,
+                composite_distance=0.0,
+                compatibility_threshold=3.0,
+                phenotypic_weight=2.0,
+                radius_component=0.0,
+                vision_range_component=0.0,
+                vision_angle_component=0.0,
+                movement_cost_component=0.0,
+            ),
+        )
+
     def _reconstruction_inputs(
         self,
         lineage: list[tuple[int, int | None, float | None]],
@@ -670,6 +750,137 @@ class SpeciesHistoryReconstructionTest(unittest.TestCase):
         layout = build_species_tree_layout(records)
         self.assertEqual(set(layout.positions), {1, 2})
         self.assertEqual(layout.roots, (1, 2))
+
+    def test_complete_checkpoint_history_is_authoritative(self) -> None:
+        world, controller = self._reconstruction_inputs([])
+        saved = {1: self._record(1, None, 0.0), 2: self._record(2, 1, 4.5)}
+        world.elapsed_time = 8.0
+        world.creatures[0].lineage = SimpleNamespace(species_id=2)
+        world.telemetry = SimpleNamespace(
+            load_species_records=lambda **kwargs: self.fail(
+                "complete checkpoint should not consult telemetry"
+            ),
+        )
+
+        restored = PersistenceManager._restore_species_history(
+            world,
+            controller,
+            saved,
+        )
+
+        self.assertEqual(restored, saved)
+        self.assertIsNot(restored, saved)
+
+    def test_incomplete_history_uses_only_telemetry_at_checkpoint_time(
+        self,
+    ) -> None:
+        world, controller = self._reconstruction_inputs(
+            [(1, None, 0.0), (2, 1, 4.5), (3, 2, 12.0)]
+        )
+        current = self._record(2, 1, 4.5)
+        future = self._record(3, 2, 12.0)
+        world.elapsed_time = 8.0
+        world.creatures[0].lineage = SimpleNamespace(species_id=2)
+        world.telemetry = SimpleNamespace(
+            load_species_lineage=lambda: [
+                (1, None, 0.0),
+                (2, 1, 4.5),
+                (3, 2, 12.0),
+            ],
+            load_species_records=lambda *, up_to_time: (
+                {2: current} if up_to_time == 8.0 else {2: current, 3: future}
+            ),
+        )
+
+        restored = PersistenceManager._restore_species_history(
+            world,
+            controller,
+            {1: self._record(1, None, 0.0)},
+        )
+
+        self.assertEqual(restored[2], current)
+        self.assertNotIn(3, restored)
+
+    def test_missing_extinct_species_is_recovered_from_telemetry(self) -> None:
+        world, controller = self._reconstruction_inputs([(1, None, 0.0)])
+        controller.species_manager.representatives = {
+            1: controller.species_manager.representatives[1]
+        }
+        controller.species_manager.next_species_id = 3
+        world.elapsed_time = 8.0
+        world.creatures[0].lineage = SimpleNamespace(species_id=1)
+        extinct = self._record(2, 1, 4.5)
+        world.telemetry = SimpleNamespace(
+            load_species_lineage=lambda: [(1, None, 0.0), (2, 1, 4.5)],
+            load_species_records=lambda *, up_to_time: {2: extinct},
+        )
+
+        restored = PersistenceManager._restore_species_history(
+            world,
+            controller,
+            {1: self._record(1, None, 0.0)},
+        )
+
+        self.assertEqual(restored[2], extinct)
+
+    def test_next_species_id_is_above_history_representatives_and_living(
+        self,
+    ) -> None:
+        manager = SimpleNamespace(
+            representatives={1: object(), 4: object()},
+            next_species_id=2,
+        )
+        controller = SimpleNamespace(species_manager=manager)
+        creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=6)),
+        ]
+
+        PersistenceManager._reconcile_next_species_id(
+            controller,
+            {1: object(), 8: object()},
+            creatures,
+        )
+
+        self.assertEqual(manager.next_species_id, 9)
+
+    def test_missing_living_species_gets_partial_history_record(self) -> None:
+        config = build_sim_config()
+        manager = SimpleNamespace(
+            representatives={},
+            compatibility_threshold=3.0,
+            phenotypic_weight=2.0,
+            trait_config=config.trait,
+            vision_config=config.vision,
+        )
+        controller = SimpleNamespace(
+            species_manager=manager,
+            config=SimpleNamespace(genome_config=object()),
+            genome_id_for=lambda creature_id: 70,
+        )
+        creature = SimpleNamespace(
+            creature_id=7,
+            color=(70, 80, 90),
+            lineage=SimpleNamespace(species_id=7),
+            physical_traits=PhysicalTraits(radius=18.0),
+            vision=VisionTraits(range=120.0, angle=1.2),
+        )
+        world = SimpleNamespace(
+            elapsed_time=20.0,
+            telemetry=None,
+            creatures=[creature],
+            _trait_archive_by_genome_id={},
+        )
+
+        restored = PersistenceManager._restore_species_history(
+            world,
+            controller,
+            {},
+        )
+
+        self.assertEqual(restored[7].data_quality, "partial")
+        self.assertEqual(restored[7].founder_creature_id, 7)
+        self.assertEqual(restored[7].founder_genome_id, 70)
+        self.assertEqual(restored[7].founder_color, (70, 80, 90))
 
 
 if __name__ == "__main__":

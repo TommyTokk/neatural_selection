@@ -152,7 +152,7 @@ class PopulationConfig:
 
 @dataclass(slots=True)
 class SpeciationConfig:
-    compatibility_threshold: float = 5.5
+    compatibility_threshold: float = 3
     phenotypic_weight: float = 2.0
 
 

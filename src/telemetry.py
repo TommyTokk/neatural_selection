@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
-from src.speciation import SpeciesRecord
+from src.speciation import (
+    SpeciesDistanceBreakdown,
+    SpeciesRecord,
+    SpeciesTraitSnapshot,
+)
 
 
 class TelemetryDatabase:
@@ -165,6 +169,102 @@ class TelemetryDatabase:
             for species_id, parent_species_id, time_emerged in rows
         ]
 
+    def load_species_records(
+        self,
+        *,
+        up_to_time: float | None = None,
+    ) -> dict[int, SpeciesRecord]:
+        query = """
+            SELECT
+                species_id, parent_species_id, founder_creature_id,
+                founder_genome_id, time_emerged, color_red, color_green,
+                color_blue, data_quality, radius, vision_range, vision_angle,
+                movement_cost_multiplier, radius_delta, vision_range_delta,
+                vision_angle_delta, movement_cost_delta, neat_distance,
+                phenotypic_distance, weighted_phenotypic_distance,
+                composite_distance, compatibility_threshold,
+                phenotypic_weight, radius_component, vision_range_component,
+                vision_angle_component, movement_cost_component
+            FROM species_history
+        """
+        parameters: tuple[float, ...] = ()
+        if up_to_time is not None:
+            query += " WHERE time_emerged IS NULL OR time_emerged <= ?"
+            parameters = (float(up_to_time),)
+        query += " ORDER BY species_id"
+
+        records: dict[int, SpeciesRecord] = {}
+        for row in self.connection.execute(query, parameters).fetchall():
+            (
+                species_id,
+                parent_species_id,
+                founder_creature_id,
+                founder_genome_id,
+                emerged_at,
+                color_red,
+                color_green,
+                color_blue,
+                data_quality,
+                radius,
+                vision_range,
+                vision_angle,
+                movement_cost_multiplier,
+                radius_delta,
+                vision_range_delta,
+                vision_angle_delta,
+                movement_cost_delta,
+                neat_distance,
+                phenotypic_distance,
+                weighted_phenotypic_distance,
+                composite_distance,
+                compatibility_threshold,
+                phenotypic_weight,
+                radius_component,
+                vision_range_component,
+                vision_angle_component,
+                movement_cost_component,
+            ) = row
+            records[int(species_id)] = SpeciesRecord(
+                species_id=int(species_id),
+                parent_species_id=parent_species_id,
+                founder_creature_id=founder_creature_id,
+                founder_genome_id=founder_genome_id,
+                emerged_at=emerged_at,
+                founder_color=(
+                    None
+                    if color_red is None
+                    or color_green is None
+                    or color_blue is None
+                    else (int(color_red), int(color_green), int(color_blue))
+                ),
+                data_quality=str(data_quality),
+                founder_traits=_trait_snapshot(
+                    radius,
+                    vision_range,
+                    vision_angle,
+                    movement_cost_multiplier,
+                ),
+                trait_deltas=_trait_snapshot(
+                    radius_delta,
+                    vision_range_delta,
+                    vision_angle_delta,
+                    movement_cost_delta,
+                ),
+                distances=SpeciesDistanceBreakdown(
+                    neat_distance=neat_distance,
+                    phenotypic_distance=phenotypic_distance,
+                    weighted_phenotypic_distance=weighted_phenotypic_distance,
+                    composite_distance=composite_distance,
+                    compatibility_threshold=compatibility_threshold,
+                    phenotypic_weight=phenotypic_weight,
+                    radius_component=radius_component,
+                    vision_range_component=vision_range_component,
+                    vision_angle_component=vision_angle_component,
+                    movement_cost_component=movement_cost_component,
+                ),
+            )
+        return records
+
     def log_creature_birth(
         self,
         creature_id: int,
@@ -240,3 +340,24 @@ class TelemetryDatabase:
 
     def __exit__(self, *args: object) -> None:
         self.close()
+
+
+def _trait_snapshot(
+    radius: float | None,
+    vision_range: float | None,
+    vision_angle: float | None,
+    movement_cost_multiplier: float | None,
+) -> SpeciesTraitSnapshot | None:
+    if (
+        radius is None
+        or vision_range is None
+        or vision_angle is None
+        or movement_cost_multiplier is None
+    ):
+        return None
+    return SpeciesTraitSnapshot(
+        radius=float(radius),
+        vision_range=float(vision_range),
+        vision_angle=float(vision_angle),
+        movement_cost_multiplier=float(movement_cost_multiplier),
+    )

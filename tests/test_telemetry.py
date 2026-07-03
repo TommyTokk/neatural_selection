@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import sqlite3
@@ -122,6 +123,29 @@ class TelemetryDatabaseTest(unittest.TestCase):
 
         self.assertEqual(row, (1, 9, 12, 3.2, 1.0, 10, "exact"))
         self.assertEqual(self.database.load_species_lineage(), [(2, 1, 4.5)])
+
+    def test_load_species_records_round_trips_and_filters_future_events(
+        self,
+    ) -> None:
+        current = species_record()
+        future = replace(
+            current,
+            species_id=3,
+            founder_creature_id=10,
+            founder_genome_id=13,
+            emerged_at=12.0,
+            founder_color=(40, 50, 60),
+        )
+        self.database.log_species_record(current)
+        self.database.log_species_record(future)
+
+        records = self.database.load_species_records(up_to_time=8.0)
+
+        self.assertEqual(records, {2: current})
+        self.assertEqual(
+            self.database.load_species_records(),
+            {2: current, 3: future},
+        )
 
     def test_existing_telemetry_database_gains_history_table(self) -> None:
         legacy_file = Path(self.temporary_directory.name) / "legacy.sqlite"
