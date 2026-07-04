@@ -66,41 +66,91 @@ def summarize_neat_changes(
     max_key_changes: int = 6,
 ) -> NeatChangeSummary:
     """Return a compact, deterministic diff between two NEAT genomes."""
-    parent_nodes = dict(getattr(parent_genome, "nodes", {}) or {})
-    child_nodes = dict(getattr(child_genome, "nodes", {}) or {})
-    parent_connections = dict(
-        getattr(parent_genome, "connections", {}) or {}
-    )
-    child_connections = dict(
-        getattr(child_genome, "connections", {}) or {}
-    )
+    parent_nodes = getattr(parent_genome, "nodes", {}) or {}
+    child_nodes = getattr(child_genome, "nodes", {}) or {}
+    parent_connections = getattr(parent_genome, "connections", {}) or {}
+    child_connections = getattr(child_genome, "connections", {}) or {}
+    detail_limit = max(0, int(max_key_changes))
 
-    added_nodes = sorted(set(child_nodes) - set(parent_nodes), key=repr)
-    removed_nodes = sorted(set(parent_nodes) - set(child_nodes), key=repr)
-    added_connections = sorted(
-        set(child_connections) - set(parent_connections),
-        key=repr,
-    )
-    removed_connections = sorted(
-        set(parent_connections) - set(child_connections),
-        key=repr,
-    )
+    node_structure: list[tuple[object, str]] = []
+    connection_structure: list[tuple[object, str]] = []
+    connection_states: list[tuple[object, str]] = []
+    weight_details: list[tuple[object, str]] = []
+    node_details: list[tuple[object, str]] = []
 
-    enabled: list[Any] = []
-    disabled: list[Any] = []
-    weight_changes: list[tuple[float, Any, float, float]] = []
-    for key in sorted(
-        set(parent_connections) & set(child_connections),
-        key=repr,
-    ):
-        parent_gene = parent_connections[key]
-        child_gene = child_connections[key]
+    nodes_added = 0
+    for key in child_nodes:
+        if key in parent_nodes:
+            continue
+        nodes_added += 1
+        description = f"Node {key} added"
+        _retain_bounded(
+            node_structure,
+            (description, description),
+            detail_limit,
+        )
+
+    nodes_removed = 0
+    for key in parent_nodes:
+        if key in child_nodes:
+            continue
+        nodes_removed += 1
+        description = f"Node {key} removed"
+        _retain_bounded(
+            node_structure,
+            (description, description),
+            detail_limit,
+        )
+
+    connections_added = 0
+    for key in child_connections:
+        if key in parent_connections:
+            continue
+        connections_added += 1
+        description = f"Connection {_format_gene_key(key)} added"
+        _retain_bounded(
+            connection_structure,
+            (description, description),
+            detail_limit,
+        )
+
+    connections_removed = 0
+    for key in parent_connections:
+        if key in child_connections:
+            continue
+        connections_removed += 1
+        description = f"Connection {_format_gene_key(key)} removed"
+        _retain_bounded(
+            connection_structure,
+            (description, description),
+            detail_limit,
+        )
+
+    connections_enabled = 0
+    connections_disabled = 0
+    weights_changed = 0
+    for key, parent_gene in parent_connections.items():
+        child_gene = child_connections.get(key)
+        if child_gene is None:
+            continue
         parent_enabled = bool(getattr(parent_gene, "enabled", True))
         child_enabled = bool(getattr(child_gene, "enabled", True))
         if not parent_enabled and child_enabled:
-            enabled.append(key)
+            connections_enabled += 1
+            description = f"Connection {_format_gene_key(key)} enabled"
+            _retain_bounded(
+                connection_states,
+                (description, description),
+                detail_limit,
+            )
         elif parent_enabled and not child_enabled:
-            disabled.append(key)
+            connections_disabled += 1
+            description = f"Connection {_format_gene_key(key)} disabled"
+            _retain_bounded(
+                connection_states,
+                (description, description),
+                detail_limit,
+            )
 
         parent_weight = _finite_float(getattr(parent_gene, "weight", None))
         child_weight = _finite_float(getattr(child_gene, "weight", None))
@@ -109,20 +159,23 @@ def summarize_neat_changes(
             and child_weight is not None
             and not isclose(parent_weight, child_weight)
         ):
-            weight_changes.append(
-                (
-                    abs(child_weight - parent_weight),
-                    key,
-                    parent_weight,
-                    child_weight,
-                )
+            weights_changed += 1
+            magnitude = abs(child_weight - parent_weight)
+            description = (
+                f"Weight {_format_gene_key(key)} "
+                f"{parent_weight:+.3f} -> {child_weight:+.3f}"
+            )
+            _retain_bounded(
+                weight_details,
+                ((-magnitude, description), description),
+                detail_limit,
             )
 
-    node_changes: list[tuple[float, Any, str, object, object]] = []
     node_parameter_count = 0
-    for key in sorted(set(parent_nodes) & set(child_nodes), key=repr):
-        parent_gene = parent_nodes[key]
-        child_gene = child_nodes[key]
+    for key, parent_gene in parent_nodes.items():
+        child_gene = child_nodes.get(key)
+        if child_gene is None:
+            continue
         for attribute in ("bias", "response", "activation", "aggregation"):
             before = getattr(parent_gene, attribute, None)
             after = getattr(child_gene, attribute, None)
@@ -136,52 +189,38 @@ def summarize_neat_changes(
                 if before_number is not None and after_number is not None
                 else float("inf")
             )
-            node_changes.append((magnitude, key, attribute, before, after))
-
-    highlights: list[tuple[int, float, str]] = []
-    for key in added_nodes:
-        highlights.append((0, 0.0, f"Node {key} added"))
-    for key in removed_nodes:
-        highlights.append((0, 0.0, f"Node {key} removed"))
-    for key in added_connections:
-        highlights.append((1, 0.0, f"Connection {_format_gene_key(key)} added"))
-    for key in removed_connections:
-        highlights.append((1, 0.0, f"Connection {_format_gene_key(key)} removed"))
-    for key in enabled:
-        highlights.append((2, 0.0, f"Connection {_format_gene_key(key)} enabled"))
-    for key in disabled:
-        highlights.append((2, 0.0, f"Connection {_format_gene_key(key)} disabled"))
-    for magnitude, key, before, after in weight_changes:
-        highlights.append(
-            (
-                3,
-                -magnitude,
-                f"Weight {_format_gene_key(key)} {before:+.3f} -> {after:+.3f}",
-            )
-        )
-    for magnitude, key, attribute, before, after in node_changes:
-        highlights.append(
-            (
-                4,
-                -magnitude,
+            description = (
                 f"Node {key} {attribute} {_format_change_value(before)}"
-                f" -> {_format_change_value(after)}",
+                f" -> {_format_change_value(after)}"
             )
+            _retain_bounded(
+                node_details,
+                ((-magnitude, description), description),
+                detail_limit,
+            )
+
+    key_changes = tuple(
+        description
+        for candidates in (
+            node_structure,
+            connection_structure,
+            connection_states,
+            weight_details,
+            node_details,
         )
-    highlights.sort(key=lambda item: (item[0], item[1], item[2]))
+        for _, description in candidates
+    )[:detail_limit]
 
     return NeatChangeSummary(
-        nodes_added=len(added_nodes),
-        nodes_removed=len(removed_nodes),
-        connections_added=len(added_connections),
-        connections_removed=len(removed_connections),
-        connections_enabled=len(enabled),
-        connections_disabled=len(disabled),
-        weights_changed=len(weight_changes),
+        nodes_added=nodes_added,
+        nodes_removed=nodes_removed,
+        connections_added=connections_added,
+        connections_removed=connections_removed,
+        connections_enabled=connections_enabled,
+        connections_disabled=connections_disabled,
+        weights_changed=weights_changed,
         node_parameters_changed=node_parameter_count,
-        key_changes=tuple(
-            item[2] for item in highlights[: max(0, int(max_key_changes))]
-        ),
+        key_changes=key_changes,
     )
 
 
@@ -206,6 +245,19 @@ def _finite_float(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed == parsed and abs(parsed) != float("inf") else None
+
+
+def _retain_bounded(
+    candidates: list[tuple[object, str]],
+    candidate: tuple[object, str],
+    limit: int,
+) -> None:
+    if limit <= 0:
+        return
+    candidates.append(candidate)
+    candidates.sort(key=lambda item: item[0])
+    if len(candidates) > limit:
+        candidates.pop()
 
 
 def _values_equal(first: object, second: object) -> bool:

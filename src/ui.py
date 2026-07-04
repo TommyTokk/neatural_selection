@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from math import ceil, floor, isfinite, log10
 from pathlib import Path
+import re
 
 import arcade
 
@@ -23,6 +24,8 @@ from src.species_tree import (
 )
 from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
+
+_EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 
 
 class UiRenderer:
@@ -93,6 +96,11 @@ class UiRenderer:
             tuple[int, int],
             SpeciesTreeRoute,
         ] = {}
+        self._species_tree_neat_label_signature: tuple[
+            tuple[int, ...],
+            tuple[int, ...],
+        ] | None = None
+        self._species_tree_neat_labels = _EMPTY_NEAT_NODE_LABELS
 
     def draw(self, world: World) -> None:
         self._control_hitboxes.clear()
@@ -1537,7 +1545,11 @@ class UiRenderer:
         self._draw_species_tree_scrollbars(canvas)
         hovered = self._species_tree_hovered_id
         if hovered is not None and hovered in records:
-            self._draw_species_tree_tooltip(bounds, records[hovered])
+            self._draw_species_tree_tooltip(
+                bounds,
+                records[hovered],
+                self._species_tree_neat_node_labels(world),
+            )
 
     def _species_tree_layout(
         self,
@@ -2347,8 +2359,9 @@ class UiRenderer:
         self,
         window_bounds: arcade.Rect,
         record: SpeciesRecord,
+        node_labels: dict[int, str] | None = None,
     ) -> None:
-        lines = self._species_tree_tooltip_lines(record)
+        lines = self._species_tree_tooltip_lines(record, node_labels)
         width = max(160.0, min(430.0, window_bounds.width - 28.0))
         height = 42.0 + len(lines) * 17.0
         mouse_x, mouse_y = self._species_tree_mouse
@@ -2388,7 +2401,11 @@ class UiRenderer:
                 10,
             )
 
-    def _species_tree_tooltip_lines(self, record: SpeciesRecord) -> list[str]:
+    def _species_tree_tooltip_lines(
+        self,
+        record: SpeciesRecord,
+        node_labels: dict[int, str] | None = None,
+    ) -> list[str]:
         traits = record.founder_traits
         deltas = record.trait_deltas
         distances = record.distances
@@ -2464,8 +2481,81 @@ class UiRenderer:
                 ),
             )
         )
-        lines.extend(neat_changes.key_changes)
+        lines.extend(
+            self._format_species_tree_neat_change(line, node_labels or {})
+            for line in neat_changes.key_changes
+        )
         return lines
+
+    def _species_tree_neat_node_labels(self, world: World) -> dict[int, str]:
+        controller = getattr(world, "neat_controller", None)
+        config = getattr(controller, "config", None)
+        genome_config = getattr(config, "genome_config", None)
+        if genome_config is None:
+            self._species_tree_neat_label_signature = None
+            self._species_tree_neat_labels = _EMPTY_NEAT_NODE_LABELS
+            return _EMPTY_NEAT_NODE_LABELS
+        input_keys = tuple(getattr(genome_config, "input_keys", ()) or ())
+        output_keys = tuple(getattr(genome_config, "output_keys", ()) or ())
+        signature = (input_keys, output_keys)
+        if signature == self._species_tree_neat_label_signature:
+            return self._species_tree_neat_labels
+        labels = {
+            int(key): SENSOR_INPUT_NAMES[index]
+            for index, key in enumerate(input_keys)
+            if index < len(SENSOR_INPUT_NAMES)
+        }
+        labels.update(
+            {
+                int(key): ACTION_OUTPUT_NAMES[index]
+                for index, key in enumerate(output_keys)
+                if index < len(ACTION_OUTPUT_NAMES)
+            }
+        )
+        self._species_tree_neat_label_signature = signature
+        self._species_tree_neat_labels = labels
+        return labels
+
+    @staticmethod
+    def _format_species_tree_neat_change(
+        line: str,
+        node_labels: dict[int, str],
+    ) -> str:
+        node_match = re.fullmatch(
+            r"Node (-?\d+) (added|removed)",
+            line,
+        )
+        if node_match is not None:
+            key = int(node_match.group(1))
+            label = node_labels.get(key, str(key))
+            return f"Node {label} {node_match.group(2)}"
+
+        parameter_match = re.fullmatch(
+            r"Node (-?\d+) (bias|response|activation|aggregation) (.+) -> (.+)",
+            line,
+        )
+        if parameter_match is not None:
+            key = int(parameter_match.group(1))
+            label = node_labels.get(key, str(key))
+            return (
+                f"Node {label} {parameter_match.group(2)} "
+                f"{parameter_match.group(3)} -> {parameter_match.group(4)}"
+            )
+
+        connection_match = re.fullmatch(
+            r"(Connection|Weight) (-?\d+)->(-?\d+)( .+)",
+            line,
+        )
+        if connection_match is not None:
+            source_key = int(connection_match.group(2))
+            target_key = int(connection_match.group(3))
+            source = node_labels.get(source_key, str(source_key))
+            target = node_labels.get(target_key, str(target_key))
+            return (
+                f"{connection_match.group(1)} {source} -> {target}"
+                f"{connection_match.group(4)}"
+            )
+        return line
 
     def _format_trait_value(
         self,

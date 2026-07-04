@@ -359,7 +359,17 @@ class NeatChangeSummaryTest(unittest.TestCase):
         self.assertEqual(summary.connections_disabled, 1)
         self.assertEqual(summary.weights_changed, 1)
         self.assertEqual(summary.node_parameters_changed, 2)
-        self.assertLessEqual(len(summary.key_changes), 6)
+        self.assertEqual(
+            summary.key_changes,
+            (
+                "Node 1 removed",
+                "Node 2 added",
+                "Connection -1->2 added",
+                "Connection -2->0 disabled",
+                "Weight -1->0 +0.500 -> +1.000",
+                "Node 0 aggregation sum -> max",
+            ),
+        )
 
     def test_key_changes_are_bounded_and_unchanged_genomes_are_empty(self) -> None:
         genome = FakeGenome()
@@ -382,6 +392,40 @@ class NeatChangeSummaryTest(unittest.TestCase):
         self.assertEqual(
             len(summarize_neat_changes(genome, changed).key_changes),
             6,
+        )
+
+    def test_large_genome_summary_keeps_exact_counts_and_bounded_details(
+        self,
+    ) -> None:
+        parent = FakeGenome()
+        parent.nodes = {0: FakeGene()}
+        parent.connections = {
+            (index, 0): FakeGene(weight=float(index))
+            for index in range(10_000)
+        }
+        child = FakeGenome()
+        child.nodes = parent.nodes
+        child.connections = {
+            key: FakeGene(weight=gene.weight + 1.0)
+            for key, gene in parent.connections.items()
+        }
+        child.connections.update(
+            {
+                (index, 1): FakeGene(weight=1.0)
+                for index in range(500)
+            }
+        )
+
+        summary = summarize_neat_changes(parent, child)
+
+        self.assertEqual(summary.connections_added, 500)
+        self.assertEqual(summary.weights_changed, 10_000)
+        self.assertEqual(len(summary.key_changes), 6)
+        self.assertTrue(
+            all(
+                change.startswith("Connection")
+                for change in summary.key_changes
+            )
         )
 
 

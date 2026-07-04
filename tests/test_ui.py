@@ -1431,6 +1431,111 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertIn("NEAT CHANGES FROM PARENT", tooltip)
         self.assertIn("Node 4 added", tooltip)
 
+    def test_species_tree_builds_neat_labels_from_active_config(self) -> None:
+        world = SimpleNamespace(
+            neat_controller=SimpleNamespace(
+                config=SimpleNamespace(
+                    genome_config=SimpleNamespace(
+                        input_keys=list(range(-1, -27, -1)),
+                        output_keys=list(range(12)),
+                    )
+                )
+            )
+        )
+
+        labels = self.renderer._species_tree_neat_node_labels(world)
+
+        self.assertEqual(labels[-11], "food_proximity")
+        self.assertEqual(labels[0], "accelerate")
+        self.assertEqual(labels[3], "want_eat")
+
+    def test_species_tree_reuses_and_invalidates_neat_label_cache(self) -> None:
+        genome_config = SimpleNamespace(
+            input_keys=[-1],
+            output_keys=[0],
+        )
+        world = SimpleNamespace(
+            neat_controller=SimpleNamespace(
+                config=SimpleNamespace(genome_config=genome_config)
+            )
+        )
+
+        first = self.renderer._species_tree_neat_node_labels(world)
+        second = self.renderer._species_tree_neat_node_labels(world)
+        genome_config.output_keys = [10]
+        changed = self.renderer._species_tree_neat_node_labels(world)
+
+        self.assertIs(first, second)
+        self.assertIsNot(first, changed)
+        self.assertEqual(changed[10], "accelerate")
+
+    def test_species_tree_missing_config_reuses_empty_neat_labels(self) -> None:
+        world = SimpleNamespace()
+
+        first = self.renderer._species_tree_neat_node_labels(world)
+        second = self.renderer._species_tree_neat_node_labels(world)
+
+        self.assertIs(first, second)
+        self.assertEqual(first, {})
+
+    def test_species_tree_formats_named_neat_nodes_in_every_change_kind(
+        self,
+    ) -> None:
+        labels = {-11: "food_proximity", 0: "accelerate", 3: "want_eat"}
+        cases = {
+            "Node 0 added": "Node accelerate added",
+            "Node 0 removed": "Node accelerate removed",
+            "Node 0 bias +0.100 -> +0.200": (
+                "Node accelerate bias +0.100 -> +0.200"
+            ),
+            "Node 0 activation sigmoid -> tanh": (
+                "Node accelerate activation sigmoid -> tanh"
+            ),
+            "Connection -11->3 added": (
+                "Connection food_proximity -> want_eat added"
+            ),
+            "Connection -11->3 removed": (
+                "Connection food_proximity -> want_eat removed"
+            ),
+            "Connection -11->3 enabled": (
+                "Connection food_proximity -> want_eat enabled"
+            ),
+            "Connection -11->3 disabled": (
+                "Connection food_proximity -> want_eat disabled"
+            ),
+            "Weight -11->3 +0.100 -> +0.900": (
+                "Weight food_proximity -> want_eat +0.100 -> +0.900"
+            ),
+        }
+
+        for original, expected in cases.items():
+            with self.subTest(original=original):
+                self.assertEqual(
+                    self.renderer._format_species_tree_neat_change(
+                        original,
+                        labels,
+                    ),
+                    expected,
+                )
+
+    def test_species_tree_neat_names_keep_hidden_ids_and_custom_text(self) -> None:
+        labels = {0: "accelerate"}
+
+        self.assertEqual(
+            self.renderer._format_species_tree_neat_change(
+                "Connection 42->0 added",
+                labels,
+            ),
+            "Connection 42 -> accelerate added",
+        )
+        self.assertEqual(
+            self.renderer._format_species_tree_neat_change(
+                "A legacy custom description",
+                labels,
+            ),
+            "A legacy custom description",
+        )
+
     def test_wheel_scrolls_vertically_and_clamps(self) -> None:
         records = {1: self.make_record(1, None)}
         for species_id in range(2, 12):
