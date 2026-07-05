@@ -5,6 +5,7 @@ import unittest
 
 from src.species_tree import (
     SpeciesTreeLayout,
+    TreeLayoutManager,
     build_species_tree_layout,
     route_species_tree_edges,
 )
@@ -18,7 +19,7 @@ class _Record:
 
 
 class SpeciesTreeLayoutTest(unittest.TestCase):
-    def test_tree_depths_edges_and_parent_centering(self) -> None:
+    def test_tree_depths_edges_and_stable_lineage_lanes(self) -> None:
         records = {
             1: _Record(1, None, 0.0),
             2: _Record(2, 1, 10.0),
@@ -33,10 +34,8 @@ class SpeciesTreeLayoutTest(unittest.TestCase):
         self.assertEqual(layout.edges, ((1, 2), (1, 3), (2, 4)))
         self.assertLess(layout.positions[1][1], layout.positions[2][1])
         self.assertLess(layout.positions[2][1], layout.positions[4][1])
-        self.assertEqual(
-            layout.positions[1][0],
-            (layout.positions[2][0] + layout.positions[3][0]) * 0.5,
-        )
+        self.assertEqual(layout.positions[1][0], layout.positions[2][0])
+        self.assertGreater(layout.positions[3][0], layout.positions[1][0])
         self.assertEqual(
             layout.positions[4][1] - layout.positions[2][1],
             20.0 * 2.0,
@@ -176,6 +175,66 @@ class SpeciesTreeLayoutTest(unittest.TestCase):
         self.assertEqual(
             route_species_tree_edges(layout, radii),
             route_species_tree_edges(layout, radii),
+        )
+
+    def test_incremental_sync_preserves_existing_coordinates(self) -> None:
+        records = {
+            1: _Record(1, None, 0.0),
+            2: _Record(2, 1, 10.0),
+        }
+        manager = TreeLayoutManager()
+        first = manager.sync(records)
+        original_positions = dict(first.positions)
+        placements = manager.placement_count
+
+        reopened = manager.sync(records)
+        self.assertEqual(manager.placement_count, placements)
+        self.assertEqual(reopened.positions, original_positions)
+
+        records[3] = _Record(3, 1, 20.0)
+        updated = manager.sync(records)
+        self.assertEqual(manager.placement_count, placements + 1)
+        self.assertEqual(
+            {key: updated.positions[key] for key in original_positions},
+            original_positions,
+        )
+
+    def test_two_hour_species_uses_bucket_four(self) -> None:
+        manager = TreeLayoutManager(bucket_seconds=1800.0)
+        manager.sync({1: _Record(1, None, 7200.0)})
+
+        self.assertEqual(manager.bucket_for_time(7200.0), 4)
+        self.assertEqual(manager.bucket_summaries()[0].bucket_id, 4)
+
+    def test_large_viewport_query_returns_only_intersecting_bucket(self) -> None:
+        records = {
+            species_id: _Record(
+                species_id,
+                None if species_id == 1 else species_id - 1,
+                (species_id - 1) * (36000.0 / 4999.0),
+            )
+            for species_id in range(1, 5001)
+        }
+        manager = TreeLayoutManager()
+        layout = manager.sync(records, timeline_end=36000.0)
+        hour_nine_y = 9.0 * 3600.0 * manager.time_scale + manager.padding
+
+        visible = manager.viewport_slice(
+            left=0.0,
+            right=layout.content_width,
+            top=hour_nine_y,
+            bottom=hour_nine_y + 900.0,
+        )
+
+        self.assertGreater(len(visible.node_ids), 0)
+        self.assertLess(len(visible.node_ids), 500)
+        self.assertTrue(
+            all(
+                17
+                <= manager.bucket_for_time(layout.effective_times[species_id])
+                <= 19
+                for species_id in visible.node_ids
+            )
         )
 
     @staticmethod

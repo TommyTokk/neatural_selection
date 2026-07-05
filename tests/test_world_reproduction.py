@@ -369,6 +369,9 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(record.founder_genome_id, 80)
         self.assertEqual(record.founder_color, founder_color)
         self.assertEqual(record.data_quality, "exact")
+        self.assertEqual(record.emergence_food_ratio, 0.5)
+        self.assertEqual(record.emergence_pop_ratio, 0.2)
+        self.assertEqual(record.neural_shifts, ())
         self.assertEqual(species_records, [record])
 
     def test_same_species_reproduction_keeps_inherited_color_jitter(self) -> None:

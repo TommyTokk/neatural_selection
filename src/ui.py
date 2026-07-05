@@ -9,6 +9,11 @@ import arcade
 
 from configs.sim_config import SimConfig
 from src.action import ACTION_OUTPUT_NAMES
+from src.analysis import (
+    InspectorReport,
+    generate_inspector_report,
+    profile_morphology,
+)
 from src.brain_graph import (
     BrainEdgeKind,
     BrainGraphEdge,
@@ -19,8 +24,8 @@ from src.speciation import SpeciesRecord
 from src.species_tree import (
     SpeciesTreeLayout,
     SpeciesTreeRoute,
-    build_species_tree_layout,
-    route_species_tree_edges,
+    TreeLayoutManager,
+    TreeViewportSlice,
 )
 from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
@@ -71,6 +76,8 @@ class UiRenderer:
         self._species_tree_hovered_id: int | None = None
         self._species_tree_selected_id: int | None = None
         self._species_tree_pending_selection_id: int | None = None
+        self._species_tree_report: InspectorReport | None = None
+        self._species_tree_report_species_id: int | None = None
         self._species_tree_horizontal_offset = 0.0
         self._species_tree_vertical_offset = 0.0
         self._species_tree_horizontal_limit = 0.0
@@ -84,18 +91,24 @@ class UiRenderer:
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
         self._species_tree_canvas_drag_last = (0.0, 0.0)
-        self._species_tree_timeline_event_bounds: dict[int, arcade.Rect] = {}
+        self._species_tree_timeline_bucket_bounds: dict[int, arcade.Rect] = {}
         self._species_tree_node_bounds: dict[int, arcade.Rect] = {}
         self._species_tree_zoom = 1.0
         self._species_tree_fit_mode = True
         self._species_tree_fit_requested = True
         self._species_tree_last_layout: SpeciesTreeLayout | None = None
         self._species_tree_last_canvas: arcade.Rect | None = None
-        self._species_tree_route_signature: object | None = None
-        self._species_tree_routes: dict[
-            tuple[int, int],
-            SpeciesTreeRoute,
-        ] = {}
+        self._species_tree_layout_manager = TreeLayoutManager(
+            horizontal_gap=92.0,
+            time_scale=self.SPECIES_TREE_TIME_SCALE,
+            padding=self.SPECIES_TREE_CONTENT_PADDING,
+        )
+        self._species_tree_cached_layout: SpeciesTreeLayout | None = None
+        self._species_tree_visible_slice = TreeViewportSlice((), (), {})
+        self._species_tree_focus_latest_pending = False
+        self._species_tree_highlight_cache_id: int | None = None
+        self._species_tree_highlight_nodes: set[int] = set()
+        self._species_tree_highlight_edges: set[tuple[int, int]] = set()
         self._species_tree_neat_label_signature: tuple[
             tuple[int, ...],
             tuple[int, ...],
@@ -103,6 +116,7 @@ class UiRenderer:
         self._species_tree_neat_labels = _EMPTY_NEAT_NODE_LABELS
 
     def draw(self, world: World) -> None:
+        self._sync_species_tree_layout(world)
         self._control_hitboxes.clear()
         self._scroll_regions.clear()
         self._scroll_limits.clear()
@@ -110,6 +124,19 @@ class UiRenderer:
         self._draw_floating_panels(world)
         self._draw_brain_window(world)
         self._draw_species_tree_window(world)
+
+    def _sync_species_tree_layout(self, world: World) -> SpeciesTreeLayout:
+        records = getattr(world, "species_history", {})
+        self._species_tree_cached_layout = (
+            self._species_tree_layout_manager.sync(
+                records,
+                timeline_end=max(
+                    0.0,
+                    float(getattr(world, "elapsed_time", 0.0)),
+                ),
+            )
+        )
+        return self._species_tree_cached_layout
 
     def _draw_icon_rail(self, world: World) -> None:
         bounds = world.layout.left_sidebar
@@ -391,10 +418,18 @@ class UiRenderer:
         fitness_score = (
             fitness.score(world.config.fitness) if fitness is not None else None
         )
+        species_id, species_color = self._selected_species_identity(
+            world,
+            selected,
+        )
         energy_ratio = self._inspector_energy_ratio(world)
         padding = 18.0
         section_gap = 18.0
-        total_height = 680.0 if fitness_score is not None else 648.0
+        species_row_height = 28.0 if species_id is not None else 0.0
+        total_height = (
+            (680.0 if fitness_score is not None else 648.0)
+            + species_row_height
+        )
         scroll_limit = max(0.0, total_height - viewport.height)
         scroll_offset = max(
             0.0,
@@ -433,6 +468,43 @@ class UiRenderer:
             17,
             bold=True,
         )
+
+        if species_id is not None:
+            y -= 29.0
+            marker_x = left + 9.0
+            marker_y = y + 5.0
+            marker_radius = 8.0
+            marker_bounds = arcade.LBWH(
+                marker_x - marker_radius,
+                marker_y - marker_radius,
+                marker_radius * 2.0,
+                marker_radius * 2.0,
+            )
+            if self._rect_intersects(marker_bounds, viewport):
+                arcade.draw_circle_filled(
+                    marker_x,
+                    marker_y,
+                    marker_radius,
+                    species_color,
+                )
+                arcade.draw_circle_outline(
+                    marker_x,
+                    marker_y,
+                    marker_radius,
+                    self.theme.selected_outline,
+                    2.5,
+                )
+            self._draw_text_in_viewport(
+                viewport,
+                "inspector_species",
+                f"Species #{species_id}",
+                left + 25.0,
+                y,
+                self.theme.text_muted,
+                11,
+                bold=True,
+            )
+            y -= 15.0
 
         y -= 44.0
         self._draw_inspector_section_label(
@@ -1337,16 +1409,21 @@ class UiRenderer:
         self._species_tree_hovered_id = None
         self._species_tree_selected_id = None
         self._species_tree_pending_selection_id = None
+        self._species_tree_report = None
+        self._species_tree_report_species_id = None
+        self._scroll_offsets["species_tree_inspector"] = 0.0
         self._species_tree_scroll_drag = None
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
         self._species_tree_zoom = 1.0
-        self._species_tree_fit_mode = True
-        self._species_tree_fit_requested = True
+        self._species_tree_fit_mode = False
+        self._species_tree_fit_requested = False
         self._species_tree_horizontal_offset = 0.0
         self._species_tree_vertical_offset = 0.0
-        self._species_tree_route_signature = None
-        self._species_tree_routes.clear()
+        self._species_tree_focus_latest_pending = True
+        self._species_tree_highlight_cache_id = None
+        self._species_tree_highlight_nodes.clear()
+        self._species_tree_highlight_edges.clear()
 
     def close_species_tree(self, world: World) -> None:
         if not self._species_tree_open:
@@ -1357,12 +1434,17 @@ class UiRenderer:
         self._species_tree_hovered_id = None
         self._species_tree_selected_id = None
         self._species_tree_pending_selection_id = None
+        self._species_tree_report = None
+        self._species_tree_report_species_id = None
+        self._scroll_offsets.pop("species_tree_inspector", None)
         self._species_tree_scroll_drag = None
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
-        self._species_tree_timeline_event_bounds.clear()
-        self._species_tree_route_signature = None
-        self._species_tree_routes.clear()
+        self._species_tree_timeline_bucket_bounds.clear()
+        self._species_tree_visible_slice = TreeViewportSlice((), (), {})
+        self._species_tree_highlight_cache_id = None
+        self._species_tree_highlight_nodes.clear()
+        self._species_tree_highlight_edges.clear()
         if previous_pause is not None:
             world.is_paused = previous_pause
 
@@ -1389,6 +1471,7 @@ class UiRenderer:
     def _draw_species_tree_window(self, world: World) -> None:
         if not self._species_tree_open:
             return
+        layout = self._sync_species_tree_layout(world)
 
         margin = float(self.config.layout.outer_padding)
         window = world.layout.window
@@ -1407,6 +1490,20 @@ class UiRenderer:
         )
         self._control_hitboxes.pop("species_tree_drag", None)
         self._control_hitboxes["species_tree_window"] = bounds
+        records = getattr(world, "species_history", {})
+        selected_id = self._species_tree_selected_id
+        show_inspector = selected_id is not None and selected_id in records
+        inspector = None
+        content_right = content.right - 20.0
+        if show_inspector:
+            inspector_width = min(380.0, max(260.0, content.width * 0.32))
+            inspector = arcade.LBWH(
+                content.right - inspector_width,
+                content.bottom + 20.0,
+                inspector_width,
+                max(0.0, content.height - 20.0),
+            )
+            content_right = inspector.left - self.SPECIES_TREE_TIMELINE_GAP
 
         timeline = arcade.LBWH(
             content.left,
@@ -1422,10 +1519,9 @@ class UiRenderer:
             content.bottom + 20.0,
             max(
                 0.0,
-                content.right
+                content_right
                 - timeline.right
                 - self.SPECIES_TREE_TIMELINE_GAP
-                - 20.0,
             ),
             max(0.0, content.height - 20.0),
         )
@@ -1446,7 +1542,6 @@ class UiRenderer:
             1.5,
         )
 
-        records = getattr(world, "species_history", {})
         if not records:
             self._species_tree_zoom = 1.0
             self._species_tree_fit_mode = True
@@ -1454,9 +1549,8 @@ class UiRenderer:
             self._species_tree_last_layout = None
             self._species_tree_last_canvas = canvas
             self._species_tree_node_bounds.clear()
-            self._species_tree_timeline_event_bounds.clear()
-            self._species_tree_route_signature = None
-            self._species_tree_routes.clear()
+            self._species_tree_timeline_bucket_bounds.clear()
+            self._species_tree_visible_slice = TreeViewportSlice((), (), {})
             self._species_tree_horizontal_limit = 0.0
             self._species_tree_vertical_limit = 0.0
             self._species_tree_horizontal_offset_min = 0.0
@@ -1486,11 +1580,6 @@ class UiRenderer:
             )
             return
 
-        layout = self._species_tree_layout(
-            records,
-            canvas,
-            max(0.0, float(getattr(world, "elapsed_time", 0.0))),
-        )
         previous_canvas = self._species_tree_last_canvas
         canvas_changed = (
             previous_canvas is not None
@@ -1507,19 +1596,32 @@ class UiRenderer:
         self._species_tree_last_layout = layout
         self._species_tree_last_canvas = canvas
         self._update_species_tree_zoom_and_limits(layout, canvas)
+        if self._species_tree_focus_latest_pending:
+            self._focus_species_tree_latest(layout, canvas)
         self._draw_species_tree_zoom_controls(bounds)
-        positions = self._species_tree_screen_positions(layout, canvas)
-        radii = {
-            species_id: self._species_tree_node_radius(record)
-            for species_id, record in records.items()
-        }
-        routes = self._species_tree_content_routes(layout, radii)
+        content_bounds = self._species_tree_visible_content_bounds(
+            layout,
+            canvas,
+        )
+        visible = self._species_tree_layout_manager.viewport_slice(
+            left=content_bounds[0],
+            right=content_bounds[1],
+            top=content_bounds[2],
+            bottom=content_bounds[3],
+            node_padding=24.0,
+        )
+        self._species_tree_visible_slice = visible
+        positions = self._species_tree_screen_positions(
+            layout,
+            canvas,
+            visible.node_ids,
+        )
         screen_routes = {
             edge: tuple(
                 self._species_tree_screen_point(point, layout, canvas)
                 for point in route
             )
-            for edge, route in routes.items()
+            for edge, route in visible.routes.items()
         }
         highlighted_nodes, highlighted_edges = (
             self._species_tree_highlighted_path(layout)
@@ -1527,52 +1629,42 @@ class UiRenderer:
 
         with self._ui_clip(canvas):
             self._draw_species_tree_edges(
-                layout,
+                visible.edges,
                 screen_routes,
                 highlighted_edges,
             )
             self._draw_species_tree_nodes(
                 records,
-                layout,
+                visible.node_ids,
                 positions,
                 highlighted_nodes,
             )
 
-        self._draw_species_tree_timeline(records, layout, timeline, canvas)
+        self._draw_species_tree_timeline(layout, timeline, canvas)
         self._species_tree_hovered_id = self._species_tree_node_at(
             *self._species_tree_mouse
         )
         self._draw_species_tree_scrollbars(canvas)
+        if inspector is not None:
+            self._ensure_species_inspector_report(world, records)
+            selected_record = (
+                records.get(self._species_tree_selected_id)
+                if self._species_tree_selected_id is not None
+                else None
+            )
+            self._draw_species_inspector(
+                inspector,
+                self._species_tree_report,
+                selected_record,
+            )
         hovered = self._species_tree_hovered_id
         if hovered is not None and hovered in records:
+            parent_id = records[hovered].parent_species_id
             self._draw_species_tree_tooltip(
                 bounds,
                 records[hovered],
-                self._species_tree_neat_node_labels(world),
+                records.get(parent_id) if parent_id is not None else None,
             )
-
-    def _species_tree_layout(
-        self,
-        records: dict[int, SpeciesRecord],
-        canvas: arcade.Rect,
-        timeline_end: float,
-    ) -> SpeciesTreeLayout:
-        initial = build_species_tree_layout(
-            records,
-            time_scale=self.SPECIES_TREE_TIME_SCALE,
-            padding=self.SPECIES_TREE_CONTENT_PADDING,
-            timeline_end=timeline_end,
-        )
-        if initial.leaf_count <= 1:
-            return initial
-        fitted_gap = (canvas.width - 96.0) / (initial.leaf_count - 1)
-        return build_species_tree_layout(
-            records,
-            horizontal_gap=max(64.0, min(92.0, fitted_gap)),
-            time_scale=self.SPECIES_TREE_TIME_SCALE,
-            padding=self.SPECIES_TREE_CONTENT_PADDING,
-            timeline_end=timeline_end,
-        )
 
     def _draw_species_tree_empty_timeline(self, timeline: arcade.Rect) -> None:
         self._draw_text(
@@ -1599,12 +1691,11 @@ class UiRenderer:
 
     def _draw_species_tree_timeline(
         self,
-        records: dict[int, SpeciesRecord],
         layout: SpeciesTreeLayout,
         timeline: arcade.Rect,
         canvas: arcade.Rect,
     ) -> None:
-        self._species_tree_timeline_event_bounds.clear()
+        self._species_tree_timeline_bucket_bounds.clear()
         self._draw_text(
             "species_tree_timeline_title",
             "TIME",
@@ -1661,26 +1752,57 @@ class UiRenderer:
                 break
             tick += interval
 
-        for species_id in sorted(records):
-            record = records[species_id]
-            emerged_at = self._valid_species_tree_time(record.emerged_at)
-            if emerged_at is None:
-                continue
-            y = self._species_tree_timeline_y(emerged_at, start, end, ruler)
-            marker = arcade.LBWH(axis_x - 7.0, y - 7.0, 14.0, 14.0)
-            self._species_tree_timeline_event_bounds[species_id] = marker
+        summaries = self._species_tree_layout_manager.bucket_summaries()
+        max_bucket_count = max(
+            (summary.node_count for summary in summaries),
+            default=1,
+        )
+        for summary in summaries:
+            bucket_time = min(
+                end,
+                summary.start_time
+                + self._species_tree_layout_manager.bucket_seconds * 0.5,
+            )
+            y = self._species_tree_timeline_y(
+                bucket_time,
+                start,
+                end,
+                ruler,
+            )
+            radius = 3.0 + 4.0 * (
+                summary.node_count / max_bucket_count
+            ) ** 0.5
+            marker = arcade.LBWH(
+                axis_x - radius - 3.0,
+                y - radius - 3.0,
+                (radius + 3.0) * 2.0,
+                (radius + 3.0) * 2.0,
+            )
+            self._species_tree_timeline_bucket_bounds[
+                summary.bucket_id
+            ] = marker
             arcade.draw_circle_filled(
                 axis_x,
                 y,
-                4.0,
-                record.founder_color or self.theme.herbivore_fill,
+                radius,
+                self.theme.accent_soft,
             )
             arcade.draw_circle_outline(
                 axis_x,
                 y,
-                4.0,
+                radius,
                 self.theme.herbivore_outline,
                 1.0,
+            )
+            self._draw_text(
+                f"species_tree_bucket_count_{summary.bucket_id}",
+                str(summary.node_count),
+                axis_x - radius - 5.0,
+                y,
+                self.theme.text_muted,
+                8,
+                anchor_x="right",
+                anchor_y="center",
             )
 
         visible_start, visible_end = self._species_tree_visible_time_range(
@@ -1787,6 +1909,72 @@ class UiRenderer:
         start = max(layout.timeline_start, time_at(canvas.top))
         end = min(layout.timeline_end, time_at(canvas.bottom))
         return min(start, end), max(start, end)
+
+    def _species_tree_visible_content_bounds(
+        self,
+        layout: SpeciesTreeLayout,
+        canvas: arcade.Rect,
+    ) -> tuple[float, float, float, float]:
+        horizontal_inset, vertical_inset = (
+            self._species_tree_content_insets(
+                layout,
+                canvas,
+                self._species_tree_zoom,
+            )
+        )
+        zoom = max(0.0001, self._species_tree_zoom)
+        left = (
+            canvas.left
+            - canvas.left
+            - horizontal_inset
+            + self._species_tree_horizontal_offset
+        ) / zoom
+        right = (
+            canvas.right
+            - canvas.left
+            - horizontal_inset
+            + self._species_tree_horizontal_offset
+        ) / zoom
+        top = (
+            canvas.top
+            - vertical_inset
+            + self._species_tree_vertical_offset
+            - canvas.top
+        ) / zoom
+        bottom = (
+            canvas.top
+            - vertical_inset
+            + self._species_tree_vertical_offset
+            - canvas.bottom
+        ) / zoom
+        return left, right, top, bottom
+
+    def _focus_species_tree_latest(
+        self,
+        layout: SpeciesTreeLayout,
+        canvas: arcade.Rect,
+    ) -> None:
+        species_id = self._species_tree_layout_manager.latest_species_id
+        if species_id is None or species_id not in layout.positions:
+            self._species_tree_focus_latest_pending = False
+            return
+        horizontal_inset, _ = self._species_tree_content_insets(
+            layout,
+            canvas,
+            self._species_tree_zoom,
+        )
+        latest_x, _ = layout.positions[species_id]
+        self._species_tree_horizontal_offset = (
+            canvas.left
+            + horizontal_inset
+            + latest_x * self._species_tree_zoom
+            - canvas.center_x
+        )
+        self._species_tree_vertical_offset = (
+            self._species_tree_vertical_offset_max
+        )
+        self._clamp_species_tree_offsets()
+        self._species_tree_focus_latest_pending = False
 
     def _jump_species_tree_to_time(
         self,
@@ -2098,11 +2286,17 @@ class UiRenderer:
         self,
         layout: SpeciesTreeLayout,
         canvas: arcade.Rect,
+        species_ids: tuple[int, ...] | None = None,
     ) -> dict[int, tuple[float, float]]:
         horizontal_inset, vertical_inset = self._species_tree_content_insets(
             layout,
             canvas,
             self._species_tree_zoom,
+        )
+        visible_ids = (
+            tuple(layout.positions)
+            if species_ids is None
+            else species_ids
         )
         return {
             species_id: (
@@ -2115,7 +2309,8 @@ class UiRenderer:
                 - position[1] * self._species_tree_zoom
                 + self._species_tree_vertical_offset,
             )
-            for species_id, position in layout.positions.items()
+            for species_id in visible_ids
+            if (position := layout.positions.get(species_id)) is not None
         }
 
     def _species_tree_screen_point(
@@ -2140,21 +2335,6 @@ class UiRenderer:
             + self._species_tree_vertical_offset,
         )
 
-    def _species_tree_content_routes(
-        self,
-        layout: SpeciesTreeLayout,
-        radii: dict[int, float],
-    ) -> dict[tuple[int, int], SpeciesTreeRoute]:
-        signature = (
-            layout.edges,
-            tuple(sorted(layout.positions.items())),
-            tuple(sorted(radii.items())),
-        )
-        if signature != self._species_tree_route_signature:
-            self._species_tree_routes = route_species_tree_edges(layout, radii)
-            self._species_tree_route_signature = signature
-        return self._species_tree_routes
-
     def _species_tree_highlighted_path(
         self,
         layout: SpeciesTreeLayout,
@@ -2162,28 +2342,35 @@ class UiRenderer:
         selected_id = self._species_tree_selected_id
         if selected_id is None or selected_id not in layout.positions:
             return set(), set()
-        parents = {child_id: parent_id for parent_id, child_id in layout.edges}
+        if self._species_tree_highlight_cache_id == selected_id:
+            return (
+                self._species_tree_highlight_nodes,
+                self._species_tree_highlight_edges,
+            )
+        parents = self._species_tree_layout_manager.parents
         nodes = {selected_id}
         edges: set[tuple[int, int]] = set()
         current = selected_id
-        while current in parents:
-            parent = parents[current]
+        while (parent := parents.get(current)) is not None:
             edge = (parent, current)
             if edge in edges:
                 break
             edges.add(edge)
             nodes.add(parent)
             current = parent
+        self._species_tree_highlight_cache_id = selected_id
+        self._species_tree_highlight_nodes = nodes
+        self._species_tree_highlight_edges = edges
         return nodes, edges
 
     def _draw_species_tree_edges(
         self,
-        layout: SpeciesTreeLayout,
+        edges: tuple[tuple[int, int], ...],
         routes: dict[tuple[int, int], SpeciesTreeRoute],
         highlighted_edges: set[tuple[int, int]],
     ) -> None:
         for highlighted in (False, True):
-            for edge in layout.edges:
+            for edge in edges:
                 if (edge in highlighted_edges) != highlighted:
                     continue
                 route = routes.get(edge)
@@ -2210,13 +2397,13 @@ class UiRenderer:
     def _draw_species_tree_nodes(
         self,
         records: dict[int, SpeciesRecord],
-        layout: SpeciesTreeLayout,
+        species_ids: tuple[int, ...],
         positions: dict[int, tuple[float, float]],
         highlighted_nodes: set[int],
     ) -> None:
         self._species_tree_node_bounds.clear()
         ordered_ids = sorted(
-            layout.positions,
+            species_ids,
             key=lambda species_id: (
                 species_id in highlighted_nodes,
                 species_id == self._species_tree_selected_id,
@@ -2355,14 +2542,256 @@ class UiRenderer:
             thumb_length,
         )
 
+    def _ensure_species_inspector_report(
+        self,
+        world: World,
+        records: dict[int, SpeciesRecord],
+    ) -> None:
+        species_id = self._species_tree_selected_id
+        if (
+            species_id is None
+            or species_id not in records
+            or self._species_tree_report_species_id == species_id
+        ):
+            return
+        record = records[species_id]
+        parent = (
+            records.get(record.parent_species_id)
+            if record.parent_species_id is not None
+            else None
+        )
+        telemetry = getattr(world, "telemetry", None)
+        connection = getattr(telemetry, "connection", None)
+        controller_config = getattr(
+            getattr(world, "neat_controller", None),
+            "config",
+            None,
+        )
+        genome_config = getattr(controller_config, "genome_config", None)
+        output_keys = tuple(
+            getattr(genome_config, "output_keys", ()) or ()
+        )
+        self._species_tree_report = generate_inspector_report(
+            record,
+            parent,
+            connection,
+            world.config,
+            output_keys,
+        )
+        self._species_tree_report_species_id = species_id
+        self._scroll_offsets["species_tree_inspector"] = 0.0
+
+    def _draw_species_inspector(
+        self,
+        bounds: arcade.Rect,
+        report: InspectorReport | None,
+        record: SpeciesRecord | None = None,
+    ) -> None:
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.accent,
+            self.config.layout.card_radius,
+            1.5,
+        )
+        title_left = bounds.left + 16.0
+        if record is not None:
+            marker_radius = 11.0
+            marker_x = bounds.left + 27.0
+            marker_y = bounds.top - 23.0
+            arcade.draw_circle_filled(
+                marker_x,
+                marker_y,
+                marker_radius,
+                record.founder_color or self.theme.herbivore_fill,
+            )
+            arcade.draw_circle_outline(
+                marker_x,
+                marker_y,
+                marker_radius,
+                self.theme.selected_outline,
+                3.0,
+            )
+            title_left = marker_x + marker_radius + 10.0
+        self._draw_text(
+            "species_tree_inspector_title",
+            (
+                "SPECIES INSPECTOR"
+                if report is None
+                else f"SPECIES {report.species_id} INSPECTOR"
+            ),
+            title_left,
+            bounds.top - 22.0,
+            self.theme.text_primary,
+            13,
+            bold=True,
+        )
+        viewport = arcade.LBWH(
+            bounds.left + 16.0,
+            bounds.bottom + 14.0,
+            max(0.0, bounds.width - 32.0),
+            max(0.0, bounds.height - 52.0),
+        )
+        lines = (
+            ["Select a species node to generate its report."]
+            if report is None
+            else self._species_inspector_lines(report)
+        )
+        with self._ui_clip(viewport):
+            self._draw_scrollable_lines_in_bounds(
+                "species_tree_inspector",
+                viewport,
+                lines,
+                line_spacing=19.0,
+                first_line_color=self.theme.text_primary,
+                body_color=self.theme.text_muted,
+                first_line_bold=True,
+            )
+
+    def _species_inspector_lines(
+        self,
+        report: InspectorReport,
+    ) -> list[str]:
+        lines = [
+            "ECOLOGICAL CONTEXT",
+            (
+                "Food scarcity: unavailable"
+                if report.food_scarcity is None
+                else (
+                    f"Food scarcity: {report.food_scarcity:.0%} "
+                    f"({self._pressure_label(report.food_scarcity)})"
+                )
+            ),
+            (
+                "Population density: unavailable"
+                if report.population_density is None
+                else (
+                    f"Population density: {report.population_density:.0%} "
+                    f"({self._pressure_label(report.population_density)})"
+                )
+            ),
+            "",
+            "SPECIES MORPHOLOGY",
+        ]
+        traits = report.species_traits
+        if traits is None:
+            lines.append("Species traits unavailable")
+        else:
+            lines.extend(
+                (
+                    f"Radius: {traits.radius:.2f} px",
+                    (
+                        f"Vision: {traits.vision_range:.2f} px"
+                        f" / {traits.vision_angle:.3f} rad"
+                    ),
+                    (
+                        "Movement cost: "
+                        f"{traits.movement_cost_multiplier:.3f}x"
+                    ),
+                )
+            )
+
+        parent_label = (
+            "PARENT COMPARISON"
+            if report.parent_species_id is None
+            else f"CHANGE VS PARENT SPECIES {report.parent_species_id}"
+        )
+        lines.extend(("", parent_label))
+        if report.morphology:
+            lines.extend(
+                (
+                    f"{insight.description}: "
+                    f"{insight.percent_change:+.1f}%"
+                )
+                for insight in report.morphology
+            )
+        else:
+            lines.append(
+                "No parent comparison"
+                if report.parent_species_id is None
+                else "No measurable morphology change"
+            )
+
+        metabolism = report.metabolism
+        lines.extend(("", "METABOLISM"))
+        if metabolism.child_idle_cost is None:
+            lines.append("Species metabolism unavailable")
+        else:
+            lines.extend(
+                (
+                    (
+                        f"Species idle: {metabolism.child_idle_cost:.5f} energy/s "
+                        f"({self._format_percent_change(metabolism.idle_percent_change)})"
+                    ),
+                    (
+                        f"Species full speed: {metabolism.child_active_cost:.5f} energy/s "
+                        f"({self._format_percent_change(metabolism.active_percent_change)})"
+                    ),
+                )
+            )
+            if (
+                metabolism.parent_idle_cost is not None
+                and metabolism.parent_active_cost is not None
+            ):
+                lines.append(
+                    f"Parent species idle/full: "
+                    f"{metabolism.parent_idle_cost:.5f}"
+                    f" / {metabolism.parent_active_cost:.5f}"
+                )
+
+        behavioral_label = (
+            "BEHAVIORAL SHIFTS"
+            if report.parent_species_id is None
+            else f"BEHAVIORAL SHIFTS VS PARENT {report.parent_species_id}"
+        )
+        lines.extend(("", behavioral_label))
+        if not report.behavioral_shifts:
+            lines.append("No retained neural shifts")
+        for group in report.behavioral_shifts:
+            lines.append(group.action)
+            for label, shifts in (
+                ("Excitatory", group.excitatory),
+                ("Inhibitory", group.inhibitory),
+            ):
+                for shift in shifts:
+                    lines.append(
+                        f"  {label}: {shift.shift_type} from "
+                        f"{shift.source_node_id} ({shift.weight_delta:+.3f})"
+                    )
+
+        lines.extend(("", "SPECIES LEGACY"))
+        if report.legacy.descendant_count is None:
+            lines.append("Descendants: unavailable")
+        else:
+            lines.append(f"Descendants: {report.legacy.descendant_count}")
+        if report.legacy.average_lifespan is None:
+            lines.append("Average lifespan: unavailable")
+        else:
+            lines.append(
+                f"Average lifespan: {report.legacy.average_lifespan:.2f} s"
+            )
+        return lines
+
+    @staticmethod
+    def _pressure_label(value: float) -> str:
+        if value < 1.0 / 3.0:
+            return "Low"
+        if value < 2.0 / 3.0:
+            return "Moderate"
+        return "High"
+
+    @staticmethod
+    def _format_percent_change(value: float | None) -> str:
+        return "change unavailable" if value is None else f"{value:+.2f}% vs parent"
+
     def _draw_species_tree_tooltip(
         self,
         window_bounds: arcade.Rect,
         record: SpeciesRecord,
-        node_labels: dict[int, str] | None = None,
+        parent_record: SpeciesRecord | None = None,
     ) -> None:
-        lines = self._species_tree_tooltip_lines(record, node_labels)
-        width = max(160.0, min(430.0, window_bounds.width - 28.0))
+        lines = self._species_tree_tooltip_lines(record, parent_record)
+        width = max(160.0, min(350.0, window_bounds.width - 28.0))
         height = 42.0 + len(lines) * 17.0
         mouse_x, mouse_y = self._species_tree_mouse
         left = min(
@@ -2404,87 +2833,29 @@ class UiRenderer:
     def _species_tree_tooltip_lines(
         self,
         record: SpeciesRecord,
-        node_labels: dict[int, str] | None = None,
+        parent_record: SpeciesRecord | None = None,
     ) -> list[str]:
-        traits = record.founder_traits
-        deltas = record.trait_deltas
-        distances = record.distances
         lines = [
-            (
-                f"Parent: {record.parent_species_id if record.parent_species_id is not None else 'None'}"
-                f"    Founder: {self._format_optional_number(record.founder_creature_id, 0)}"
-                f"    Genome: {self._format_optional_number(record.founder_genome_id, 0)}"
-            ),
-            (
-                f"Emerged: {self._format_optional_number(record.emerged_at, 2)} s"
-                f"    Data quality: {record.data_quality}"
-            ),
-            "FOUNDER TRAITS",
-            (
-                f"Radius {self._format_trait_value(traits, 'radius')}"
-                f"    Vision range {self._format_trait_value(traits, 'vision_range')}"
-            ),
-            (
-                f"Vision angle {self._format_trait_value(traits, 'vision_angle')}"
-                "    Movement cost "
-                f"{self._format_trait_value(traits, 'movement_cost_multiplier')}"
-            ),
-            "CHANGE FROM PARENT REPRESENTATIVE",
-            (
-                f"Radius {self._format_trait_value(deltas, 'radius', signed=True)}"
-                f"    Vision range {self._format_trait_value(deltas, 'vision_range', signed=True)}"
-            ),
-            (
-                f"Vision angle {self._format_trait_value(deltas, 'vision_angle', signed=True)}"
-                f"    Movement cost {self._format_trait_value(deltas, 'movement_cost_multiplier', signed=True)}"
-            ),
-            "SPECIATION DISTANCE",
-            (
-                f"NEAT {self._format_optional_number(distances.neat_distance)}"
-                f"    Phenotype {self._format_optional_number(distances.phenotypic_distance)}"
-            ),
-            (
-                f"Weighted {self._format_optional_number(distances.weighted_phenotypic_distance)}"
-                "    "
-                f"Composite {self._format_optional_number(distances.composite_distance)}"
-            ),
-            (
-                f"Threshold {self._format_optional_number(distances.compatibility_threshold)}"
-                f"    Weight {self._format_optional_number(distances.phenotypic_weight)}"
-            ),
-            (
-                f"Components: radius {self._format_optional_number(distances.radius_component)}"
-                f"  range {self._format_optional_number(distances.vision_range_component)}"
-            ),
-            (
-                f"Components: angle {self._format_optional_number(distances.vision_angle_component)}"
-                f"  movement {self._format_optional_number(distances.movement_cost_component)}"
-            ),
+            f"Species ID: {record.species_id}",
+            f"Parent ID: {record.parent_species_id if record.parent_species_id is not None else 'None'}",
+            f"Emergence: {self._format_optional_number(record.emerged_at, 2)} s",
         ]
-        neat_changes = getattr(record, "neat_changes", None)
-        lines.append("NEAT CHANGES FROM PARENT")
-        if neat_changes is None:
-            lines.append("Unavailable for legacy data")
-            return lines
+        trait_labels = {
+            "radius": "Radius",
+            "vision_range": "Vision range",
+            "vision_angle": "Vision angle",
+            "movement_cost_multiplier": "Move cost",
+        }
+        summaries = [
+            f"{insight.percent_change:+.0f}% {trait_labels[insight.trait]}"
+            for insight in profile_morphology(record, parent_record)
+        ]
         lines.extend(
-            (
-                (
-                    f"Nodes +{neat_changes.nodes_added}/-{neat_changes.nodes_removed}"
-                    f"    Connections +{neat_changes.connections_added}"
-                    f"/-{neat_changes.connections_removed}"
-                ),
-                (
-                    f"Enabled +{neat_changes.connections_enabled}"
-                    f"/-{neat_changes.connections_disabled}"
-                    f"    Weights changed {neat_changes.weights_changed}"
-                    f"    Node params {neat_changes.node_parameters_changed}"
-                ),
-            )
+            ", ".join(summaries[index : index + 2])
+            for index in range(0, min(4, len(summaries)), 2)
         )
-        lines.extend(
-            self._format_species_tree_neat_change(line, node_labels or {})
-            for line in neat_changes.key_changes
-        )
+        if not summaries:
+            lines.append("Morphology: baseline or unavailable")
         return lines
 
     def _species_tree_neat_node_labels(self, world: World) -> dict[int, str]:
@@ -2762,18 +3133,18 @@ class UiRenderer:
             if self._contains_hitbox("species_tree_vertical_track", x, y):
                 self._set_species_tree_scroll_from_pointer("vertical", x, y)
                 return True
-            for species_id in sorted(
-                self._species_tree_timeline_event_bounds,
+            for bucket_id in sorted(
+                self._species_tree_timeline_bucket_bounds,
                 reverse=True,
             ):
-                marker = self._species_tree_timeline_event_bounds[species_id]
+                marker = self._species_tree_timeline_bucket_bounds[bucket_id]
                 if self._contains_bounds(marker, x, y):
-                    layout = self._species_tree_last_layout
-                    if layout is not None:
-                        self._jump_species_tree_to_time(
-                            layout.effective_times.get(species_id, 0.0),
-                            species_id=species_id,
-                        )
+                    bucket_seconds = (
+                        self._species_tree_layout_manager.bucket_seconds
+                    )
+                    self._jump_species_tree_to_time(
+                        (bucket_id + 0.5) * bucket_seconds
+                    )
                     return True
             if self._contains_hitbox("species_tree_timeline", x, y):
                 timeline = self._control_hitboxes["species_tree_timeline"]
@@ -2955,6 +3326,26 @@ class UiRenderer:
         command_down: bool = False,
     ) -> bool:
         if self._species_tree_open:
+            inspector_region = self._scroll_regions.get(
+                "species_tree_inspector"
+            )
+            if (
+                inspector_region is not None
+                and self._contains_bounds(inspector_region, x, y)
+            ):
+                limit = self._scroll_limits.get(
+                    "species_tree_inspector",
+                    0.0,
+                )
+                current = self._scroll_offsets.get(
+                    "species_tree_inspector",
+                    0.0,
+                )
+                self._scroll_offsets["species_tree_inspector"] = max(
+                    0.0,
+                    min(limit, current - scroll_y * 24.0),
+                )
+                return True
             if self._contains_hitbox("species_tree_canvas", x, y):
                 if command_down and scroll_y != 0.0:
                     zoom_steps = max(-8.0, min(8.0, scroll_y))
@@ -3347,6 +3738,34 @@ class UiRenderer:
             return 0.0
         max_energy = max(0.0001, float(world.config.metabolism.max_energy))
         return max(0.0, min(1.0, selected.energy / max_energy))
+
+    def _selected_species_identity(
+        self,
+        world: World,
+        selected: object,
+    ) -> tuple[int | None, arcade.Color | tuple[int, ...]]:
+        lineage = getattr(selected, "lineage", None)
+        raw_species_id = getattr(lineage, "species_id", None)
+        try:
+            species_id = int(raw_species_id)
+        except (TypeError, ValueError):
+            return None, self.theme.herbivore_fill
+
+        color = getattr(selected, "color", None)
+        if (
+            not isinstance(color, (tuple, list))
+            or len(color) < 3
+        ):
+            records = getattr(world, "species_history", {}) or {}
+            record = records.get(species_id)
+            color = (
+                getattr(record, "founder_color", None)
+                if record is not None
+                else None
+            )
+        if not isinstance(color, (tuple, list)) or len(color) < 3:
+            color = self.theme.herbivore_fill
+        return species_id, tuple(color[:3])
 
     def _biome_food_summary(self, world: World) -> str:
         counts = world.stats.biome_food_counts

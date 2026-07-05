@@ -370,6 +370,7 @@ class World:
         if not self.creatures:
             return
         founder = self.creatures[0]
+        food_ratio, population_ratio = self._species_emergence_ratios()
         zero_traits = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
         self.species_history[1] = SpeciesRecord(
             species_id=1,
@@ -403,6 +404,9 @@ class World:
                 movement_cost_component=0.0,
             ),
             neat_changes=NeatChangeSummary.empty(),
+            emergence_food_ratio=food_ratio,
+            emergence_pop_ratio=population_ratio,
+            neural_shifts=(),
         )
 
     def _record_new_species(
@@ -410,6 +414,7 @@ class World:
         founder: Creature,
         result: SpeciationResult,
     ) -> None:
+        food_ratio, population_ratio = self._species_emergence_ratios()
         record = SpeciesRecord(
             species_id=result.species_id,
             parent_species_id=result.parent_species_id,
@@ -424,11 +429,29 @@ class World:
             trait_deltas=result.trait_deltas,
             distances=result.distances,
             neat_changes=result.neat_changes,
+            emergence_food_ratio=food_ratio,
+            emergence_pop_ratio=population_ratio,
+            neural_shifts=result.neural_shifts,
         )
         self.species_history[record.species_id] = record
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             telemetry.log_species_record(record)
+
+    def _species_emergence_ratios(self) -> tuple[float | None, float | None]:
+        creatures = getattr(self, "creatures", None)
+        foods = getattr(self, "foods", None)
+        food_spawner = getattr(self, "food_spawner", None)
+        config = getattr(self, "config", None)
+        if creatures is None or config is None:
+            return None, None
+
+        max_creatures = max(1, int(config.population.max_creatures))
+        population_ratio = len(creatures) / max_creatures
+        if foods is None or food_spawner is None:
+            return None, population_ratio
+        food_capacity = food_spawner.food_capacity(len(creatures))
+        return len(foods) / max(1, food_capacity), population_ratio
 
     def adjust_environment_zoom(self, scroll_y: float) -> None:
         if scroll_y == 0:
@@ -1116,19 +1139,31 @@ class World:
         self.space.add(*self._boundary_shapes)
 
     def _apply_creature_intents(self) -> None:
+        """
+        Apply the intents of all creatures in the simulation, based on their
+        sensor snapshots and the decisions made by their respective controllers.
+        """
         for creature in self.creatures:
+            # Generate a sensor snapshot for the creature, recording food discoveries if necessary.
             snapshot = self._sensor_snapshot_for(
                 creature,
                 record_food_discoveries=True,
             )
+
+            # Decide on the action for the creature based on whether NEAT brains are being used or a baseline controller.
             if self.use_neat_brains:
+                # Use the NEAT controller to decide the action for the creature based on its sensor snapshot.
                 action = self.neat_controller.decide(creature.creature_id, snapshot)
+                # Store the last action taken by the creature for future reference.
                 self._last_actions[creature.creature_id] = action
 
+                # Reset the chronometer for the creature if the action indicates a reset is needed.
                 if action.reset_chronometer >= 0.5:
                     self._chronometers[creature.creature_id] = 0.0
 
+                # Apply the carry intent of the creature based on the decided action.
                 self._apply_carry_intent(creature, action)
+                # Apply the action to the creature, considering whether to stabilize velocity and apply stabilizers based on the snapshot's food visibility.
                 self._apply_action(
                     creature,
                     action,
@@ -1136,7 +1171,7 @@ class World:
                     stabilize_velocity=False,
                     apply_stabilizers=False,
                 )
-            else:
+            else:# Use the baseline controller to decide the action for the creature based on its sensor snapshot.
                 action = self.baseline_controller.decide(snapshot, creature.creature_id)
                 self._last_actions[creature.creature_id] = action
 
@@ -1162,33 +1197,60 @@ class World:
         stabilize_velocity: bool = False,
         apply_stabilizers: bool = True,
     ) -> None:
+        """
+        Apply the specified action to the given creature, considering its current state,
+        sensor snapshot, and the simulation's configuration. This method calculates the
+        necessary forces and torques to apply to the creature's body based on the action's
+        parameters, including acceleration, rotation, and panic intensity. It also handles
+        flocking behavior and stabilizing the creature's movement when appropriate.
+        
+        Args:
+            creature (Creature): The creature to which the action will be applied.
+            action (Action): The action to apply, containing acceleration, rotation, and other parameters.
+            snapshot (SensorSnapshot | None): The sensor snapshot of the creature, used for flocking calculations. If None, flocking forces will not be applied.
+            stabilize_velocity (bool): Whether to stabilize the creature's velocity when moving forward. This is typically used when the creature is actively pursuing food.
+            apply_stabilizers (bool): Whether to apply stabilizing forces and torques to the creature's body to reduce unwanted angular velocity and maintain smoother movement.
+        """
+
+        # Calculate the thrust and panic intensity based on the action's parameters.
         thrust = action.accelerate
         panic = self._clamp(
             getattr(action, "flee_panic_intensity", 0.0),
             0.0,
             1.0,
         )
+        # Calculate the sprint multiplier based on the panic intensity and the maximum allowed sprint multiplier from the configuration.
         sprint_multiplier = 1.0 + (
             panic * max(0.0, self.config.action.max_sprint_multiplier)
         )
+        # Calculate the current maximum forward and backward forces, as well as the maximum speed and angular speed, based on the sprint multiplier.
+
+        # These values will be used to limit the forces applied to the creature's body and ensure that it does not exceed its physical capabilities.
         current_max_forward_force = (
             self.config.action.max_forward_force * sprint_multiplier
         )
+
+        # The current maximum backward force is calculated similarly, allowing the creature to move backward with a force that is also scaled by the sprint multiplier.
         current_max_backward_force = (
             self.config.action.max_backward_force * sprint_multiplier
         )
+
+        # The current maximum speed and angular speed are also scaled by the sprint multiplier, allowing the creature to move faster and turn more quickly when in a state of panic or urgency.
         current_max_speed = self.MAX_SPEED * sprint_multiplier
         current_max_angular_speed = self.MAX_ANGULAR_SPEED * sprint_multiplier
 
         if apply_stabilizers and stabilize_velocity and thrust > 0.0:
             self._stabilize_food_tracking_velocity(creature)
 
+        # Calculate the voluntary force to apply to the creature based on its desired acceleration and heading, as well as the current maximum forward and backward forces. This force represents the creature's intentional movement in the direction it is facing.
         voluntary_force = acceleration_force_vector(
             thrust,
             creature.heading,
             current_max_forward_force,
             current_max_backward_force,
         )
+
+        # Calculate the flocking force to apply to the creature based on its sensor snapshot and the flocking behavior of nearby creatures. This force represents the influence of other creatures in the vicinity, encouraging alignment, cohesion, and separation as appropriate.
         flock_force = self._flock_steering_force(
             creature,
             action,
@@ -1196,6 +1258,8 @@ class World:
             current_max_speed,
             current_max_forward_force,
         )
+
+        # Combine the voluntary force and flocking force to determine the total force to apply to the creature's body. The total force is limited to ensure that it does not exceed the current maximum forward force, preventing unrealistic acceleration.
         total_force = self._limit_vector(
             (
                 voluntary_force[0] + flock_force[0],
@@ -1203,11 +1267,14 @@ class World:
             ),
             current_max_forward_force,
         )
+        # Calculate the flock turn bias based on the flocking force and the creature's current heading. This bias influences the creature's turning behavior, encouraging it to align with the flock's movement while still allowing for individual decision-making.
         flock_turn_bias = self._flock_turn_bias(
             creature,
             flock_force,
             current_max_forward_force,
         )
+
+        # Determine the effective turn to apply to the creature based on its desired rotation and the flock turn bias. The turn is clamped to ensure that it does not exceed the maximum allowed angular speed, preventing unrealistic or erratic turning behavior.
         turn = self._clamp(action.rotate + flock_turn_bias, -1.0, 1.0)
         if not hasattr(self, "_motion_commands"):
             self._motion_commands = {}
@@ -1216,11 +1283,15 @@ class World:
             max_speed=current_max_speed,
             max_angular_speed=current_max_angular_speed,
         )
+
+        # Apply the calculated total force to the creature's body at its current position, influencing its movement in the simulation. The force is applied in world coordinates, ensuring that it affects the creature's velocity and trajectory appropriately.
         creature.body.apply_force_at_world_point(
             total_force,
             creature.body.position,
         )
 
+
+        # Apply stabilizing forces and torques to the creature's body if appropriate, reducing unwanted angular velocity and maintaining smoother movement. This is particularly important when the creature is actively pursuing food or moving in a state of panic, as it helps to prevent erratic behavior and maintain control over its movement.
         if (
             apply_stabilizers
             and turn == 0.0

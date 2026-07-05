@@ -47,8 +47,11 @@ def species_record() -> SpeciesRecord:
             connections_disabled=1,
             weights_changed=3,
             node_parameters_changed=1,
-            key_changes=("Node 4 added",),
+            key_changes=(),
         ),
+        emergence_food_ratio=0.25,
+        emergence_pop_ratio=0.8,
+        neural_shifts=((7, -1, "added", 0.9),),
     )
 
 
@@ -208,6 +211,9 @@ class TelemetryDatabaseTest(unittest.TestCase):
             upgraded.close()
 
         self.assertIn("neat_changes_json", columns)
+        self.assertIn("emergence_food_ratio", columns)
+        self.assertIn("emergence_pop_ratio", columns)
+        self.assertIn("neural_shifts_json", columns)
 
     def test_legacy_history_row_loads_with_unavailable_neat_changes(self) -> None:
         self.database.connection.execute(

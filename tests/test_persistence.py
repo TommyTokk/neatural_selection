@@ -481,6 +481,8 @@ class PersistenceManagerTest(unittest.TestCase):
             original_brain = world.neat_controller.brain_for(
                 world.creatures[0].creature_id
             )
+            saved_member_color = (77, 88, 199)
+            world.creatures[0].color = saved_member_color
             world.foods[0].consume_energy(
                 world.foods[0].energy_value * 0.25,
                 min_remainder_ratio=0.0,
@@ -526,6 +528,10 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertEqual(
                 restored.species_history[2].founder_color,
                 (210, 40, 90),
+            )
+            self.assertEqual(
+                restored.creatures[0].color,
+                saved_member_color,
             )
             self.assertEqual(
                 restored.neat_controller.species_manager.next_species_id,
@@ -776,6 +782,47 @@ class SpeciesHistoryReconstructionTest(unittest.TestCase):
 
         self.assertEqual(restored, saved)
         self.assertIsNot(restored, saved)
+
+    def test_complete_legacy_history_recovers_missing_founder_color(self) -> None:
+        world, controller = self._reconstruction_inputs([])
+        world.elapsed_time = 8.0
+        world.creatures[0].lineage = SimpleNamespace(species_id=2)
+        saved = {
+            1: self._record(1, None, 0.0),
+            2: replace(
+                self._record(2, 1, 4.5),
+                founder_color=None,
+            ),
+        }
+
+        restored = PersistenceManager._restore_species_history(
+            world,
+            controller,
+            saved,
+        )
+
+        self.assertEqual(restored[2].founder_color, (10, 20, 30))
+
+    def test_saved_founder_color_is_not_replaced_by_member_color(self) -> None:
+        world, controller = self._reconstruction_inputs([])
+        world.elapsed_time = 8.0
+        world.creatures[0].lineage = SimpleNamespace(species_id=2)
+        saved_color = (220, 30, 160)
+        saved = {
+            1: self._record(1, None, 0.0),
+            2: replace(
+                self._record(2, 1, 4.5),
+                founder_color=saved_color,
+            ),
+        }
+
+        restored = PersistenceManager._restore_species_history(
+            world,
+            controller,
+            saved,
+        )
+
+        self.assertEqual(restored[2].founder_color, saved_color)
 
     def test_legacy_slotted_species_record_is_normalized_before_copying(
         self,

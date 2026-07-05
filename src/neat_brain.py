@@ -22,12 +22,16 @@ DEFAULT_ACTION_OUTPUTS = [
 
 @dataclass(slots=True)
 class NeatBrain:
-    genome_id: int
-    genome: Any
-    network: neat.nn.FeedForwardNetwork
-    output_activations: list[str] = field(default_factory=list)
-    last_inputs: list[float] = field(default_factory=list)
-    last_outputs: list[float] = field(default_factory=list)
+    """
+    Represents a NEAT brain for a creature, encapsulating its genome, neural network,
+    and decision-making capabilities based on sensor inputs.
+    """
+    genome_id: int # Genome ID for the NEAT brain
+    genome: Any # Genome object representing the neural network structure
+    network: neat.nn.FeedForwardNetwork # Neural network created from the genome
+    output_activations: list[str] = field(default_factory=list)# List of activation functions for each output node
+    last_inputs: list[float] = field(default_factory=list)# Last sensor inputs received by the brain
+    last_outputs: list[float] = field(default_factory=list)# Last outputs produced by the neural network
     last_action: Action | None = None
 
     @classmethod
@@ -42,24 +46,47 @@ class NeatBrain:
         )
 
     def decide(self, snapshot: SensorSnapshot) -> Action:
+        """
+        Decide on an action based on the current sensor snapshot.
+        This method processes the sensor inputs through the neural network and
+        normalizes the outputs to produce a valid action for the creature.
+        
+        Args:
+            snapshot (SensorSnapshot): The current sensor snapshot of the creature's environment.
+
+        Returns:
+            Action: The action decided by the neural network based on the sensor inputs.
+        """
+
+        # Store the last inputs from the sensor snapshot
+        
+        # Convert the sensor snapshot to a list of inputs for the neural network
         self.last_inputs = snapshot.as_inputs()
+
+        # Activate the neural network with the last inputs to get raw outputs
         raw_outputs = self.network.activate(self.last_inputs)
+
+        # Normalize the raw outputs to ensure they are within valid ranges for actions
         outputs = self._normalize_outputs(raw_outputs)
+        
+        # Store the last outputs for reference
         self.last_outputs = outputs
 
+        # Create an Action object based on the normalized outputs and clamp its values to ensure they are within valid ranges
+        # The Action object is then stored as the last action taken by the brain.
         self.last_action = Action(
-            accelerate=self._signed_action_output(outputs[0]),
-            rotate=self._signed_action_output(outputs[1]),
-            want_reproduce=outputs[2],
-            want_eat=outputs[3],
-            reset_chronometer=outputs[4],
-            want_grab=outputs[5],
-            want_release=outputs[6],
-            want_nurse=outputs[7],
-            flee_panic_intensity=outputs[8],
-            weight_separation=outputs[9],
-            weight_alignment=outputs[10],
-            weight_cohesion=outputs[11],
+            accelerate=self._signed_action_output(outputs[0]),#  Normalize the first output for acceleration
+            rotate=self._signed_action_output(outputs[1]), # Normalize the second output for rotation
+            want_reproduce=outputs[2], # Use the third output directly for reproduction desire
+            want_eat=outputs[3], # Use the fourth output directly for eating desire
+            reset_chronometer=outputs[4], # Use the fifth output directly for chronometer reset desire
+            want_grab=outputs[5], # Use the sixth output directly for grab desire
+            want_release=outputs[6], # Use the seventh output directly for release desire
+            want_nurse=outputs[7],# Use the eighth output directly for nursing desire
+            flee_panic_intensity=outputs[8],# Use the ninth output directly for panic intensity in fleeing
+            weight_separation=outputs[9],# Use the tenth output directly for separation weight in flocking behavior
+            weight_alignment=outputs[10],# Use the eleventh output directly for alignment weight in flocking behavior
+            weight_cohesion=outputs[11],# Use the twelfth output directly for cohesion weight in flocking behavior
         ).clamped()
         return self.last_action
 

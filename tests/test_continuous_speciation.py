@@ -4,6 +4,7 @@ from math import pi
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
+from unittest.mock import patch
 
 try:
     import neat  # noqa: F401
@@ -26,7 +27,7 @@ from src.neat_controller import (
     calculate_phenotypic_distance,
     calculate_phenotypic_distance_components,
 )
-from src.speciation import summarize_neat_changes
+from src.speciation import extract_neural_shifts, summarize_neat_changes
 
 
 class FakeGenome:
@@ -180,7 +181,11 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(set(self.manager.representatives), {1})
 
     def test_distance_equal_to_threshold_keeps_parent_species(self) -> None:
-        result = self.evaluate(FakeGenome(distance=3.0))
+        with patch(
+            "src.neat_controller.extract_neural_shifts",
+            side_effect=AssertionError("diff must remain lazy"),
+        ):
+            result = self.evaluate(FakeGenome(distance=3.0))
         self.assertEqual(result.species_id, 1)
         self.assertFalse(result.is_new_species)
 
@@ -333,6 +338,27 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
 
 
 class NeatChangeSummaryTest(unittest.TestCase):
+    def test_neural_shifts_filter_jitter_and_keep_structural_changes(self) -> None:
+        parent = FakeGenome()
+        parent.connections = {
+            (-1, 0): FakeGene(weight=0.2),
+            (-2, 7): FakeGene(weight=0.8),
+            (-3, 1): FakeGene(weight=-0.4),
+        }
+        child = FakeGenome()
+        child.connections = {
+            (-1, 0): FakeGene(weight=0.7),
+            (-2, 7): FakeGene(weight=1.31),
+            (-4, 7): FakeGene(weight=-0.9),
+        }
+
+        shifts = extract_neural_shifts(parent, child)
+
+        self.assertNotIn((0, -1, "weight", 0.5), shifts)
+        self.assertIn((7, -2, "weight", 0.51), shifts)
+        self.assertIn((1, -3, "removed", 0.4), shifts)
+        self.assertIn((7, -4, "added", -0.9), shifts)
+
     def test_summarizes_structural_and_parameter_changes(self) -> None:
         parent = FakeGenome()
         parent.nodes = {0: FakeGene(bias=0.1), 1: FakeGene()}

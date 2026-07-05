@@ -23,6 +23,18 @@ CHECKPOINT_VERSION = 6
 LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5}
 
 
+def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
+    if not isinstance(value, (tuple, list)) or len(value) < 3:
+        return None
+    try:
+        channels = tuple(int(channel) for channel in value[:3])
+    except (TypeError, ValueError):
+        return None
+    if any(channel < 0 or channel > 255 for channel in channels):
+        return None
+    return channels
+
+
 class CheckpointError(RuntimeError):
     pass
 
@@ -634,7 +646,7 @@ class PersistenceManager:
             SpeciesDistanceBreakdown,
             SpeciesRecord,
             SpeciesTraitSnapshot,
-            summarize_neat_changes,
+            extract_neural_shifts,
         )
 
         telemetry = getattr(world, "telemetry", None)
@@ -679,6 +691,7 @@ class PersistenceManager:
             zero = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
             deltas = None
             neat_changes = None
+            neural_shifts = ()
             distances = SpeciesDistanceBreakdown(
                 neat_distance=None,
                 phenotypic_distance=None,
@@ -732,7 +745,7 @@ class PersistenceManager:
                     parent_genome,
                     neat_controller.config.genome_config,
                 )
-                neat_changes = summarize_neat_changes(parent_genome, genome)
+                neural_shifts = extract_neural_shifts(parent_genome, genome)
                 weighted_distance = (
                     phenotypic_distance * manager.phenotypic_weight
                 )
@@ -779,27 +792,54 @@ class PersistenceManager:
                 trait_deltas=deltas,
                 distances=distances,
                 neat_changes=neat_changes,
+                emergence_food_ratio=None,
+                emergence_pop_ratio=None,
+                neural_shifts=neural_shifts,
             )
         return records
 
     @staticmethod
     def _normalize_species_record(record: Any) -> Any:
-        from src.speciation import SpeciesRecord
+        from src.speciation import NeatChangeSummary, SpeciesRecord
 
         if not isinstance(record, SpeciesRecord):
             return record
+        legacy_summary = getattr(record, "neat_changes", None)
+        if legacy_summary is not None:
+            legacy_summary = NeatChangeSummary(
+                nodes_added=legacy_summary.nodes_added,
+                nodes_removed=legacy_summary.nodes_removed,
+                connections_added=legacy_summary.connections_added,
+                connections_removed=legacy_summary.connections_removed,
+                connections_enabled=legacy_summary.connections_enabled,
+                connections_disabled=legacy_summary.connections_disabled,
+                weights_changed=legacy_summary.weights_changed,
+                node_parameters_changed=legacy_summary.node_parameters_changed,
+                key_changes=(),
+            )
         return SpeciesRecord(
             species_id=record.species_id,
             parent_species_id=record.parent_species_id,
             founder_creature_id=record.founder_creature_id,
             founder_genome_id=record.founder_genome_id,
             emerged_at=record.emerged_at,
-            founder_color=record.founder_color,
+            founder_color=_checkpoint_rgb(record.founder_color),
             data_quality=record.data_quality,
             founder_traits=record.founder_traits,
             trait_deltas=record.trait_deltas,
             distances=record.distances,
-            neat_changes=getattr(record, "neat_changes", None),
+            neat_changes=legacy_summary,
+            emergence_food_ratio=getattr(
+                record,
+                "emergence_food_ratio",
+                None,
+            ),
+            emergence_pop_ratio=getattr(
+                record,
+                "emergence_pop_ratio",
+                None,
+            ),
+            neural_shifts=tuple(getattr(record, "neural_shifts", ()) or ()),
         )
 
     @staticmethod
@@ -809,17 +849,14 @@ class PersistenceManager:
     ) -> dict[int, Any]:
         from src.speciation import (
             SpeciesRecord,
-            summarize_neat_changes,
+            extract_neural_shifts,
         )
 
         representatives = neat_controller.species_manager.representatives
         enriched: dict[int, Any] = {}
         for species_id, raw_record in history.items():
             record = PersistenceManager._normalize_species_record(raw_record)
-            if (
-                not isinstance(record, SpeciesRecord)
-                or record.neat_changes is not None
-            ):
+            if not isinstance(record, SpeciesRecord) or record.neural_shifts:
                 enriched[int(species_id)] = record
                 continue
             if record.parent_species_id is None:
@@ -839,9 +876,83 @@ class PersistenceManager:
             ):
                 record = replace(
                     record,
-                    neat_changes=summarize_neat_changes(parent[0], child[0]),
+                    neural_shifts=extract_neural_shifts(parent[0], child[0]),
                 )
             enriched[int(species_id)] = record
+        return enriched
+
+    @staticmethod
+    def _enrich_species_colors(
+        history: dict[int, Any],
+        world: World,
+        neat_controller: NeatBrainController,
+    ) -> dict[int, Any]:
+        """Recover canonical tree colors missing from legacy checkpoints."""
+        from src.speciation import SpeciesRecord
+
+        living_by_id = {
+            int(creature.creature_id): creature
+            for creature in getattr(world, "creatures", ())
+        }
+        living_by_species: dict[int, Any] = {}
+        living_by_genome: dict[int, Any] = {}
+        for creature in getattr(world, "creatures", ()):
+            lineage = getattr(creature, "lineage", None)
+            species_id = getattr(lineage, "species_id", None)
+            if species_id is not None:
+                living_by_species.setdefault(int(species_id), creature)
+            genome_id = neat_controller.genome_id_for(creature.creature_id)
+            if genome_id is not None:
+                living_by_genome.setdefault(int(genome_id), creature)
+
+        archived_by_genome = getattr(
+            world,
+            "_trait_archive_by_genome_id",
+            {},
+        )
+        archived_by_species: dict[int, Any] = {}
+        for archived in archived_by_genome.values():
+            lineage = getattr(archived, "lineage", None)
+            species_id = getattr(lineage, "species_id", None)
+            if species_id is not None:
+                archived_by_species.setdefault(int(species_id), archived)
+
+        enriched: dict[int, Any] = {}
+        for species_id, record in history.items():
+            if (
+                not isinstance(record, SpeciesRecord)
+                or _checkpoint_rgb(getattr(record, "founder_color", None))
+                is not None
+            ):
+                enriched[int(species_id)] = record
+                continue
+
+            source = None
+            founder_creature_id = getattr(
+                record,
+                "founder_creature_id",
+                None,
+            )
+            if founder_creature_id is not None:
+                source = living_by_id.get(int(founder_creature_id))
+            founder_genome_id = getattr(record, "founder_genome_id", None)
+            if source is None and founder_genome_id is not None:
+                source = living_by_genome.get(int(founder_genome_id))
+            if source is None and founder_genome_id is not None:
+                source = archived_by_genome.get(int(founder_genome_id))
+            if source is None:
+                source = living_by_species.get(int(species_id))
+            if source is None:
+                source = archived_by_species.get(int(species_id))
+
+            recovered_color = _checkpoint_rgb(
+                getattr(source, "color", None)
+            )
+            enriched[int(species_id)] = (
+                record
+                if recovered_color is None
+                else replace(record, founder_color=recovered_color)
+            )
         return enriched
 
     @staticmethod
@@ -858,6 +969,11 @@ class PersistenceManager:
         }
         history = PersistenceManager._enrich_species_neat_changes(
             copy.deepcopy(normalized_saved_history),
+            neat_controller,
+        )
+        history = PersistenceManager._enrich_species_colors(
+            history,
+            world,
             neat_controller,
         )
         representative_ids = {
@@ -943,9 +1059,16 @@ class PersistenceManager:
                     trait_deltas=None,
                     distances=unknown_distances,
                     neat_changes=None,
+                    emergence_food_ratio=None,
+                    emergence_pop_ratio=None,
+                    neural_shifts=(),
                 )
-        return PersistenceManager._enrich_species_neat_changes(
-            recovered,
+        return PersistenceManager._enrich_species_colors(
+            PersistenceManager._enrich_species_neat_changes(
+                recovered,
+                neat_controller,
+            ),
+            world,
             neat_controller,
         )
 

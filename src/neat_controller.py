@@ -16,7 +16,8 @@ from src.speciation import (
     NeatChangeSummary,
     SpeciesDistanceBreakdown,
     SpeciesTraitSnapshot,
-    summarize_neat_changes,
+    NeuralShift,
+    extract_neural_shifts,
 )
 from src.vision import SENSOR_INPUT_COUNT, SensorSnapshot
 
@@ -121,6 +122,7 @@ class SpeciationResult:
     trait_deltas: SpeciesTraitSnapshot
     distances: SpeciesDistanceBreakdown
     neat_changes: NeatChangeSummary | None = None
+    neural_shifts: tuple[NeuralShift, ...] = ()
 
 
 class ContinuousSpeciesManager:
@@ -216,11 +218,11 @@ class ContinuousSpeciesManager:
                 phenotype_components.movement_cost_multiplier
             ),
         )
-        neat_changes = summarize_neat_changes(
-            representative_genome,
-            child_genome,
-        )
         if composite_distance > self.compatibility_threshold:
+            neural_shifts = extract_neural_shifts(
+                representative_genome,
+                child_genome,
+            )
             new_species_id = self.next_species_id
             self.representatives[new_species_id] = (
                 child_genome,
@@ -238,7 +240,7 @@ class ContinuousSpeciesManager:
                 ),
                 trait_deltas=trait_deltas,
                 distances=distances,
-                neat_changes=neat_changes,
+                neural_shifts=neural_shifts,
             )
 
         return SpeciationResult(
@@ -251,11 +253,14 @@ class ContinuousSpeciesManager:
             ),
             trait_deltas=trait_deltas,
             distances=distances,
-            neat_changes=neat_changes,
         )
 
 
 class NeatBrainController:
+    """
+    Manages NEAT brains for a population of creatures, including creation,
+    mutation, speciation, and decision-making based on sensor snapshots.
+    """
     def __init__(
         self,
         config_path: str | Path,

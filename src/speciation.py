@@ -6,6 +6,8 @@ from typing import Any
 
 from src.creature import PhysicalTraits, VisionTraits
 
+NeuralShift = tuple[int, int, str, float]
+
 
 @dataclass(frozen=True, slots=True)
 class SpeciesTraitSnapshot:
@@ -237,6 +239,91 @@ class SpeciesRecord:
     trait_deltas: SpeciesTraitSnapshot | None
     distances: SpeciesDistanceBreakdown
     neat_changes: NeatChangeSummary | None = None
+    emergence_food_ratio: float | None = None
+    emergence_pop_ratio: float | None = None
+    neural_shifts: tuple[NeuralShift, ...] = ()
+
+
+def extract_neural_shifts(
+    parent_genome: Any,
+    child_genome: Any,
+    *,
+    weight_threshold: float = 0.5,
+) -> tuple[NeuralShift, ...]:
+    """Return only behaviorally meaningful connection changes."""
+    parent_connections = getattr(parent_genome, "connections", {}) or {}
+    child_connections = getattr(child_genome, "connections", {}) or {}
+    shifts: list[NeuralShift] = []
+
+    for key in sorted(
+        set(parent_connections) | set(child_connections),
+        key=str,
+    ):
+        if not isinstance(key, tuple) or len(key) != 2:
+            continue
+        try:
+            source_node_id = int(key[0])
+            target_node_id = int(key[1])
+        except (TypeError, ValueError):
+            continue
+
+        parent_gene = parent_connections.get(key)
+        child_gene = child_connections.get(key)
+        parent_enabled = parent_gene is not None and bool(
+            getattr(parent_gene, "enabled", True)
+        )
+        child_enabled = child_gene is not None and bool(
+            getattr(child_gene, "enabled", True)
+        )
+        parent_weight = (
+            _finite_float(getattr(parent_gene, "weight", None))
+            if parent_gene is not None
+            else None
+        )
+        child_weight = (
+            _finite_float(getattr(child_gene, "weight", None))
+            if child_gene is not None
+            else None
+        )
+
+        if not parent_enabled and child_enabled:
+            shifts.append(
+                (
+                    target_node_id,
+                    source_node_id,
+                    "added",
+                    0.0 if child_weight is None else child_weight,
+                )
+            )
+            continue
+        if parent_enabled and not child_enabled:
+            shifts.append(
+                (
+                    target_node_id,
+                    source_node_id,
+                    "removed",
+                    0.0 if parent_weight is None else -parent_weight,
+                )
+            )
+            continue
+        if (
+            parent_enabled
+            and child_enabled
+            and parent_weight is not None
+            and child_weight is not None
+        ):
+            delta = child_weight - parent_weight
+            if abs(delta) > weight_threshold:
+                shifts.append(
+                    (
+                        target_node_id,
+                        source_node_id,
+                        "weight",
+                        delta,
+                    )
+                )
+
+    return tuple(shifts)
 
 
 def _finite_float(value: object) -> float | None:

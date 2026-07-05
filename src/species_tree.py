@@ -28,6 +28,344 @@ class SpeciesTreeLayout:
 SpeciesTreeRoute = tuple[tuple[float, float], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TreeViewportSlice:
+    node_ids: tuple[int, ...]
+    edges: tuple[tuple[int, int], ...]
+    routes: dict[tuple[int, int], SpeciesTreeRoute]
+
+
+@dataclass(frozen=True, slots=True)
+class TimeBucketSummary:
+    bucket_id: int
+    node_count: int
+    start_time: float
+    end_time: float
+
+
+class TreeLayoutManager:
+    """Append-only species layout with numeric time-bucket indexing."""
+
+    def __init__(
+        self,
+        *,
+        horizontal_gap: float = 92.0,
+        time_scale: float = 2.0,
+        minimum_generation_gap: float = 64.0,
+        padding: float = 48.0,
+        bucket_seconds: float = 1800.0,
+    ) -> None:
+        self.horizontal_gap = max(1.0, float(horizontal_gap))
+        self.time_scale = max(0.0001, float(time_scale))
+        self.minimum_generation_gap = max(
+            0.0,
+            float(minimum_generation_gap),
+        )
+        self.padding = max(0.0, float(padding))
+        self.bucket_seconds = max(1.0, float(bucket_seconds))
+        self.placement_count = 0
+        self._records_identity: int | None = None
+        self._record_count = 0
+        self._max_species_id: int | None = None
+        self._positions: dict[int, tuple[float, float]] = {}
+        self._depths: dict[int, int] = {}
+        self._effective_times: dict[int, float] = {}
+        self._parents: dict[int, int | None] = {}
+        self._child_counts: dict[int, int] = {}
+        self._lanes: dict[int, int] = {}
+        self._roots: list[int] = []
+        self._edges: list[tuple[int, int]] = []
+        self._routes: dict[tuple[int, int], SpeciesTreeRoute] = {}
+        self._node_buckets: dict[int, list[int]] = {}
+        self._edge_buckets: dict[int, list[tuple[int, int]]] = {}
+        self._next_lane = 0
+        self._timeline_end = 0.0
+        self._display_end = 0.0
+        self._latest_species_id: int | None = None
+        self._edges_tuple: tuple[tuple[int, int], ...] = ()
+        self._roots_tuple: tuple[int, ...] = ()
+        self._bucket_ids: tuple[int, ...] = ()
+        self._buckets_dirty = False
+
+    @property
+    def latest_species_id(self) -> int | None:
+        return self._latest_species_id
+
+    @property
+    def parents(self) -> Mapping[int, int | None]:
+        return self._parents
+
+    @property
+    def routes(self) -> Mapping[tuple[int, int], SpeciesTreeRoute]:
+        return self._routes
+
+    def sync(
+        self,
+        records: Mapping[int, SpeciesRecordLike],
+        *,
+        timeline_end: float | None = None,
+    ) -> SpeciesTreeLayout:
+        records_identity = id(records)
+        record_count = len(records)
+        must_rebuild = (
+            self._records_identity is not None
+            and (
+                records_identity != self._records_identity
+                or record_count < self._record_count
+            )
+        )
+        if must_rebuild:
+            self._reset()
+
+        if self._records_identity is None:
+            self._records_identity = records_identity
+            new_ids = sorted(int(species_id) for species_id in records)
+        elif record_count == self._record_count:
+            new_ids = []
+        else:
+            added_count = record_count - self._record_count
+            sequential_ids = (
+                []
+                if self._max_species_id is None
+                else list(
+                    range(
+                        self._max_species_id + 1,
+                        self._max_species_id + added_count + 1,
+                    )
+                )
+            )
+            if sequential_ids and all(
+                species_id in records for species_id in sequential_ids
+            ):
+                new_ids = sequential_ids
+            else:
+                new_ids = sorted(
+                    int(species_id)
+                    for species_id in records
+                    if int(species_id) not in self._positions
+                )
+
+        for species_id in new_ids:
+            self._place(species_id, records[species_id])
+
+        self._record_count = record_count
+        if self._positions:
+            self._max_species_id = max(
+                self._max_species_id or min(self._positions),
+                max(self._positions),
+            )
+        requested_end = _valid_time(timeline_end)
+        latest_time = max(self._effective_times.values(), default=0.0)
+        self._display_end = max(self._display_end, latest_time)
+        self._timeline_end = max(
+            self._timeline_end,
+            0.0 if requested_end is None else requested_end,
+        )
+        return self._layout()
+
+    def viewport_slice(
+        self,
+        *,
+        left: float,
+        right: float,
+        top: float,
+        bottom: float,
+        node_padding: float = 24.0,
+    ) -> TreeViewportSlice:
+        if not self._positions:
+            return TreeViewportSlice((), (), {})
+        low_x, high_x = sorted((float(left), float(right)))
+        low_y, high_y = sorted((float(top), float(bottom)))
+        padding = max(0.0, float(node_padding))
+        start_time = max(0.0, (low_y - self.padding - padding) / self.time_scale)
+        end_time = max(0.0, (high_y - self.padding + padding) / self.time_scale)
+        start_bucket = self.bucket_for_time(start_time)
+        end_bucket = self.bucket_for_time(end_time)
+        bucket_ids = tuple(
+            bucket_id
+            for bucket_id in self._sorted_bucket_ids()
+            if start_bucket <= bucket_id <= end_bucket
+        )
+
+        node_ids: list[int] = []
+        for bucket_id in bucket_ids:
+            for species_id in self._node_buckets.get(bucket_id, ()):
+                x, y = self._positions[species_id]
+                if (
+                    low_x - padding <= x <= high_x + padding
+                    and low_y - padding <= y <= high_y + padding
+                ):
+                    node_ids.append(species_id)
+
+        candidate_edges = {
+            edge
+            for bucket_id in bucket_ids
+            for edge in self._edge_buckets.get(bucket_id, ())
+        }
+        edges = tuple(
+            edge
+            for edge in sorted(candidate_edges)
+            if _route_intersects_bounds(
+                self._routes[edge],
+                low_x - padding,
+                high_x + padding,
+                low_y - padding,
+                high_y + padding,
+            )
+        )
+        return TreeViewportSlice(
+            node_ids=tuple(node_ids),
+            edges=edges,
+            routes={edge: self._routes[edge] for edge in edges},
+        )
+
+    def bucket_for_time(self, time_value: float) -> int:
+        return int(max(0.0, float(time_value)) // self.bucket_seconds)
+
+    def bucket_summaries(self) -> tuple[TimeBucketSummary, ...]:
+        return tuple(
+            TimeBucketSummary(
+                bucket_id=bucket_id,
+                node_count=len(self._node_buckets[bucket_id]),
+                start_time=bucket_id * self.bucket_seconds,
+                end_time=(bucket_id + 1) * self.bucket_seconds,
+            )
+            for bucket_id in sorted(self._node_buckets)
+        )
+
+    def _place(
+        self,
+        species_id: int,
+        record: SpeciesRecordLike,
+    ) -> None:
+        candidate = getattr(record, "parent_species_id", None)
+        parent_id = (
+            int(candidate)
+            if candidate is not None
+            and int(candidate) in self._positions
+            and int(candidate) != species_id
+            else None
+        )
+        recorded_time = _valid_time(getattr(record, "emerged_at", None))
+        if recorded_time is not None:
+            self._timeline_end = max(self._timeline_end, recorded_time)
+        if parent_id is None:
+            lane = self._allocate_lane()
+            depth = 0
+            effective_time = 0.0 if recorded_time is None else recorded_time
+            self._roots.append(species_id)
+            self._roots_tuple = tuple(self._roots)
+        else:
+            parent_time = self._effective_times[parent_id]
+            fallback_gap = self.minimum_generation_gap / self.time_scale
+            effective_time = (
+                parent_time + fallback_gap
+                if recorded_time is None
+                else max(parent_time, recorded_time)
+            )
+            child_count = self._child_counts.get(parent_id, 0)
+            lane = (
+                self._lanes[parent_id]
+                if child_count == 0
+                else self._allocate_lane()
+            )
+            self._child_counts[parent_id] = child_count + 1
+            depth = self._depths[parent_id] + 1
+
+        position = (
+            self.padding + lane * self.horizontal_gap,
+            self.padding + effective_time * self.time_scale,
+        )
+        self._positions[species_id] = position
+        self._depths[species_id] = depth
+        self._effective_times[species_id] = effective_time
+        self._parents[species_id] = parent_id
+        self._child_counts.setdefault(species_id, 0)
+        self._lanes[species_id] = lane
+        bucket_id = self.bucket_for_time(effective_time)
+        self._node_buckets.setdefault(bucket_id, []).append(species_id)
+        self._buckets_dirty = True
+        self.placement_count += 1
+
+        if parent_id is not None:
+            edge = (parent_id, species_id)
+            self._edges.append(edge)
+            self._edges_tuple = tuple(self._edges)
+            route = _incremental_edge_route(
+                self._positions[parent_id],
+                position,
+            )
+            self._routes[edge] = route
+            parent_bucket = self.bucket_for_time(
+                self._effective_times[parent_id]
+            )
+            for edge_bucket in range(parent_bucket, bucket_id + 1):
+                self._edge_buckets.setdefault(edge_bucket, []).append(edge)
+                self._buckets_dirty = True
+
+        latest = self._latest_species_id
+        if latest is None or (effective_time, species_id) >= (
+            self._effective_times[latest],
+            latest,
+        ):
+            self._latest_species_id = species_id
+
+    def _allocate_lane(self) -> int:
+        lane = self._next_lane
+        self._next_lane += 1
+        return lane
+
+    def _layout(self) -> SpeciesTreeLayout:
+        latest_time = max(self._timeline_end, self._display_end, 0.0)
+        return SpeciesTreeLayout(
+            positions=self._positions,
+            edges=self._edges_tuple,
+            depths=self._depths,
+            effective_times=self._effective_times,
+            roots=self._roots_tuple,
+            content_width=(
+                0.0
+                if not self._positions
+                else self.padding * 2.0
+                + max(0, self._next_lane - 1) * self.horizontal_gap
+            ),
+            content_height=(
+                0.0
+                if not self._positions
+                else self.padding * 2.0 + latest_time * self.time_scale
+            ),
+            leaf_count=max(0, self._next_lane),
+            timeline_start=0.0,
+            timeline_end=self._timeline_end,
+        )
+
+    def _sorted_bucket_ids(self) -> tuple[int, ...]:
+        if self._buckets_dirty:
+            self._bucket_ids = tuple(
+                sorted(set(self._node_buckets) | set(self._edge_buckets))
+            )
+            self._buckets_dirty = False
+        return self._bucket_ids
+
+    def _reset(self) -> None:
+        configuration = (
+            self.horizontal_gap,
+            self.time_scale,
+            self.minimum_generation_gap,
+            self.padding,
+            self.bucket_seconds,
+        )
+        placement_count = self.placement_count
+        self.__init__(
+            horizontal_gap=configuration[0],
+            time_scale=configuration[1],
+            minimum_generation_gap=configuration[2],
+            padding=configuration[3],
+            bucket_seconds=configuration[4],
+        )
+        self.placement_count = placement_count
+
+
 def build_species_tree_layout(
     records: Mapping[int, SpeciesRecordLike],
     *,
@@ -37,111 +375,13 @@ def build_species_tree_layout(
     padding: float = 48.0,
     timeline_end: float | None = None,
 ) -> SpeciesTreeLayout:
-    """Lay out a possibly imperfect species ancestry graph as a forest.
-
-    Invalid, self-referencing, missing, and cyclic parent relationships are
-    detached into roots so every supplied species remains visible.
-    Coordinates are measured from the content's top-left corner.
-    """
-    species_ids = tuple(sorted(int(species_id) for species_id in records))
-    if not species_ids:
-        end = _valid_time(timeline_end) or 0.0
-        return SpeciesTreeLayout(
-            {}, (), {}, {}, (), 0.0, 0.0, 0, 0.0, end
-        )
-
-    known_ids = set(species_ids)
-    parents: dict[int, int | None] = {}
-    for species_id in species_ids:
-        candidate = records[species_id].parent_species_id
-        parents[species_id] = (
-            int(candidate)
-            if candidate is not None
-            and int(candidate) in known_ids
-            and int(candidate) != species_id
-            else None
-        )
-
-    _break_parent_cycles(parents)
-
-    children: dict[int, list[int]] = {species_id: [] for species_id in species_ids}
-    for species_id in species_ids:
-        parent_id = parents[species_id]
-        if parent_id is not None:
-            children[parent_id].append(species_id)
-    for child_ids in children.values():
-        child_ids.sort()
-
-    roots = tuple(
-        species_id for species_id in species_ids if parents[species_id] is None
+    manager = TreeLayoutManager(
+        horizontal_gap=horizontal_gap,
+        time_scale=time_scale,
+        minimum_generation_gap=minimum_generation_gap,
+        padding=padding,
     )
-    depths: dict[int, int] = {}
-    effective_times: dict[int, float] = {}
-    positions: dict[int, tuple[float, float]] = {}
-    next_leaf_column = 0
-    safe_time_scale = max(0.0001, float(time_scale))
-    fallback_time_gap = max(0.0, minimum_generation_gap) / safe_time_scale
-
-    def place(species_id: int, depth: int, parent_time: float | None) -> float:
-        nonlocal next_leaf_column
-        depths[species_id] = depth
-        recorded_time = _valid_time(getattr(records[species_id], "emerged_at", None))
-        if recorded_time is None:
-            effective_time = (
-                0.0 if parent_time is None else parent_time + fallback_time_gap
-            )
-        else:
-            effective_time = max(recorded_time, parent_time or 0.0)
-        effective_times[species_id] = effective_time
-
-        child_ids = children[species_id]
-        if child_ids:
-            child_columns = [
-                place(child_id, depth + 1, effective_time)
-                for child_id in child_ids
-            ]
-            column = (child_columns[0] + child_columns[-1]) * 0.5
-        else:
-            column = float(next_leaf_column)
-            next_leaf_column += 1
-        positions[species_id] = (
-            padding + column * horizontal_gap,
-            padding + effective_time * safe_time_scale,
-        )
-        return column
-
-    for root_id in roots:
-        place(root_id, 0, None)
-
-    leaf_count = max(1, next_leaf_column)
-    recorded_times = [
-        time
-        for record in records.values()
-        if (time := _valid_time(getattr(record, "emerged_at", None))) is not None
-    ]
-    requested_end = _valid_time(timeline_end)
-    timeline_candidates = [0.0, *recorded_times]
-    if requested_end is not None:
-        timeline_candidates.append(requested_end)
-    real_timeline_end = max(timeline_candidates)
-    display_end = max(real_timeline_end, *effective_times.values())
-    edges = tuple(
-        (parent_id, species_id)
-        for species_id in species_ids
-        if (parent_id := parents[species_id]) is not None
-    )
-    return SpeciesTreeLayout(
-        positions=positions,
-        edges=edges,
-        depths=depths,
-        effective_times=effective_times,
-        roots=roots,
-        content_width=padding * 2.0 + (leaf_count - 1) * horizontal_gap,
-        content_height=padding * 2.0 + display_end * safe_time_scale,
-        leaf_count=leaf_count,
-        timeline_start=0.0,
-        timeline_end=real_timeline_end,
-    )
+    return manager.sync(records, timeline_end=timeline_end)
 
 
 def route_species_tree_edges(
@@ -342,6 +582,40 @@ def _compact_route(points: tuple[tuple[float, float], ...]) -> SpeciesTreeRoute:
         else:
             compact.append(point)
     return tuple(compact)
+
+
+def _incremental_edge_route(
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> SpeciesTreeRoute:
+    if start[0] == end[0] or start[1] == end[1]:
+        return (start, end)
+    midpoint_y = (start[1] + end[1]) * 0.5
+    return _compact_route(
+        (
+            start,
+            (start[0], midpoint_y),
+            (end[0], midpoint_y),
+            end,
+        )
+    )
+
+
+def _route_intersects_bounds(
+    route: SpeciesTreeRoute,
+    left: float,
+    right: float,
+    top: float,
+    bottom: float,
+) -> bool:
+    low_y, high_y = sorted((top, bottom))
+    return any(
+        max(min(start[0], end[0]), left)
+        <= min(max(start[0], end[0]), right)
+        and max(min(start[1], end[1]), low_y)
+        <= min(max(start[1], end[1]), high_y)
+        for start, end in zip(route, route[1:])
+    )
 
 
 def _route_hits_obstacle(

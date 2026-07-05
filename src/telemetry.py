@@ -15,8 +15,12 @@ from src.speciation import (
 class TelemetryDatabase:
     def __init__(self, database_file: str | Path) -> None:
         self.database_file = Path(database_file)
-        self.database_file.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.database_file)
+        in_memory = str(database_file) == ":memory:"
+        if not in_memory:
+            self.database_file.parent.mkdir(parents=True, exist_ok=True)
+        self.connection = sqlite3.connect(
+            ":memory:" if in_memory else self.database_file
+        )
         self.connection.execute("PRAGMA journal_mode=WAL;")
         self.connection.execute("PRAGMA synchronous=NORMAL;")
         self.connection.executescript(
@@ -65,7 +69,10 @@ class TelemetryDatabase:
                 vision_range_component REAL,
                 vision_angle_component REAL,
                 movement_cost_component REAL,
-                neat_changes_json TEXT
+                neat_changes_json TEXT,
+                emergence_food_ratio REAL,
+                emergence_pop_ratio REAL,
+                neural_shifts_json TEXT
             );
 
             CREATE TABLE IF NOT EXISTS population_metrics (
@@ -74,6 +81,11 @@ class TelemetryDatabase:
                 food_count INTEGER,
                 best_fitness REAL
             );
+
+            CREATE INDEX IF NOT EXISTS idx_species_parent
+                ON species(parent_species_id);
+            CREATE INDEX IF NOT EXISTS idx_creatures_species
+                ON creatures(species_id);
             """
         )
         self._ensure_species_history_columns()
@@ -91,6 +103,21 @@ class TelemetryDatabase:
             self.connection.execute(
                 "ALTER TABLE species_history "
                 "ADD COLUMN neat_changes_json TEXT"
+            )
+        if "emergence_food_ratio" not in columns:
+            self.connection.execute(
+                "ALTER TABLE species_history "
+                "ADD COLUMN emergence_food_ratio REAL"
+            )
+        if "emergence_pop_ratio" not in columns:
+            self.connection.execute(
+                "ALTER TABLE species_history "
+                "ADD COLUMN emergence_pop_ratio REAL"
+            )
+        if "neural_shifts_json" not in columns:
+            self.connection.execute(
+                "ALTER TABLE species_history "
+                "ADD COLUMN neural_shifts_json TEXT"
             )
 
     def log_species(
@@ -138,10 +165,11 @@ class TelemetryDatabase:
                 composite_distance, compatibility_threshold,
                 phenotypic_weight, radius_component, vision_range_component,
                 vision_angle_component, movement_cost_component,
-                neat_changes_json
+                neat_changes_json, emergence_food_ratio,
+                emergence_pop_ratio, neural_shifts_json
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -172,6 +200,11 @@ class TelemetryDatabase:
                 distances.movement_cost_component,
                 _serialize_neat_changes(
                     getattr(record, "neat_changes", None)
+                ),
+                getattr(record, "emergence_food_ratio", None),
+                getattr(record, "emergence_pop_ratio", None),
+                _serialize_neural_shifts(
+                    getattr(record, "neural_shifts", ())
                 ),
             ),
         )
@@ -206,7 +239,8 @@ class TelemetryDatabase:
                 composite_distance, compatibility_threshold,
                 phenotypic_weight, radius_component, vision_range_component,
                 vision_angle_component, movement_cost_component,
-                neat_changes_json
+                neat_changes_json, emergence_food_ratio,
+                emergence_pop_ratio, neural_shifts_json
             FROM species_history
         """
         parameters: tuple[float, ...] = ()
@@ -246,6 +280,9 @@ class TelemetryDatabase:
                 vision_angle_component,
                 movement_cost_component,
                 neat_changes_json,
+                emergence_food_ratio,
+                emergence_pop_ratio,
+                neural_shifts_json,
             ) = row
             records[int(species_id)] = SpeciesRecord(
                 species_id=int(species_id),
@@ -286,6 +323,9 @@ class TelemetryDatabase:
                     movement_cost_component=movement_cost_component,
                 ),
                 neat_changes=_deserialize_neat_changes(neat_changes_json),
+                emergence_food_ratio=_optional_float(emergence_food_ratio),
+                emergence_pop_ratio=_optional_float(emergence_pop_ratio),
+                neural_shifts=_deserialize_neural_shifts(neural_shifts_json),
             )
         return records
 
@@ -387,6 +427,41 @@ def _trait_snapshot(
     )
 
 
+def _optional_float(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed == parsed and abs(parsed) != float("inf") else None
+
+
+def _serialize_neural_shifts(shifts: object) -> str | None:
+    try:
+        compact = [
+            [int(target), int(source), str(shift_type), float(delta)]
+            for target, source, shift_type, delta in shifts  # type: ignore[misc]
+        ]
+    except (TypeError, ValueError):
+        return None
+    return json.dumps(compact, separators=(",", ":"))
+
+
+def _deserialize_neural_shifts(
+    value: object,
+) -> tuple[tuple[int, int, str, float], ...]:
+    if value is None:
+        return ()
+    try:
+        rows = json.loads(str(value))
+        return tuple(
+            (int(target), int(source), str(shift_type), float(delta))
+            for target, source, shift_type, delta in rows
+            if str(shift_type) in {"added", "removed", "weight"}
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ()
+
+
 def _serialize_neat_changes(summary: NeatChangeSummary | None) -> str | None:
     if summary is None:
         return None
@@ -421,7 +496,7 @@ def _deserialize_neat_changes(value: object) -> NeatChangeSummary | None:
             connections_disabled=int(data["connections_disabled"]),
             weights_changed=int(data["weights_changed"]),
             node_parameters_changed=int(data["node_parameters_changed"]),
-            key_changes=tuple(str(item) for item in data.get("key_changes", ())),
+            key_changes=(),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
