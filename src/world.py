@@ -119,6 +119,7 @@ class World:
         self.show_biome_background = False
         self._physics_accumulator = 0.0
         self._reproduction_accumulator = 0.0
+        self._speciation_adjustment_accumulator = 0.0
         self._last_actions: dict[int, Action] = {}
         self._motion_commands: dict[int, MotionCommand] = {}
         self.debug_vision_enabled = config.debug.show_debug_vision_by_default
@@ -189,8 +190,6 @@ class World:
             biome_food_counts=self._biome_food_counts(),
         )
 
-        self.metabolism = Metabolism(config.metabolism, self.vision, config.trait)
-
         self.baseline_controller = BaselineFoodController(self.config.action)
         self.neat_controller = NeatBrainController(
             "configs/neat_herbivore.ini",
@@ -201,6 +200,12 @@ class World:
         )
         if bootstrap:
             self.neat_controller.assign_initial_brains(self.creatures)
+        self.metabolism = Metabolism(
+            config.metabolism,
+            self.vision,
+            config.trait,
+            genome_for_creature_id=self._genome_for_creature_id,
+        )
         self.rt_neat = RtNeatManager(self.neat_controller)
         self._trait_archive_by_genome_id: dict[int, ArchivedCreatureTraits] = {}
         self.species_history: dict[int, SpeciesRecord] = {}
@@ -238,6 +243,7 @@ class World:
             self._refresh_stats()
             return
 
+        self._update_speciation_threshold(delta_time)
         scaled_delta_time = delta_time * self.simulation_speed
         self.elapsed_time += scaled_delta_time
         self._physics_accumulator += min(
@@ -2407,10 +2413,68 @@ class World:
         self._refresh_stats()
         self._try_reproduce()
 
-    def _spend_reproduction_energy(self, parent: Creature) -> None:
+    def _update_speciation_threshold(self, delta_time: float) -> None:
+        speciation_config = self.config.speciation
+        interval = speciation_config.adjustment_interval_seconds
+        if interval <= 0.0:
+            return
+
+        self._speciation_adjustment_accumulator += max(0.0, delta_time)
+        if self._speciation_adjustment_accumulator < interval:
+            return
+
+        intervals_elapsed = int(
+            self._speciation_adjustment_accumulator / interval
+        )
+        self._speciation_adjustment_accumulator %= interval
+        active_species_count = len(
+            {creature.lineage.species_id for creature in self.creatures}
+        )
+        threshold = self.neat_controller.species_manager.compatibility_threshold
+        if active_species_count < speciation_config.target_species_count:
+            threshold -= (
+                speciation_config.threshold_adjust_rate * intervals_elapsed
+            )
+        elif active_species_count > speciation_config.target_species_count:
+            threshold += (
+                speciation_config.threshold_adjust_rate * intervals_elapsed
+            )
+
+        self.neat_controller.species_manager.compatibility_threshold = max(
+            speciation_config.min_threshold,
+            min(speciation_config.max_threshold, threshold),
+        )
+
+    def _genome_for_creature_id(self, creature_id: int) -> object | None:
+        brain_for = getattr(self.neat_controller, "brain_for", None)
+        if brain_for is None:
+            return None
+        brain = brain_for(creature_id)
+        return None if brain is None else brain.genome
+
+    def _reproduction_cost_for(self, parent: Creature) -> float:
+        population_config = self.config.population
+        genome = self._genome_for_creature_id(parent.creature_id)
+        nodes = getattr(genome, "nodes", {}) or {}
+        connections = getattr(genome, "connections", {}) or {}
+        calculated_cost = (
+            population_config.reproduction_energy_cost_base
+            + len(nodes) * population_config.reproduction_cost_per_node
+            + len(connections) * population_config.reproduction_cost_per_connection
+        )
+        return min(
+            calculated_cost,
+            population_config.max_dynamic_reproduction_cost,
+        )
+
+    def _spend_reproduction_energy(
+        self,
+        parent: Creature,
+        reproduction_cost: float,
+    ) -> None:
         parent.energy = max(
             0.0,
-            parent.energy - self.config.population.reproduction_energy_cost,
+            parent.energy - reproduction_cost,
         )
 
     def _try_reproduce(self) -> bool:
@@ -2427,6 +2491,7 @@ class World:
         if parent is None:
             return False
 
+        reproduction_cost = self._reproduction_cost_for(parent)
         parent_fitness = self.fitness[parent.creature_id]
         child_id = self._next_creature_id()
         child_traits = self._mutated_child_traits(parent)
@@ -2470,13 +2535,13 @@ class World:
         self._chronometers[child_id] = 0.0
         self._log_creature_birth(child)
 
-        self._spend_reproduction_energy(parent)
+        self._spend_reproduction_energy(parent, reproduction_cost)
         parent_fitness.record_reproduction()
         self.rt_neat.record_normal_replacement()
         return True
 
     def _has_reproduction_resources(self) -> bool:
-        child_energy = self.config.population.reproduction_energy_cost
+        child_energy = self.config.population.reproduction_energy_cost_base
         available_biomass = self._available_biomass()
         if available_biomass < child_energy:
             return False

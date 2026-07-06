@@ -569,6 +569,67 @@ class PersistenceManagerTest(unittest.TestCase):
             if restored is not None:
                 restored.close()
 
+    def test_legacy_checkpoint_reconstructs_neat_allocators_before_mutation(
+        self,
+    ) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 1
+        self.config.food.initial_food_items = 0
+        world = World(self.config)
+        restored = None
+        try:
+            controller = world.neat_controller
+            creature = world.creatures[0]
+            brain = controller.brain_for(creature.creature_id)
+            self.assertIsNotNone(brain)
+            genome = brain.genome
+            genome_config = controller.config.genome_config
+            evolved_node_id = 1_000
+            genome.nodes[evolved_node_id] = genome.create_node(
+                genome_config,
+                evolved_node_id,
+            )
+            max_saved_innovation = 5_000
+            next(iter(genome.connections.values())).innovation = (
+                max_saved_innovation
+            )
+
+            state = PersistenceManager._capture_state(world, controller)
+            self.assertGreater(
+                state["population"]["next_node_id"],
+                evolved_node_id,
+            )
+            self.assertGreaterEqual(
+                state["population"]["innovation_number"],
+                max_saved_innovation,
+            )
+            state["population"].pop("next_node_id")
+            state["population"].pop("innovation_number")
+
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+            )
+            restored_genome = restored.neat_controller.brain_for(
+                creature.creature_id
+            ).genome
+            restored_config = restored.neat_controller.config.genome_config
+
+            restored_genome.mutate_add_node(restored_config)
+
+            self.assertIn(evolved_node_id + 1, restored_genome.nodes)
+            self.assertGreater(
+                restored_config.innovation_tracker.global_counter,
+                max_saved_innovation,
+            )
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
+
     def test_new_simulations_have_distinct_isolated_directories(self) -> None:
         second = SimulationPaths.create_new(
             self.config.persistence,

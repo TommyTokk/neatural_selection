@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import count
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -241,6 +242,44 @@ class NeatArchivePruningTest(unittest.TestCase):
         self.assertEqual(controller._next_genome_id(), 1000)
         controller.population.population.clear()
         self.assertEqual(controller._next_genome_id(), 1001)
+
+
+class EvolutionAllocatorPersistenceTest(unittest.TestCase):
+    def test_restore_reconstructs_allocators_above_every_loaded_gene(self) -> None:
+        low_genome = SimpleNamespace(
+            nodes={12: object()},
+            connections={
+                (-1, 0): SimpleNamespace(innovation=20),
+            },
+        )
+        evolved_genome = SimpleNamespace(
+            nodes={30: object()},
+            connections={
+                (12, 0): SimpleNamespace(innovation=50),
+            },
+        )
+        innovation_tracker = SimpleNamespace(
+            global_counter=10,
+            generation_innovations={"stale": 10},
+        )
+        genome_config = SimpleNamespace(
+            num_outputs=12,
+            output_keys=list(range(12)),
+            node_indexer=count(13),
+            innovation_tracker=innovation_tracker,
+        )
+        controller = NeatBrainController.__new__(NeatBrainController)
+        controller.config = SimpleNamespace(genome_config=genome_config)
+        controller.population = SimpleNamespace(
+            population={1: low_genome, 2: evolved_genome},
+        )
+        controller.species_manager = SimpleNamespace(representatives={})
+
+        controller.restore_evolution_allocators()
+
+        self.assertEqual(next(genome_config.node_indexer), 31)
+        self.assertEqual(innovation_tracker.global_counter, 50)
+        self.assertEqual(innovation_tracker.generation_innovations, {})
 
 
 if __name__ == "__main__":

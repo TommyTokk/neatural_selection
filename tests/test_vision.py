@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from math import cos, pi, sin
 import sys
 import types
+from unittest.mock import patch
 
 
 class _Body:
@@ -97,7 +98,7 @@ class VisionVisibilityTest(unittest.TestCase):
             own_infants=own_infants,
         )
 
-    def test_creature_directly_behind_creature_remains_visible(self) -> None:
+    def test_creature_directly_behind_creature_is_occluded(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
         front = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         behind = creature_at((60.0, 0.0), radius=10.0, creature_id=3)
@@ -107,12 +108,12 @@ class VisionVisibilityTest(unittest.TestCase):
             creatures=[observer, front, behind],
         )
 
-        self.assertEqual(snapshot.creatures.count, 2)
+        self.assertEqual(snapshot.creatures.count, 1)
         self.assertGreater(snapshot.creatures.proximity, 0.0)
         self.assertAlmostEqual(snapshot.creatures.angle, 0.0)
         self.assertEqual(
             self.vision.visible_creatures(observer, [observer, front, behind]),
-            [front, behind],
+            [front],
         )
 
     def test_partly_exposed_creature_remains_visible(self) -> None:
@@ -131,7 +132,7 @@ class VisionVisibilityTest(unittest.TestCase):
             [front, offset],
         )
 
-    def test_food_behind_creature_remains_visible(self) -> None:
+    def test_food_behind_creature_is_occluded(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         hidden_food = FakeFood(id=1, position=(60.0, 0.0), radius=5.0)
@@ -142,11 +143,75 @@ class VisionVisibilityTest(unittest.TestCase):
             creatures=[observer, blocker],
         )
 
-        self.assertEqual(snapshot.food.count, 1)
+        self.assertEqual(snapshot.food.count, 0)
         self.assertEqual(
             self.vision.visible_foods(observer, [hidden_food], [observer, blocker]),
-            [hidden_food],
+            [],
         )
+
+    def test_partly_exposed_food_behind_creature_remains_visible(self) -> None:
+        observer = creature_at((0.0, 0.0), radius=5.0)
+        blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
+        exposed_food = FakeFood(id=1, position=(60.0, 20.0), radius=5.0)
+
+        snapshot = self.sense_snapshot(
+            observer,
+            foods=[exposed_food],
+            creatures=[observer, blocker],
+        )
+
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertEqual(
+            self.vision.visible_foods(observer, [exposed_food], [observer, blocker]),
+            [exposed_food],
+        )
+
+    def test_occluded_food_is_excluded_from_visible_food_ids(self) -> None:
+        observer = creature_at((0.0, 0.0), radius=5.0)
+        blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
+        hidden_food = FakeFood(id=1, position=(60.0, 0.0), radius=5.0)
+        exposed_food = FakeFood(id=2, position=(40.0, 25.0), radius=5.0)
+
+        with patch("src.vision.Food", FakeFood):
+            result = self.vision.sense_with_visible_food_ids(
+                observer,
+                foods=[hidden_food, exposed_food],
+                creatures=[observer, blocker],
+                world_bounds=(-100.0, -100.0, 100.0, 100.0),
+                max_speed=100.0,
+            )
+
+        self.assertEqual(result.snapshot.food.count, 1)
+        self.assertEqual(result.visible_food_ids, [exposed_food.id])
+
+    def test_own_infant_behind_creature_is_occluded(self) -> None:
+        observer = creature_at((0.0, 0.0), radius=5.0)
+        blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
+        hidden_infant = creature_at((60.0, 0.0), radius=5.0, creature_id=3)
+
+        snapshot = self.sense_snapshot(
+            observer,
+            creatures=[observer, blocker, hidden_infant],
+            own_infants=[hidden_infant],
+        )
+
+        self.assertEqual(snapshot.creatures.count, 1)
+        self.assertEqual(snapshot.own_infants.count, 0)
+        self.assertEqual(snapshot.flock.flockmate_count, 1)
+
+    def test_visible_own_infant_is_not_occluded_by_its_creature_entry(self) -> None:
+        observer = creature_at((0.0, 0.0), radius=5.0)
+        infant = creature_at((40.0, 0.0), radius=5.0, creature_id=2)
+
+        snapshot = self.sense_snapshot(
+            observer,
+            creatures=[observer, infant],
+            own_infants=[infant],
+        )
+
+        self.assertEqual(snapshot.creatures.count, 1)
+        self.assertEqual(snapshot.own_infants.count, 1)
+        self.assertEqual(snapshot.flock.flockmate_count, 1)
 
     def test_own_infant_snapshot_uses_target_proximity_and_angle(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)

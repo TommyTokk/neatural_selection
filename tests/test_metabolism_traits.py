@@ -14,6 +14,7 @@ class FakeCreature:
     speed: float
     energy: float
     physical_traits: PhysicalTraits
+    creature_id: int = 1
 
 
 class FakeVision:
@@ -125,6 +126,61 @@ class MetabolismTraitCostTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(creature.energy, 0.7)
+
+    def test_brain_complexity_increases_basal_upkeep_before_multiplier(
+        self,
+    ) -> None:
+        genomes = {
+            1: SimpleGenome(node_count=2, connection_count=3),
+            2: SimpleGenome(node_count=20, connection_count=30),
+        }
+        metabolism = Metabolism(
+            MetabolismConfig(
+                basic_metabolism_rate=0.0,
+                brain_upkeep_per_node=0.001,
+                brain_upkeep_per_connection=0.0005,
+                movement_energy_cost_factor=0.0,
+                sprint_energy_cost_per_second=0.0,
+            ),
+            FakeVision(cost=0.0),
+            TraitConfig(body_metabolism_cost_factor=0.0),
+            genome_for_creature_id=genomes.get,
+        )
+        simple = FakeCreature(
+            creature_id=1,
+            radius=16.0,
+            speed=0.0,
+            energy=1.0,
+            physical_traits=PhysicalTraits(radius=16.0),
+        )
+        complex_creature = FakeCreature(
+            creature_id=2,
+            radius=16.0,
+            speed=0.0,
+            energy=1.0,
+            physical_traits=PhysicalTraits(radius=16.0),
+        )
+
+        metabolism.consume_energy(simple, delta_time=1.0, max_speed=100.0)
+        metabolism.consume_energy(
+            complex_creature,
+            delta_time=1.0,
+            max_speed=100.0,
+            energy_cost_multiplier=2.0,
+        )
+
+        self.assertAlmostEqual(simple.energy, 1.0 - 0.0035)
+        self.assertAlmostEqual(complex_creature.energy, 1.0 - 0.07)
+        self.assertLess(complex_creature.energy, simple.energy)
+
+
+class SimpleGenome:
+    def __init__(self, node_count: int, connection_count: int) -> None:
+        self.nodes = {node_id: object() for node_id in range(node_count)}
+        self.connections = {
+            connection_id: object()
+            for connection_id in range(connection_count)
+        }
 
 
 if __name__ == "__main__":

@@ -46,10 +46,12 @@ class Metabolism:
         config: MetabolismConfig,
         vision: VisionSystem,
         trait_config: TraitConfig | None = None,
+        genome_for_creature_id: Callable[[int], object | None] | None = None,
     ) -> None:
         self.config = config
         self.vision = vision
         self.trait_config = trait_config or TraitConfig()
+        self.genome_for_creature_id = genome_for_creature_id
 
     def update(
         self,
@@ -168,7 +170,10 @@ class Metabolism:
         trait = vision + body + max(0.0, movement - base_movement)
 
         return EnergyCostBreakdown(
-            base=self.config.basic_metabolism_rate,
+            base=(
+                self.config.basic_metabolism_rate
+                + self.brain_upkeep_energy_cost_per_second(creature)
+            ),
             movement=movement,
             sprint=sprint,
             vision=vision,
@@ -187,6 +192,21 @@ class Metabolism:
         max_radius = max(self.trait_config.max_radius, 0.0001)
         radius_ratio = max(0.0, creature.radius) / max_radius
         return self.trait_config.body_metabolism_cost_factor * radius_ratio**2
+
+    def brain_upkeep_energy_cost_per_second(self, creature: Creature) -> float:
+        if self.genome_for_creature_id is None:
+            return 0.0
+
+        genome = self.genome_for_creature_id(creature.creature_id)
+        if genome is None:
+            return 0.0
+
+        nodes = getattr(genome, "nodes", {}) or {}
+        connections = getattr(genome, "connections", {}) or {}
+        return (
+            len(nodes) * self.config.brain_upkeep_per_node
+            + len(connections) * self.config.brain_upkeep_per_connection
+        )
 
     def eat(self, creature: Creature, food: Food) -> FoodConsumption:
         previous_energy = creature.energy

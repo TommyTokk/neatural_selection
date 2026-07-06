@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -414,13 +415,7 @@ class NeatBrainController:
 
     def migrate_legacy_brain_contract(self) -> None:
         """Add inert output nodes required by the current brain contract."""
-        genomes = list(self.population.population.values())
-        genomes.extend(
-            representative[0]
-            if isinstance(representative, tuple)
-            else representative
-            for representative in self.species_manager.representatives.values()
-        )
+        genomes = self._known_genomes()
         seen: set[int] = set()
         for genome in genomes:
             identity = id(genome)
@@ -443,6 +438,105 @@ class NeatBrainController:
             if hasattr(node, "bias"):
                 node.bias = float(getattr(genome_config, "bias_min_value", -5.0))
             nodes[output_key] = node
+
+    def evolution_allocator_state(self) -> dict[str, int]:
+        """Return allocator positions needed to continue mutating after a load."""
+        genome_config = self.config.genome_config
+        minimum_next_node_id = self._minimum_next_node_id()
+        next_node_id = minimum_next_node_id
+        node_indexer = getattr(genome_config, "node_indexer", None)
+        if node_indexer is not None:
+            try:
+                reduce_args = node_indexer.__reduce__()[1]
+                next_node_id = max(next_node_id, int(reduce_args[0]))
+            except (AttributeError, IndexError, TypeError, ValueError):
+                pass
+
+        innovation_number = self._minimum_innovation_number()
+        innovation_tracker = getattr(genome_config, "innovation_tracker", None)
+        if innovation_tracker is not None:
+            innovation_number = max(
+                innovation_number,
+                int(getattr(innovation_tracker, "global_counter", 0)),
+            )
+
+        return {
+            "next_node_id": next_node_id,
+            "innovation_number": innovation_number,
+        }
+
+    def restore_evolution_allocators(
+        self,
+        next_node_id: int | None = None,
+        innovation_number: int | None = None,
+    ) -> None:
+        """Restore or reconstruct NEAT's process-local structural allocators."""
+        genome_config = self.config.genome_config
+        minimum_next_node_id = self._minimum_next_node_id()
+        restored_next_node_id = max(
+            minimum_next_node_id,
+            minimum_next_node_id if next_node_id is None else int(next_node_id),
+        )
+        genome_config.node_indexer = count(restored_next_node_id)
+
+        innovation_tracker = getattr(genome_config, "innovation_tracker", None)
+        if innovation_tracker is None:
+            return
+
+        restored_innovation_number = max(
+            self._minimum_innovation_number(),
+            int(getattr(innovation_tracker, "global_counter", 0)),
+            0 if innovation_number is None else int(innovation_number),
+        )
+        innovation_tracker.global_counter = restored_innovation_number
+        generation_innovations = getattr(
+            innovation_tracker,
+            "generation_innovations",
+            None,
+        )
+        if generation_innovations is not None:
+            generation_innovations.clear()
+
+    def _known_genomes(self) -> list[Any]:
+        genomes = list(self.population.population.values())
+        genomes.extend(
+            representative[0]
+            if isinstance(representative, tuple)
+            else representative
+            for representative in self.species_manager.representatives.values()
+        )
+        return genomes
+
+    def _minimum_next_node_id(self) -> int:
+        genome_config = self.config.genome_config
+        node_ids = [
+            int(node_id)
+            for genome in self._known_genomes()
+            for node_id in (getattr(genome, "nodes", {}) or {})
+            if int(node_id) >= 0
+        ]
+        return max(
+            [
+                int(getattr(genome_config, "num_outputs", 0)) - 1,
+                *(int(key) for key in getattr(genome_config, "output_keys", ())),
+                *node_ids,
+            ],
+            default=-1,
+        ) + 1
+
+    def _minimum_innovation_number(self) -> int:
+        return max(
+            (
+                int(innovation)
+                for genome in self._known_genomes()
+                for connection in (
+                    getattr(genome, "connections", {}) or {}
+                ).values()
+                if (innovation := getattr(connection, "innovation", None))
+                is not None
+            ),
+            default=0,
+        )
 
     def create_child_brain(
         self,

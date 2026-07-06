@@ -122,6 +122,8 @@ class ZoomConfig:
 class MetabolismConfig:
     max_energy: float = 1
     basic_metabolism_rate: float = 0.01
+    brain_upkeep_per_node: float = 0.001
+    brain_upkeep_per_connection: float = 0.0005
     movement_energy_cost_factor: float = 0.02
     sprint_energy_cost_per_second: float = 0.04
     eating_distance: float = 8
@@ -142,9 +144,12 @@ class PopulationConfig:
     min_reproduction_age: float = 20.0
     reproduction_cooldown: float = 12.0
     reproduction_energy_threshold: float = 0.8
-    reproduction_energy_cost: float = 0.5
+    reproduction_energy_cost_base: float = 0.4
+    reproduction_cost_per_node: float = 0.015
+    reproduction_cost_per_connection: float = 0.005
+    max_dynamic_reproduction_cost: float = 0.75
     infant_energy_spawn: float = 0.15
-    infant_maturity_age: float = 5.0
+    infant_maturity_age: float = 12.0
     nursing_energy_transfer_rate: float = 0.05
     child_spawn_distance: float = 34.0
     reproduction_min_food_ratio: float = 0.2
@@ -156,21 +161,34 @@ class PopulationConfig:
 class SpeciationConfig:
     compatibility_threshold: float = 3.5
     phenotypic_weight: float = 2.0
+    target_species_count: int = 5
+    min_threshold: float = 2.0
+    max_threshold: float = 7.0
+    threshold_adjust_rate: float = 0.05
+    adjustment_interval_seconds: float = 5.0
 
 
 @dataclass(slots=True)
 class FitnessConfig:
-    age_weight: float = 0.1                      # Increased to reward baseline survival
-    food_discovery_weight: float = 0.5           # Increased to encourage exploration
+    age_weight: float = 0.1  # Increased to reward baseline survival
+    food_discovery_weight: float = 0.5  # Increased to encourage exploration
     food_discovery_cap: int = 25
     # food_eaten_weight: float = 8               REMOVED (Prevents double-dipping with energy)
-    energy_gained_weight: float = 30.0           # Lowered to balance with reproduction
-    energy_efficiency_weight: float = 10.0       # SLASHED from 120 to fix the "Zen Monk" immobile exploit
+    energy_gained_weight: float = 30.0  # Lowered to balance with reproduction
+    energy_efficiency_weight: float = (
+        10.0  # SLASHED from 120 to fix the "Zen Monk" immobile exploit
+    )
     efficiency_min_age_seconds: float = 20.0
-    movement_effort_penalty: float = 0.02        # Lowered so active foragers aren't punished heavily
-    offspring_weight: float = 20.0               # MASSIVELY INCREASED (Base reward for giving birth)
-    matured_offspring_weight: float = 40.0       # INCREASED (Bonus reward if the child survives)
-    trait_energy_cost_penalty_weight: float = 2.0 # Lowered so big creatures can still evolve
+    movement_effort_penalty: float = (
+        0.02  # Lowered so active foragers aren't punished heavily
+    )
+    offspring_weight: float = 20.0  # MASSIVELY INCREASED (Base reward for giving birth)
+    matured_offspring_weight: float = (
+        40.0  # INCREASED (Bonus reward if the child survives)
+    )
+    trait_energy_cost_penalty_weight: float = (
+        2.0  # Lowered so big creatures can still evolve
+    )
 
 
 @dataclass(slots=True)

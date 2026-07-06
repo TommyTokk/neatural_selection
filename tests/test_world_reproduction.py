@@ -258,11 +258,89 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world._next_creature_id(), 500)
         self.assertEqual(world._next_creature_id(), 501)
 
+    def test_dynamic_speciation_threshold_tracks_living_species(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.speciation.adjustment_interval_seconds = 5.0
+        world.config.speciation.threshold_adjust_rate = 0.05
+        world._speciation_adjustment_accumulator = 0.0
+        species_manager = SimpleNamespace(compatibility_threshold=3.5)
+        world.neat_controller = SimpleNamespace(species_manager=species_manager)
+
+        world.creatures = [
+            FakeCreature(creature_id=1, lineage=LineageInfo(species_id=1)),
+            FakeCreature(creature_id=2, lineage=LineageInfo(species_id=2)),
+        ]
+        world._update_speciation_threshold(4.0)
+        self.assertEqual(species_manager.compatibility_threshold, 3.5)
+        world._update_speciation_threshold(1.0)
+        self.assertAlmostEqual(species_manager.compatibility_threshold, 3.45)
+
+        world.creatures = [
+            FakeCreature(
+                creature_id=species_id,
+                lineage=LineageInfo(species_id=species_id),
+            )
+            for species_id in range(1, 11)
+        ]
+        world._update_speciation_threshold(5.0)
+        self.assertAlmostEqual(species_manager.compatibility_threshold, 3.5)
+
+        world.creatures = [
+            FakeCreature(
+                creature_id=species_id,
+                lineage=LineageInfo(species_id=species_id),
+            )
+            for species_id in range(1, 6)
+        ]
+        world._update_speciation_threshold(5.0)
+        self.assertAlmostEqual(species_manager.compatibility_threshold, 3.5)
+
+    def test_dynamic_speciation_threshold_clamps_and_retains_overshoot(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.speciation.adjustment_interval_seconds = 5.0
+        world._speciation_adjustment_accumulator = 0.0
+        species_manager = SimpleNamespace(compatibility_threshold=3.5)
+        world.neat_controller = SimpleNamespace(species_manager=species_manager)
+        world.creatures = [
+            FakeCreature(creature_id=1, lineage=LineageInfo(species_id=1))
+        ]
+
+        world._update_speciation_threshold(10.25)
+        self.assertAlmostEqual(species_manager.compatibility_threshold, 3.4)
+        self.assertAlmostEqual(world._speciation_adjustment_accumulator, 0.25)
+
+        species_manager.compatibility_threshold = (
+            world.config.speciation.min_threshold
+        )
+        world._update_speciation_threshold(4.75)
+        self.assertEqual(
+            species_manager.compatibility_threshold,
+            world.config.speciation.min_threshold,
+        )
+
+        species_manager.compatibility_threshold = (
+            world.config.speciation.max_threshold
+        )
+        world.creatures = [
+            FakeCreature(
+                creature_id=species_id,
+                lineage=LineageInfo(species_id=species_id),
+            )
+            for species_id in range(1, 11)
+        ]
+        world._update_speciation_threshold(5.0)
+        self.assertEqual(
+            species_manager.compatibility_threshold,
+            world.config.speciation.max_threshold,
+        )
+
     def test_reproduction_skips_unwilling_top_eligible_parent(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
         world.config.population.max_creatures = 10
-        world.config.population.reproduction_energy_cost = 0.5
+        world.config.population.reproduction_energy_cost_base = 0.4
         world.creatures = [
             FakeCreature(creature_id=1),
             FakeCreature(creature_id=2),
@@ -336,8 +414,68 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world.creatures[-1].lineage.parent_id, 1)
         self.assertEqual(world.creatures[-1].lineage.generation, 1)
         self.assertEqual(world.fitness[1].offspring_count, 1)
-        self.assertEqual(world.creatures[0].energy, 0.5)
+        self.assertEqual(world.creatures[0].energy, 0.6)
         self.assertEqual(world.species_history, {})
+
+    def test_reproduction_cost_scales_with_brain_complexity_and_caps(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        parent = FakeCreature(creature_id=1)
+
+        small_genome = SimpleNamespace(
+            nodes={node_id: object() for node_id in range(5)},
+            connections={connection_id: object() for connection_id in range(10)},
+        )
+        large_genome = SimpleNamespace(
+            nodes={node_id: object() for node_id in range(20)},
+            connections={connection_id: object() for connection_id in range(30)},
+        )
+        active_genome = small_genome
+        world.neat_controller = SimpleNamespace(
+            brain_for=lambda creature_id: SimpleNamespace(genome=active_genome)
+        )
+
+        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.525)
+        active_genome = large_genome
+        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.75)
+
+    def test_missing_brain_uses_base_reproduction_cost(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.neat_controller = SimpleNamespace(brain_for=lambda creature_id: None)
+
+        self.assertAlmostEqual(
+            world._reproduction_cost_for(FakeCreature(creature_id=1)),
+            world.config.population.reproduction_energy_cost_base,
+        )
+
+    def test_reproduction_resource_gate_uses_base_cost(self) -> None:
+        world = self._world_ready_to_reproduce()
+        used_biomass = sum(creature.energy for creature in world.creatures) + sum(
+            food.energy_value for food in world.foods
+        )
+        world.total_biomass_energy = used_biomass + 0.45
+
+        self.assertTrue(world._has_reproduction_resources())
+
+    def test_failed_child_creation_does_not_spend_reproduction_energy(self) -> None:
+        world = self._world_ready_to_reproduce()
+        parent = world.creatures[0]
+        parent.energy = 1.0
+        genome = SimpleNamespace(
+            nodes={node_id: object() for node_id in range(20)},
+            connections={
+                connection_id: object() for connection_id in range(30)
+            },
+        )
+        world.neat_controller = SimpleNamespace(
+            brain_for=lambda creature_id: SimpleNamespace(genome=genome),
+            create_child_brain=lambda *args: (None, None),
+        )
+        world.space = SimpleNamespace(remove=lambda *args: None)
+
+        self.assertFalse(world._try_reproduce())
+        self.assertEqual(parent.energy, 1.0)
 
     def test_reproduction_assigns_new_species_and_overwrites_color(self) -> None:
         world = self._world_ready_to_reproduce()
@@ -893,7 +1031,7 @@ class WorldReproductionTest(unittest.TestCase):
         world = object.__new__(World)
         world.config = build_sim_config()
         world.config.population.max_creatures = 10
-        world.config.population.reproduction_energy_cost = 0.5
+        world.config.population.reproduction_energy_cost_base = 0.4
         world.creatures = [FakeCreature(creature_id=1), FakeCreature(creature_id=2)]
         world.fitness = {
             1: CreatureFitness(age_seconds=30.0),

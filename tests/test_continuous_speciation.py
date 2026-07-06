@@ -194,6 +194,15 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(result.species_id, 2)
         self.assertTrue(result.is_new_species)
 
+    def test_evaluation_reads_runtime_threshold_changes(self) -> None:
+        self.manager.compatibility_threshold = 3.1
+
+        result = self.evaluate(FakeGenome(distance=3.05))
+
+        self.assertEqual(result.species_id, 1)
+        self.assertFalse(result.is_new_species)
+        self.assertEqual(result.distances.compatibility_threshold, 3.1)
+
     def test_body_only_change_creates_species(self) -> None:
         result = self.evaluate(
             FakeGenome(distance=0.0),

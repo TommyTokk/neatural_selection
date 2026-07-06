@@ -468,6 +468,16 @@ class PersistenceManager:
                     ),
                 ]
             ) + 1
+        allocator_state_getter = getattr(
+            neat_controller,
+            "evolution_allocator_state",
+            None,
+        )
+        allocator_state = (
+            allocator_state_getter()
+            if allocator_state_getter is not None
+            else {}
+        )
         return {
             "version": CHECKPOINT_VERSION,
             "brain_contract": {
@@ -513,6 +523,7 @@ class PersistenceManager:
                 "genomes": evolution_state["genomes"],
                 "generation": neat_controller.population.generation,
                 "next_genome_id": next_genome_id,
+                **allocator_state,
             },
             "species_manager": {
                 "compatibility_threshold": (
@@ -1165,6 +1176,10 @@ class PersistenceManager:
                 )
             ):
                 controller.migrate_legacy_brain_contract()
+            controller.restore_evolution_allocators(
+                population_state.get("next_node_id"),
+                population_state.get("innovation_number"),
+            )
 
             world.fitness = {}
             world._chronometers = {}

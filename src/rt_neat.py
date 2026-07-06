@@ -50,6 +50,11 @@ class RtNeatManager:
         live_scores: list[tuple[int, float]] = []
         eligible_scores: list[tuple[int, float]] = []
         live_fitnesses: list[CreatureFitness] = []
+        species_counts: dict[int, int] = {}
+
+        for creature in creatures:
+            species_id = creature.lineage.species_id
+            species_counts[species_id] = species_counts.get(species_id, 0) + 1
 
         for creature in creatures:
             fitness = fitness_by_creature_id.get(creature.creature_id)
@@ -58,7 +63,13 @@ class RtNeatManager:
                 live_scores.append((creature.creature_id, score))
                 live_fitnesses.append(fitness)
                 if self.is_reproduction_eligible(creature, fitness, population_config):
-                    eligible_scores.append((creature.creature_id, score))
+                    species_size = max(
+                        1,
+                        species_counts[creature.lineage.species_id],
+                    )
+                    eligible_scores.append(
+                        (creature.creature_id, score / species_size)
+                    )
 
         if not live_scores:
             self.eligible_parent_ids = []

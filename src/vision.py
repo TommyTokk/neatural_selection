@@ -497,7 +497,99 @@ class VisionSystem:
                 candidates.append(candidate)
 
         candidates.sort(key=lambda candidate: candidate.surface_distance)
-        return candidates
+        return self._remove_targets_occluded_by_creatures(candidates)
+
+    def _remove_targets_occluded_by_creatures(
+        self,
+        candidates: list[_VisionCandidate],
+    ) -> list[_VisionCandidate]:
+        blocked_intervals: list[tuple[float, float]] = []
+        visible_targets: list[_VisionCandidate] = []
+        candidate_index = 0
+        distance_epsilon = 1e-9
+
+        while candidate_index < len(candidates):
+            group_end = candidate_index + 1
+            group_distance = candidates[candidate_index].surface_distance
+            while (
+                group_end < len(candidates)
+                and candidates[group_end].surface_distance
+                <= group_distance + distance_epsilon
+            ):
+                group_end += 1
+
+            visible_group = [
+                candidate
+                for candidate in candidates[candidate_index:group_end]
+                if not self._interval_is_blocked(
+                    candidate.interval,
+                    blocked_intervals,
+                )
+            ]
+            visible_targets.extend(visible_group)
+
+            for candidate in visible_group:
+                if candidate.kind in {"creature", "own_infant"}:
+                    self._add_blocked_interval(
+                        candidate.interval,
+                        blocked_intervals,
+                    )
+
+            candidate_index = group_end
+
+        return visible_targets
+
+    def _interval_is_blocked(
+        self,
+        interval: tuple[float, float],
+        blocked_intervals: list[tuple[float, float]],
+    ) -> bool:
+        epsilon = 1e-9
+        if interval[1] - interval[0] <= epsilon:
+            return any(
+                start - epsilon <= interval[0] <= end + epsilon
+                for start, end in blocked_intervals
+            )
+
+        cursor = interval[0]
+        for start, end in blocked_intervals:
+            if end <= cursor + epsilon:
+                continue
+            if start > cursor + epsilon:
+                return False
+            cursor = max(cursor, end)
+            if cursor >= interval[1] - epsilon:
+                return True
+
+        return cursor >= interval[1] - epsilon
+
+    def _add_blocked_interval(
+        self,
+        interval: tuple[float, float],
+        blocked_intervals: list[tuple[float, float]],
+    ) -> None:
+        start, end = interval
+        merged: list[tuple[float, float]] = []
+        inserted = False
+
+        for current_start, current_end in blocked_intervals:
+            if current_end < start:
+                merged.append((current_start, current_end))
+                continue
+            if end < current_start:
+                if not inserted:
+                    merged.append((start, end))
+                    inserted = True
+                merged.append((current_start, current_end))
+                continue
+
+            start = min(start, current_start)
+            end = max(end, current_end)
+
+        if not inserted:
+            merged.append((start, end))
+
+        blocked_intervals[:] = merged
 
     def _vision_candidate(
         self,
