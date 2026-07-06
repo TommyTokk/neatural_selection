@@ -3,7 +3,7 @@ from __future__ import annotations
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field
 from math import atan2, cos, floor, hypot, pi, sin
-from random import Random
+from random import Random, choice
 
 import pymunk
 
@@ -1071,18 +1071,40 @@ class World:
         parent: Creature,
         child_radius: float,
     ) -> tuple[float, float]:
+        """
+        Calculate a suitable spawn position for a child creature based on the parent's
+        position, heading, and the child's radius. The spawn position is determined by
+        ensuring that the child is placed at a safe distance from the parent and within
+        the bounds of the environment. The method takes into account the configured
+        child spawn distance, the parent's radius, and the child's radius to calculate
+        the appropriate spawn position. The resulting position is clamped to ensure that
+        the child does not spawn outside the environment's world bounds.
+
+        Args:
+            parent (Creature): The parent creature from which the child will spawn.
+            child_radius (float): The radius of the child creature.
+
+        Returns:
+            tuple[float, float]: The calculated spawn position (x, y) for the child creature.
+        """
+
+        # Calculate the distance at which the child should spawn from the parent, ensuring it is at least the configured child spawn distance and accounting for the parent's and child's radii.
         distance = max(
             self.config.population.child_spawn_distance,
             parent.radius + child_radius + 2.0,
         )
-        parent_x, parent_y = parent.position
-        raw_x = parent_x - cos(parent.heading) * distance
-        raw_y = parent_y - sin(parent.heading) * distance
 
-        left, bottom, right, top = self.environment_world_bounds
-        radius = child_radius + 2.0
-        spawn_x = max(left + radius, min(right - radius, raw_x))
-        spawn_y = max(bottom + radius, min(top - radius, raw_y))
+        # Calculate the raw spawn position based on the parent's position and heading, moving backward along the parent's heading by the calculated distance.
+        parent_x, parent_y = parent.position
+        angle = parent.heading + choice((-pi / 4, pi / 4))
+        raw_x = parent_x + cos(angle) * distance # Calculate the x-coordinate of the spawn position based on the parent's heading and distance.
+        raw_y = parent_y + sin(angle) * distance # Calculate the y-coordinate of the spawn position based on the parent's heading and distance.
+
+        # Get the bounds of the environment to ensure the child spawns within these limits.
+        left, bottom, right, top = self.environment_world_bounds# Get the bounds of the environment to ensure the child spawns within these limits.
+        radius = child_radius + 2.0# Calculate the effective radius to ensure the child does not spawn too close to the environment boundaries.
+        spawn_x = max(left + radius, min(right - radius, raw_x))# Clamp the x-coordinate of the spawn position to ensure it is within the environment bounds, accounting for the effective radius.
+        spawn_y = max(bottom + radius, min(top - radius, raw_y))# Clamp the y-coordinate of the spawn position to ensure it is within the environment bounds, accounting for the effective radius.
         return spawn_x, spawn_y
 
     def _next_creature_id(self) -> int:

@@ -60,7 +60,7 @@ class CreatureFitness:
         return (
             self.age_seconds * config.age_weight
             + capped_discoveries * config.food_discovery_weight
-            + self.food_eaten * config.food_eaten_weight
+            # + self.food_eaten * config.food_eaten_weight
             + self.energy_gained * config.energy_gained_weight
             + energy_efficiency * config.energy_efficiency_weight
             + self.offspring_count * config.offspring_weight
