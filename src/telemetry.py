@@ -329,6 +329,67 @@ class TelemetryDatabase:
             )
         return records
 
+    def load_species_end_times(
+        self,
+        *,
+        up_to_time: float | None = None,
+    ) -> dict[int, float]:
+        """Return inferred species end times from creature birth/death rows."""
+        if up_to_time is None:
+            rows = self.connection.execute(
+                """
+                SELECT
+                    species_id,
+                    SUM(CASE WHEN death_time IS NULL THEN 1 ELSE 0 END),
+                    MAX(death_time)
+                FROM creatures
+                GROUP BY species_id
+                """
+            ).fetchall()
+            end_times: dict[int, float] = {}
+            for species_id, living_count, last_death in rows:
+                if species_id is None:
+                    continue
+                if int(living_count or 0) > 0:
+                    end_times[int(species_id)] = float("inf")
+                elif last_death is not None:
+                    end_times[int(species_id)] = float(last_death)
+            return end_times
+
+        cutoff = float(up_to_time)
+        rows = self.connection.execute(
+            """
+            SELECT
+                species_id,
+                SUM(
+                    CASE
+                        WHEN death_time IS NULL OR death_time > ? THEN 1
+                        ELSE 0
+                    END
+                ),
+                MAX(
+                    CASE
+                        WHEN death_time <= ? THEN death_time
+                        ELSE NULL
+                    END
+                )
+            FROM creatures
+            WHERE birth_time <= ?
+            GROUP BY species_id
+            """,
+            (cutoff, cutoff, cutoff),
+        ).fetchall()
+        end_times: dict[int, float] = {}
+        for species_id, living_count, last_death in rows:
+            if species_id is None:
+                continue
+            end_times[int(species_id)] = (
+                float("inf")
+                if int(living_count or 0) > 0
+                else cutoff if last_death is None else float(last_death)
+            )
+        return end_times
+
     def log_creature_birth(
         self,
         creature_id: int,

@@ -8,6 +8,7 @@ from src.species_tree import (
     TreeLayoutManager,
     build_species_tree_layout,
     route_species_tree_edges,
+    species_tree_line_width,
 )
 
 
@@ -19,7 +20,7 @@ class _Record:
 
 
 class SpeciesTreeLayoutTest(unittest.TestCase):
-    def test_tree_depths_edges_and_stable_lineage_lanes(self) -> None:
+    def test_tree_depths_edges_and_distinct_living_lanes(self) -> None:
         records = {
             1: _Record(1, None, 0.0),
             2: _Record(2, 1, 10.0),
@@ -34,12 +35,108 @@ class SpeciesTreeLayoutTest(unittest.TestCase):
         self.assertEqual(layout.edges, ((1, 2), (1, 3), (2, 4)))
         self.assertLess(layout.positions[1][1], layout.positions[2][1])
         self.assertLess(layout.positions[2][1], layout.positions[4][1])
-        self.assertEqual(layout.positions[1][0], layout.positions[2][0])
+        self.assertNotEqual(layout.positions[1][0], layout.positions[2][0])
         self.assertGreater(layout.positions[3][0], layout.positions[1][0])
         self.assertEqual(
             layout.positions[4][1] - layout.positions[2][1],
             20.0 * 2.0,
         )
+
+    def test_lane_reuses_only_after_species_has_ended(self) -> None:
+        records = {
+            1: _Record(1, None, 0.0),
+            2: _Record(2, None, 15.0),
+            3: _Record(3, None, 20.0),
+        }
+
+        layout = build_species_tree_layout(
+            records,
+            species_end_times={1: 10.0, 2: 20.0, 3: 30.0},
+        )
+
+        self.assertEqual(layout.lanes[1], layout.lanes[2])
+        self.assertNotEqual(layout.lanes[2], layout.lanes[3])
+
+    def test_living_species_reserves_lane(self) -> None:
+        layout = build_species_tree_layout(
+            {
+                1: _Record(1, None, 0.0),
+                2: _Record(2, None, 15.0),
+            },
+            species_end_times={1: float("inf"), 2: 20.0},
+        )
+
+        self.assertNotEqual(layout.lanes[1], layout.lanes[2])
+
+    def test_new_species_can_reuse_lane_freed_in_same_sync(self) -> None:
+        records = {1: _Record(1, None, 0.0)}
+        manager = TreeLayoutManager()
+        manager.sync(
+            records,
+            timeline_end=5.0,
+            species_end_times={1: float("inf")},
+        )
+        records[2] = _Record(2, None, 15.0)
+
+        layout = manager.sync(
+            records,
+            timeline_end=15.0,
+            species_end_times={1: 10.0, 2: float("inf")},
+        )
+
+        self.assertEqual(layout.lanes[1], layout.lanes[2])
+
+    def test_revived_species_rebuilds_overlapping_lanes(self) -> None:
+        records = {
+            1: _Record(1, None, 0.0),
+            2: _Record(2, None, 15.0),
+        }
+        manager = TreeLayoutManager()
+        compact = manager.sync(
+            records,
+            species_end_times={1: 10.0, 2: float("inf")},
+        )
+        self.assertEqual(compact.lanes[1], compact.lanes[2])
+
+        rebuilt = manager.sync(
+            records,
+            species_end_times={1: float("inf"), 2: float("inf")},
+        )
+
+        self.assertNotEqual(rebuilt.lanes[1], rebuilt.lanes[2])
+
+    def test_descendant_counts_and_spindle_widths(self) -> None:
+        layout = build_species_tree_layout(
+            {
+                1: _Record(1, None, 0.0),
+                2: _Record(2, 1, 10.0),
+                3: _Record(3, 1, 20.0),
+                4: _Record(4, 2, 30.0),
+            }
+        )
+
+        self.assertEqual(
+            layout.descendant_counts,
+            {1: 3, 2: 1, 3: 0, 4: 0},
+        )
+        self.assertEqual(species_tree_line_width(0), 1.0)
+        self.assertGreater(species_tree_line_width(50), 1.0)
+        self.assertEqual(species_tree_line_width(1_000_000), 10.0)
+
+    def test_branch_connector_meets_parent_at_child_emergence(self) -> None:
+        manager = TreeLayoutManager()
+        layout = manager.sync(
+            {
+                1: _Record(1, None, 0.0),
+                2: _Record(2, 1, 15.0),
+            },
+            species_end_times={1: float("inf"), 2: float("inf")},
+        )
+
+        route = manager.routes[(1, 2)]
+        self.assertEqual(route[0][0], layout.positions[1][0])
+        self.assertEqual(route[0][1], layout.positions[2][1])
+        self.assertEqual(route[-1], layout.positions[2])
 
     def test_layout_is_deterministic_for_different_mapping_order(self) -> None:
         forward = {

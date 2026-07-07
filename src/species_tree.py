@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from math import isfinite
+from dataclasses import dataclass, field
+from math import isfinite, log
 from typing import Mapping, Protocol
 
 
@@ -23,6 +23,9 @@ class SpeciesTreeLayout:
     leaf_count: int
     timeline_start: float
     timeline_end: float
+    lanes: dict[int, int] = field(default_factory=dict)
+    end_times: dict[int, float] = field(default_factory=dict)
+    descendant_counts: dict[int, int] = field(default_factory=dict)
 
 
 SpeciesTreeRoute = tuple[tuple[float, float], ...]
@@ -33,6 +36,7 @@ class TreeViewportSlice:
     node_ids: tuple[int, ...]
     edges: tuple[tuple[int, int], ...]
     routes: dict[tuple[int, int], SpeciesTreeRoute]
+    lifeline_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +48,7 @@ class TimeBucketSummary:
 
 
 class TreeLayoutManager:
-    """Append-only species layout with numeric time-bucket indexing."""
+    """Incremental Romerogram layout with compact lanes and time buckets."""
 
     def __init__(
         self,
@@ -73,11 +77,16 @@ class TreeLayoutManager:
         self._parents: dict[int, int | None] = {}
         self._child_counts: dict[int, int] = {}
         self._lanes: dict[int, int] = {}
+        self._lane_end_times: dict[int, float] = {}
+        self._end_times: dict[int, float] = {}
+        self._descendant_counts: dict[int, int] = {}
         self._roots: list[int] = []
         self._edges: list[tuple[int, int]] = []
         self._routes: dict[tuple[int, int], SpeciesTreeRoute] = {}
         self._node_buckets: dict[int, list[int]] = {}
         self._edge_buckets: dict[int, list[tuple[int, int]]] = {}
+        self._lifeline_buckets: dict[int, list[int]] = {}
+        self._lifeline_bucket_ends: dict[int, int] = {}
         self._next_lane = 0
         self._timeline_end = 0.0
         self._display_end = 0.0
@@ -104,14 +113,26 @@ class TreeLayoutManager:
         records: Mapping[int, SpeciesRecordLike],
         *,
         timeline_end: float | None = None,
+        species_end_times: Mapping[int, float] | None = None,
     ) -> SpeciesTreeLayout:
+        requested_ends = {
+            int(species_id): _normalize_end_time(end_time)
+            for species_id, end_time in (species_end_times or {}).items()
+        }
         records_identity = id(records)
         record_count = len(records)
+        revived_species = any(
+            isfinite(previous_end)
+            and not isfinite(requested_ends.get(species_id, float("inf")))
+            for species_id, previous_end in self._end_times.items()
+            if species_id in records
+        )
         must_rebuild = (
             self._records_identity is not None
             and (
                 records_identity != self._records_identity
                 or record_count < self._record_count
+                or revived_species
             )
         )
         if must_rebuild:
@@ -145,8 +166,28 @@ class TreeLayoutManager:
                     if int(species_id) not in self._positions
                 )
 
+        for species_id in self._positions:
+            requested_end = requested_ends.get(species_id, float("inf"))
+            previous_end = self._end_times[species_id]
+            if previous_end == requested_end:
+                continue
+            if isfinite(previous_end) and requested_end != previous_end:
+                continue
+            normalized_end = max(
+                self._effective_times[species_id],
+                requested_end,
+            )
+            self._end_times[species_id] = normalized_end
+            lane = self._lanes[species_id]
+            if self._lane_end_times.get(lane) == previous_end:
+                self._lane_end_times[lane] = normalized_end
+
         for species_id in new_ids:
-            self._place(species_id, records[species_id])
+            self._place(
+                species_id,
+                records[species_id],
+                requested_ends.get(species_id, float("inf")),
+            )
 
         self._record_count = record_count
         if self._positions:
@@ -161,6 +202,9 @@ class TreeLayoutManager:
             self._timeline_end,
             0.0 if requested_end is None else requested_end,
         )
+        if new_ids or must_rebuild:
+            self._recompute_descendant_counts()
+        self._index_lifelines_through(self._timeline_end)
         return self._layout()
 
     def viewport_slice(
@@ -213,10 +257,32 @@ class TreeLayoutManager:
                 high_y + padding,
             )
         )
+        candidate_lifelines = {
+            species_id
+            for bucket_id in bucket_ids
+            for species_id in self._lifeline_buckets.get(bucket_id, ())
+        }
+        lifeline_ids = tuple(
+            species_id
+            for species_id in sorted(candidate_lifelines)
+            if (
+                low_x - padding
+                <= self._positions[species_id][0]
+                <= high_x + padding
+                and self._positions[species_id][1] <= high_y + padding
+                and (
+                    self.padding
+                    + min(self._end_times[species_id], self._timeline_end)
+                    * self.time_scale
+                    >= low_y - padding
+                )
+            )
+        )
         return TreeViewportSlice(
             node_ids=tuple(node_ids),
             edges=edges,
             routes={edge: self._routes[edge] for edge in edges},
+            lifeline_ids=lifeline_ids,
         )
 
     def bucket_for_time(self, time_value: float) -> int:
@@ -237,6 +303,7 @@ class TreeLayoutManager:
         self,
         species_id: int,
         record: SpeciesRecordLike,
+        end_time: float,
     ) -> None:
         candidate = getattr(record, "parent_species_id", None)
         parent_id = (
@@ -250,7 +317,6 @@ class TreeLayoutManager:
         if recorded_time is not None:
             self._timeline_end = max(self._timeline_end, recorded_time)
         if parent_id is None:
-            lane = self._allocate_lane()
             depth = 0
             effective_time = 0.0 if recorded_time is None else recorded_time
             self._roots.append(species_id)
@@ -264,13 +330,11 @@ class TreeLayoutManager:
                 else max(parent_time, recorded_time)
             )
             child_count = self._child_counts.get(parent_id, 0)
-            lane = (
-                self._lanes[parent_id]
-                if child_count == 0
-                else self._allocate_lane()
-            )
             self._child_counts[parent_id] = child_count + 1
             depth = self._depths[parent_id] + 1
+
+        normalized_end = max(effective_time, end_time)
+        lane = self._allocate_lane(effective_time, normalized_end)
 
         position = (
             self.padding + lane * self.horizontal_gap,
@@ -282,6 +346,7 @@ class TreeLayoutManager:
         self._parents[species_id] = parent_id
         self._child_counts.setdefault(species_id, 0)
         self._lanes[species_id] = lane
+        self._end_times[species_id] = normalized_end
         bucket_id = self.bucket_for_time(effective_time)
         self._node_buckets.setdefault(bucket_id, []).append(species_id)
         self._buckets_dirty = True
@@ -292,16 +357,15 @@ class TreeLayoutManager:
             self._edges.append(edge)
             self._edges_tuple = tuple(self._edges)
             route = _incremental_edge_route(
-                self._positions[parent_id],
+                (
+                    self._positions[parent_id][0],
+                    position[1],
+                ),
                 position,
             )
             self._routes[edge] = route
-            parent_bucket = self.bucket_for_time(
-                self._effective_times[parent_id]
-            )
-            for edge_bucket in range(parent_bucket, bucket_id + 1):
-                self._edge_buckets.setdefault(edge_bucket, []).append(edge)
-                self._buckets_dirty = True
+            self._edge_buckets.setdefault(bucket_id, []).append(edge)
+            self._buckets_dirty = True
 
         latest = self._latest_species_id
         if latest is None or (effective_time, species_id) >= (
@@ -310,10 +374,46 @@ class TreeLayoutManager:
         ):
             self._latest_species_id = species_id
 
-    def _allocate_lane(self) -> int:
-        lane = self._next_lane
-        self._next_lane += 1
+    def _allocate_lane(self, emergence_time: float, end_time: float) -> int:
+        lane = next(
+            (
+                lane_index
+                for lane_index in range(self._next_lane)
+                if self._lane_end_times[lane_index] < emergence_time
+            ),
+            self._next_lane,
+        )
+        if lane == self._next_lane:
+            self._next_lane += 1
+        self._lane_end_times[lane] = end_time
         return lane
+
+    def _recompute_descendant_counts(self) -> None:
+        counts = {species_id: 0 for species_id in self._positions}
+        for species_id in reversed(tuple(self._positions)):
+            parent_id = self._parents.get(species_id)
+            if parent_id is not None:
+                counts[parent_id] += counts[species_id] + 1
+        self._descendant_counts = counts
+
+    def _index_lifelines_through(self, timeline_end: float) -> None:
+        for species_id, emergence_time in self._effective_times.items():
+            end_time = min(self._end_times[species_id], timeline_end)
+            end_bucket = self.bucket_for_time(max(emergence_time, end_time))
+            indexed_end = self._lifeline_bucket_ends.get(species_id, -1)
+            start_bucket = max(
+                self.bucket_for_time(emergence_time),
+                indexed_end + 1,
+            )
+            for bucket_id in range(start_bucket, end_bucket + 1):
+                self._lifeline_buckets.setdefault(bucket_id, []).append(
+                    species_id
+                )
+                self._buckets_dirty = True
+            self._lifeline_bucket_ends[species_id] = max(
+                indexed_end,
+                end_bucket,
+            )
 
     def _layout(self) -> SpeciesTreeLayout:
         latest_time = max(self._timeline_end, self._display_end, 0.0)
@@ -337,12 +437,19 @@ class TreeLayoutManager:
             leaf_count=max(0, self._next_lane),
             timeline_start=0.0,
             timeline_end=self._timeline_end,
+            lanes=self._lanes,
+            end_times=self._end_times,
+            descendant_counts=self._descendant_counts,
         )
 
     def _sorted_bucket_ids(self) -> tuple[int, ...]:
         if self._buckets_dirty:
             self._bucket_ids = tuple(
-                sorted(set(self._node_buckets) | set(self._edge_buckets))
+                sorted(
+                    set(self._node_buckets)
+                    | set(self._edge_buckets)
+                    | set(self._lifeline_buckets)
+                )
             )
             self._buckets_dirty = False
         return self._bucket_ids
@@ -374,6 +481,7 @@ def build_species_tree_layout(
     minimum_generation_gap: float = 64.0,
     padding: float = 48.0,
     timeline_end: float | None = None,
+    species_end_times: Mapping[int, float] | None = None,
 ) -> SpeciesTreeLayout:
     manager = TreeLayoutManager(
         horizontal_gap=horizontal_gap,
@@ -381,7 +489,17 @@ def build_species_tree_layout(
         minimum_generation_gap=minimum_generation_gap,
         padding=padding,
     )
-    return manager.sync(records, timeline_end=timeline_end)
+    return manager.sync(
+        records,
+        timeline_end=timeline_end,
+        species_end_times=species_end_times,
+    )
+
+
+def species_tree_line_width(total_descendants: int) -> float:
+    """Return the spindle width for a species' transitive clade size."""
+    descendants = max(0, int(total_descendants))
+    return max(1.0, min(10.0, log(1.0 + descendants) * 2.0))
 
 
 def route_species_tree_edges(
@@ -669,6 +787,18 @@ def _valid_time(value: object) -> float | None:
         return None
     if not isfinite(parsed) or parsed < 0.0:
         return None
+    return parsed
+
+
+def _normalize_end_time(value: object) -> float:
+    if value is None:
+        return float("inf")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float("inf")
+    if parsed < 0.0 or parsed != parsed:
+        return float("inf")
     return parsed
 
 

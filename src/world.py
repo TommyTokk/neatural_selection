@@ -1824,6 +1824,10 @@ class World:
                     creature.creature_id: self._senescence_factor_for(creature)
                     for creature in self.creatures
                 },
+                creature_age_seconds={
+                    creature.creature_id: self._creature_age_seconds(creature)
+                    for creature in self.creatures
+                },
             )
         finally:
             self._restore_movement_multipliers(with_infant_penalties)
@@ -1969,7 +1973,7 @@ class World:
                 continue
 
             infant = self._nearest_nursable_infant_for(parent)
-            if infant is None or parent.energy <= transfer:
+            if infant is None or parent.energy <= 0.30 or parent.energy <= transfer:
                 continue
 
             parent.energy -= transfer

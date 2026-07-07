@@ -122,8 +122,8 @@ class ZoomConfig:
 class MetabolismConfig:
     max_energy: float = 1
     basic_metabolism_rate: float = 0.01
-    brain_upkeep_per_node: float = 0.001
-    brain_upkeep_per_connection: float = 0.0005
+    brain_upkeep_per_node: float = 0.0003
+    brain_upkeep_per_connection: float = 0.0001
     movement_energy_cost_factor: float = 0.02
     sprint_energy_cost_per_second: float = 0.04
     eating_distance: float = 8
@@ -144,9 +144,9 @@ class PopulationConfig:
     min_reproduction_age: float = 20.0
     reproduction_cooldown: float = 12.0
     reproduction_energy_threshold: float = 0.8
-    reproduction_energy_cost_base: float = 0.4
-    reproduction_cost_per_node: float = 0.015
-    reproduction_cost_per_connection: float = 0.005
+    reproduction_energy_cost_base: float = 0.35
+    reproduction_cost_per_node: float = 0.008
+    reproduction_cost_per_connection: float = 0.002
     max_dynamic_reproduction_cost: float = 0.75
     infant_energy_spawn: float = 0.15
     infant_maturity_age: float = 12.0

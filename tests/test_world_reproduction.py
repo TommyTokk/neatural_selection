@@ -435,9 +435,11 @@ class WorldReproductionTest(unittest.TestCase):
             brain_for=lambda creature_id: SimpleNamespace(genome=active_genome)
         )
 
-        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.525)
+        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.41)
         active_genome = large_genome
-        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.75)
+        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.57)
+        world.config.population.max_dynamic_reproduction_cost = 0.5
+        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.5)
 
     def test_missing_brain_uses_base_reproduction_cost(self) -> None:
         world = object.__new__(World)
@@ -580,6 +582,7 @@ class WorldReproductionTest(unittest.TestCase):
     def test_own_infant_children_filters_to_direct_infant_children(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
+        world.config.population.infant_maturity_age = 5.0
         parent = FakeCreature(creature_id=1)
         own_infant = FakeCreature(
             creature_id=2,
@@ -606,6 +609,7 @@ class WorldReproductionTest(unittest.TestCase):
     def test_maturity_reward_is_recorded_once_for_parent(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
+        world.config.population.infant_maturity_age = 5.0
         parent = FakeCreature(creature_id=1)
         child = FakeCreature(creature_id=2, lineage=LineageInfo(parent_id=1))
         world.creatures = [parent, child]
@@ -638,12 +642,20 @@ class WorldReproductionTest(unittest.TestCase):
     def test_nursing_respects_parent_energy_and_infant_capacity(self) -> None:
         world = self._world_ready_for_parenting()
         parent, own_infant = world.creatures[0], world.creatures[1]
-        parent.energy = 0.05
+        parent.energy = 0.28
+        own_infant.energy = 0.05
 
-        world._apply_nursing(2.0)
+        world._apply_nursing(1.0)
 
-        self.assertAlmostEqual(parent.energy, 0.05)
-        self.assertAlmostEqual(own_infant.energy, 0.2)
+        self.assertAlmostEqual(parent.energy, 0.28)
+        self.assertAlmostEqual(own_infant.energy, 0.05)
+
+        parent.energy = 0.30
+        own_infant.energy = 0.05
+        world._apply_nursing(1.0)
+
+        self.assertAlmostEqual(parent.energy, 0.30)
+        self.assertAlmostEqual(own_infant.energy, 0.05)
 
         parent.energy = 1.0
         own_infant.energy = 0.98

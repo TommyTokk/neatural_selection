@@ -26,6 +26,7 @@ from src.species_tree import (
     SpeciesTreeRoute,
     TreeLayoutManager,
     TreeViewportSlice,
+    species_tree_line_width,
 )
 from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
@@ -103,6 +104,7 @@ class UiRenderer:
             time_scale=self.SPECIES_TREE_TIME_SCALE,
             padding=self.SPECIES_TREE_CONTENT_PADDING,
         )
+        self._species_tree_extinction_times: dict[int, float] = {}
         self._species_tree_cached_layout: SpeciesTreeLayout | None = None
         self._species_tree_visible_slice = TreeViewportSlice((), (), {})
         self._species_tree_focus_latest_pending = False
@@ -127,13 +129,65 @@ class UiRenderer:
 
     def _sync_species_tree_layout(self, world: World) -> SpeciesTreeLayout:
         records = getattr(world, "species_history", {})
+        elapsed_time = max(
+            0.0,
+            float(getattr(world, "elapsed_time", 0.0)),
+        )
+        living_species_ids = {
+            int(creature.lineage.species_id)
+            for creature in getattr(world, "creatures", ())
+            if getattr(creature, "lineage", None) is not None
+        }
+        record_ids = {int(species_id) for species_id in records}
+        telemetry_end_times: dict[int, float] = {}
+        load_species_end_times = getattr(
+            getattr(world, "telemetry", None),
+            "load_species_end_times",
+            None,
+        )
+        if load_species_end_times is not None:
+            telemetry_end_times = {
+                int(species_id): float(end_time)
+                for species_id, end_time in load_species_end_times(
+                    up_to_time=elapsed_time
+                ).items()
+            }
+        self._species_tree_extinction_times = {
+            species_id: extinction_time
+            for species_id, extinction_time
+            in self._species_tree_extinction_times.items()
+            if species_id in record_ids
+        }
+        for species_id in record_ids:
+            if species_id in living_species_ids:
+                self._species_tree_extinction_times.pop(species_id, None)
+            else:
+                telemetry_end_time = telemetry_end_times.get(species_id)
+                if (
+                    telemetry_end_time is not None
+                    and isfinite(telemetry_end_time)
+                    and telemetry_end_time <= elapsed_time
+                ):
+                    self._species_tree_extinction_times[
+                        species_id
+                    ] = telemetry_end_time
+                    continue
+                self._species_tree_extinction_times.setdefault(
+                    species_id,
+                    elapsed_time,
+                )
+        species_end_times = {
+            species_id: self._species_tree_extinction_times.get(
+                species_id,
+                float("inf"),
+            )
+            for species_id in record_ids
+        }
         self._species_tree_cached_layout = (
             self._species_tree_layout_manager.sync(
                 records,
-                timeline_end=max(
-                    0.0,
-                    float(getattr(world, "elapsed_time", 0.0)),
-                ),
+                timeline_end=elapsed_time,
+                species_end_times=species_end_times,
             )
         )
         return self._species_tree_cached_layout
@@ -201,7 +255,7 @@ class UiRenderer:
             ),
             (
                 "open_species_tree",
-                "speciation",
+                "species",
                 self._species_tree_open,
                 top - step * 5,
             ),
@@ -1628,6 +1682,13 @@ class UiRenderer:
         )
 
         with self._ui_clip(canvas):
+            self._draw_species_tree_lifelines(
+                records,
+                layout,
+                visible.lifeline_ids,
+                canvas,
+                highlighted_nodes,
+            )
             self._draw_species_tree_edges(
                 visible.edges,
                 screen_routes,
@@ -2393,6 +2454,124 @@ class UiRenderer:
                         color,
                         max(0.75, width),
                     )
+
+    def _draw_species_tree_lifelines(
+        self,
+        records: dict[int, SpeciesRecord],
+        layout: SpeciesTreeLayout,
+        species_ids: tuple[int, ...],
+        canvas: arcade.Rect,
+        highlighted_nodes: set[int],
+    ) -> None:
+        for species_id in sorted(
+            species_ids,
+            key=lambda candidate: (
+                candidate in highlighted_nodes,
+                candidate == self._species_tree_selected_id,
+                candidate,
+            ),
+        ):
+            record = records[species_id]
+            start = layout.positions[species_id]
+            end_time = min(
+                layout.end_times.get(species_id, float("inf")),
+                layout.timeline_end,
+            )
+            end = (
+                start[0],
+                self._species_tree_layout_manager.padding
+                + max(layout.effective_times[species_id], end_time)
+                * self._species_tree_layout_manager.time_scale,
+            )
+            screen_start = self._species_tree_screen_point(
+                start,
+                layout,
+                canvas,
+            )
+            screen_end = self._species_tree_screen_point(
+                end,
+                layout,
+                canvas,
+            )
+            color = record.founder_color or self.theme.herbivore_fill
+            width = species_tree_line_width(
+                layout.descendant_counts.get(species_id, 0)
+            )
+            scaled_width = max(0.75, width * self._species_tree_zoom)
+            if (
+                species_id in highlighted_nodes
+                or species_id == self._species_tree_selected_id
+            ):
+                arcade.draw_line(
+                    screen_start[0],
+                    screen_start[1],
+                    screen_end[0],
+                    screen_end[1],
+                    self.theme.selected_outline,
+                    scaled_width + max(1.0, 2.0 * self._species_tree_zoom),
+                )
+            arcade.draw_line(
+                screen_start[0],
+                screen_start[1],
+                screen_end[0],
+                screen_end[1],
+                color,
+                scaled_width,
+            )
+            if isfinite(layout.end_times.get(species_id, float("inf"))):
+                self._draw_species_tree_extinct_marker(screen_end)
+            else:
+                self._draw_species_tree_extant_marker(screen_end, color)
+
+    def _draw_species_tree_extinct_marker(
+        self,
+        position: tuple[float, float],
+    ) -> None:
+        half_size = max(3.0, 5.0 * self._species_tree_zoom)
+        width = max(1.0, 1.5 * self._species_tree_zoom)
+        color = self.theme.text_muted
+        arcade.draw_line(
+            position[0] - half_size,
+            position[1],
+            position[0] + half_size,
+            position[1],
+            color,
+            width,
+        )
+        arcade.draw_line(
+            position[0],
+            position[1] - half_size,
+            position[0],
+            position[1] + half_size,
+            color,
+            width,
+        )
+
+    def _draw_species_tree_extant_marker(
+        self,
+        position: tuple[float, float],
+        color: tuple[int, ...],
+    ) -> None:
+        red, green, blue = color[:3]
+        zoom = self._species_tree_zoom
+        arcade.draw_circle_filled(
+            position[0],
+            position[1],
+            max(6.0, 12.0 * zoom),
+            (red, green, blue, 35),
+        )
+        arcade.draw_circle_filled(
+            position[0],
+            position[1],
+            max(4.5, 8.0 * zoom),
+            (red, green, blue, 75),
+        )
+        arcade.draw_circle_filled(
+            position[0],
+            position[1],
+            max(3.0, 4.5 * zoom),
+            (red, green, blue, 255),
+        )
 
     def _draw_species_tree_nodes(
         self,

@@ -63,6 +63,7 @@ class Metabolism:
         can_eat: Callable[[Creature], bool] | None = None,
         sprint_intensities: dict[int, float] | None = None,
         energy_cost_multipliers: dict[int, float] | None = None,
+        creature_age_seconds: dict[int, float] | None = None,
     ) -> MetabolismReport:
         depleted_foods: list[Food] = []
         touched_foods: list[Food] = []
@@ -85,6 +86,11 @@ class Metabolism:
                     1.0
                     if energy_cost_multipliers is None
                     else energy_cost_multipliers.get(creature.creature_id, 1.0)
+                ),
+                age_seconds=(
+                    None
+                    if creature_age_seconds is None
+                    else creature_age_seconds.get(creature.creature_id)
                 ),
             )
 
@@ -131,12 +137,14 @@ class Metabolism:
         max_speed: float,
         sprint_intensity: float = 0.0,
         energy_cost_multiplier: float = 1.0,
+        age_seconds: float | None = None,
     ) -> None:
         energy_cost = (
             self.energy_cost_breakdown_per_second(
                 creature,
                 max_speed,
                 sprint_intensity=sprint_intensity,
+                age_seconds=age_seconds,
             ).total
             * delta_time
             * energy_cost_multiplier
@@ -150,6 +158,7 @@ class Metabolism:
         creature: Creature,
         max_speed: float,
         sprint_intensity: float = 0.0,
+        age_seconds: float | None = None,
     ) -> EnergyCostBreakdown:
         speed_ratio: float = 0.0
         if max_speed > 0:
@@ -172,7 +181,10 @@ class Metabolism:
         return EnergyCostBreakdown(
             base=(
                 self.config.basic_metabolism_rate
-                + self.brain_upkeep_energy_cost_per_second(creature)
+                + self.brain_upkeep_energy_cost_per_second(
+                    creature,
+                    age_seconds=age_seconds,
+                )
             ),
             movement=movement,
             sprint=sprint,
@@ -193,7 +205,14 @@ class Metabolism:
         radius_ratio = max(0.0, creature.radius) / max_radius
         return self.trait_config.body_metabolism_cost_factor * radius_ratio**2
 
-    def brain_upkeep_energy_cost_per_second(self, creature: Creature) -> float:
+    def brain_upkeep_energy_cost_per_second(
+        self,
+        creature: Creature,
+        age_seconds: float | None = None,
+    ) -> float:
+        if age_seconds is not None and age_seconds < 5.0:
+            return 0.0
+
         if self.genome_for_creature_id is None:
             return 0.0
 

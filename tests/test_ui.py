@@ -1450,6 +1450,75 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertEqual((bounds.width, bounds.height), (1400, 860))
         self.assertEqual(set(self.renderer._species_tree_node_bounds), {1, 2})
 
+    def test_runtime_species_lifecycle_tracks_extinction_and_revival(self) -> None:
+        world = self.make_world(
+            {1: self.make_record(1, None, emerged_at=0.0)}
+        )
+        world.elapsed_time = 5.0
+        world.creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=1))
+        ]
+
+        living = self.renderer._sync_species_tree_layout(world)
+        self.assertEqual(living.end_times[1], float("inf"))
+
+        world.elapsed_time = 12.0
+        world.creatures = []
+        extinct = self.renderer._sync_species_tree_layout(world)
+        self.assertEqual(extinct.end_times[1], 12.0)
+
+        world.elapsed_time = 15.0
+        world.creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=1))
+        ]
+        revived = self.renderer._sync_species_tree_layout(world)
+        self.assertEqual(revived.end_times[1], float("inf"))
+
+    def test_loaded_species_tree_uses_telemetry_extinction_times(self) -> None:
+        world = self.make_world(
+            {
+                1: self.make_record(1, None, emerged_at=0.0),
+                2: self.make_record(2, 1, emerged_at=15.0),
+            }
+        )
+        world.elapsed_time = 20.0
+        world.creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=2))
+        ]
+        world.telemetry = SimpleNamespace(
+            load_species_end_times=lambda *, up_to_time: {
+                1: 10.0,
+                2: float("inf"),
+            }
+        )
+
+        layout = self.renderer._sync_species_tree_layout(world)
+
+        self.assertEqual(layout.end_times[1], 10.0)
+        self.assertEqual(layout.end_times[2], float("inf"))
+        self.assertEqual(layout.lanes[1], layout.lanes[2])
+
+    def test_species_endpoint_markers_distinguish_extant_and_extinct(self) -> None:
+        with patch("src.ui.arcade.draw_circle_filled") as filled:
+            self.renderer._draw_species_tree_extant_marker(
+                (10.0, 20.0),
+                (100, 120, 140),
+            )
+
+        self.assertEqual(filled.call_count, 3)
+        self.assertEqual(filled.call_args.args[-1], (100, 120, 140, 255))
+
+        with patch("src.ui.arcade.draw_line") as line:
+            self.renderer._draw_species_tree_extinct_marker((10.0, 20.0))
+
+        self.assertEqual(line.call_count, 2)
+        self.assertTrue(
+            all(
+                call.args[-2] == self.renderer.theme.text_muted
+                for call in line.call_args_list
+            )
+        )
+
     def test_hover_finds_node_and_legacy_tooltip_marks_unavailable_data(self) -> None:
         record = self.make_record(1, None, exact=False)
         world = self.make_world({1: record})

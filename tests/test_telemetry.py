@@ -121,6 +121,19 @@ class TelemetryDatabaseTest(unittest.TestCase):
         self.assertEqual(metrics, (3, 40, 12.5))
         self.assertEqual(creatures_table, ("creatures",))
 
+    def test_load_species_end_times_respects_checkpoint_time(self) -> None:
+        self.database.log_creature_birth(1, 1, 0.0, 100.0, 15.0)
+        self.database.log_creature_death(1, 5.0, "starved")
+        self.database.log_creature_birth(2, 2, 2.0, 100.0, 15.0)
+        self.database.log_creature_death(2, 20.0, "old_age")
+        self.database.log_creature_birth(3, 3, 30.0, 100.0, 15.0)
+
+        end_times = self.database.load_species_end_times(up_to_time=10.0)
+
+        self.assertEqual(end_times[1], 5.0)
+        self.assertEqual(end_times[2], float("inf"))
+        self.assertNotIn(3, end_times)
+
     def test_species_history_survives_database_reopen(self) -> None:
         record = species_record()
         self.database.log_species_record(record)
