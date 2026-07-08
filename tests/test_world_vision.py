@@ -78,18 +78,21 @@ class FakeVisionSystem:
     def __init__(self) -> None:
         self.sense_with_visible_food_ids_calls = 0
         self.sense_calls = 0
+        self.last_creatures: object | None = None
 
     def sense_with_visible_food_ids(self, *args: object, **kwargs: object) -> VisionSenseResult:
-        del args, kwargs
+        del kwargs
         self.sense_with_visible_food_ids_calls += 1
+        self.last_creatures = args[2]
         return VisionSenseResult(
             snapshot=self._snapshot(),
             visible_food_ids=[101, 202],
         )
 
     def sense(self, *args: object, **kwargs: object) -> SensorSnapshot:
-        del args, kwargs
+        del kwargs
         self.sense_calls += 1
+        self.last_creatures = args[2]
         return self._snapshot()
 
     def visible_foods(self, *args: object, **kwargs: object) -> list[object]:
@@ -205,6 +208,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         world._held_food_by_creature_id = {}
         world._chronometers = {}
         world._nearby_foods_for = lambda creature, radius: []
+        world._nearby_creatures_for = lambda creature, radius: world.creatures
         world._ignored_food_ids_for = lambda creature: set()
         world.MAX_SPEED = 170.0
         world.vision = FakeVisionSystem()
@@ -227,6 +231,18 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertEqual(fitness.discovered_food_ids, [101, 202])
         self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 1)
         self.assertEqual(world.vision.sense_calls, 0)
+
+    def test_sensor_snapshot_uses_nearby_creature_candidates(self) -> None:
+        world = self.make_world_for_biome_sensors()
+        observer = self.biome_sensor_creature()
+        nearby = self.biome_sensor_creature(position=(10.0, 0.0))
+        nearby.creature_id = 2
+        world.creatures = [observer, nearby]
+        world._nearby_creatures_for = lambda creature, radius: [observer, nearby]
+
+        world._sensor_snapshot_for(observer, record_food_discoveries=False)
+
+        self.assertEqual(world.vision.last_creatures, [observer, nearby])
 
     def test_biome_memory_activation_overwrites_reused_creature_id(self) -> None:
         world = self.make_world_for_biome_sensors(fertility=0.7)
@@ -293,6 +309,73 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         self.assertAlmostEqual(world._previous_biome_here_by_creature_id[1], 0.85)
 
+    def test_creature_intents_apply_cached_actions_every_tick(self) -> None:
+        world = self.make_world_for_biome_sensors()
+        creature = self.biome_sensor_creature()
+        world.creatures = [creature]
+        world.use_neat_brains = True
+        world.physics_step_count = 1
+        action = Action(
+            accelerate=0.0,
+            rotate=0.0,
+            want_reproduce=0.0,
+            want_eat=0.0,
+            reset_chronometer=0.0,
+            want_grab=0.0,
+            want_release=0.0,
+        )
+        snapshot = world.vision._snapshot()
+        world._last_actions = {creature.creature_id: action}
+        world._last_sensor_snapshots = {creature.creature_id: snapshot}
+        applied: list[tuple[object, object, object]] = []
+        world.neat_controller = SimpleNamespace(
+            decide=lambda creature_id, snapshot: self.fail("should not decide")
+        )
+        world._apply_carry_intent = lambda creature, action: self.fail(
+            "should not replay carry intent"
+        )
+        world._apply_action = (
+            lambda active_creature, active_action, active_snapshot, **kwargs: applied.append(
+                (active_creature, active_action, active_snapshot)
+            )
+        )
+
+        world._apply_creature_intents()
+
+        self.assertEqual(applied, [(creature, action, snapshot)])
+        self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 0)
+
+    def test_creature_intents_stagger_new_decisions_by_creature_id(self) -> None:
+        world = self.make_world_for_biome_sensors()
+        creatures = [
+            self.biome_sensor_creature(position=(float(index), 0.0))
+            for index in range(1, 6)
+        ]
+        for index, creature in enumerate(creatures, start=1):
+            creature.creature_id = index
+        world.creatures = creatures
+        world.use_neat_brains = True
+        world.physics_step_count = 0
+        cached_action = Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        cached_snapshot = world.vision._snapshot()
+        world._last_actions = {
+            creature.creature_id: cached_action for creature in creatures
+        }
+        world._last_sensor_snapshots = {
+            creature.creature_id: cached_snapshot for creature in creatures
+        }
+        decided_ids: list[int] = []
+        world.neat_controller = SimpleNamespace(
+            decide=lambda creature_id, snapshot: decided_ids.append(creature_id)
+            or cached_action
+        )
+        world._apply_carry_intent = lambda creature, action: None
+        world._apply_action = lambda *args, **kwargs: None
+
+        world._apply_creature_intents()
+
+        self.assertEqual(decided_ids, [5])
+
     def test_east_facing_biome_sensors_use_y_up_left_right_orientation(self) -> None:
         world = self.make_world_for_biome_sensors()
         creature = self.biome_sensor_creature(position=(0.0, 0.0), heading=0.0)
@@ -308,6 +391,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         world._held_food_by_creature_id = {}
         world._chronometers = {}
         world._nearby_foods_for = lambda creature, radius: []
+        world._nearby_creatures_for = lambda creature, radius: world.creatures
         world._ignored_food_ids_for = lambda creature: set()
         world.MAX_SPEED = 170.0
         world.vision = FakeVisionSystem()

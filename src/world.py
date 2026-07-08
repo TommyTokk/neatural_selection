@@ -120,7 +120,9 @@ class World:
         self._physics_accumulator = 0.0
         self._reproduction_accumulator = 0.0
         self._speciation_adjustment_accumulator = 0.0
+        self.physics_step_count = 0
         self._last_actions: dict[int, Action] = {}
+        self._last_sensor_snapshots: dict[int, SensorSnapshot] = {}
         self._motion_commands: dict[int, MotionCommand] = {}
         self.debug_vision_enabled = config.debug.show_debug_vision_by_default
         self.layout = build_screen_layout(
@@ -134,6 +136,13 @@ class World:
         self.space.gravity = (0.0, 0.0)
         self.space.damping = 0.94
         self.space.iterations = 12
+        use_spatial_hash = getattr(self.space, "use_spatial_hash", None)
+        if use_spatial_hash is not None:
+            try:
+                use_spatial_hash(cell_size=50.0, static_amount=1000)
+            except TypeError:
+                use_spatial_hash(50.0, 1000)
+        self._creature_by_shape_id: dict[int, Creature] = {}
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
         self.creatures = self._spawn_creatures() if bootstrap else []
@@ -257,6 +266,7 @@ class World:
         ):
             self._apply_creature_intents()
             self.space.step(self.FIXED_TIMESTEP)
+            self.physics_step_count += 1
             self._settle_food_motion()
             self._apply_top_down_motion()
             self._limit_creature_motion()
@@ -576,6 +586,22 @@ class World:
 
     def visible_creatures_for_viewport(self) -> list[Creature]:
         left, bottom, right, top = self.visible_world_bounds()
+        queried = self._creatures_in_world_bounds(left, bottom, right, top)
+        if queried is not None:
+            return [
+                creature
+                for creature in queried
+                if self._circle_intersects_world_bounds(
+                    creature.position[0],
+                    creature.position[1],
+                    creature.radius,
+                    left,
+                    bottom,
+                    right,
+                    top,
+                )
+            ]
+
         return [
             creature
             for creature in self.creatures
@@ -589,6 +615,66 @@ class World:
                 top,
             )
         ]
+
+    def _nearby_creatures_for(
+        self,
+        creature: Creature,
+        radius: float,
+    ) -> list[Creature]:
+        center_x, center_y = creature.position
+        queried = self._creatures_in_world_bounds(
+            center_x - radius,
+            center_y - radius,
+            center_x + radius,
+            center_y + radius,
+        )
+        candidates = self.creatures if queried is None else queried
+        max_distance = max(0.0, radius)
+        return [
+            other
+            for other in candidates
+            if hypot(other.position[0] - center_x, other.position[1] - center_y)
+            <= max_distance + other.radius
+        ]
+
+    def _creatures_in_world_bounds(
+        self,
+        left: float,
+        bottom: float,
+        right: float,
+        top: float,
+    ) -> list[Creature] | None:
+        space = getattr(self, "space", None)
+        bb_query = getattr(space, "bb_query", None)
+        bb_factory = getattr(pymunk, "BB", None)
+        filter_factory = getattr(pymunk, "ShapeFilter", None)
+        index = getattr(self, "_creature_by_shape_id", None)
+        if (
+            bb_query is None
+            or bb_factory is None
+            or filter_factory is None
+            or index is None
+        ):
+            return None
+
+        try:
+            viewport_bb = bb_factory(left, bottom, right, top)
+            shape_filter = filter_factory(mask=CREATURE_CATEGORY)
+            shapes = bb_query(viewport_bb, shape_filter)
+        except Exception:
+            return None
+
+        creatures: list[Creature] = []
+        seen_ids: set[int] = set()
+        for shape in shapes:
+            creature = index.get(id(shape))
+            if creature is None:
+                continue
+            if creature.creature_id in seen_ids:
+                continue
+            seen_ids.add(creature.creature_id)
+            creatures.append(creature)
+        return creatures
 
     @property
     def selected_creature(self) -> Creature | None:
@@ -637,6 +723,10 @@ class World:
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
+        nearby_creatures = self._nearby_creatures_for(
+            creature,
+            creature.vision.range + self.config.trait.max_radius,
+        )
 
         fitness = self.fitness.get(creature.creature_id)
         age_seconds = 0.0 if fitness is None else fitness.age_seconds
@@ -657,7 +747,7 @@ class World:
             result = self.vision.sense_with_visible_food_ids(
                 creature,
                 nearby_foods,
-                self.creatures,
+                nearby_creatures,
                 self.environment_world_bounds,
                 self.MAX_SPEED,
                 maturity=maturity,
@@ -674,7 +764,7 @@ class World:
             snapshot = self.vision.sense(
                 creature,
                 nearby_foods,
-                self.creatures,
+                nearby_creatures,
                 self.environment_world_bounds,
                 self.MAX_SPEED,
                 maturity=maturity,
@@ -739,10 +829,14 @@ class World:
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
+        nearby_creatures = self._nearby_creatures_for(
+            creature,
+            creature.vision.range + self.config.trait.max_radius,
+        )
         return self.vision.visible_foods(
             creature,
             nearby_foods,
-            self.creatures,
+            nearby_creatures,
             ignored_food_ids=self._ignored_food_ids_for(creature),
         )
 
@@ -751,9 +845,13 @@ class World:
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
+        nearby_creatures = self._nearby_creatures_for(
+            creature,
+            creature.vision.range + self.config.trait.max_radius,
+        )
         return self.vision.visible_creatures(
             creature,
-            self.creatures,
+            nearby_creatures,
             nearby_foods,
             ignored_food_ids=self._ignored_food_ids_for(creature),
         )
@@ -872,7 +970,7 @@ class World:
                 ),
             )
 
-        return Creature(
+        creature = Creature(
             creature_id=creature_id,
             name=f"Herbivore {creature_id:02d}",
             body=body,
@@ -887,6 +985,8 @@ class World:
             physical_traits=physical_traits,
             lineage=lineage,
         )
+        self._index_creature_shape(shape, creature)
+        return creature
 
     def _initial_creature_color(self, index: int) -> Color:
         return self.CREATURE_COLOR_PALETTE[index % len(self.CREATURE_COLOR_PALETTE)]
@@ -1171,51 +1271,59 @@ class World:
         Apply the intents of all creatures in the simulation, based on their
         sensor snapshots and the decisions made by their respective controllers.
         """
+        if not hasattr(self, "_last_sensor_snapshots"):
+            self._last_sensor_snapshots = {}
+        if not hasattr(self, "_last_actions"):
+            self._last_actions = {}
+
         for creature in self.creatures:
-            # Generate a sensor snapshot for the creature, recording food discoveries if necessary.
-            snapshot = self._sensor_snapshot_for(
-                creature,
-                record_food_discoveries=True,
+            creature_id = creature.creature_id
+            action = self._last_actions.get(creature_id)
+            snapshot = self._last_sensor_snapshots.get(creature_id)
+            should_think = (
+                action is None
+                or snapshot is None
+                or (getattr(self, "physics_step_count", 0) + creature_id) % 5 == 0
             )
 
-            # Decide on the action for the creature based on whether NEAT brains are being used or a baseline controller.
-            if self.use_neat_brains:
-                # Use the NEAT controller to decide the action for the creature based on its sensor snapshot.
-                action = self.neat_controller.decide(creature.creature_id, snapshot)
-                # Store the last action taken by the creature for future reference.
-                self._last_actions[creature.creature_id] = action
-
-                # Reset the chronometer for the creature if the action indicates a reset is needed.
-                if action.reset_chronometer >= 0.5:
-                    self._chronometers[creature.creature_id] = 0.0
-
-                # Apply the carry intent of the creature based on the decided action.
-                self._apply_carry_intent(creature, action)
-                # Apply the action to the creature, considering whether to stabilize velocity and apply stabilizers based on the snapshot's food visibility.
-                self._apply_action(
+            if should_think:
+                snapshot = self._sensor_snapshot_for(
                     creature,
-                    action,
-                    snapshot,
-                    stabilize_velocity=False,
-                    apply_stabilizers=False,
+                    record_food_discoveries=True,
                 )
-            else:# Use the baseline controller to decide the action for the creature based on its sensor snapshot.
-                action = self.baseline_controller.decide(snapshot, creature.creature_id)
+                if self.use_neat_brains:
+                    action = self.neat_controller.decide(creature_id, snapshot)
+                else:
+                    action = self.baseline_controller.decide(snapshot, creature_id)
+
                 self._last_actions[creature.creature_id] = action
+                self._last_sensor_snapshots[creature.creature_id] = snapshot
+                try:
+                    creature.last_action = action
+                except AttributeError:
+                    pass
 
                 if action.reset_chronometer >= 0.5:
                     self._chronometers[creature.creature_id] = 0.0
 
                 self._apply_carry_intent(creature, action)
-                self._apply_action(
-                    creature,
-                    action,
-                    snapshot,
-                    stabilize_velocity=snapshot.food.visible > 0.0,
-                    apply_stabilizers=True,
-                )
+                self._advance_biome_memory(creature, snapshot)
 
-            self._advance_biome_memory(creature, snapshot)
+            if action is None:
+                continue
+
+            stabilize_velocity = (
+                False
+                if self.use_neat_brains or snapshot is None
+                else snapshot.food.visible > 0.0
+            )
+            self._apply_action(
+                creature,
+                action,
+                snapshot,
+                stabilize_velocity=stabilize_velocity,
+                apply_stabilizers=not self.use_neat_brains,
+            )
 
     def _apply_action(
         self,
@@ -2132,6 +2240,22 @@ class World:
             floor(y / self._food_grid_cell_size),
         )
 
+    def _ensure_creature_shape_index(self) -> None:
+        if not hasattr(self, "_creature_by_shape_id"):
+            self._creature_by_shape_id = {}
+
+    def _index_creature_shape(
+        self,
+        shape: pymunk.Shape,
+        creature: Creature,
+    ) -> None:
+        self._ensure_creature_shape_index()
+        self._creature_by_shape_id[id(shape)] = creature
+
+    def _unindex_creature_shape(self, creature: Creature) -> None:
+        self._ensure_creature_shape_index()
+        self._creature_by_shape_id.pop(id(creature.shape), None)
+
     def _remove_creature(
         self,
         creature: Creature,
@@ -2154,9 +2278,13 @@ class World:
 
         if creature in self.creatures:
             self.creatures.remove(creature)
+            self._unindex_creature_shape(creature)
             self.space.remove(creature.body, creature.shape)
             self.neat_controller.remove_brain(creature.creature_id)
             self._last_actions.pop(creature.creature_id, None)
+            last_snapshots = getattr(self, "_last_sensor_snapshots", None)
+            if last_snapshots is not None:
+                last_snapshots.pop(creature.creature_id, None)
             motion_commands = getattr(self, "_motion_commands", None)
             if motion_commands is not None:
                 motion_commands.pop(creature.creature_id, None)
@@ -2377,6 +2505,7 @@ class World:
                 )
             )
             if child_brain is None:
+                self._unindex_creature_shape(child)
                 self.space.remove(child.body, child.shape)
                 continue
             child.lineage.species_id = speciation_result.species_id
@@ -2532,6 +2661,7 @@ class World:
             )
         )
         if child_brain is None:
+            self._unindex_creature_shape(child)
             self.space.remove(child.body, child.shape)
             return False
         assert speciation_result is not None

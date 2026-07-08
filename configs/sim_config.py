@@ -139,7 +139,7 @@ class PopulationConfig:
     fitness_archive_size: int = 256
     extinction_recovery_creatures: int = 35
     extinction_recovery_parent_pool: int = 5
-    senescence_age_seconds: float = 120.0
+    senescence_age_seconds: float = 90.0
     senescence_cost_multiplier: float = 0.05
     min_reproduction_age: float = 20.0
     reproduction_cooldown: float = 12.0
@@ -226,8 +226,8 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 540
-    max_food_items: int = 650
+    initial_food_items: int = 400
+    max_food_items: int = 500
     low_food_pressure_threshold: float = (
         0.5  # Food ratio below which low-food recovery can accumulate.
     )
@@ -236,7 +236,7 @@ class FoodConfig:
     )
     low_food_burst_interval: float = 0.75  # Minimum interval in seconds between food bursts when food pressure is low.
     total_biomass_energy: float | None = None
-    max_biomass_spawns_per_second: float = 20.0
+    max_biomass_spawns_per_second: float = 10.0
     critical_food_ratio: float = 0.15  # Burst below 15% capacity
 
     min_food_radius: float = 6.0

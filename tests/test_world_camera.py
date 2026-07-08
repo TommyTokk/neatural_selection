@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from math import pi
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -285,6 +286,40 @@ class WorldCameraTest(unittest.TestCase):
 
         self.assertEqual(world.visible_creatures_for_viewport(), [visible_creature])
 
+    def test_viewport_creature_query_uses_pymunk_bb_query(self) -> None:
+        world = self.make_world_shell()
+        visible_creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        distant_creature = FakeCreature(creature_id=2, position=(1500.0, 1000.0))
+        world.creatures = [visible_creature, distant_creature]
+        world._creature_by_shape_id = {id(visible_creature.shape): visible_creature}
+        captured_queries: list[object] = []
+
+        class FakeSpace:
+            def bb_query(self, bb: object, shape_filter: object) -> list[object]:
+                captured_queries.append((bb, shape_filter))
+                return [visible_creature.shape]
+
+        original_bb = getattr(pymunk, "BB", None)
+        original_shape_filter = getattr(pymunk, "ShapeFilter", None)
+        pymunk.BB = lambda left, bottom, right, top: (left, bottom, right, top)
+        pymunk.ShapeFilter = lambda **kwargs: SimpleNamespace(**kwargs)
+        world.space = FakeSpace()
+
+        try:
+            visible = world.visible_creatures_for_viewport()
+        finally:
+            if original_bb is None:
+                delattr(pymunk, "BB")
+            else:
+                pymunk.BB = original_bb
+            if original_shape_filter is None:
+                delattr(pymunk, "ShapeFilter")
+            else:
+                pymunk.ShapeFilter = original_shape_filter
+
+        self.assertEqual(visible, [visible_creature])
+        self.assertEqual(len(captured_queries), 1)
+
     def test_renderer_does_not_draw_offscreen_food_candidates(self) -> None:
         world = self.make_world_shell()
         renderer = EnvironmentRenderer(world.config)
@@ -365,13 +400,13 @@ class WorldCameraTest(unittest.TestCase):
                 self.height = 0.0
 
         class FakeSpriteList:
-            last_instance: "FakeSpriteList | None" = None
+            instances: list["FakeSpriteList"] = []
 
             def __init__(self, **kwargs: object) -> None:
                 self.kwargs = kwargs
                 self.sprites: list[FakeSprite] = []
                 self.draw_count = 0
-                FakeSpriteList.last_instance = self
+                FakeSpriteList.instances.append(self)
 
             def clear(self) -> None:
                 self.sprites.clear()
@@ -384,6 +419,7 @@ class WorldCameraTest(unittest.TestCase):
 
         original_get_window = getattr(arcade, "get_window", None)
         original_make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        original_texture = getattr(arcade, "Texture", None)
         original_sprite = getattr(arcade, "Sprite", None)
         original_sprite_list = getattr(arcade, "SpriteList", None)
         original_draw_circle_filled = arcade.draw_circle_filled
@@ -391,6 +427,10 @@ class WorldCameraTest(unittest.TestCase):
 
         arcade.get_window = lambda: object()
         arcade.make_circle_texture = lambda *args, **kwargs: object()
+        arcade.Texture = lambda image, **kwargs: SimpleNamespace(
+            image=image,
+            kwargs=kwargs,
+        )
         arcade.Sprite = FakeSprite
         arcade.SpriteList = FakeSpriteList
         arcade.draw_circle_filled = lambda *args, **kwargs: fill_calls.append(args)
@@ -407,6 +447,10 @@ class WorldCameraTest(unittest.TestCase):
                 delattr(arcade, "make_circle_texture")
             else:
                 arcade.make_circle_texture = original_make_circle_texture
+            if original_texture is None:
+                delattr(arcade, "Texture")
+            else:
+                arcade.Texture = original_texture
             if original_sprite is None:
                 delattr(arcade, "Sprite")
             else:
@@ -424,6 +468,300 @@ class WorldCameraTest(unittest.TestCase):
         self.assertEqual(len(outline_calls), 1)
         self.assertEqual(len(sprite_list.sprites), 1)
         self.assertEqual(sprite_list.draw_count, 1)
+
+    def test_creature_batch_draws_sprites_without_immediate_body(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        world.creatures = [creature]
+        renderer = EnvironmentRenderer(world.config)
+        fill_calls: list[object] = []
+        outline_calls: list[object] = []
+
+        class FakeSprite:
+            def __init__(self, texture: object) -> None:
+                self.texture = texture
+                self.center_x = 0.0
+                self.center_y = 0.0
+                self.scale = 0.0
+                self.angle = 0.0
+                self.color = None
+
+        class FakeSpriteList:
+            instances: list["FakeSpriteList"] = []
+
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+                self.sprites: list[FakeSprite] = []
+                self.draw_count = 0
+                FakeSpriteList.instances.append(self)
+
+            def clear(self) -> None:
+                self.sprites.clear()
+
+            def append(self, sprite: FakeSprite) -> None:
+                self.sprites.append(sprite)
+
+            def draw(self) -> None:
+                self.draw_count += 1
+
+        original_get_window = getattr(arcade, "get_window", None)
+        original_make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        original_texture = getattr(arcade, "Texture", None)
+        original_sprite = getattr(arcade, "Sprite", None)
+        original_sprite_list = getattr(arcade, "SpriteList", None)
+        original_draw_circle_filled = arcade.draw_circle_filled
+        original_draw_circle_outline = arcade.draw_circle_outline
+
+        arcade.get_window = lambda: object()
+        arcade.make_circle_texture = lambda *args, **kwargs: object()
+        arcade.Texture = lambda image, **kwargs: SimpleNamespace(
+            image=image,
+            kwargs=kwargs,
+        )
+        arcade.Sprite = FakeSprite
+        arcade.SpriteList = FakeSpriteList
+        arcade.draw_circle_filled = lambda *args, **kwargs: fill_calls.append(args)
+        arcade.draw_circle_outline = lambda *args, **kwargs: outline_calls.append(args)
+
+        try:
+            renderer._draw_creatures(
+                [creature],
+                world.layout.environment,
+                world,
+                selected_creature_id=None,
+            )
+            first_sprite = renderer._creature_sprite_cache[creature.creature_id]
+            renderer._draw_creatures(
+                [creature],
+                world.layout.environment,
+                world,
+                selected_creature_id=None,
+            )
+            second_sprite = renderer._creature_sprite_cache[creature.creature_id]
+        finally:
+            if original_get_window is None:
+                delattr(arcade, "get_window")
+            else:
+                arcade.get_window = original_get_window
+            if original_make_circle_texture is None:
+                delattr(arcade, "make_circle_texture")
+            else:
+                arcade.make_circle_texture = original_make_circle_texture
+            if original_texture is None:
+                delattr(arcade, "Texture")
+            else:
+                arcade.Texture = original_texture
+            if original_sprite is None:
+                delattr(arcade, "Sprite")
+            else:
+                arcade.Sprite = original_sprite
+            if original_sprite_list is None:
+                delattr(arcade, "SpriteList")
+            else:
+                arcade.SpriteList = original_sprite_list
+            arcade.draw_circle_filled = original_draw_circle_filled
+            arcade.draw_circle_outline = original_draw_circle_outline
+
+        body_sprite_list, detail_sprite_list = FakeSpriteList.instances
+        self.assertEqual(fill_calls, [])
+        self.assertEqual(outline_calls, [])
+        self.assertEqual(len(body_sprite_list.sprites), 1)
+        self.assertEqual(len(detail_sprite_list.sprites), 1)
+        self.assertEqual(body_sprite_list.sprites[0].color, creature.color)
+        self.assertEqual(detail_sprite_list.sprites[0].color, (255, 255, 255, 255))
+        self.assertAlmostEqual(body_sprite_list.sprites[0].angle, 270.0)
+        self.assertAlmostEqual(detail_sprite_list.sprites[0].angle, 270.0)
+        self.assertIs(first_sprite, second_sprite)
+        self.assertEqual(body_sprite_list.draw_count, 2)
+        self.assertEqual(detail_sprite_list.draw_count, 2)
+
+    def test_creature_sprite_angle_matches_viewfield_heading(self) -> None:
+        renderer = EnvironmentRenderer(build_sim_config())
+        creature = FakeCreature(creature_id=1, position=(0.0, 0.0), heading=0.0)
+
+        self.assertAlmostEqual(renderer._creature_sprite_angle(creature), 270.0)
+
+        creature.heading = pi / 2
+
+        self.assertAlmostEqual(renderer._creature_sprite_angle(creature), 180.0)
+
+    def test_creature_detail_texture_has_white_eyes(self) -> None:
+        renderer = EnvironmentRenderer(build_sim_config())
+        original_texture = getattr(arcade, "Texture", None)
+        arcade.Texture = lambda image, **kwargs: SimpleNamespace(
+            image=image,
+            kwargs=kwargs,
+        )
+
+        try:
+            texture = renderer._creature_detail_base_texture()
+        finally:
+            if original_texture is None:
+                delattr(arcade, "Texture")
+            else:
+                arcade.Texture = original_texture
+
+        image = texture.image
+        center = renderer.CREATURE_BASE_TEXTURE_RADIUS
+
+        self.assertEqual(image.getpixel((center - 34, center + 42)), (255, 255, 255, 255))
+        self.assertEqual(image.getpixel((center + 34, center + 42)), (255, 255, 255, 255))
+
+    def test_selected_creature_keeps_immediate_overlay_with_batch(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        world.creatures = [creature]
+        renderer = EnvironmentRenderer(world.config)
+        outline_calls: list[object] = []
+        bar_calls: list[object] = []
+
+        class FakeSprite:
+            def __init__(self, texture: object) -> None:
+                self.texture = texture
+
+        class FakeSpriteList:
+            def __init__(self, **kwargs: object) -> None:
+                self.sprites: list[FakeSprite] = []
+
+            def clear(self) -> None:
+                self.sprites.clear()
+
+            def append(self, sprite: FakeSprite) -> None:
+                self.sprites.append(sprite)
+
+            def draw(self) -> None:
+                pass
+
+        original_get_window = getattr(arcade, "get_window", None)
+        original_make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        original_texture = getattr(arcade, "Texture", None)
+        original_sprite = getattr(arcade, "Sprite", None)
+        original_sprite_list = getattr(arcade, "SpriteList", None)
+        original_draw_circle_outline = arcade.draw_circle_outline
+        original_draw_lrbt = arcade.draw_lrbt_rectangle_filled
+
+        arcade.get_window = lambda: object()
+        arcade.make_circle_texture = lambda *args, **kwargs: object()
+        arcade.Texture = lambda image, **kwargs: SimpleNamespace(
+            image=image,
+            kwargs=kwargs,
+        )
+        arcade.Sprite = FakeSprite
+        arcade.SpriteList = FakeSpriteList
+        arcade.draw_circle_outline = lambda *args, **kwargs: outline_calls.append(args)
+        arcade.draw_lrbt_rectangle_filled = lambda *args, **kwargs: bar_calls.append(args)
+
+        try:
+            renderer._draw_creatures(
+                [creature],
+                world.layout.environment,
+                world,
+                selected_creature_id=creature.creature_id,
+            )
+        finally:
+            if original_get_window is None:
+                delattr(arcade, "get_window")
+            else:
+                arcade.get_window = original_get_window
+            if original_make_circle_texture is None:
+                delattr(arcade, "make_circle_texture")
+            else:
+                arcade.make_circle_texture = original_make_circle_texture
+            if original_texture is None:
+                delattr(arcade, "Texture")
+            else:
+                arcade.Texture = original_texture
+            if original_sprite is None:
+                delattr(arcade, "Sprite")
+            else:
+                arcade.Sprite = original_sprite
+            if original_sprite_list is None:
+                delattr(arcade, "SpriteList")
+            else:
+                arcade.SpriteList = original_sprite_list
+            arcade.draw_circle_outline = original_draw_circle_outline
+            arcade.draw_lrbt_rectangle_filled = original_draw_lrbt
+
+        self.assertEqual(len(outline_calls), 1)
+        self.assertEqual(len(bar_calls), 2)
+
+    def test_creature_sprite_cache_prunes_dead_creatures(self) -> None:
+        world = self.make_world_shell()
+        live = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        dead = FakeCreature(creature_id=2, position=(40.0, 0.0))
+        world.creatures = [live, dead]
+        renderer = EnvironmentRenderer(world.config)
+
+        class FakeSprite:
+            def __init__(self, texture: object) -> None:
+                self.texture = texture
+
+        class FakeSpriteList:
+            def __init__(self, **kwargs: object) -> None:
+                self.sprites: list[FakeSprite] = []
+
+            def clear(self) -> None:
+                self.sprites.clear()
+
+            def append(self, sprite: FakeSprite) -> None:
+                self.sprites.append(sprite)
+
+            def draw(self) -> None:
+                pass
+
+        original_get_window = getattr(arcade, "get_window", None)
+        original_make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        original_texture = getattr(arcade, "Texture", None)
+        original_sprite = getattr(arcade, "Sprite", None)
+        original_sprite_list = getattr(arcade, "SpriteList", None)
+
+        arcade.get_window = lambda: object()
+        arcade.make_circle_texture = lambda *args, **kwargs: object()
+        arcade.Texture = lambda image, **kwargs: SimpleNamespace(
+            image=image,
+            kwargs=kwargs,
+        )
+        arcade.Sprite = FakeSprite
+        arcade.SpriteList = FakeSpriteList
+
+        try:
+            renderer._draw_creatures(
+                [live, dead],
+                world.layout.environment,
+                world,
+                selected_creature_id=None,
+            )
+            world.creatures = [live]
+            renderer._draw_creatures(
+                [live],
+                world.layout.environment,
+                world,
+                selected_creature_id=None,
+            )
+        finally:
+            if original_get_window is None:
+                delattr(arcade, "get_window")
+            else:
+                arcade.get_window = original_get_window
+            if original_make_circle_texture is None:
+                delattr(arcade, "make_circle_texture")
+            else:
+                arcade.make_circle_texture = original_make_circle_texture
+            if original_texture is None:
+                delattr(arcade, "Texture")
+            else:
+                arcade.Texture = original_texture
+            if original_sprite is None:
+                delattr(arcade, "Sprite")
+            else:
+                arcade.Sprite = original_sprite
+            if original_sprite_list is None:
+                delattr(arcade, "SpriteList")
+            else:
+                arcade.SpriteList = original_sprite_list
+
+        self.assertEqual(set(renderer._creature_sprite_cache), {live.creature_id})
+        self.assertEqual(set(renderer._creature_detail_sprite_cache), {live.creature_id})
 
     def test_renderer_skips_biome_background_when_toggle_is_off(self) -> None:
         world = self.make_world_shell()

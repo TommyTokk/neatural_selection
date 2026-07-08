@@ -48,6 +48,8 @@ class Creature:
     physical_traits: PhysicalTraits
     color: Color
     lineage: LineageInfo = field(default_factory=LineageInfo)
+    render_sprite: object | None = None
+    last_action: object | None = None
 
     @property
     def position(self) -> tuple[float, float]:

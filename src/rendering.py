@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from math import ceil, floor, cos, sin
+from math import ceil, cos, degrees, floor, sin
 from src.world import World
 import arcade
 
@@ -12,6 +12,8 @@ from src.food import Food
 
 class EnvironmentRenderer:
     FOOD_SPRITE_TEXTURE_DIAMETER = 64
+    CREATURE_BASE_TEXTURE_RADIUS = 100
+    CREATURE_BASE_TEXTURE_DIAMETER = CREATURE_BASE_TEXTURE_RADIUS * 2
 
     def __init__(self, config: SimConfig) -> None:
         self.config = config
@@ -23,6 +25,13 @@ class EnvironmentRenderer:
         self._food_sprite_cache: dict[int, object] = {}
         self._food_sprite_texture: object | None = None
         self._food_batch_disabled = False
+        self._creature_sprite_list: object | None = None
+        self._creature_detail_sprite_list: object | None = None
+        self._creature_sprite_cache: dict[int, object] = {}
+        self._creature_detail_sprite_cache: dict[int, object] = {}
+        self._creature_sprite_texture: object | None = None
+        self._creature_detail_texture: object | None = None
+        self._creature_batch_disabled = False
 
     def draw(self, world: World) -> None:
         bounds = world.layout.environment
@@ -435,26 +444,39 @@ class EnvironmentRenderer:
         selected_creature_id: int | None,
     ) -> None:
         zoom = world.environment_zoom
+        visible_creatures: list[tuple[Creature, float, float, float]] = []
         for creature in creatures:
             model_x, model_y = creature.position
-            draw_x, draw_y = world.environment_to_screen(model_x, model_y)
+            draw_x = bounds.center_x + model_x * zoom + world.environment_pan_x
+            draw_y = bounds.center_y + model_y * zoom + world.environment_pan_y
             radius = max(3.0, creature.radius * zoom)
             if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
-            arcade.draw_circle_filled(draw_x, draw_y, radius, creature.color)
-            outline_color = (
-                self.theme.selected_outline
-                if selected_creature_id == creature.creature_id
-                else self.theme.herbivore_outline
-            )
+            visible_creatures.append((creature, draw_x, draw_y, radius))
+
+        if not self._draw_creature_sprite_batch(visible_creatures, zoom, world.creatures):
+            self._draw_creatures_immediate(visible_creatures, world, zoom)
+
+        for creature, draw_x, draw_y, radius in visible_creatures:
+            if selected_creature_id != creature.creature_id:
+                continue
             arcade.draw_circle_outline(
                 draw_x,
                 draw_y,
                 radius,
-                outline_color,
+                self.theme.selected_outline,
                 2,
             )
+            self._draw_energy_bar(creature, bounds, world)
 
+    def _draw_creatures_immediate(
+        self,
+        visible_creatures: list[tuple[Creature, float, float, float]],
+        world: World,
+        zoom: float,
+    ) -> None:
+        for creature, draw_x, draw_y, radius in visible_creatures:
+            arcade.draw_circle_filled(draw_x, draw_y, radius, creature.color)
             heading_x = draw_x + cos(creature.heading) * radius
             heading_y = draw_y + sin(creature.heading) * radius
             arcade.draw_circle_filled(
@@ -471,8 +493,203 @@ class EnvironmentRenderer:
             arcade.draw_circle_filled(left_eye_x, left_eye_y, eye_radius, (247, 247, 241))
             arcade.draw_circle_filled(right_eye_x, right_eye_y, eye_radius, (247, 247, 241))
 
-            if selected_creature_id == creature.creature_id:
-                self._draw_energy_bar(creature, bounds, world)
+    def _draw_creature_sprite_batch(
+        self,
+        visible_creatures: list[tuple[Creature, float, float, float]],
+        zoom: float,
+        active_creatures: list[Creature],
+    ) -> bool:
+        if self._creature_batch_disabled or not visible_creatures:
+            return False
+
+        if not self._has_active_window():
+            return False
+
+        sprite_list = self._creature_sprite_list
+        detail_sprite_list = self._creature_detail_sprite_list
+        if sprite_list is None:
+            sprite_list_cls = getattr(arcade, "SpriteList", None)
+            if sprite_list_cls is None:
+                self._creature_batch_disabled = True
+                return False
+            try:
+                sprite_list = sprite_list_cls(
+                    use_spatial_hash=False,
+                    capacity=max(100, len(visible_creatures)),
+                )
+                detail_sprite_list = sprite_list_cls(
+                    use_spatial_hash=False,
+                    capacity=max(100, len(visible_creatures)),
+                )
+            except Exception:
+                self._creature_batch_disabled = True
+                return False
+            self._creature_sprite_list = sprite_list
+            self._creature_detail_sprite_list = detail_sprite_list
+        elif detail_sprite_list is None:
+            sprite_list_cls = getattr(arcade, "SpriteList", None)
+            if sprite_list_cls is None:
+                self._creature_batch_disabled = True
+                return False
+            try:
+                detail_sprite_list = sprite_list_cls(
+                    use_spatial_hash=False,
+                    capacity=max(100, len(visible_creatures)),
+                )
+            except Exception:
+                self._creature_batch_disabled = True
+                return False
+            self._creature_detail_sprite_list = detail_sprite_list
+
+        try:
+            sprite_list.clear()
+            detail_sprite_list.clear()
+            for creature, draw_x, draw_y, _radius in visible_creatures:
+                creature_key = self._creature_sprite_key(creature)
+                sprite = self._creature_sprite_cache.get(creature_key)
+                if sprite is None:
+                    sprite = self._create_creature_sprite()
+                    self._creature_sprite_cache[creature_key] = sprite
+                    try:
+                        creature.render_sprite = sprite
+                    except AttributeError:
+                        pass
+                detail_sprite = self._creature_detail_sprite_cache.get(creature_key)
+                if detail_sprite is None:
+                    detail_sprite = self._create_creature_detail_sprite()
+                    self._creature_detail_sprite_cache[creature_key] = detail_sprite
+
+                sprite.center_x = draw_x
+                sprite.center_y = draw_y
+                sprite.scale = (
+                    creature.radius * zoom / self.CREATURE_BASE_TEXTURE_RADIUS
+                )
+                sprite.angle = self._creature_sprite_angle(creature)
+                sprite.color = creature.color
+                sprite_list.append(sprite)
+
+                detail_sprite.center_x = draw_x
+                detail_sprite.center_y = draw_y
+                detail_sprite.scale = sprite.scale
+                detail_sprite.angle = sprite.angle
+                detail_sprite.color = (255, 255, 255, 255)
+                detail_sprite_list.append(detail_sprite)
+
+            active_keys = (
+                {
+                    self._creature_sprite_key(creature)
+                    for creature in active_creatures
+                }
+            )
+            self._prune_creature_sprite_cache(active_keys)
+            sprite_list.draw()
+            detail_sprite_list.draw()
+        except Exception:
+            self._creature_batch_disabled = True
+            return False
+
+        return True
+
+    def _create_creature_sprite(self) -> object:
+        sprite_cls = getattr(arcade, "Sprite", None)
+        if sprite_cls is None:
+            raise RuntimeError("Arcade Sprite is unavailable.")
+        return sprite_cls(self._creature_base_texture())
+
+    def _create_creature_detail_sprite(self) -> object:
+        sprite_cls = getattr(arcade, "Sprite", None)
+        if sprite_cls is None:
+            raise RuntimeError("Arcade Sprite is unavailable.")
+        return sprite_cls(self._creature_detail_base_texture())
+
+    def _creature_base_texture(self) -> object:
+        if self._creature_sprite_texture is not None:
+            return self._creature_sprite_texture
+
+        make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        if make_circle_texture is None:
+            raise RuntimeError("Arcade circle texture factory is unavailable.")
+
+        texture = make_circle_texture(
+            self.CREATURE_BASE_TEXTURE_DIAMETER,
+            (255, 255, 255, 255),
+            name="creature-base-body",
+        )
+        self._creature_sprite_texture = texture
+        return self._creature_sprite_texture
+
+    def _creature_detail_base_texture(self) -> object:
+        if self._creature_detail_texture is not None:
+            return self._creature_detail_texture
+
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            raise RuntimeError("Pillow is required for creature detail texture.")
+
+        try:
+            image = Image.new(
+                "RGBA",
+                (
+                    self.CREATURE_BASE_TEXTURE_DIAMETER,
+                    self.CREATURE_BASE_TEXTURE_DIAMETER,
+                ),
+                (0, 0, 0, 0),
+            )
+            draw = ImageDraw.Draw(image)
+            center = self.CREATURE_BASE_TEXTURE_RADIUS
+            marker_radius = 16
+            draw.ellipse(
+                (
+                    center - marker_radius,
+                    center + 76 - marker_radius,
+                    center + marker_radius,
+                    center + 76 + marker_radius,
+                ),
+                fill=(76, 76, 76, 255),
+            )
+            eye_radius = 12
+            for eye_x in (center - 34, center + 34):
+                draw.ellipse(
+                    (
+                        eye_x - eye_radius,
+                        center + 42 - eye_radius,
+                        eye_x + eye_radius,
+                        center + 42 + eye_radius,
+                    ),
+                    fill=(255, 255, 255, 255),
+                )
+            texture_factory = getattr(arcade, "Texture", None)
+            if texture_factory is None:
+                raise RuntimeError("Arcade Texture is unavailable.")
+            try:
+                self._creature_detail_texture = texture_factory(
+                    image,
+                    hash="creature-face-details",
+                )
+            except TypeError:
+                self._creature_detail_texture = texture_factory(image)
+            return self._creature_detail_texture
+        except Exception as exc:
+            raise RuntimeError("Could not create creature detail texture.") from exc
+
+    def _creature_sprite_angle(self, creature: Creature) -> float:
+        return (270.0 - degrees(creature.heading)) % 360.0
+
+    def _creature_sprite_key(self, creature: Creature) -> int:
+        return getattr(creature, "creature_id", id(creature))
+
+    def _prune_creature_sprite_cache(self, active_keys: set[int]) -> None:
+        self._creature_sprite_cache = {
+            key: sprite
+            for key, sprite in self._creature_sprite_cache.items()
+            if key in active_keys
+        }
+        self._creature_detail_sprite_cache = {
+            key: sprite
+            for key, sprite in self._creature_detail_sprite_cache.items()
+            if key in active_keys
+        }
 
     def _draw_energy_bar(
         self,
