@@ -358,9 +358,7 @@ class PersistenceManagerTest(unittest.TestCase):
         spawner = SimpleNamespace(
             _next_food_id=1,
             _spawn_credit=0.0,
-            _burst_credit=0.0,
             _low_food_burst_credit=0.0,
-            _pending_burst_items=0,
             _pending_low_food_burst_items=0,
         )
         rt_neat = SimpleNamespace(
@@ -418,6 +416,15 @@ class PersistenceManagerTest(unittest.TestCase):
         self.assertNotIn("brain", state["creatures"][0])
         self.assertEqual(state["species_manager"]["phenotypic_weight"], 2.0)
         self.assertEqual(state["species_history"], {})
+        self.assertEqual(
+            set(state["food_spawner"]),
+            {
+                "next_food_id",
+                "spawn_credit",
+                "low_food_burst_credit",
+                "pending_low_food_burst_items",
+            },
+        )
 
     def test_legacy_representative_migration_uses_living_traits(self) -> None:
         genome = SimpleNamespace(key=17)

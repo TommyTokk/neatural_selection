@@ -133,8 +133,8 @@ class MetabolismConfig:
 
 @dataclass(slots=True)
 class PopulationConfig:
-    initial_creatures: int = 50
-    max_creatures: int = 50
+    initial_creatures: int = 40
+    max_creatures: int = 40
     elite_archive_size: int = 256
     fitness_archive_size: int = 256
     extinction_recovery_creatures: int = 35
@@ -228,31 +228,15 @@ class VisionConfig:
 class FoodConfig:
     initial_food_items: int = 540
     max_food_items: int = 650
-    low_creature_food_bonus_items: int = (
-        430  # Number of bonus food items to spawn when creature count is low.
+    low_food_pressure_threshold: float = (
+        0.5  # Food ratio below which low-food recovery can accumulate.
     )
-    low_creature_food_bonus_threshold: int = (
-        10  # Creature count threshold below which bonus food items will spawn.
-    )
-    low_creature_burst_items: int = (
-        170  # Number of food items to spawn in a burst when creature count is low.
-    )
-    low_creature_burst_interval: float = 0.75  # Minimum interval in seconds between food bursts when creature count is low.
-    low_food_pressure_threshold: float = 0.5  # Food spawn pressure threshold below which low food spawn rate multiplier is applied.
-    low_food_spawn_rate_multiplier: float = 3.0  # Multiplier for food spawn rate when food pressure is below the low_food_pressure_threshold.
     low_food_burst_items: int = (
         215  # Number of food items to spawn in a burst when food pressure is low.
     )
     low_food_burst_interval: float = 0.75  # Minimum interval in seconds between food bursts when food pressure is low.
     total_biomass_energy: float | None = None
     max_biomass_spawns_per_second: float = 20.0
-    biomass_spawn_pressure_exponent: float = 1.6
-    creature_pressure_midpoint: float = 18.0
-    creature_pressure_steepness: float = 3.0
-    creature_pressure_spawn_cutoff: float = 0.05
-
-    food_regrowth_midpoint_ratio: float = 0.65  # Higher spawn rate below 65% capacity
-    food_regrowth_steepness: float = 0.12  # Sharpness of the logistic curve
     critical_food_ratio: float = 0.15  # Burst below 15% capacity
 
     min_food_radius: float = 6.0

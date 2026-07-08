@@ -63,18 +63,8 @@ from src.food_spawner import FoodSpawner
 BOUNDS = (0.0, 0.0, 1000.0, 1000.0)
 
 
-def low_creature_config(**overrides: object) -> FoodConfig:
-    defaults = {
-        "low_food_burst_items": 0,
-        "max_biomass_spawns_per_second": 0.0,
-    }
-    defaults.update(overrides)
-    return FoodConfig(**defaults)
-
-
 def low_food_config(**overrides: object) -> FoodConfig:
     defaults = {
-        "low_creature_burst_items": 0,
         "max_biomass_spawns_per_second": 0.0,
     }
     defaults.update(overrides)
@@ -182,128 +172,96 @@ class FoodEnergyValueTest(unittest.TestCase):
         self.assertEqual(food.energy_value, original_energy)
 
 
-class FoodSpawnerLowCreatureBurstTest(unittest.TestCase):
-    def test_low_creature_burst_uses_configured_interval(self) -> None:
-        config = low_creature_config()
+class FoodSpawnerLogisticGrowthTest(unittest.TestCase):
+    def test_high_species_count_does_not_block_normal_spawning(self) -> None:
+        config = FoodConfig(
+            max_food_items=100,
+            max_biomass_spawns_per_second=10.0,
+            low_food_burst_items=0,
+        )
         spawner = FoodSpawner(config, Random(1))
-        expected_burst_items = ceil(
-            config.low_creature_burst_items
-            * spawner.low_creature_shortage_ratio(9)
-        )
-        expected_first_frame_items = min(
-            expected_burst_items,
-            spawner._burst_spawn_cap(),
-        )
-
-        early_foods = spawner.update(
-            config.low_creature_burst_interval - 0.01,
-            BOUNDS,
-            current_food_count=config.max_food_items,
-            creature_count=9,
-            available_biomass=10_000.0,
-        )
-        burst_foods = spawner.update(
-            0.01,
-            BOUNDS,
-            current_food_count=config.max_food_items,
-            creature_count=9,
-            available_biomass=10_000.0,
-        )
-
-        self.assertEqual(len(early_foods), 0)
-        self.assertEqual(len(burst_foods), expected_first_frame_items)
-
-    def test_burst_size_scales_with_low_creature_shortage(self) -> None:
-        config = low_creature_config()
-
-        nine_creature_spawner = FoodSpawner(config, Random(1))
-        five_creature_spawner = FoodSpawner(config, Random(1))
-        nine_creature_foods = nine_creature_spawner.update(
-            config.low_creature_burst_interval,
-            BOUNDS,
-            current_food_count=config.max_food_items,
-            creature_count=9,
-            available_biomass=10_000.0,
-        )
-        five_creature_foods = five_creature_spawner.update(
-            config.low_creature_burst_interval,
-            BOUNDS,
-            current_food_count=config.max_food_items,
-            creature_count=5,
-            available_biomass=10_000.0,
-        )
-
-        self.assertEqual(
-            len(nine_creature_foods),
-            ceil(
-                config.low_creature_burst_items
-                * nine_creature_spawner.low_creature_shortage_ratio(9)
-            ),
-        )
-        five_creature_expected_burst = ceil(
-            config.low_creature_burst_items
-            * five_creature_spawner.low_creature_shortage_ratio(5)
-        )
-        self.assertEqual(
-            len(five_creature_foods),
-            min(
-                five_creature_expected_burst,
-                five_creature_spawner._burst_spawn_cap(),
-            ),
-        )
-        self.assertGreater(len(five_creature_foods), len(nine_creature_foods))
-
-        carried_foods = five_creature_spawner.update(
-            0.0,
-            BOUNDS,
-            current_food_count=config.max_food_items + len(five_creature_foods),
-            creature_count=5,
-            available_biomass=10_000.0,
-        )
-
-        self.assertEqual(
-            len(five_creature_foods) + len(carried_foods),
-            five_creature_expected_burst,
-        )
-
-    def test_no_low_creature_burst_at_threshold(self) -> None:
-        spawner = FoodSpawner(low_creature_config(), Random(1))
 
         foods = spawner.update(
-            spawner.config.low_creature_burst_interval,
+            1.0,
             BOUNDS,
-            current_food_count=spawner.config.max_food_items - 100,
-            creature_count=10,
+            current_food_count=50,
+            active_species_count=50,
             available_biomass=10_000.0,
         )
 
-        self.assertEqual(len(foods), 0)
+        self.assertGreater(len(foods), 0)
 
-    def test_low_creature_burst_respects_slots_and_biomass(self) -> None:
-        spawner = FoodSpawner(low_creature_config(), Random(1))
-        spawn_pressure = spawner.creature_pressure_factor(5)
-        seven_foods_biomass = (
-            7 * spawner.average_food_energy_value()
-        ) / spawn_pressure
-
-        biomass_limited_foods = spawner.update(
-            spawner.config.low_creature_burst_interval,
-            BOUNDS,
-            current_food_count=spawner.config.max_food_items,
-            creature_count=5,
-            available_biomass=seven_foods_biomass,
+    def test_available_biomass_is_not_scaled_by_species_or_creatures(self) -> None:
+        config = FoodConfig(
+            max_food_items=100,
+            max_biomass_spawns_per_second=100.0,
+            low_food_burst_items=0,
         )
-        slot_limited_spawner = FoodSpawner(low_creature_config(), Random(1))
-        slot_limited_foods = slot_limited_spawner.update(
-            slot_limited_spawner.config.low_creature_burst_interval,
+        spawner = FoodSpawner(config, Random(1))
+        five_foods_biomass = 5 * spawner.average_food_energy_value()
+
+        foods = spawner.update(
+            10.0,
             BOUNDS,
-            current_food_count=slot_limited_spawner.food_capacity(5) - 2,
-            creature_count=5,
+            current_food_count=50,
+            active_species_count=50,
+            available_biomass=five_foods_biomass,
+        )
+
+        self.assertEqual(len(foods), 5)
+
+    def test_zero_food_uses_seeding_pressure(self) -> None:
+        config = FoodConfig(
+            max_food_items=100,
+            max_biomass_spawns_per_second=20.0,
+            low_food_burst_items=0,
+        )
+        spawner = FoodSpawner(config, Random(1))
+
+        foods = spawner.update(
+            1.0,
+            BOUNDS,
+            current_food_count=0,
+            active_species_count=4,
             available_biomass=10_000.0,
         )
 
-        self.assertEqual(len(biomass_limited_foods), 7)
-        self.assertEqual(len(slot_limited_foods), 2)
+        self.assertEqual(spawner.food_regrowth_pressure(0, config.max_food_items), 0.05)
+        self.assertGreater(len(foods), 0)
+
+    def test_full_capacity_blocks_spawning_and_resets_credits(self) -> None:
+        config = FoodConfig(max_food_items=100)
+        spawner = FoodSpawner(config, Random(1))
+        spawner._spawn_credit = 3.0
+        spawner._low_food_burst_credit = 0.5
+        spawner._pending_low_food_burst_items = 4
+
+        foods = spawner.update(
+            1.0,
+            BOUNDS,
+            current_food_count=100,
+            active_species_count=4,
+            available_biomass=10_000.0,
+        )
+
+        self.assertEqual(foods, [])
+        self.assertEqual(spawner._spawn_credit, 0.0)
+        self.assertEqual(spawner._low_food_burst_credit, 0.0)
+        self.assertEqual(spawner._pending_low_food_burst_items, 0)
+
+    def test_species_count_scales_regular_spawn_rate(self) -> None:
+        spawner = FoodSpawner(FoodConfig(), Random(1))
+
+        low_species_rate = spawner._spawn_rate_per_second(
+            active_species_count=1,
+            spawn_pressure=1.0,
+        )
+        high_species_rate = spawner._spawn_rate_per_second(
+            active_species_count=8,
+            spawn_pressure=1.0,
+        )
+
+        self.assertGreater(high_species_rate, low_species_rate)
 
 
 class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
@@ -319,7 +277,7 @@ class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
             0.0,
             BOUNDS,
             current_food_count=current_food_count,
-            creature_count=12,
+            active_species_count=4,
             available_biomass=10_000.0,
         )
 
@@ -333,7 +291,7 @@ class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
             0.0,
             BOUNDS,
             current_food_count=current_food_count + len(foods),
-            creature_count=12,
+            active_species_count=4,
             available_biomass=10_000.0,
         )
 
@@ -346,14 +304,14 @@ class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
             0.0,
             BOUNDS,
             current_food_count=20,
-            creature_count=12,
+            active_species_count=4,
             available_biomass=10_000.0,
         )
         low_foods = FoodSpawner(config, Random(1)).update(
             0.0,
             BOUNDS,
             current_food_count=300,
-            creature_count=12,
+            active_species_count=4,
             available_biomass=10_000.0,
         )
 
@@ -369,7 +327,7 @@ class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
             0.0,
             BOUNDS,
             current_food_count=current_food_count,
-            creature_count=12,
+            active_species_count=4,
             available_biomass=10_000.0,
         )
 
@@ -378,27 +336,27 @@ class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
     def test_low_food_refill_respects_biomass_limit(self) -> None:
         config = low_food_config()
         spawner = FoodSpawner(config, Random(1))
-        spawn_pressure = spawner.creature_pressure_factor(12)
-        five_foods_biomass = (
-            5 * spawner.average_food_energy_value()
-        ) / spawn_pressure
+        five_foods_biomass = 5 * spawner.average_food_energy_value()
 
         foods = spawner.update(
             0.0,
             BOUNDS,
             current_food_count=20,
-            creature_count=12,
+            active_species_count=4,
             available_biomass=five_foods_biomass,
         )
 
         self.assertEqual(len(foods), 5)
 
-    def test_spawn_rate_increases_as_food_count_lowers(self) -> None:
+    def test_logistic_food_pressure_peaks_near_half_capacity(self) -> None:
         config = FoodConfig()
         spawner = FoodSpawner(config, Random(1))
-        spawn_pressure = spawner.creature_pressure_factor(12)
         high_food_pressure = spawner.food_regrowth_pressure(
             600,
+            config.max_food_items,
+        )
+        half_capacity_pressure = spawner.food_regrowth_pressure(
+            config.max_food_items // 2,
             config.max_food_items,
         )
         low_food_pressure = spawner.food_regrowth_pressure(
@@ -406,16 +364,8 @@ class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
             config.max_food_items,
         )
 
-        high_food_rate = spawner._spawn_rate_per_second(
-            spawn_pressure=spawn_pressure,
-            food_pressure=high_food_pressure,
-        )
-        low_food_rate = spawner._spawn_rate_per_second(
-            spawn_pressure=spawn_pressure,
-            food_pressure=low_food_pressure,
-        )
-
-        self.assertGreater(low_food_rate, high_food_rate)
+        self.assertGreater(half_capacity_pressure, high_food_pressure)
+        self.assertGreater(half_capacity_pressure, low_food_pressure)
 
 
 if __name__ == "__main__":

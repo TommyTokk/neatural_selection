@@ -20,9 +20,7 @@ class FoodSpawner:
         self.biome_map = biome_map
         self._next_food_id = 1
         self._spawn_credit = 0.0
-        self._burst_credit = 0.0
         self._low_food_burst_credit = 0.0
-        self._pending_burst_items = 0
         self._pending_low_food_burst_items = 0
 
     def create_initial_foods(
@@ -36,26 +34,21 @@ class FoodSpawner:
         delta_time: float,
         bounds: tuple[float, float, float, float],
         current_food_count: int,
-        creature_count: int,
+        active_species_count: int,
         available_biomass: float,
     ) -> list[Food]:
-        food_capacity = self.food_capacity(creature_count)
+        food_capacity = self.food_capacity()
         if current_food_count >= food_capacity:
             self._reset_spawn_credits()
             return []
 
-        creature_pressure = self.creature_pressure_factor(creature_count)
-        if creature_pressure <= self.config.creature_pressure_spawn_cutoff:
-            self._reset_spawn_credits()
-            return []
-
-        food_pressure = self.food_regrowth_pressure(current_food_count, food_capacity)
+        spawn_pressure = self.food_regrowth_pressure(current_food_count, food_capacity)
 
         plant_energy_value = self.average_food_energy_value()
-        spawnable_biomass = available_biomass * creature_pressure
-
-        if spawnable_biomass <= plant_energy_value:
+        if plant_energy_value <= 0.0:
             return []
+
+        spawnable_biomass = max(0.0, available_biomass)
 
         available_slots = food_capacity - current_food_count
         biomass_slots = int(spawnable_biomass // plant_energy_value)
@@ -63,27 +56,24 @@ class FoodSpawner:
         if allowed_spawns <= 0:
             return []
 
-        spawn_rate = self._spawn_rate_per_second(creature_pressure, food_pressure)
+        spawn_rate = self._spawn_rate_per_second(
+            active_species_count,
+            spawn_pressure,
+        )
 
         self._spawn_credit += max(0.0, delta_time) * spawn_rate
         regular_spawn_count = min(allowed_spawns, int(self._spawn_credit))
 
         burst_spawn_budget = self._burst_spawn_cap()
-        burst_count = self._low_creature_burst_count(
-            delta_time,
-            creature_count,
-            min(allowed_spawns - regular_spawn_count, burst_spawn_budget),
-        )
-
-        burst_count += self._low_food_burst_count(
+        burst_count = self._low_food_burst_count(
             delta_time,
             current_food_count,
             food_capacity,
             min(
-                allowed_spawns - regular_spawn_count - burst_count,
-                burst_spawn_budget - burst_count,
+                allowed_spawns - regular_spawn_count,
+                burst_spawn_budget,
             ),
-            allowed_spawns - regular_spawn_count - burst_count,
+            allowed_spawns - regular_spawn_count,
         )
 
         spawn_count = regular_spawn_count + burst_count
@@ -93,7 +83,7 @@ class FoodSpawner:
         self._spawn_credit -= regular_spawn_count
         self._spawn_credit = min(
             self._spawn_credit,
-            max(1.0, self.config.max_biomass_spawns_per_second),
+            max(1.0, spawn_rate),
         )
 
         return [self.create_food(bounds) for _ in range(spawn_count)]
@@ -156,30 +146,19 @@ class FoodSpawner:
         ) * 0.5
         return pi * average_radius**2 * self.config.energy_density
 
-    def creature_pressure_factor(self, creature_count: int) -> float:
-        steepness = max(0.001, self.config.creature_pressure_steepness)
-        pressure = (creature_count - self.config.creature_pressure_midpoint) / steepness
-        return 1.0 / (1.0 + exp(pressure))
-
     def food_regrowth_pressure(
         self, current_food_count: int, food_capacity: int
     ) -> float:
-        food_ratio = current_food_count / max(1, food_capacity)
-        steepness = max(0.001, self.config.food_regrowth_steepness)
-        pressure = (food_ratio - self.config.food_regrowth_midpoint_ratio) / steepness
+        if food_capacity <= 0:
+            return 0.0
 
-        return 1.0 / (1.0 + exp(pressure))
+        food_ratio = max(0.0, min(1.0, current_food_count / food_capacity))
+        logistic_food_pressure = 4.0 * food_ratio * (1.0 - food_ratio)
+        seeding_pressure = 0.05 if current_food_count == 0 else 0.0
+        return max(logistic_food_pressure, seeding_pressure)
 
-    def food_capacity(self, creature_count: int) -> int:
-        shortage_ratio = self.low_creature_shortage_ratio(creature_count)
-        bonus_items = round(
-            max(0, self.config.low_creature_food_bonus_items) * shortage_ratio
-        )
-        return self.config.max_food_items + bonus_items
-
-    def low_creature_shortage_ratio(self, creature_count: int) -> float:
-        threshold = max(1, self.config.low_creature_food_bonus_threshold)
-        return max(0.0, (threshold - creature_count) / threshold)
+    def food_capacity(self, active_species_count: int | None = None) -> int:
+        return max(0, self.config.max_food_items)
 
     def low_food_shortage_ratio(
         self,
@@ -192,41 +171,18 @@ class FoodSpawner:
 
     def _spawn_rate_per_second(
         self,
+        active_species_count: int,
         spawn_pressure: float,
-        food_pressure: float,
     ) -> float:
-        return (
-            self.config.max_biomass_spawns_per_second * spawn_pressure * food_pressure
+        active_max_rate = (
+            self.config.max_biomass_spawns_per_second
+            * self.species_growth_multiplier(active_species_count)
         )
+        return active_max_rate * spawn_pressure
 
-    def _low_creature_burst_count(
-        self,
-        delta_time: float,
-        creature_count: int,
-        remaining_spawns: int,
-    ) -> int:
-        burst_items = max(0, self.config.low_creature_burst_items)
-        if burst_items <= 0 or remaining_spawns <= 0:
-            return 0
-
-        shortage_ratio = self.low_creature_shortage_ratio(creature_count)
-        if shortage_ratio <= 0.0:
-            self._burst_credit = 0.0
-            self._pending_burst_items = 0
-            return 0
-
-        burst_interval = max(0.001, self.config.low_creature_burst_interval)
-        scaled_burst_items = max(1, ceil(burst_items * shortage_ratio))
-        self._burst_credit += max(0.0, delta_time) / burst_interval
-        burst_events = int(self._burst_credit)
-        if burst_events > 0:
-            self._pending_burst_items += burst_events * scaled_burst_items
-            self._burst_credit -= burst_events
-            self._burst_credit = min(self._burst_credit, 1.0)
-
-        burst_count = min(remaining_spawns, self._pending_burst_items)
-        self._pending_burst_items -= burst_count
-        return burst_count
+    def species_growth_multiplier(self, active_species_count: int) -> float:
+        species_pressure = -0.6 * (max(0, active_species_count) - 4.0)
+        return 0.5 + (1.5 / (1.0 + exp(species_pressure)))
 
     def _low_food_burst_count(
         self,
@@ -304,15 +260,9 @@ class FoodSpawner:
         return burst_count
 
     def _burst_spawn_cap(self) -> int:
-        max_burst_items = max(
-            self.config.low_creature_burst_items,
-            self.config.low_food_burst_items,
-        )
-        return max(1, ceil(max(1, max_burst_items) * 0.25))
+        return max(1, ceil(max(1, self.config.low_food_burst_items) * 0.25))
 
     def _reset_spawn_credits(self) -> None:
         self._spawn_credit = 0.0
-        self._burst_credit = 0.0
         self._low_food_burst_credit = 0.0
-        self._pending_burst_items = 0
         self._pending_low_food_burst_items = 0

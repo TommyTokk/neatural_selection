@@ -512,9 +512,7 @@ class PersistenceManager:
             "food_spawner": {
                 "next_food_id": spawner._next_food_id,
                 "spawn_credit": spawner._spawn_credit,
-                "burst_credit": spawner._burst_credit,
                 "low_food_burst_credit": spawner._low_food_burst_credit,
-                "pending_burst_items": spawner._pending_burst_items,
                 "pending_low_food_burst_items": (
                     spawner._pending_low_food_burst_items
                 ),
@@ -1230,14 +1228,14 @@ class PersistenceManager:
             spawner = world.food_spawner
             spawner._next_food_id = spawner_state["next_food_id"]
             spawner._spawn_credit = spawner_state["spawn_credit"]
-            spawner._burst_credit = spawner_state["burst_credit"]
-            spawner._low_food_burst_credit = spawner_state[
-                "low_food_burst_credit"
-            ]
-            spawner._pending_burst_items = spawner_state["pending_burst_items"]
-            spawner._pending_low_food_burst_items = spawner_state[
-                "pending_low_food_burst_items"
-            ]
+            spawner._low_food_burst_credit = spawner_state.get(
+                "low_food_burst_credit",
+                0.0,
+            )
+            spawner._pending_low_food_burst_items = spawner_state.get(
+                "pending_low_food_burst_items",
+                0,
+            )
 
             world._held_food_by_creature_id = runtime["held_foods"]
             world._carrier_by_food_id = runtime["food_carriers"]

@@ -138,8 +138,16 @@ class CapturingFoodSpawner:
         CapturingFoodSpawner.captured_bounds = bounds
         return []
 
-    def creature_pressure_factor(self, creature_count: int) -> float:
-        del creature_count
+    def food_capacity(self, active_species_count: int | None = None) -> int:
+        del active_species_count
+        return 1
+
+    def food_regrowth_pressure(
+        self,
+        current_food_count: int,
+        food_capacity: int,
+    ) -> float:
+        del current_food_count, food_capacity
         return 1.0
 
 

@@ -1132,7 +1132,7 @@ class World:
             delta_time,
             self.environment_world_bounds,
             len(self.foods),
-            len(self.creatures),
+            self._active_species_count(),
             self._available_biomass(),
         )
         self._add_foods(spawned_foods)
@@ -2285,8 +2285,15 @@ class World:
         used_biomass = self._creature_energy() + self._plant_energy()
         return max(0.0, self.total_biomass_energy - used_biomass)
 
+    def _active_species_count(self) -> int:
+        return len({creature.lineage.species_id for creature in self.creatures})
+
     def _plant_spawn_pressure(self) -> float:
-        return self.food_spawner.creature_pressure_factor(len(self.creatures))
+        food_capacity = self.food_spawner.food_capacity(self._active_species_count())
+        return self.food_spawner.food_regrowth_pressure(
+            len(self.foods),
+            food_capacity,
+        )
 
     def _biome_area_shares(self) -> dict[str, float]:
         biome_map = getattr(self, "biome_map", None)
@@ -2550,7 +2557,7 @@ class World:
         if available_biomass < child_energy:
             return False
 
-        food_capacity = self.food_spawner.food_capacity(len(self.creatures))
+        food_capacity = self.food_spawner.food_capacity(self._active_species_count())
         food_ratio = len(self.foods) / max(1, food_capacity)
         if food_ratio >= self.config.population.reproduction_min_food_ratio:
             return True
