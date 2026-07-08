@@ -41,12 +41,85 @@ class WorldFlockingMotionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.world = World.__new__(World)
         self.world.config = SimConfig()
+        self.world.config.action.action_smoothing_alpha = 1.0
+        self.world.config.action.active_angular_velocity_retention = 1.0
+        self.world.config.action.turn_control_gain = 1.0
         self.world._motion_commands = {}
         self.creature = SimpleNamespace(
             creature_id=1,
             heading=0.0,
             vision=SimpleNamespace(angle=pi / 2),
             body=FakeBody(),
+            smoothed_rotation=0.0,
+            smoothed_acceleration=0.0,
+        )
+
+    def test_action_smoothing_uses_default_alpha_on_first_tick(self) -> None:
+        self.world.config.action.action_smoothing_alpha = (
+            SimConfig().action.action_smoothing_alpha
+        )
+
+        self.world._apply_action(
+            self.creature,
+            action(accelerate=1.0, rotate=1.0),
+            snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
+            apply_stabilizers=False,
+        )
+
+        self.assertAlmostEqual(self.creature.smoothed_acceleration, 0.8)
+        self.assertAlmostEqual(self.creature.smoothed_rotation, 0.8)
+        self.assertAlmostEqual(self.creature.body.applied_force[0], 100.0)
+        self.assertAlmostEqual(self.creature.body.applied_force[1], 0.0)
+        self.assertAlmostEqual(self.world._motion_commands[1].effective_rotate, 0.8)
+
+    def test_action_smoothing_converges_across_cached_action_ticks(self) -> None:
+        self.world.config.action.action_smoothing_alpha = 0.3
+        cached_action = action(accelerate=1.0, rotate=1.0)
+        snapshot = SimpleNamespace(flock=FlockSensorSnapshot())
+
+        for _ in range(3):
+            self.world._apply_action(
+                self.creature,
+                cached_action,
+                snapshot=snapshot,
+                apply_stabilizers=False,
+            )
+
+        self.assertAlmostEqual(self.creature.smoothed_acceleration, 0.657)
+        self.assertAlmostEqual(self.creature.smoothed_rotation, 0.657)
+        self.assertAlmostEqual(self.creature.body.applied_force[0], 82.125)
+        self.assertLess(self.world._motion_commands[1].effective_rotate, 1.0)
+
+    def test_active_angular_velocity_damping_applies_after_turn_control(self) -> None:
+        self.world.config.action.turn_response = 1.0
+        self.world.config.action.turn_control_gain = 1.0
+        self.world.config.action.active_angular_velocity_retention = 0.80
+
+        self.world._apply_action(
+            self.creature,
+            action(rotate=1.0),
+            snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
+            apply_stabilizers=False,
+        )
+
+        self.assertAlmostEqual(
+            self.creature.body.angular_velocity,
+            self.world.MAX_ANGULAR_SPEED * 0.80,
+        )
+
+    def test_turn_control_gain_reduces_angular_speed_limit(self) -> None:
+        self.world.config.action.turn_control_gain = 0.65
+
+        self.world._apply_action(
+            self.creature,
+            action(rotate=1.0),
+            snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
+            apply_stabilizers=False,
+        )
+
+        self.assertAlmostEqual(
+            self.world._motion_commands[1].max_angular_speed,
+            self.world.MAX_ANGULAR_SPEED * 0.65,
         )
 
     def test_zero_new_outputs_preserve_legacy_force_and_limits(self) -> None:

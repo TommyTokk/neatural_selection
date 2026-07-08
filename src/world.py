@@ -134,7 +134,7 @@ class World:
         self.vision = VisionSystem(config.vision, config.metabolism.eating_distance)
         self.space = pymunk.Space()
         self.space.gravity = (0.0, 0.0)
-        self.space.damping = 0.94
+        self.space.damping = 0.90
         self.space.iterations = 12
         use_spatial_hash = getattr(self.space, "use_spatial_hash", None)
         if use_spatial_hash is not None:
@@ -324,8 +324,7 @@ class World:
         if archive_interval > 0.0:
             self.time_since_last_archive_save += elapsed
         quick_due = (
-            quick_interval > 0.0
-            and self.time_since_last_quick_save >= quick_interval
+            quick_interval > 0.0 and self.time_since_last_quick_save >= quick_interval
         )
         archive_due = (
             archive_interval > 0.0
@@ -392,9 +391,7 @@ class World:
             species_id=1,
             parent_species_id=None,
             founder_creature_id=founder.creature_id,
-            founder_genome_id=self.neat_controller.genome_id_for(
-                founder.creature_id
-            ),
+            founder_genome_id=self.neat_controller.genome_id_for(founder.creature_id),
             emerged_at=self.elapsed_time,
             founder_color=tuple(founder.color[:3]),
             data_quality="exact",
@@ -435,9 +432,7 @@ class World:
             species_id=result.species_id,
             parent_species_id=result.parent_species_id,
             founder_creature_id=founder.creature_id,
-            founder_genome_id=self.neat_controller.genome_id_for(
-                founder.creature_id
-            ),
+            founder_genome_id=self.neat_controller.genome_id_for(founder.creature_id),
             emerged_at=self.elapsed_time,
             founder_color=tuple(founder.color[:3]),
             data_quality="exact",
@@ -1203,26 +1198,41 @@ class World:
         # Calculate the raw spawn position based on the parent's position and heading, moving backward along the parent's heading by the calculated distance.
         parent_x, parent_y = parent.position
         angle = parent.heading + choice((-pi / 4, pi / 4))
-        raw_x = parent_x + cos(angle) * distance # Calculate the x-coordinate of the spawn position based on the parent's heading and distance.
-        raw_y = parent_y + sin(angle) * distance # Calculate the y-coordinate of the spawn position based on the parent's heading and distance.
+        raw_x = (
+            parent_x + cos(angle) * distance
+        )  # Calculate the x-coordinate of the spawn position based on the parent's heading and distance.
+        raw_y = (
+            parent_y + sin(angle) * distance
+        )  # Calculate the y-coordinate of the spawn position based on the parent's heading and distance.
 
         # Get the bounds of the environment to ensure the child spawns within these limits.
-        left, bottom, right, top = self.environment_world_bounds# Get the bounds of the environment to ensure the child spawns within these limits.
-        radius = child_radius + 2.0# Calculate the effective radius to ensure the child does not spawn too close to the environment boundaries.
-        spawn_x = max(left + radius, min(right - radius, raw_x))# Clamp the x-coordinate of the spawn position to ensure it is within the environment bounds, accounting for the effective radius.
-        spawn_y = max(bottom + radius, min(top - radius, raw_y))# Clamp the y-coordinate of the spawn position to ensure it is within the environment bounds, accounting for the effective radius.
+        left, bottom, right, top = (
+            self.environment_world_bounds
+        )  # Get the bounds of the environment to ensure the child spawns within these limits.
+        radius = (
+            child_radius + 2.0
+        )  # Calculate the effective radius to ensure the child does not spawn too close to the environment boundaries.
+        spawn_x = max(
+            left + radius, min(right - radius, raw_x)
+        )  # Clamp the x-coordinate of the spawn position to ensure it is within the environment bounds, accounting for the effective radius.
+        spawn_y = max(
+            bottom + radius, min(top - radius, raw_y)
+        )  # Clamp the y-coordinate of the spawn position to ensure it is within the environment bounds, accounting for the effective radius.
         return spawn_x, spawn_y
 
     def _next_creature_id(self) -> int:
         if not hasattr(self, "_next_creature_id_value"):
-            self._next_creature_id_value = max(
-                [
-                    0,
-                    *(creature.creature_id for creature in self.creatures),
-                    *self.fitness,
-                    *self.fitness_archive,
-                ]
-            ) + 1
+            self._next_creature_id_value = (
+                max(
+                    [
+                        0,
+                        *(creature.creature_id for creature in self.creatures),
+                        *self.fitness,
+                        *self.fitness_archive,
+                    ]
+                )
+                + 1
+            )
         creature_id = self._next_creature_id_value
         self._next_creature_id_value += 1
         return creature_id
@@ -1283,7 +1293,7 @@ class World:
             should_think = (
                 action is None
                 or snapshot is None
-                or (getattr(self, "physics_step_count", 0) + creature_id) % 5 == 0
+                or (getattr(self, "physics_step_count", 0) + creature_id) % 2 == 0
             )
 
             if should_think:
@@ -1339,7 +1349,7 @@ class World:
         necessary forces and torques to apply to the creature's body based on the action's
         parameters, including acceleration, rotation, and panic intensity. It also handles
         flocking behavior and stabilizing the creature's movement when appropriate.
-        
+
         Args:
             creature (Creature): The creature to which the action will be applied.
             action (Action): The action to apply, containing acceleration, rotation, and other parameters.
@@ -1348,8 +1358,8 @@ class World:
             apply_stabilizers (bool): Whether to apply stabilizing forces and torques to the creature's body to reduce unwanted angular velocity and maintain smoother movement.
         """
 
-        # Calculate the thrust and panic intensity based on the action's parameters.
-        thrust = action.accelerate
+        # Calculate the target thrust and panic intensity based on the action's parameters.
+        target_thrust = action.accelerate
         panic = self._clamp(
             getattr(action, "flee_panic_intensity", 0.0),
             0.0,
@@ -1373,7 +1383,34 @@ class World:
 
         # The current maximum speed and angular speed are also scaled by the sprint multiplier, allowing the creature to move faster and turn more quickly when in a state of panic or urgency.
         current_max_speed = self.MAX_SPEED * sprint_multiplier
-        current_max_angular_speed = self.MAX_ANGULAR_SPEED * sprint_multiplier
+        turn_control_gain = self._clamp(
+            self.config.action.turn_control_gain,
+            0.0,
+            1.0,
+        )
+        active_angular_velocity_retention = self._clamp(
+            self.config.action.active_angular_velocity_retention,
+            0.0,
+            1.0,
+        )
+        current_max_angular_speed = (
+            self.MAX_ANGULAR_SPEED * sprint_multiplier * turn_control_gain
+        )
+
+        alpha = self._clamp(
+            self.config.action.action_smoothing_alpha,
+            0.0,
+            1.0,
+        )
+        previous_acceleration = getattr(creature, "smoothed_acceleration", 0.0)
+        smoothed_acceleration = (
+            previous_acceleration * (1.0 - alpha) + target_thrust * alpha
+        )
+        try:
+            creature.smoothed_acceleration = smoothed_acceleration
+        except AttributeError:
+            pass
+        thrust = smoothed_acceleration
 
         if apply_stabilizers and stabilize_velocity and thrust > 0.0:
             self._stabilize_food_tracking_velocity(creature)
@@ -1410,8 +1447,15 @@ class World:
             current_max_forward_force,
         )
 
-        # Determine the effective turn to apply to the creature based on its desired rotation and the flock turn bias. The turn is clamped to ensure that it does not exceed the maximum allowed angular speed, preventing unrealistic or erratic turning behavior.
-        turn = self._clamp(action.rotate + flock_turn_bias, -1.0, 1.0)
+        # Determine the target turn based on desired rotation and flock turn bias, then smooth it before applying angular control.
+        target_turn = self._clamp(action.rotate + flock_turn_bias, -1.0, 1.0)
+        previous_rotation = getattr(creature, "smoothed_rotation", 0.0)
+        turn = previous_rotation * (1.0 - alpha) + target_turn * alpha
+        try:
+            creature.smoothed_rotation = turn
+        except AttributeError:
+            pass
+
         if not hasattr(self, "_motion_commands"):
             self._motion_commands = {}
         self._motion_commands[creature.creature_id] = MotionCommand(
@@ -1420,12 +1464,11 @@ class World:
             max_angular_speed=current_max_angular_speed,
         )
 
-        # Apply the calculated total force to the creature's body at its current position, influencing its movement in the simulation. The force is applied in world coordinates, ensuring that it affects the creature's velocity and trajectory appropriately.
+        # Apply the calculated total force to the creature's body at its current position, influencing its movement in the simulation. The force is applied in world coordinates, ensuring that it affects the creature's velocity and trajectory appropriately.
         creature.body.apply_force_at_world_point(
             total_force,
             creature.body.position,
         )
-
 
         # Apply stabilizing forces and torques to the creature's body if appropriate, reducing unwanted angular velocity and maintaining smoother movement. This is particularly important when the creature is actively pursuing food or moving in a state of panic, as it helps to prevent erratic behavior and maintain control over its movement.
         if (
@@ -1449,6 +1492,7 @@ class World:
             turn,
             max_angular_speed=current_max_angular_speed,
         )
+        creature.body.angular_velocity *= active_angular_velocity_retention
 
         if apply_stabilizers and thrust < 0.0:
             creature.body.angular_velocity *= (
@@ -1677,9 +1721,7 @@ class World:
             command = motion_commands.get(creature.creature_id)
             max_speed = self.MAX_SPEED if command is None else command.max_speed
             max_angular_speed = (
-                self.MAX_ANGULAR_SPEED
-                if command is None
-                else command.max_angular_speed
+                self.MAX_ANGULAR_SPEED if command is None else command.max_angular_speed
             )
             velocity = creature.body.velocity
             if velocity.length > max_speed:
@@ -1834,8 +1876,7 @@ class World:
         return min(
             candidates,
             key=lambda food: (
-                (food.position[0] - mouth_x) ** 2
-                + (food.position[1] - mouth_y) ** 2
+                (food.position[0] - mouth_x) ** 2 + (food.position[1] - mouth_y) ** 2
             ),
         )
 
@@ -1846,8 +1887,7 @@ class World:
             return
 
         creatures_by_id = {
-            creature.creature_id: creature
-            for creature in self.creatures
+            creature.creature_id: creature for creature in self.creatures
         }
 
         for creature_id, food_id in list(held_foods.items()):
@@ -1961,9 +2001,7 @@ class World:
                 self.space.remove(food.body, food.shape)
 
         for creature in report.dead_creatures:
-            death_reason = (
-                "old_age" if self._is_senescent(creature) else "starvation"
-            )
+            death_reason = "old_age" if self._is_senescent(creature) else "starvation"
             self._remove_creature(creature, death_reason=death_reason)
 
         if not self.creatures:
@@ -2026,8 +2064,7 @@ class World:
             return False
 
         return (
-            self._creature_age_seconds(creature)
-            < population_config.infant_maturity_age
+            self._creature_age_seconds(creature) < population_config.infant_maturity_age
         )
 
     def _own_infant_children_for(self, parent: Creature) -> list[Creature]:
@@ -2318,8 +2355,7 @@ class World:
         )
 
         retained_species_ids = {
-            creature.lineage.species_id
-            for creature in self.creatures
+            creature.lineage.species_id for creature in self.creatures
         }
         retained_species_ids.update(
             archived.lineage.species_id
@@ -2427,10 +2463,7 @@ class World:
         biome_map = getattr(self, "biome_map", None)
         if biome_map is None:
             return {biome.label: 0.0 for biome in Biome}
-        return {
-            biome.label: biome_map.area_shares.get(biome, 0.0)
-            for biome in Biome
-        }
+        return {biome.label: biome_map.area_shares.get(biome, 0.0) for biome in Biome}
 
     def _biome_food_counts(self) -> dict[str, int]:
         counts = {biome.label: 0 for biome in Biome}
@@ -2470,9 +2503,7 @@ class World:
             )
             child_id = self._next_creature_id()
             parent_species_id = (
-                archived_traits.lineage.species_id
-                if archived_traits is not None
-                else 1
+                archived_traits.lineage.species_id if archived_traits is not None else 1
             )
             parent_color = (
                 archived_traits.color
@@ -2489,9 +2520,7 @@ class World:
                 ),
                 vision=child_traits.vision if child_traits is not None else None,
                 physical_traits=(
-                    child_traits.physical_traits
-                    if child_traits is not None
-                    else None
+                    child_traits.physical_traits if child_traits is not None else None
                 ),
                 lineage=child_traits.lineage if child_traits is not None else None,
             )
@@ -2563,22 +2592,16 @@ class World:
         if self._speciation_adjustment_accumulator < interval:
             return
 
-        intervals_elapsed = int(
-            self._speciation_adjustment_accumulator / interval
-        )
+        intervals_elapsed = int(self._speciation_adjustment_accumulator / interval)
         self._speciation_adjustment_accumulator %= interval
         active_species_count = len(
             {creature.lineage.species_id for creature in self.creatures}
         )
         threshold = self.neat_controller.species_manager.compatibility_threshold
         if active_species_count < speciation_config.target_species_count:
-            threshold -= (
-                speciation_config.threshold_adjust_rate * intervals_elapsed
-            )
+            threshold -= speciation_config.threshold_adjust_rate * intervals_elapsed
         elif active_species_count > speciation_config.target_species_count:
-            threshold += (
-                speciation_config.threshold_adjust_rate * intervals_elapsed
-            )
+            threshold += speciation_config.threshold_adjust_rate * intervals_elapsed
 
         self.neat_controller.species_manager.compatibility_threshold = max(
             speciation_config.min_threshold,
@@ -2651,14 +2674,12 @@ class World:
             lineage=child_traits.lineage,
         )
 
-        child_brain, speciation_result = (
-            self.neat_controller.create_child_brain(
-                parent.creature_id,
-                child_id,
-                parent.lineage.species_id,
-                child.physical_traits,
-                child.vision,
-            )
+        child_brain, speciation_result = self.neat_controller.create_child_brain(
+            parent.creature_id,
+            child_id,
+            parent.lineage.species_id,
+            child.physical_traits,
+            child.vision,
         )
         if child_brain is None:
             self._unindex_creature_shape(child)
@@ -2702,10 +2723,7 @@ class World:
         )
 
     def _reproduction_parent(self) -> Creature | None:
-        live_creatures = {
-            creature.creature_id: creature
-            for creature in self.creatures
-        }
+        live_creatures = {creature.creature_id: creature for creature in self.creatures}
         for parent_id in self.rt_neat.eligible_parent_ids:
             parent = live_creatures.get(parent_id)
             if parent is None or parent.creature_id not in self.fitness:

@@ -50,6 +50,8 @@ class Creature:
     lineage: LineageInfo = field(default_factory=LineageInfo)
     render_sprite: object | None = None
     last_action: object | None = None
+    smoothed_rotation: float = 0.0
+    smoothed_acceleration: float = 0.0
 
     @property
     def position(self) -> tuple[float, float]:

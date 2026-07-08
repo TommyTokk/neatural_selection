@@ -314,7 +314,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         creature = self.biome_sensor_creature()
         world.creatures = [creature]
         world.use_neat_brains = True
-        world.physics_step_count = 1
+        world.physics_step_count = 0
         action = Action(
             accelerate=0.0,
             rotate=0.0,
@@ -374,7 +374,7 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         world._apply_creature_intents()
 
-        self.assertEqual(decided_ids, [5])
+        self.assertEqual(decided_ids, [2, 4])
 
     def test_east_facing_biome_sensors_use_y_up_left_right_orientation(self) -> None:
         world = self.make_world_for_biome_sensors()

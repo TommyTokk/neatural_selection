@@ -226,8 +226,8 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 400
-    max_food_items: int = 500
+    initial_food_items: int = 200
+    max_food_items: int = 250
     low_food_pressure_threshold: float = (
         0.5  # Food ratio below which low-food recovery can accumulate.
     )
@@ -251,6 +251,9 @@ class ActionConfig:
     max_turn_torque: float = 260.0
     max_sprint_multiplier: float = 0.5
     max_flock_turn_bias: float = 0.65
+    action_smoothing_alpha: float = 0.8
+    active_angular_velocity_retention: float = 0.80
+    turn_control_gain: float = 0.65
     turn_response: float = 0.72
     turn_damping: float = 0.88
     turn_deadzone: float = 0.03
