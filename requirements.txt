@@ -4,3 +4,5 @@ neat-python
 numpy
 opensimplex
 Pillow
+matplotlib
+seaborn

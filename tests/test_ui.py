@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from time import perf_counter
@@ -7,7 +8,7 @@ import sys
 from types import ModuleType
 from types import SimpleNamespace
 import unittest
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, Mock, patch
 
 try:
     import arcade
@@ -1375,6 +1376,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         paused: bool = False,
         width: float = 1440.0,
         height: float = 900.0,
+        representatives: dict[int, object] | None = None,
     ) -> SimpleNamespace:
         active_records = records or {}
         emerged_times = [
@@ -1394,7 +1396,10 @@ class SpeciesTreeWindowTest(unittest.TestCase):
                         input_keys=tuple(range(-1, -27, -1)),
                         output_keys=tuple(range(12)),
                     )
-                )
+                ),
+                species_manager=SimpleNamespace(
+                    representatives=representatives or {}
+                ),
             ),
             layout=SimpleNamespace(
                 window=arcade.LBWH(0, 0, width, height),
@@ -1618,6 +1623,168 @@ class SpeciesTreeWindowTest(unittest.TestCase):
                 self.renderer._species_tree_report_species_id,
                 2,
             )
+
+    def test_radar_texture_is_lazy_cached_replaced_and_cleared(self) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        genome = SimpleNamespace(
+            nodes={
+                key: SimpleNamespace(bias=0.0)
+                for key in range(12)
+            },
+            connections={},
+        )
+        representative = (genome, object(), object())
+        world = self.make_world(
+            records,
+            representatives={1: representative, 2: representative},
+        )
+        self.renderer.open_species_tree(world)
+        textures = [object(), object()]
+        futures: list[Future[object]] = [Future(), Future()]
+        executor = SimpleNamespace(
+            submit=Mock(side_effect=futures),
+        )
+        self.renderer._species_tree_radar_executor = executor
+
+        with (
+            patch(
+                "src.ui.arcade.Texture",
+                side_effect=textures,
+                create=True,
+            ) as texture,
+            patch("src.ui.arcade.draw_texture_rect", create=True),
+        ):
+            self.renderer._draw_species_tree_window(world)
+            self.assertEqual(executor.submit.call_count, 0)
+
+            child_node = self.renderer._species_tree_node_bounds[2]
+            self.renderer.handle_mouse_press(
+                world, child_node.center_x, child_node.center_y
+            )
+            self.renderer.handle_mouse_release()
+            self.renderer._draw_species_tree_window(world)
+            self.renderer._draw_species_tree_window(world)
+
+            self.assertEqual(executor.submit.call_count, 1)
+            self.assertEqual(texture.call_count, 0)
+            self.assertIsNone(self.renderer._species_tree_radar_texture)
+            self.assertEqual(
+                self.renderer._text_cache["species_tree_radar_status"].text,
+                "Loading behavioral profile...",
+            )
+
+            futures[0].set_result(object())
+            self.renderer._draw_species_tree_window(world)
+
+            self.assertEqual(texture.call_count, 1)
+            self.assertIs(self.renderer._species_tree_radar_texture, textures[0])
+
+            parent_node = self.renderer._species_tree_node_bounds[1]
+            self.renderer.handle_mouse_press(
+                world, parent_node.center_x, parent_node.center_y
+            )
+            self.renderer.handle_mouse_release()
+            self.renderer._draw_species_tree_window(world)
+
+            self.assertEqual(executor.submit.call_count, 2)
+            self.assertEqual(texture.call_count, 1)
+            self.assertIsNone(self.renderer._species_tree_radar_texture)
+
+            futures[1].set_result(object())
+            self.renderer._draw_species_tree_window(world)
+
+            self.assertEqual(texture.call_count, 2)
+            self.assertIs(self.renderer._species_tree_radar_texture, textures[1])
+
+        self.renderer.close_species_tree(world)
+        self.assertIsNone(self.renderer._species_tree_radar_texture)
+        self.assertIsNone(self.renderer._species_tree_radar_species_id)
+        self.renderer.open_species_tree(world)
+        self.assertIsNone(self.renderer._species_tree_radar_texture)
+
+    def test_radar_draw_bounds_are_above_text_and_inside_viewport(self) -> None:
+        viewport = arcade.LBWH(100.0, 100.0, 320.0, 500.0)
+        self.renderer._species_tree_radar_texture = object()
+        self.renderer._species_tree_radar_species_id = 2
+
+        with patch("src.ui.arcade.draw_texture_rect", create=True) as draw:
+            text_viewport = self.renderer._draw_species_radar_chart(viewport)
+
+        draw.assert_called_once()
+        texture, chart_bounds = draw.call_args.args
+        self.assertIs(texture, self.renderer._species_tree_radar_texture)
+        self.assertGreaterEqual(chart_bounds.left, viewport.left)
+        self.assertLessEqual(chart_bounds.right, viewport.right)
+        self.assertGreaterEqual(chart_bounds.bottom, viewport.bottom)
+        self.assertLessEqual(chart_bounds.top, viewport.top)
+        self.assertLess(text_viewport.top, chart_bounds.bottom)
+
+    def test_stale_radar_result_is_not_converted_to_texture(self) -> None:
+        old_future: Future[object] = Future()
+        old_future.set_result(object())
+        new_future: Future[object] = Future()
+        self.renderer._species_tree_open = True
+        self.renderer._species_tree_selected_id = 2
+        self.renderer._species_tree_radar_species_id = 1
+        self.renderer._species_tree_radar_future = old_future
+
+        with patch("src.ui.arcade.Texture", create=True) as texture:
+            self.renderer._consume_species_radar_result()
+
+        texture.assert_not_called()
+        self.assertIsNone(self.renderer._species_tree_radar_texture)
+
+        self.renderer._species_tree_radar_species_id = 2
+        self.renderer._species_tree_radar_future = new_future
+        new_future.set_result(object())
+        with patch(
+            "src.ui.arcade.Texture",
+            return_value="texture",
+            create=True,
+        ) as texture:
+            self.renderer._consume_species_radar_result()
+
+        texture.assert_called_once()
+        self.assertEqual(self.renderer._species_tree_radar_texture, "texture")
+
+    def test_radar_render_failure_uses_unavailable_placeholder(self) -> None:
+        future: Future[object] = Future()
+        future.set_exception(RuntimeError("render failed"))
+        self.renderer._species_tree_open = True
+        self.renderer._species_tree_selected_id = 2
+        self.renderer._species_tree_radar_species_id = 2
+        self.renderer._species_tree_radar_future = future
+
+        self.renderer._consume_species_radar_result()
+        viewport = arcade.LBWH(100.0, 100.0, 320.0, 500.0)
+        text_viewport = self.renderer._draw_species_radar_chart(viewport)
+
+        self.assertEqual(self.renderer._species_tree_radar_error, "render_failed")
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_radar_status"].text,
+            "Behavioral profile unavailable",
+        )
+        self.assertLess(text_viewport.height, viewport.height)
+
+    def test_close_cancels_radar_work_and_shuts_down_executor(self) -> None:
+        future: Future[object] = Future()
+        executor = Mock()
+        self.renderer._species_tree_radar_future = future
+        self.renderer._species_tree_radar_executor = executor
+        self.renderer._species_tree_radar_species_id = 2
+
+        self.renderer.close()
+
+        self.assertTrue(future.cancelled())
+        self.assertIsNone(self.renderer._species_tree_radar_future)
+        self.assertIsNone(self.renderer._species_tree_radar_executor)
+        executor.shutdown.assert_called_once_with(
+            wait=False,
+            cancel_futures=True,
+        )
 
     def test_species_inspector_header_marker_matches_selected_node(self) -> None:
         parent = self.make_record(1, None)

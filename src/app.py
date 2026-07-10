@@ -41,6 +41,7 @@ class NeatGameView(arcade.View):
             self.window.background_color = self.config.theme.window_background
 
     def on_hide_view(self) -> None:
+        self.ui_renderer.close()
         self.world.close()
 
     def on_resize(self, width: int, height: int) -> bool | None:

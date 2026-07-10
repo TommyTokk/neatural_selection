@@ -693,6 +693,16 @@ class CreateAndRunMenuTest(unittest.TestCase):
 
         self.assertEqual(calls, [(120, 240, 1, 0, True)])
 
+    def test_game_view_closes_ui_resources_when_hidden(self) -> None:
+        calls: list[str] = []
+        ui = SimpleNamespace(close=lambda: calls.append("ui"))
+        view = self._game_view_with_ui(ui)
+        view.world.close = lambda: calls.append("world")
+
+        view.on_hide_view()
+
+        self.assertEqual(calls, ["ui", "world"])
+
     def test_game_view_uses_supplied_world_without_creating_fresh_world(
         self,
     ) -> None:

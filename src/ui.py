@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from math import ceil, floor, isfinite, log10
 from pathlib import Path
@@ -10,8 +11,11 @@ import arcade
 from configs.sim_config import SimConfig
 from src.action import ACTION_OUTPUT_NAMES
 from src.analysis import (
+    BEHAVIOR_RADAR_LABELS,
     InspectorReport,
+    calculate_behavior_scores,
     generate_inspector_report,
+    generate_radar_chart_image,
     profile_morphology,
 )
 from src.brain_graph import (
@@ -79,6 +83,11 @@ class UiRenderer:
         self._species_tree_pending_selection_id: int | None = None
         self._species_tree_report: InspectorReport | None = None
         self._species_tree_report_species_id: int | None = None
+        self._species_tree_radar_texture: arcade.Texture | None = None
+        self._species_tree_radar_species_id: int | None = None
+        self._species_tree_radar_future: Future[object] | None = None
+        self._species_tree_radar_executor: ThreadPoolExecutor | None = None
+        self._species_tree_radar_error: str | None = None
         self._species_tree_horizontal_offset = 0.0
         self._species_tree_vertical_offset = 0.0
         self._species_tree_horizontal_limit = 0.0
@@ -1467,6 +1476,7 @@ class UiRenderer:
         self._species_tree_pending_selection_id = None
         self._species_tree_report = None
         self._species_tree_report_species_id = None
+        self._clear_species_radar_state()
         self._scroll_offsets["species_tree_inspector"] = 0.0
         self._species_tree_scroll_drag = None
         self._species_tree_canvas_drag = False
@@ -1494,6 +1504,7 @@ class UiRenderer:
         self._species_tree_pending_selection_id = None
         self._species_tree_report = None
         self._species_tree_report_species_id = None
+        self._clear_species_radar_state()
         self._scroll_offsets.pop("species_tree_inspector", None)
         self._species_tree_scroll_drag = None
         self._species_tree_canvas_drag = False
@@ -1508,6 +1519,14 @@ class UiRenderer:
         self._species_tree_highlight_edges.clear()
         if previous_pause is not None:
             world.is_paused = previous_pause
+
+    def close(self) -> None:
+        """Release asynchronous UI resources owned by this renderer."""
+        self._clear_species_radar_state()
+        executor = self._species_tree_radar_executor
+        self._species_tree_radar_executor = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def handle_key_press(self, world: World, symbol: int, modifiers: int) -> bool:
         del world, symbol, modifiers
@@ -2807,8 +2826,103 @@ class UiRenderer:
             output_keys,
             input_keys,
         )
+        self._clear_species_radar_state()
+        self._species_tree_radar_species_id = species_id
+        controller = getattr(world, "neat_controller", None)
+        species_manager = getattr(controller, "species_manager", None)
+        representatives = getattr(species_manager, "representatives", {}) or {}
+        child_representative = representatives.get(species_id)
+        parent_representative = (
+            representatives.get(record.parent_species_id)
+            if record.parent_species_id is not None
+            else None
+        )
+        child_genome = self._species_representative_genome(
+            child_representative
+        )
+        parent_genome = self._species_representative_genome(
+            parent_representative
+        )
+        if child_genome is not None:
+            child_scores = calculate_behavior_scores(
+                child_genome,
+                output_keys,
+            )
+            parent_scores = (
+                None
+                if parent_genome is None
+                else calculate_behavior_scores(parent_genome, output_keys)
+            )
+            self._species_tree_radar_future = self._radar_executor().submit(
+                generate_radar_chart_image,
+                child_scores,
+                parent_scores,
+                BEHAVIOR_RADAR_LABELS,
+            )
+        else:
+            self._species_tree_radar_error = "representative_unavailable"
         self._species_tree_report_species_id = species_id
         self._scroll_offsets["species_tree_inspector"] = 0.0
+
+    def _radar_executor(self) -> ThreadPoolExecutor:
+        executor = self._species_tree_radar_executor
+        if executor is None:
+            executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="species-radar",
+            )
+            self._species_tree_radar_executor = executor
+        return executor
+
+    def _clear_species_radar_state(self) -> None:
+        future = self._species_tree_radar_future
+        if future is not None:
+            future.cancel()
+        self._species_tree_radar_future = None
+        self._species_tree_radar_texture = None
+        self._species_tree_radar_species_id = None
+        self._species_tree_radar_error = None
+
+    def _consume_species_radar_result(self) -> None:
+        future = self._species_tree_radar_future
+        if future is None or not future.done():
+            return
+        self._species_tree_radar_future = None
+        if (
+            not self._species_tree_open
+            or self._species_tree_radar_species_id
+            != self._species_tree_selected_id
+        ):
+            return
+        try:
+            radar_image = future.result()
+        except Exception:
+            self._species_tree_radar_error = "render_failed"
+            return
+
+        hitbox_algorithm = getattr(
+            getattr(arcade, "hitbox", None),
+            "algo_bounding_box",
+            None,
+        )
+        texture_options = (
+            {}
+            if hitbox_algorithm is None
+            else {"hit_box_algorithm": hitbox_algorithm}
+        )
+        self._species_tree_radar_texture = arcade.Texture(
+            radar_image,
+            **texture_options,
+        )
+
+    @staticmethod
+    def _species_representative_genome(representative: object) -> object | None:
+        if not isinstance(representative, tuple) or len(representative) != 3:
+            return None
+        genome = representative[0]
+        if not hasattr(genome, "nodes") or not hasattr(genome, "connections"):
+            return None
+        return genome
 
     def _draw_species_inspector(
         self,
@@ -2881,9 +2995,11 @@ class UiRenderer:
             else self._species_inspector_lines(report)
         )
         with self._ui_clip(viewport):
+            self._consume_species_radar_result()
+            text_viewport = self._draw_species_radar_chart(viewport)
             self._draw_scrollable_lines_in_bounds(
                 "species_tree_inspector",
-                viewport,
+                text_viewport,
                 lines,
                 line_spacing=19.0,
                 first_line_color=self.theme.text_primary,
@@ -2892,6 +3008,52 @@ class UiRenderer:
                 wrap_lines=True,
                 draw_ethogram_markers=True,
             )
+
+    def _draw_species_radar_chart(
+        self,
+        viewport: arcade.Rect,
+    ) -> arcade.Rect:
+        texture = self._species_tree_radar_texture
+        if self._species_tree_radar_species_id is None:
+            return viewport
+        chart_size = min(
+            300.0,
+            viewport.width,
+            max(0.0, viewport.height - 96.0),
+        )
+        if chart_size <= 0.0:
+            return viewport
+        chart_bounds = arcade.LBWH(
+            viewport.center_x - chart_size / 2.0,
+            viewport.top - chart_size,
+            chart_size,
+            chart_size,
+        )
+        if texture is not None:
+            arcade.draw_texture_rect(texture, chart_bounds)
+        else:
+            message = (
+                "Loading behavioral profile..."
+                if self._species_tree_radar_future is not None
+                else "Behavioral profile unavailable"
+            )
+            self._draw_text(
+                "species_tree_radar_status",
+                message,
+                chart_bounds.center_x,
+                chart_bounds.center_y,
+                self.theme.text_muted,
+                11,
+                anchor_x="center",
+                anchor_y="center",
+            )
+        gap = 8.0
+        return arcade.LBWH(
+            viewport.left,
+            viewport.bottom,
+            viewport.width,
+            max(0.0, chart_bounds.bottom - gap - viewport.bottom),
+        )
 
     def _species_inspector_lines(
         self,

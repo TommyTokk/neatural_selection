@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
+from math import exp, isfinite, pi
 import sqlite3
-from typing import Iterable
+from typing import Any, Iterable, Sequence
+
+from PIL import Image
 
 from configs.sim_config import SimConfig
 from src.action import ACTION_OUTPUT_NAMES
 from src.speciation import NeuralShift, SpeciesRecord, SpeciesTraitSnapshot
 from src.vision import SENSOR_INPUT_NAMES
+
+
+BEHAVIOR_RADAR_LABELS = (
+    "Motility",
+    "Voracity",
+    "Sociability",
+    "Nurturing",
+    "Fecundity",
+    "Vigilance",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +152,180 @@ _SENSORY_LEXICON = (
 
 if len(_SENSORY_LEXICON) != len(SENSOR_INPUT_NAMES):
     raise RuntimeError("Sensory lexicon must match SensorSnapshot.as_inputs().")
+
+
+def calculate_behavior_scores(
+    genome: Any,
+    output_keys: Iterable[int],
+) -> tuple[float, ...]:
+    """Return six normalized behavioral tendencies for a NEAT genome."""
+    action_keys = {
+        name: int(key)
+        for key, name in zip(output_keys, ACTION_OUTPUT_NAMES)
+    }
+    nodes = getattr(genome, "nodes", {}) or {}
+    connections = getattr(genome, "connections", {}) or {}
+
+    incoming_weights: dict[int, float] = {}
+    for connection_key, connection in connections.items():
+        if not bool(getattr(connection, "enabled", True)):
+            continue
+        key = getattr(connection, "key", connection_key)
+        if not isinstance(key, tuple) or len(key) != 2:
+            continue
+        try:
+            target = int(key[1])
+            weight = float(getattr(connection, "weight", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if isfinite(weight):
+            incoming_weights[target] = incoming_weights.get(target, 0.0) + weight
+
+    def output_score(action: str) -> float:
+        key = action_keys.get(action)
+        if key is None or key not in nodes:
+            return 0.5
+        try:
+            bias = float(getattr(nodes[key], "bias", 0.0))
+        except (TypeError, ValueError):
+            return 0.5
+        drive = bias + incoming_weights.get(key, 0.0)
+        if drive != drive:
+            return 0.5
+        return _stable_sigmoid(drive)
+
+    motility = output_score("accelerate")
+    voracity = (
+        output_score("want_eat") + output_score("want_grab")
+    ) / 2.0
+    sociability = (
+        output_score("weight_alignment")
+        + output_score("weight_cohesion")
+        + 1.0
+        - output_score("weight_separation")
+    ) / 3.0
+    nurturing = output_score("want_nurse")
+    fecundity = output_score("want_reproduce")
+    vigilance = output_score("flee_panic_intensity")
+    return (
+        motility,
+        voracity,
+        sociability,
+        nurturing,
+        fecundity,
+        vigilance,
+    )
+
+
+def generate_radar_chart_image(
+    child_scores: Sequence[float],
+    parent_scores: Sequence[float] | None,
+    labels: Sequence[str],
+) -> Image.Image:
+    """Render a transparent radar chart and return a detached RGBA image."""
+    if len(child_scores) != len(labels):
+        raise ValueError("child_scores and labels must have the same length")
+    if len(labels) < 3:
+        raise ValueError("a radar chart requires at least three axes")
+    if parent_scores is not None and len(parent_scores) != len(labels):
+        raise ValueError("parent_scores and labels must have the same length")
+
+    # These imports are deliberately lazy: normal simulation frames do not pay
+    # Matplotlib's import and initialization cost.
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    sns.set_theme(style="ticks", palette="muted")
+    figure = None
+    try:
+        figure, axis = plt.subplots(
+            figsize=(4, 4),
+            subplot_kw={"polar": True},
+            facecolor="none",
+        )
+        figure.patch.set_alpha(0.0)
+        axis.set_facecolor("none")
+
+        count = len(labels)
+        angles = [index * 2.0 * pi / count for index in range(count)]
+        closed_angles = [*angles, angles[0]]
+        child_values = [_bounded_score(value) for value in child_scores]
+        closed_child = [*child_values, child_values[0]]
+
+        if parent_scores is not None:
+            parent_values = [_bounded_score(value) for value in parent_scores]
+            closed_parent = [*parent_values, parent_values[0]]
+            axis.plot(
+                closed_angles,
+                closed_parent,
+                color="#374151",
+                linewidth=2.0,
+                linestyle="--",
+                label="Parent",
+            )
+            axis.fill(
+                closed_angles,
+                closed_parent,
+                color="#6b7280",
+                alpha=0.10,
+            )
+
+        child_fill = "#4c78a8"
+        child_border = "#173f5f"
+        axis.plot(
+            closed_angles,
+            closed_child,
+            color=child_border,
+            linewidth=2.6,
+            label="Selected species",
+        )
+        axis.fill(closed_angles, closed_child, color=child_fill, alpha=0.30)
+        axis.set_ylim(0.0, 1.0)
+        axis.set_xticks(angles, labels=labels)
+        axis.set_yticks((0.25, 0.5, 0.75, 1.0))
+        axis.set_yticklabels(("0.25", "0.50", "0.75", "1.0"))
+        axis.set_rlabel_position(90)
+        axis.tick_params(axis="x", colors="#161a32", labelsize=9, pad=8)
+        axis.tick_params(axis="y", colors="#42474d", labelsize=7)
+        axis.grid(color="#4b5563", alpha=0.48, linewidth=0.9)
+        axis.spines["polar"].set_color("#374151")
+        axis.spines["polar"].set_linewidth(1.4)
+        axis.spines["polar"].set_alpha(0.85)
+        figure.subplots_adjust(left=0.17, right=0.83, bottom=0.17, top=0.83)
+
+        with BytesIO() as buffer:
+            figure.savefig(
+                buffer,
+                format="png",
+                transparent=True,
+                dpi=110,
+            )
+            buffer.seek(0)
+            with Image.open(buffer) as image:
+                return image.convert("RGBA").copy()
+    finally:
+        if figure is not None:
+            plt.close(figure)
+
+
+def _stable_sigmoid(value: float) -> float:
+    if value >= 0.0:
+        return 1.0 / (1.0 + exp(-value))
+    exponential = exp(value)
+    return exponential / (1.0 + exponential)
+
+
+def _bounded_score(value: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    if not isfinite(numeric):
+        return 0.5
+    return max(0.0, min(1.0, numeric))
 
 
 def generate_inspector_report(

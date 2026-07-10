@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from math import exp, log
 import sqlite3
+from types import SimpleNamespace
 import unittest
 
 from configs.sim_config import build_sim_config
-from src.analysis import generate_inspector_report
+from src.analysis import (
+    BEHAVIOR_RADAR_LABELS,
+    calculate_behavior_scores,
+    generate_inspector_report,
+    generate_radar_chart_image,
+)
 from src.speciation import (
     SpeciesDistanceBreakdown,
     SpeciesRecord,
@@ -273,6 +280,98 @@ class InspectorAnalysisTest(unittest.TestCase):
         self.assertIsNotNone(report.metabolism.child_active_cost)
         self.assertIsNone(report.metabolism.parent_idle_cost)
         self.assertIsNone(report.metabolism.idle_percent_change)
+
+
+class BehaviorRadarAnalysisTest(unittest.TestCase):
+    @staticmethod
+    def genome(
+        biases: dict[int, float],
+        connections: tuple[tuple[int, int, float, bool], ...] = (),
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            nodes={
+                key: SimpleNamespace(bias=bias)
+                for key, bias in biases.items()
+            },
+            connections={
+                (source, target): SimpleNamespace(
+                    key=(source, target),
+                    weight=weight,
+                    enabled=enabled,
+                )
+                for source, target, weight, enabled in connections
+            },
+        )
+
+    def test_extreme_drives_are_stable_and_bounded(self) -> None:
+        genome = self.genome({0: 100.0, 8: -100.0})
+
+        scores = calculate_behavior_scores(genome, range(12))
+
+        self.assertAlmostEqual(scores[0], 1.0)
+        self.assertLess(scores[5], 1e-40)
+
+    def test_only_enabled_incoming_weights_contribute(self) -> None:
+        genome = self.genome(
+            {0: 0.0},
+            (
+                (-1, 0, 1.0, True),
+                (-2, 0, 100.0, False),
+            ),
+        )
+
+        scores = calculate_behavior_scores(genome, range(12))
+
+        self.assertAlmostEqual(scores[0], 1.0 / (1.0 + exp(-1.0)))
+
+    def test_output_keys_are_mapped_positionally(self) -> None:
+        output_keys = tuple(range(100, 112))
+        genome = self.genome({100: log(3.0), 108: -log(3.0)})
+
+        scores = calculate_behavior_scores(genome, output_keys)
+
+        self.assertAlmostEqual(scores[0], 0.75)
+        self.assertAlmostEqual(scores[5], 0.25)
+
+    def test_composite_axes_average_normalized_scores(self) -> None:
+        magnitude = log(3.0)
+        genome = self.genome(
+            {
+                3: magnitude,
+                5: -magnitude,
+                9: -magnitude,
+                10: magnitude,
+                11: -magnitude,
+            }
+        )
+
+        scores = calculate_behavior_scores(genome, range(12))
+
+        self.assertAlmostEqual(scores[1], 0.5)
+        self.assertAlmostEqual(scores[2], (0.75 + 0.25 + 0.75) / 3.0)
+        self.assertEqual(len(scores), len(BEHAVIOR_RADAR_LABELS))
+
+    def test_missing_output_nodes_are_neutral(self) -> None:
+        scores = calculate_behavior_scores(self.genome({}), range(12))
+
+        self.assertEqual(scores, (0.5,) * 6)
+
+    def test_radar_image_is_detached_and_figures_are_closed(self) -> None:
+        import matplotlib.pyplot as plt
+
+        before = tuple(plt.get_fignums())
+        for parent_scores in (None, (0.4,) * 6):
+            image = generate_radar_chart_image(
+                (0.6,) * 6,
+                parent_scores,
+                BEHAVIOR_RADAR_LABELS,
+            )
+            image.load()
+            self.assertEqual(image.mode, "RGBA")
+            self.assertGreater(image.width, 0)
+            self.assertGreater(image.height, 0)
+            self.assertEqual(image.width, image.height)
+            self.assertEqual(tuple(plt.get_fignums()), before)
 
 
 if __name__ == "__main__":
