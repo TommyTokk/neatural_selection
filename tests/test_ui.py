@@ -1390,7 +1390,10 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             telemetry=None,
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
-                    genome_config=SimpleNamespace(output_keys=tuple(range(12)))
+                    genome_config=SimpleNamespace(
+                        input_keys=tuple(range(-1, -27, -1)),
+                        output_keys=tuple(range(12)),
+                    )
                 )
             ),
             layout=SimpleNamespace(
@@ -1658,16 +1661,21 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             "SPECIES 2 INSPECTOR",
         )
         inspector_lines = self.renderer._species_inspector_lines(report)
-        self.assertIn("SPECIES MORPHOLOGY", inspector_lines)
+        self.assertIn("Anatomy & Morphology", inspector_lines)
         self.assertIn("Radius: 18.00 px", inspector_lines)
         self.assertIn("Vision: 100.00 px / 0.900 rad", inspector_lines)
-        self.assertIn("CHANGE VS PARENT SPECIES 1", inspector_lines)
+        self.assertIn("Metabolic Profile", inspector_lines)
+        self.assertIn("Neuro-Integration Hubs", inspector_lines)
+        self.assertIn("Behavioral Ethogram", inspector_lines)
         self.assertTrue(
-            any(line.startswith("Species idle:") for line in inspector_lines)
+            any(
+                line.startswith("Basal metabolic BMR:")
+                for line in inspector_lines
+            )
         )
         self.assertTrue(
             any(
-                line.startswith("Parent species idle/full:")
+                line.startswith("Parent BMR/active:")
                 for line in inspector_lines
             )
         )
@@ -1701,6 +1709,158 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             marker_positions.append(filled.call_args.args[:2])
 
         self.assertEqual(marker_positions[0], marker_positions[1])
+
+    def test_species_inspector_defaults_wider_than_legacy_cap(self) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records, width=1440, height=900)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        node = self.renderer._species_tree_node_bounds[2]
+        self.renderer.handle_mouse_press(world, node.center_x, node.center_y)
+        self.renderer.handle_mouse_release()
+
+        self.renderer._draw_species_tree_window(world)
+
+        content = self.renderer._control_hitboxes["species_tree_body"]
+        resize = self.renderer._control_hitboxes["species_tree_inspector_resize"]
+        inspector_left = resize.left + 5.0
+        inspector_width = content.right - inspector_left
+        self.assertGreater(inspector_width, 380.0)
+
+    def test_species_inspector_resize_clamps_to_two_thirds_width(self) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records, width=1440, height=900)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        node = self.renderer._species_tree_node_bounds[2]
+        self.renderer.handle_mouse_press(world, node.center_x, node.center_y)
+        self.renderer.handle_mouse_release()
+        self.renderer._draw_species_tree_window(world)
+        content = self.renderer._control_hitboxes["species_tree_body"]
+        resize = self.renderer._control_hitboxes["species_tree_inspector_resize"]
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                world,
+                resize.center_x,
+                resize.center_y,
+            )
+        )
+        self.assertTrue(
+            self.renderer.handle_mouse_drag(
+                world,
+                content.left,
+                resize.center_y,
+            )
+        )
+        self.renderer.handle_mouse_release()
+        self.renderer._draw_species_tree_window(world)
+
+        self.assertAlmostEqual(
+            self.renderer._species_tree_inspector_width or 0.0,
+            content.width * 2.0 / 3.0,
+        )
+
+    def test_species_inspector_resize_drag_does_not_select_or_pan(self) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records, width=1440, height=900)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        node = self.renderer._species_tree_node_bounds[2]
+        self.renderer.handle_mouse_press(world, node.center_x, node.center_y)
+        self.renderer.handle_mouse_release()
+        self.renderer._draw_species_tree_window(world)
+        resize = self.renderer._control_hitboxes["species_tree_inspector_resize"]
+        selected = self.renderer._species_tree_selected_id
+        horizontal_offset = self.renderer._species_tree_horizontal_offset
+        vertical_offset = self.renderer._species_tree_vertical_offset
+
+        self.renderer.handle_mouse_press(world, resize.center_x, resize.center_y)
+        self.renderer.handle_mouse_drag(
+            world,
+            resize.center_x - 80.0,
+            resize.center_y,
+        )
+        self.renderer.handle_mouse_release()
+
+        self.assertEqual(self.renderer._species_tree_selected_id, selected)
+        self.assertEqual(
+            self.renderer._species_tree_horizontal_offset,
+            horizontal_offset,
+        )
+        self.assertEqual(
+            self.renderer._species_tree_vertical_offset,
+            vertical_offset,
+        )
+        self.assertFalse(self.renderer._species_tree_canvas_drag)
+
+    def test_species_inspector_wraps_long_lines_without_ellipses(self) -> None:
+        viewport = arcade.LBWH(100.0, 100.0, 145.0, 180.0)
+        lines = [
+            "Behavioral Ethogram",
+            (
+                "🟢 [Load Carriage State (Carrying Object)] now actively "
+                "triggers/sensitizes [Threat Avoidance Reflexes]"
+            ),
+        ]
+
+        self.renderer._draw_scrollable_lines_in_bounds(
+            "species_tree_inspector",
+            viewport,
+            lines,
+            line_spacing=19.0,
+            first_line_color=self.renderer.theme.text_primary,
+            body_color=self.renderer.theme.text_muted,
+            first_line_bold=True,
+            wrap_lines=True,
+            draw_ethogram_markers=True,
+        )
+
+        rendered = [
+            text.text
+            for key, text in self.renderer._text_cache.items()
+            if key.startswith("species_tree_inspector_line_")
+        ]
+        self.assertGreater(len(rendered), len(lines))
+        self.assertFalse(any("..." in line for line in rendered))
+        self.assertFalse(any(line.startswith("🟢") for line in rendered))
+
+    def test_species_inspector_ethogram_markers_use_bright_custom_colors(self) -> None:
+        viewport = arcade.LBWH(100.0, 100.0, 520.0, 120.0)
+        circles: list[tuple[object, ...]] = []
+        original_circle = arcade.draw_circle_filled
+        arcade.draw_circle_filled = lambda *args: circles.append(args)
+        try:
+            self.renderer._draw_scrollable_lines_in_bounds(
+                "species_tree_inspector",
+                viewport,
+                ["🟢 [Sense] now actively triggers/sensitizes [Behavior]"],
+                line_spacing=19.0,
+                first_line_color=self.renderer.theme.text_primary,
+                body_color=self.renderer.theme.text_muted,
+                wrap_lines=True,
+                draw_ethogram_markers=True,
+            )
+        finally:
+            arcade.draw_circle_filled = original_circle
+
+        self.assertIn(
+            (viewport.left + 8.0, viewport.top - 8.0, 6.0, (0, 210, 72)),
+            circles,
+        )
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_inspector_line_0"].text,
+            "[Sense] now actively triggers/sensitizes [Behavior]",
+        )
 
     def test_tooltip_is_compact_and_uses_parent_percentages(self) -> None:
         parent = self.make_record(1, None)

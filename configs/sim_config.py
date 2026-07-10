@@ -226,8 +226,8 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 200
-    max_food_items: int = 250
+    initial_food_items: int = 300
+    max_food_items: int = 300
     low_food_pressure_threshold: float = (
         0.5  # Food ratio below which low-food recovery can accumulate.
     )

@@ -7,6 +7,7 @@ from typing import Iterable
 from configs.sim_config import SimConfig
 from src.action import ACTION_OUTPUT_NAMES
 from src.speciation import NeuralShift, SpeciesRecord, SpeciesTraitSnapshot
+from src.vision import SENSOR_INPUT_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,24 @@ class BehavioralShiftGroup:
 
 
 @dataclass(frozen=True, slots=True)
+class EthogramReflex:
+    behavior: str
+    sense: str
+    description: str
+    target_node_id: int
+    source_node_id: int
+    shift_type: str
+    weight_delta: float
+
+
+@dataclass(frozen=True, slots=True)
+class NeuroIntegrationHub:
+    hub_id: int
+    sensory_integrations: tuple[str, ...]
+    behavioral_modulations: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class LegacyProfile:
     descendant_count: int | None
     average_lifespan: float | None
@@ -54,6 +73,8 @@ class InspectorReport:
     morphology: tuple[MorphologyInsight, ...]
     metabolism: MetabolicProfile
     behavioral_shifts: tuple[BehavioralShiftGroup, ...]
+    neuro_integration_hubs: tuple[NeuroIntegrationHub, ...]
+    behavioral_ethogram: tuple[EthogramReflex, ...]
     food_scarcity: float | None
     population_density: float | None
     legacy: LegacyProfile
@@ -70,21 +91,53 @@ _TRAIT_LABELS = {
 }
 
 _ACTION_LABELS = {
-    "accelerate": "Movement (Accelerate)",
-    "rotate": "Movement (Turn)",
-    "want_reproduce": "Reproduction",
-    "want_eat": "Eating",
+    "accelerate": "Kinetic / Locomotion Reflexes",
+    "rotate": "Kinetic / Locomotion Reflexes",
+    "want_reproduce": "Reproductive / Fecundity Reflexes",
+    "want_eat": "Metabolic Ingestion Reflexes",
     "reset_chronometer": "Chronometer Reset",
-    "want_grab": "Grabbing",
-    "want_release": "Releasing",
-    "want_nurse": "Nursing",
-    "flee_panic_intensity": "Fleeing",
-    "weight_separation": "Flocking (Separation)",
-    "weight_alignment": "Flocking (Alignment)",
-    "weight_cohesion": "Flocking (Cohesion)",
+    "want_grab": "Foraging / Object Manipulation Reflexes",
+    "want_release": "Foraging / Object Manipulation Reflexes",
+    "want_nurse": "Parental Care / Nurturing Reflexes",
+    "flee_panic_intensity": "Threat Avoidance Reflexes",
+    "weight_separation": "Cohort Spacing Reflexes",
+    "weight_alignment": "Cohort Alignment Reflexes",
+    "weight_cohesion": "Cohort Cohesion Reflexes",
 }
 
 _HIDDEN_ACTION = "Sensory Processing (Hidden)"
+
+_SENSORY_LEXICON = (
+    "Endogenous Baseline Drive",
+    "Nutritional Deficit (Hunger)",
+    "Developmental Maturity",
+    "Metabolic Reserve (Energy)",
+    "Self-Velocity",
+    "Visual Field: Local Crowd Density",
+    "Visual Foraging Field: Local Resource Density",
+    "Biological Pacemaker (Alternating Drive)",
+    "Dynamic Interval Timer (Chronometer)",
+    "Absolute Longevity Sensation (Age)",
+    "Nearest Food Distance (Sight/Olfaction)",
+    "Nearest Food Direction (Sight/Olfactory)",
+    "Nearest Neighbor Distance (Social Sight)",
+    "Nearest Neighbor Direction (Social Sight)",
+    "Boundary Proximity (Wall Tactile)",
+    "Boundary Direction (Wall Tactile)",
+    "Load Carriage State (Carrying Object)",
+    "Local Soil Quality (Fertility Here)",
+    "Left-Forward Soil Nutrient Gradient",
+    "Right-Forward Soil Nutrient Gradient",
+    "Temporal Nutrient Flux (Fertility Delta)",
+    "Nearest Offspring Distance",
+    "Nearest Offspring Direction",
+    "Cohort Cohesion Distance",
+    "Cohort Cohesion Direction",
+    "Cohort Alignment Delta (Average Heading)",
+)
+
+if len(_SENSORY_LEXICON) != len(SENSOR_INPUT_NAMES):
+    raise RuntimeError("Sensory lexicon must match SensorSnapshot.as_inputs().")
 
 
 def generate_inspector_report(
@@ -93,6 +146,7 @@ def generate_inspector_report(
     db_connection: sqlite3.Connection | None,
     sim_config: SimConfig,
     output_keys: Iterable[int],
+    input_keys: Iterable[int] | None = None,
 ) -> InspectorReport:
     """Build a semantic report on demand for one selected species."""
     morphology = profile_morphology(species_record, parent_record)
@@ -100,6 +154,11 @@ def generate_inspector_report(
     behavioral_shifts = profile_cognition(
         species_record.neural_shifts,
         output_keys,
+    )
+    neuro_integration_hubs, behavioral_ethogram = profile_neuroethology(
+        species_record.neural_shifts,
+        output_keys,
+        input_keys,
     )
     legacy = query_species_legacy(db_connection, species_record.species_id)
     food_ratio = _bounded_ratio(species_record.emergence_food_ratio)
@@ -110,6 +169,8 @@ def generate_inspector_report(
         morphology=morphology,
         metabolism=metabolism,
         behavioral_shifts=behavioral_shifts,
+        neuro_integration_hubs=neuro_integration_hubs,
+        behavioral_ethogram=behavioral_ethogram,
         food_scarcity=None if food_ratio is None else 1.0 - food_ratio,
         population_density=_bounded_ratio(
             species_record.emergence_pop_ratio
@@ -178,14 +239,78 @@ def profile_metabolism(
     )
 
 
+def profile_neuroethology(
+    neural_shifts: Iterable[NeuralShift],
+    output_keys: Iterable[int],
+    input_keys: Iterable[int] | None = None,
+) -> tuple[tuple[NeuroIntegrationHub, ...], tuple[EthogramReflex, ...]]:
+    action_by_target = _action_labels_by_output_key(output_keys)
+    sense_by_source = _sense_labels_by_input_key(input_keys)
+    integrations: dict[int, list[str]] = {}
+    modulations: dict[int, list[str]] = {}
+    reflexes: list[EthogramReflex] = []
+
+    for target, source, shift_type, delta in neural_shifts:
+        target_id = int(target)
+        source_id = int(source)
+        normalized_type = str(shift_type)
+        weight_delta = float(delta)
+        sense = sense_by_source.get(source_id)
+        behavior = action_by_target.get(target_id)
+
+        if sense is not None and behavior is not None:
+            description = _reflex_description(
+                sense,
+                behavior,
+                normalized_type,
+                weight_delta,
+            )
+            if description is not None:
+                reflexes.append(
+                    EthogramReflex(
+                        behavior=behavior,
+                        sense=sense,
+                        description=description,
+                        target_node_id=target_id,
+                        source_node_id=source_id,
+                        shift_type=normalized_type,
+                        weight_delta=weight_delta,
+                    )
+                )
+            continue
+
+        if sense is not None and target_id >= 0:
+            integrations.setdefault(target_id, []).append(
+                f"Integration Hub {target_id} is now integrating "
+                f"[{sense}] into its internal state "
+                f"(Delta: {weight_delta:+.2f})"
+            )
+            continue
+
+        if source_id >= 0 and behavior is not None:
+            modulations.setdefault(source_id, []).append(
+                f"{behavior} is now modulated by abstract concepts from "
+                f"[Integration Hub {source_id}] "
+                f"(Delta: {weight_delta:+.2f})"
+            )
+
+    hub_ids = sorted(set(integrations) | set(modulations))
+    hubs = tuple(
+        NeuroIntegrationHub(
+            hub_id=hub_id,
+            sensory_integrations=tuple(integrations.get(hub_id, ())),
+            behavioral_modulations=tuple(modulations.get(hub_id, ())),
+        )
+        for hub_id in hub_ids
+    )
+    return hubs, tuple(reflexes)
+
+
 def profile_cognition(
     neural_shifts: Iterable[NeuralShift],
     output_keys: Iterable[int],
 ) -> tuple[BehavioralShiftGroup, ...]:
-    action_by_target = {
-        int(key): _ACTION_LABELS.get(name, name.replace("_", " ").title())
-        for key, name in zip(output_keys, ACTION_OUTPUT_NAMES)
-    }
+    action_by_target = _action_labels_by_output_key(output_keys)
     grouped: dict[str, tuple[list[CognitiveShift], list[CognitiveShift]]] = {}
     for target, source, shift_type, delta in neural_shifts:
         action = action_by_target.get(int(target), _HIDDEN_ACTION)
@@ -205,6 +330,53 @@ def profile_cognition(
         )
         for action, values in grouped.items()
     )
+
+
+def _action_labels_by_output_key(
+    output_keys: Iterable[int],
+) -> dict[int, str]:
+    return {
+        int(key): _ACTION_LABELS.get(name, name.replace("_", " ").title())
+        for key, name in zip(output_keys, ACTION_OUTPUT_NAMES)
+    }
+
+
+def _sense_labels_by_input_key(
+    input_keys: Iterable[int] | None,
+) -> dict[int, str]:
+    keys = (
+        tuple(-(index + 1) for index in range(len(_SENSORY_LEXICON)))
+        if input_keys is None
+        else tuple(int(key) for key in input_keys)
+    )
+    return {
+        key: _SENSORY_LEXICON[index]
+        for index, key in enumerate(keys[: len(_SENSORY_LEXICON)])
+    }
+
+
+def _reflex_description(
+    sense: str,
+    behavior: str,
+    shift_type: str,
+    weight_delta: float,
+) -> str | None:
+    if shift_type == "removed":
+        return (
+            f"⚪ Lost the instinct to trigger [{behavior}] "
+            f"in response to [{sense}]"
+        )
+    if weight_delta > 0.0:
+        return (
+            f"🟢 [{sense}] now actively triggers/sensitizes "
+            f"[{behavior}]"
+        )
+    if weight_delta < 0.0:
+        return (
+            f"🔴 [{sense}] now actively suppresses/brakes "
+            f"[{behavior}]"
+        )
+    return None
 
 
 def query_species_legacy(

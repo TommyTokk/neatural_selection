@@ -92,6 +92,8 @@ class UiRenderer:
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
         self._species_tree_canvas_drag_last = (0.0, 0.0)
+        self._species_tree_inspector_width: float | None = None
+        self._species_tree_inspector_resize_drag = False
         self._species_tree_timeline_bucket_bounds: dict[int, arcade.Rect] = {}
         self._species_tree_node_bounds: dict[int, arcade.Rect] = {}
         self._species_tree_zoom = 1.0
@@ -1469,6 +1471,8 @@ class UiRenderer:
         self._species_tree_scroll_drag = None
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
+        self._species_tree_inspector_width = None
+        self._species_tree_inspector_resize_drag = False
         self._species_tree_zoom = 1.0
         self._species_tree_fit_mode = False
         self._species_tree_fit_requested = False
@@ -1494,6 +1498,9 @@ class UiRenderer:
         self._species_tree_scroll_drag = None
         self._species_tree_canvas_drag = False
         self._species_tree_canvas_drag_started = False
+        self._species_tree_inspector_width = None
+        self._species_tree_inspector_resize_drag = False
+        self._control_hitboxes.pop("species_tree_inspector_resize", None)
         self._species_tree_timeline_bucket_bounds.clear()
         self._species_tree_visible_slice = TreeViewportSlice((), (), {})
         self._species_tree_highlight_cache_id = None
@@ -1550,7 +1557,9 @@ class UiRenderer:
         inspector = None
         content_right = content.right - 20.0
         if show_inspector:
-            inspector_width = min(380.0, max(260.0, content.width * 0.32))
+            inspector_width = self._species_tree_inspector_clamped_width(
+                content
+            )
             inspector = arcade.LBWH(
                 content.right - inspector_width,
                 content.bottom + 20.0,
@@ -1718,6 +1727,8 @@ class UiRenderer:
                 self._species_tree_report,
                 selected_record,
             )
+        else:
+            self._control_hitboxes.pop("species_tree_inspector_resize", None)
         hovered = self._species_tree_hovered_id
         if hovered is not None and hovered in records:
             parent_id = records[hovered].parent_species_id
@@ -1726,6 +1737,40 @@ class UiRenderer:
                 records[hovered],
                 records.get(parent_id) if parent_id is not None else None,
             )
+
+    def _species_tree_inspector_width_limits(
+        self,
+        content: arcade.Rect,
+    ) -> tuple[float, float]:
+        max_width = max(0.0, content.width * 2.0 / 3.0)
+        min_width = min(320.0, max_width)
+        return min_width, max_width
+
+    def _species_tree_inspector_default_width(
+        self,
+        content: arcade.Rect,
+    ) -> float:
+        min_width, max_width = self._species_tree_inspector_width_limits(
+            content
+        )
+        preferred = max(520.0, content.width * 0.38)
+        return max(min_width, min(max_width, preferred))
+
+    def _species_tree_inspector_clamped_width(
+        self,
+        content: arcade.Rect,
+    ) -> float:
+        min_width, max_width = self._species_tree_inspector_width_limits(
+            content
+        )
+        requested = (
+            self._species_tree_inspector_default_width(content)
+            if self._species_tree_inspector_width is None
+            else self._species_tree_inspector_width
+        )
+        width = max(min_width, min(max_width, requested))
+        self._species_tree_inspector_width = width
+        return width
 
     def _draw_species_tree_empty_timeline(self, timeline: arcade.Rect) -> None:
         self._draw_text(
@@ -2747,6 +2792,10 @@ class UiRenderer:
             None,
         )
         genome_config = getattr(controller_config, "genome_config", None)
+        input_keys_source = getattr(genome_config, "input_keys", None)
+        input_keys = (
+            None if input_keys_source is None else tuple(input_keys_source)
+        )
         output_keys = tuple(
             getattr(genome_config, "output_keys", ()) or ()
         )
@@ -2756,6 +2805,7 @@ class UiRenderer:
             connection,
             world.config,
             output_keys,
+            input_keys,
         )
         self._species_tree_report_species_id = species_id
         self._scroll_offsets["species_tree_inspector"] = 0.0
@@ -2772,6 +2822,20 @@ class UiRenderer:
             self.theme.accent,
             self.config.layout.card_radius,
             1.5,
+        )
+        resize_hitbox = arcade.LBWH(
+            bounds.left - 5.0,
+            bounds.bottom,
+            10.0,
+            bounds.height,
+        )
+        self._control_hitboxes["species_tree_inspector_resize"] = resize_hitbox
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left - 1.5,
+            bounds.left + 1.5,
+            bounds.bottom + 12.0,
+            bounds.top - 12.0,
+            self.theme.accent,
         )
         title_left = bounds.left + 16.0
         if record is not None:
@@ -2825,6 +2889,8 @@ class UiRenderer:
                 first_line_color=self.theme.text_primary,
                 body_color=self.theme.text_muted,
                 first_line_bold=True,
+                wrap_lines=True,
+                draw_ethogram_markers=True,
             )
 
     def _species_inspector_lines(
@@ -2832,7 +2898,7 @@ class UiRenderer:
         report: InspectorReport,
     ) -> list[str]:
         lines = [
-            "ECOLOGICAL CONTEXT",
+            "Ecological Context",
             (
                 "Food scarcity: unavailable"
                 if report.food_scarcity is None
@@ -2850,7 +2916,7 @@ class UiRenderer:
                 )
             ),
             "",
-            "SPECIES MORPHOLOGY",
+            "Anatomy & Morphology",
         ]
         traits = report.species_traits
         if traits is None:
@@ -2870,11 +2936,7 @@ class UiRenderer:
                 )
             )
 
-        parent_label = (
-            "PARENT COMPARISON"
-            if report.parent_species_id is None
-            else f"CHANGE VS PARENT SPECIES {report.parent_species_id}"
-        )
+        parent_label = "Parent comparison"
         lines.extend(("", parent_label))
         if report.morphology:
             lines.extend(
@@ -2892,18 +2954,18 @@ class UiRenderer:
             )
 
         metabolism = report.metabolism
-        lines.extend(("", "METABOLISM"))
+        lines.extend(("", "Metabolic Profile"))
         if metabolism.child_idle_cost is None:
             lines.append("Species metabolism unavailable")
         else:
             lines.extend(
                 (
                     (
-                        f"Species idle: {metabolism.child_idle_cost:.5f} energy/s "
+                        f"Basal metabolic BMR: {metabolism.child_idle_cost:.5f} energy/s "
                         f"({self._format_percent_change(metabolism.idle_percent_change)})"
                     ),
                     (
-                        f"Species full speed: {metabolism.child_active_cost:.5f} energy/s "
+                        f"Active foraging cost: {metabolism.child_active_cost:.5f} energy/s "
                         f"({self._format_percent_change(metabolism.active_percent_change)})"
                     ),
                 )
@@ -2913,32 +2975,28 @@ class UiRenderer:
                 and metabolism.parent_active_cost is not None
             ):
                 lines.append(
-                    f"Parent species idle/full: "
+                    f"Parent BMR/active: "
                     f"{metabolism.parent_idle_cost:.5f}"
                     f" / {metabolism.parent_active_cost:.5f}"
                 )
 
-        behavioral_label = (
-            "BEHAVIORAL SHIFTS"
-            if report.parent_species_id is None
-            else f"BEHAVIORAL SHIFTS VS PARENT {report.parent_species_id}"
-        )
-        lines.extend(("", behavioral_label))
-        if not report.behavioral_shifts:
-            lines.append("No retained neural shifts")
-        for group in report.behavioral_shifts:
-            lines.append(group.action)
-            for label, shifts in (
-                ("Excitatory", group.excitatory),
-                ("Inhibitory", group.inhibitory),
-            ):
-                for shift in shifts:
-                    lines.append(
-                        f"  {label}: {shift.shift_type} from "
-                        f"{shift.source_node_id} ({shift.weight_delta:+.3f})"
-                    )
+        lines.extend(("", "Neuro-Integration Hubs"))
+        if not report.neuro_integration_hubs:
+            lines.append("No evolving interneuron hubs detected")
+        for hub in report.neuro_integration_hubs:
+            lines.append(f"Integration Hub {hub.hub_id}")
+            for description in hub.sensory_integrations:
+                lines.append(f"  {description}")
+            for description in hub.behavioral_modulations:
+                lines.append(f"  {description}")
 
-        lines.extend(("", "SPECIES LEGACY"))
+        lines.extend(("", "Behavioral Ethogram"))
+        if not report.behavioral_ethogram:
+            lines.append("No direct stimulus-response reflex shifts")
+        for reflex in report.behavioral_ethogram:
+            lines.append(reflex.description)
+
+        lines.extend(("", "Species Legacy"))
         if report.legacy.descendant_count is None:
             lines.append("Descendants: unavailable")
         else:
@@ -3296,6 +3354,9 @@ class UiRenderer:
             if self._contains_hitbox("species_tree_zoom_fit", x, y):
                 self._activate_species_tree_fit()
                 return True
+            if self._contains_hitbox("species_tree_inspector_resize", x, y):
+                self._species_tree_inspector_resize_drag = True
+                return True
             if self._contains_hitbox("species_tree_horizontal_thumb", x, y):
                 thumb = self._control_hitboxes["species_tree_horizontal_thumb"]
                 self._species_tree_scroll_drag = "horizontal"
@@ -3427,6 +3488,18 @@ class UiRenderer:
 
     def handle_mouse_drag(self, world: World, x: float, y: float) -> bool:
         if self._species_tree_open:
+            if self._species_tree_inspector_resize_drag:
+                content = self._control_hitboxes.get("species_tree_body")
+                if content is not None:
+                    min_width, max_width = (
+                        self._species_tree_inspector_width_limits(content)
+                    )
+                    requested_width = content.right - x
+                    self._species_tree_inspector_width = max(
+                        min_width,
+                        min(max_width, requested_width),
+                    )
+                return True
             if self._species_tree_scroll_drag is not None:
                 self._set_species_tree_scroll_from_pointer(
                     self._species_tree_scroll_drag,
@@ -3484,6 +3557,7 @@ class UiRenderer:
         self._active_panel_drag = None
         self._active_brain_window_drag = False
         self._species_tree_scroll_drag = None
+        self._species_tree_inspector_resize_drag = False
         if (
             self._species_tree_canvas_drag
             and not self._species_tree_canvas_drag_started
@@ -4655,8 +4729,27 @@ class UiRenderer:
         first_line_color: arcade.Color | tuple[int, ...],
         body_color: arcade.Color | tuple[int, ...],
         first_line_bold: bool = False,
+        wrap_lines: bool = False,
+        draw_ethogram_markers: bool = False,
     ) -> None:
-        total_height = max(0.0, len(lines) * line_spacing)
+        visual_lines = (
+            self._wrapped_scrollable_lines(
+                lines,
+                content.width - 12.0,
+                draw_ethogram_markers=draw_ethogram_markers,
+            )
+            if wrap_lines
+            else [
+                (
+                    line,
+                    line_index == 0,
+                    None,
+                    0.0,
+                )
+                for line_index, line in enumerate(lines)
+            ]
+        )
+        total_height = max(0.0, len(visual_lines) * line_spacing)
         scroll_limit = max(0.0, total_height - content.height)
         scroll_offset = max(
             0.0,
@@ -4666,15 +4759,30 @@ class UiRenderer:
         self._scroll_limits[key] = scroll_limit
         self._scroll_regions[key] = content
 
-        for line_index, line in enumerate(lines):
+        for line_index, (line, is_first_line, marker_color, x) in enumerate(
+            visual_lines
+        ):
             y = content.top - 12 - line_index * line_spacing + scroll_offset
             if y < content.bottom or y > content.top:
                 continue
-            is_first_line = line_index == 0
+            if marker_color is not None:
+                arcade.draw_circle_filled(
+                    content.left + 8.0,
+                    y + 4.0,
+                    6.0,
+                    marker_color,
+                )
             self._draw_text(
                 f"{key}_line_{line_index}",
-                self._fit_line(line, content.width - (12 if scroll_limit > 0 else 0)),
-                content.left,
+                (
+                    line
+                    if wrap_lines
+                    else self._fit_line(
+                        line,
+                        content.width - (12 if scroll_limit > 0 else 0),
+                    )
+                ),
+                content.left + x,
                 y,
                 first_line_color if is_first_line else body_color,
                 12,
@@ -4683,6 +4791,100 @@ class UiRenderer:
 
         if scroll_limit > 0.0:
             self._draw_scrollbar(content, scroll_offset, scroll_limit)
+
+    def _wrapped_scrollable_lines(
+        self,
+        lines: list[str],
+        width: float,
+        *,
+        draw_ethogram_markers: bool,
+    ) -> list[
+        tuple[
+            str,
+            bool,
+            tuple[int, int, int] | None,
+            float,
+        ]
+    ]:
+        visual_lines: list[
+            tuple[str, bool, tuple[int, int, int] | None, float]
+        ] = []
+        base_x = 0.0
+        for logical_index, raw_line in enumerate(lines):
+            marker_color: tuple[int, int, int] | None = None
+            line = raw_line
+            marker_indent = 0.0
+            if draw_ethogram_markers and line:
+                marker_color = self._ethogram_marker_color(line[0])
+                if marker_color is not None:
+                    line = line[1:].lstrip()
+                    marker_indent = 20.0
+
+            available_width = max(24.0, width - marker_indent)
+            wrapped = self._wrap_line(line, available_width)
+            if not wrapped:
+                wrapped = [""]
+            for wrapped_index, wrapped_line in enumerate(wrapped):
+                visual_lines.append(
+                    (
+                        wrapped_line,
+                        logical_index == 0 and wrapped_index == 0,
+                        marker_color if wrapped_index == 0 else None,
+                        base_x + marker_indent,
+                    )
+                )
+        return visual_lines
+
+    @staticmethod
+    def _ethogram_marker_color(
+        marker: str,
+    ) -> tuple[int, int, int] | None:
+        return {
+            "🟢": (0, 210, 72),
+            "🔴": (255, 55, 65),
+            "⚪": (150, 160, 170),
+        }.get(marker)
+
+    def _wrap_line(self, text: str, width: float) -> list[str]:
+        max_chars = max(4, int(width / 7.0))
+        if len(text) <= max_chars:
+            return [text]
+        leading = len(text) - len(text.lstrip(" "))
+        indent = text[:leading]
+        continuation_indent = indent
+        words = text.strip().split()
+        if not words:
+            return [text]
+
+        lines: list[str] = []
+        current = indent
+        chunk_size = max(1, max_chars - len(continuation_indent))
+        for word in words:
+            if len(word) > chunk_size:
+                if current.strip():
+                    lines.append(current)
+                    current = continuation_indent
+                for start in range(0, len(word), chunk_size):
+                    chunk = word[start : start + chunk_size]
+                    if start + chunk_size < len(word):
+                        lines.append(f"{continuation_indent}{chunk}")
+                    else:
+                        current = f"{continuation_indent}{chunk}"
+                continue
+            candidate = (
+                f"{current} {word}"
+                if current.strip()
+                else f"{continuation_indent}{word}"
+            )
+            if len(candidate) <= max_chars:
+                current = candidate
+                continue
+            if current.strip():
+                lines.append(current)
+            current = f"{continuation_indent}{word}"
+        if current.strip() or not lines:
+            lines.append(current)
+        return lines
 
     def _card_content_bounds(self, bounds: arcade.Rect) -> arcade.Rect:
         bottom = bounds.bottom + 12

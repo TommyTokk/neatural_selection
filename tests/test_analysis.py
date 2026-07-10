@@ -88,20 +88,141 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(12),
         )
 
-        groups = {group.action: group for group in report.behavioral_shifts}
         self.assertEqual(report.species_id, 2)
         self.assertEqual(report.parent_species_id, 1)
         self.assertEqual(report.species_traits, self.child.founder_traits)
         self.assertNotEqual(report.species_traits, self.parent.founder_traits)
-        self.assertEqual(len(groups["Nursing"].excitatory), 1)
-        self.assertEqual(
-            len(groups["Sensory Processing (Hidden)"].inhibitory),
-            1,
+        self.assertEqual(len(report.behavioral_ethogram), 1)
+        self.assertIn(
+            "Endogenous Baseline Drive",
+            report.behavioral_ethogram[0].description,
+        )
+        self.assertEqual(len(report.neuro_integration_hubs), 1)
+        self.assertEqual(report.neuro_integration_hubs[0].hub_id, 99)
+        self.assertIn(
+            "Nutritional Deficit (Hunger)",
+            report.neuro_integration_hubs[0].sensory_integrations[0],
         )
         self.assertEqual(report.legacy.descendant_count, 1)
         self.assertEqual(report.legacy.average_lifespan, 15.0)
         self.assertEqual(report.food_scarcity, 0.75)
         self.assertEqual(report.population_density, 0.8)
+
+    def test_direct_reflex_translation_for_load_carriage_to_fleeing(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=((8, -17, "added", 0.8),),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+        )
+
+        self.assertEqual(
+            report.behavioral_ethogram[0].description,
+            "🟢 [Load Carriage State (Carrying Object)] now actively "
+            "triggers/sensitizes [Threat Avoidance Reflexes]",
+        )
+
+    def test_direct_reflex_translation_for_inhibitory_shift(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=((8, -17, "added", -0.8),),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+        )
+
+        self.assertEqual(
+            report.behavioral_ethogram[0].description,
+            "🔴 [Load Carriage State (Carrying Object)] now actively "
+            "suppresses/brakes [Threat Avoidance Reflexes]",
+        )
+
+    def test_removed_reflex_translation(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=((8, -17, "removed", 0.4),),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+        )
+
+        self.assertEqual(
+            report.behavioral_ethogram[0].description,
+            "⚪ Lost the instinct to trigger [Threat Avoidance Reflexes] "
+            "in response to [Load Carriage State (Carrying Object)]",
+        )
+
+    def test_hidden_sensor_shift_is_grouped_as_integration_hub(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=((491, -17, "weight", 0.9),),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+        )
+
+        self.assertEqual(report.behavioral_ethogram, ())
+        self.assertEqual(len(report.neuro_integration_hubs), 1)
+        hub = report.neuro_integration_hubs[0]
+        self.assertEqual(hub.hub_id, 491)
+        self.assertIn(
+            "Integration Hub 491 is now integrating "
+            "[Load Carriage State (Carrying Object)]",
+            hub.sensory_integrations[0],
+        )
+
+    def test_hidden_output_shift_is_grouped_as_behavioral_modulation(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=((0, 491, "weight", -0.9),),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+        )
+
+        self.assertEqual(report.behavioral_ethogram, ())
+        self.assertEqual(len(report.neuro_integration_hubs), 1)
+        self.assertIn(
+            "Kinetic / Locomotion Reflexes is now modulated by "
+            "abstract concepts from [Integration Hub 491]",
+            report.neuro_integration_hubs[0].behavioral_modulations[0],
+        )
 
     def test_metabolic_profile_uses_exact_configured_formulas(self) -> None:
         report = generate_inspector_report(
