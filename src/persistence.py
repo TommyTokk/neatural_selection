@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 6
-LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5}
+CHECKPOINT_VERSION = 7
+LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6}
 
 
 def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
@@ -403,6 +403,7 @@ class PersistenceManager:
                     "chronometer": world._chronometers.get(
                         creature.creature_id, 0.0
                     ),
+                    "fertility_baseline": creature.fertility_baseline,
                     "genome_id": neat_controller.genome_id_for(
                         creature.creature_id
                     ),
@@ -501,9 +502,6 @@ class PersistenceManager:
                 "simulation_speed": world.simulation_speed,
                 "is_paused": world.is_paused,
                 "selected_creature_id": world.selected_creature_id,
-                "previous_biome": copy.deepcopy(
-                    world._previous_biome_here_by_creature_id
-                ),
                 "held_foods": copy.deepcopy(world._held_food_by_creature_id),
                 "food_carriers": copy.deepcopy(world._carrier_by_food_id),
             },
@@ -1140,7 +1138,7 @@ class PersistenceManager:
             world.simulation_speed = runtime["simulation_speed"]
             world.is_paused = runtime["is_paused"]
             world.selected_creature_id = runtime["selected_creature_id"]
-            world._previous_biome_here_by_creature_id = runtime["previous_biome"]
+            legacy_fertility_baselines = runtime.get("previous_biome", {})
 
             controller = world.neat_controller
             population_state = state["population"]
@@ -1195,6 +1193,15 @@ class PersistenceManager:
                 creature.name = creature_state["name"]
                 creature.body.velocity = creature_state["velocity"]
                 creature.body.angular_velocity = creature_state["angular_velocity"]
+                creature.fertility_baseline = float(
+                    creature_state.get(
+                        "fertility_baseline",
+                        legacy_fertility_baselines.get(
+                            creature.creature_id,
+                            world._biome_fertility_at(*creature.position),
+                        ),
+                    )
+                )
                 world.creatures.append(creature)
                 fitness = creature_state["fitness"]
                 if fitness is not None:

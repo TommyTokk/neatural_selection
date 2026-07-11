@@ -163,9 +163,8 @@ class World:
         self.biome_map = BiomeGenerationHandler(config.biome).generate(
             self.environment_world_bounds
         )
-        self._previous_biome_here_by_creature_id: dict[int, float] = {}
         for creature in self.creatures:
-            self._activate_creature_biome_memory(creature)
+            self._initialize_creature_fertility_baseline(creature)
         self.food_spawner = FoodSpawner(config.food, self.rng, self.biome_map)
         self.foods: list[Food] = []
         self._held_food_by_creature_id: dict[int, int] = {}
@@ -777,16 +776,8 @@ class World:
     def _biome_sensor_snapshot_for(self, creature: Creature) -> BiomeSensorSnapshot:
         here, forward_left, forward_right = self.biome_sensor_positions_for(creature)
         biome_here = self._biome_fertility_at(*here)
-        previous_by_id = getattr(self, "_previous_biome_here_by_creature_id", {})
-        previous_biome_here = previous_by_id.get(creature.creature_id)
-        raw_delta = (
-            0.0 if previous_biome_here is None else biome_here - previous_biome_here
-        )
-        biome_delta = self._clamp(
-            raw_delta * self.config.biome_sensor.delta_scale,
-            -1.0,
-            1.0,
-        )
+        baseline = getattr(creature, "fertility_baseline", biome_here)
+        biome_delta = self._clamp(biome_here - baseline, -1.0, 1.0)
 
         return BiomeSensorSnapshot(
             here=biome_here,
@@ -795,22 +786,17 @@ class World:
             delta=biome_delta,
         )
 
-    def _activate_creature_biome_memory(self, creature: Creature) -> None:
-        if not hasattr(self, "_previous_biome_here_by_creature_id"):
-            self._previous_biome_here_by_creature_id = {}
-        self._previous_biome_here_by_creature_id[creature.creature_id] = (
-            self._biome_fertility_at(*creature.position)
-        )
+    def _initialize_creature_fertility_baseline(self, creature: Creature) -> None:
+        creature.fertility_baseline = self._biome_fertility_at(*creature.position)
 
-    def _advance_biome_memory(
+    def _adapt_creature_fertility_baseline(
         self,
         creature: Creature,
         snapshot: SensorSnapshot,
     ) -> None:
-        if not hasattr(self, "_previous_biome_here_by_creature_id"):
-            self._previous_biome_here_by_creature_id = {}
-        self._previous_biome_here_by_creature_id[creature.creature_id] = (
-            snapshot.biome.here
+        baseline = getattr(creature, "fertility_baseline", snapshot.biome.here)
+        creature.fertility_baseline = (
+            baseline * 0.90 + snapshot.biome.here * 0.10
         )
 
     def _biome_fertility_at(self, x: float, y: float) -> float:
@@ -1317,7 +1303,7 @@ class World:
                     self._chronometers[creature.creature_id] = 0.0
 
                 self._apply_carry_intent(creature, action)
-                self._advance_biome_memory(creature, snapshot)
+                self._adapt_creature_fertility_baseline(creature, snapshot)
 
             if action is None:
                 continue
@@ -2335,9 +2321,6 @@ class World:
             self.selected_creature_id = None
 
         self._chronometers.pop(creature.creature_id, None)
-        previous_biome = getattr(self, "_previous_biome_here_by_creature_id", None)
-        if previous_biome is not None:
-            previous_biome.pop(creature.creature_id, None)
         self._prune_historical_archives()
 
     def _prune_historical_archives(self) -> None:
@@ -2543,7 +2526,7 @@ class World:
                 self._record_new_species(child, speciation_result)
 
             self.creatures.append(child)
-            self._activate_creature_biome_memory(child)
+            self._initialize_creature_fertility_baseline(child)
             self.fitness[child_id] = CreatureFitness()
             self._chronometers[child_id] = 0.0
             self._log_creature_birth(child)
@@ -2692,7 +2675,7 @@ class World:
             self._record_new_species(child, speciation_result)
 
         self.creatures.append(child)
-        self._activate_creature_biome_memory(child)
+        self._initialize_creature_fertility_baseline(child)
         self.fitness[child_id] = CreatureFitness()
         self._chronometers[child_id] = 0.0
         self._log_creature_birth(child)

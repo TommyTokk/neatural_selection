@@ -107,7 +107,6 @@ class BiomeConfig:
 class BiomeSensorConfig:
     forward_distance: float = 48.0
     side_offset: float = 24.0
-    delta_scale: float = 10.0
 
 
 @dataclass(slots=True)

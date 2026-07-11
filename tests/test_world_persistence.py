@@ -268,8 +268,6 @@ class WorldPersistenceTimerTest(unittest.TestCase):
         self.world.rt_neat = SimpleNamespace(record_death=lambda fitness: None)
         self.world.selected_creature_id = None
         self.world._chronometers = {}
-        self.world._previous_biome_here_by_creature_id = {}
-
         self.world._remove_creature(creature, death_reason="manual")
 
         self.assertEqual(self.world.telemetry.deaths, [(7, 25.0, "manual")])

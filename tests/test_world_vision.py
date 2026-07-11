@@ -244,19 +244,19 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         self.assertEqual(world.vision.last_creatures, [observer, nearby])
 
-    def test_biome_memory_activation_overwrites_reused_creature_id(self) -> None:
+    def test_fertility_baseline_initializes_from_spawn_position(self) -> None:
         world = self.make_world_for_biome_sensors(fertility=0.7)
-        world._previous_biome_here_by_creature_id = {1: 0.1}
         creature = self.biome_sensor_creature()
+        creature.fertility_baseline = 0.1
 
-        world._activate_creature_biome_memory(creature)
+        world._initialize_creature_fertility_baseline(creature)
 
-        self.assertAlmostEqual(world._previous_biome_here_by_creature_id[1], 0.7)
+        self.assertAlmostEqual(creature.fertility_baseline, 0.7)
 
     def test_first_biome_sensor_tick_delta_is_zero(self) -> None:
         world = self.make_world_for_biome_sensors(fertility=0.8)
         creature = self.biome_sensor_creature()
-        world._activate_creature_biome_memory(creature)
+        world._initialize_creature_fertility_baseline(creature)
 
         snapshot = world._sensor_snapshot_for(
             creature,
@@ -266,10 +266,10 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.biome.here, 0.8)
         self.assertAlmostEqual(snapshot.biome.delta, 0.0)
 
-    def test_read_only_biome_sensor_snapshot_does_not_mutate_memory(self) -> None:
+    def test_read_only_biome_sensor_snapshot_does_not_adapt_baseline(self) -> None:
         world = self.make_world_for_biome_sensors(fertility=0.9)
         creature = self.biome_sensor_creature()
-        world._previous_biome_here_by_creature_id = {1: 0.2}
+        creature.fertility_baseline = 0.2
 
         first_snapshot = world._sensor_snapshot_for(
             creature,
@@ -280,15 +280,15 @@ class WorldVisionMutationTest(unittest.TestCase):
             record_food_discoveries=False,
         )
 
-        self.assertAlmostEqual(world._previous_biome_here_by_creature_id[1], 0.2)
-        self.assertAlmostEqual(first_snapshot.biome.delta, 1.0)
-        self.assertAlmostEqual(second_snapshot.biome.delta, 1.0)
+        self.assertAlmostEqual(creature.fertility_baseline, 0.2)
+        self.assertAlmostEqual(first_snapshot.biome.delta, 0.7)
+        self.assertAlmostEqual(second_snapshot.biome.delta, 0.7)
 
-    def test_creature_intent_tick_advances_biome_memory_once(self) -> None:
+    def test_creature_intent_tick_adapts_fertility_baseline_once(self) -> None:
         world = self.make_world_for_biome_sensors(fertility=0.85)
         creature = self.biome_sensor_creature()
         world.creatures = [creature]
-        world._previous_biome_here_by_creature_id = {1: 0.2}
+        creature.fertility_baseline = 0.2
         world.use_neat_brains = True
         world.neat_controller = SimpleNamespace(
             decide=lambda creature_id, snapshot: Action(
@@ -307,7 +307,28 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         world._apply_creature_intents()
 
-        self.assertAlmostEqual(world._previous_biome_here_by_creature_id[1], 0.85)
+        self.assertAlmostEqual(creature.fertility_baseline, 0.265)
+
+    def test_fertility_baseline_converges_toward_current_fertility(self) -> None:
+        world = self.make_world_for_biome_sensors(fertility=1.0)
+        creature = self.biome_sensor_creature()
+        creature.fertility_baseline = 0.0
+
+        first = world._sensor_snapshot_for(creature, record_food_discoveries=False)
+        self.assertEqual(first.biome.delta, 1.0)
+        world._adapt_creature_fertility_baseline(creature, first)
+        self.assertAlmostEqual(creature.fertility_baseline, 0.1)
+
+        for _ in range(9):
+            snapshot = world._sensor_snapshot_for(
+                creature,
+                record_food_discoveries=False,
+            )
+            world._adapt_creature_fertility_baseline(creature, snapshot)
+
+        self.assertAlmostEqual(creature.fertility_baseline, 1.0 - 0.9**10)
+        final = world._sensor_snapshot_for(creature, record_food_discoveries=False)
+        self.assertAlmostEqual(final.biome.delta, 0.9**10)
 
     def test_creature_intents_apply_cached_actions_every_tick(self) -> None:
         world = self.make_world_for_biome_sensors()
@@ -344,6 +365,7 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         self.assertEqual(applied, [(creature, action, snapshot)])
         self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 0)
+        self.assertEqual(creature.fertility_baseline, 0.0)
 
     def test_creature_intents_stagger_new_decisions_by_creature_id(self) -> None:
         world = self.make_world_for_biome_sensors()
@@ -397,7 +419,6 @@ class WorldVisionMutationTest(unittest.TestCase):
         world.vision = FakeVisionSystem()
         world.fitness = {1: FakeFitness()}
         world.biome_map = FakeBiomeMap(fertility)
-        world._previous_biome_here_by_creature_id = {}
         return world
 
     def biome_sensor_creature(
@@ -412,6 +433,7 @@ class WorldVisionMutationTest(unittest.TestCase):
             heading=heading,
             vision=SimpleNamespace(range=120.0),
             energy=1.0,
+            fertility_baseline=0.0,
         )
 
 

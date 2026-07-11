@@ -86,6 +86,52 @@ class BiomeGenerationHandlerTest(unittest.TestCase):
         self.assertEqual(biome_map.fertility_at(0.0, 0.0), 1.0)
         self.assertEqual(biome_map.fertility_at(1000.0, 0.0), 1.0)
 
+    def test_fertility_bilinearly_interpolates_between_cell_centers(self) -> None:
+        biome_map = BiomeMap(
+            biome_ids=np.array(
+                [
+                    [Biome.PRAIRIE, Biome.FOREST],
+                    [Biome.PRAIRIE, Biome.FOREST],
+                ],
+                dtype=np.uint8,
+            ),
+            render_rgba=np.zeros((2, 2, 4), dtype=np.uint8),
+            world_bounds=(10.0, 20.0, 30.0, 40.0),
+            area_shares={biome: 0.0 for biome in Biome},
+            spawn_weights={
+                Biome.PRAIRIE: 0.0,
+                Biome.BUSHES: 0.5,
+                Biome.FOREST: 1.0,
+            },
+            uniform_spawn_chance=0.0,
+            max_spawn_attempts=4,
+        )
+
+        self.assertEqual(biome_map.fertility_at(15.0, 25.0), 0.0)
+        self.assertEqual(biome_map.fertility_at(25.0, 35.0), 1.0)
+        self.assertEqual(biome_map.fertility_at(20.0, 30.0), 0.5)
+
+    def test_fertility_interpolation_clamps_outside_world_bounds(self) -> None:
+        biome_map = BiomeMap(
+            biome_ids=np.array(
+                [[Biome.PRAIRIE, Biome.FOREST]],
+                dtype=np.uint8,
+            ),
+            render_rgba=np.zeros((1, 2, 4), dtype=np.uint8),
+            world_bounds=(10.0, 20.0, 30.0, 40.0),
+            area_shares={biome: 0.0 for biome in Biome},
+            spawn_weights={
+                Biome.PRAIRIE: 0.0,
+                Biome.BUSHES: 0.5,
+                Biome.FOREST: 1.0,
+            },
+            uniform_spawn_chance=0.0,
+            max_spawn_attempts=4,
+        )
+
+        self.assertEqual(biome_map.fertility_at(-100.0, -100.0), 0.0)
+        self.assertEqual(biome_map.fertility_at(100.0, 100.0), 1.0)
+
     def _three_vertical_biome_map(self) -> BiomeMap:
         biome_ids = np.array(
             [[Biome.PRAIRIE, Biome.BUSHES, Biome.FOREST]],

@@ -172,12 +172,12 @@ class WorldCarryTest(unittest.TestCase):
         world = object.__new__(World)
         world.config = SimpleNamespace(
             food=SimpleNamespace(max_food_radius=10.0),
+            trait=SimpleNamespace(max_radius=20.0),
             population=SimpleNamespace(min_reproduction_age=10.0),
             environment=SimpleNamespace(world_width=100.0, world_height=100.0),
             biome_sensor=SimpleNamespace(
                 forward_distance=48.0,
                 side_offset=24.0,
-                delta_scale=10.0,
             ),
         )
         world.MAX_SPEED = 100.0
@@ -186,6 +186,7 @@ class WorldCarryTest(unittest.TestCase):
         world._chronometers = {}
         world._held_food_by_creature_id = {}
         world._nearby_foods_for = lambda creature, distance: []
+        world._nearby_creatures_for = lambda creature, distance: []
         world.vision = SimpleNamespace(
             sense=lambda *args, **kwargs: SimpleNamespace(
                 is_grabbing=kwargs["is_grabbing"],

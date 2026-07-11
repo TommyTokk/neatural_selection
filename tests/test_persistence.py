@@ -354,6 +354,7 @@ class PersistenceManagerTest(unittest.TestCase):
             ),
             color=(1, 2, 3),
             lineage=SimpleNamespace(species_id=2),
+            fertility_baseline=0.37,
         )
         spawner = SimpleNamespace(
             _next_food_id=1,
@@ -383,7 +384,6 @@ class PersistenceManagerTest(unittest.TestCase):
             simulation_speed=1.0,
             is_paused=False,
             selected_creature_id=None,
-            _previous_biome_here_by_creature_id={},
             _held_food_by_creature_id={},
             _carrier_by_food_id={},
             food_spawner=spawner,
@@ -408,6 +408,8 @@ class PersistenceManagerTest(unittest.TestCase):
 
         self.assertEqual(state["simulation_id"], self.simulation_paths.simulation_id)
         self.assertEqual(state["creatures"][0]["genome_id"], 17)
+        self.assertEqual(state["creatures"][0]["fertility_baseline"], 0.37)
+        self.assertNotIn("previous_biome", state["world"])
         self.assertEqual(state["world"]["time_since_last_quick_save"], 20.0)
         self.assertEqual(state["world"]["time_since_last_archive_save"], 50.0)
         self.assertEqual(state["world"]["next_creature_id"], 5)
@@ -490,6 +492,7 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             saved_member_color = (77, 88, 199)
             world.creatures[0].color = saved_member_color
+            world.creatures[0].fertility_baseline = 0.37
             world.foods[0].consume_energy(
                 world.foods[0].energy_value * 0.25,
                 min_remainder_ratio=0.0,
@@ -540,6 +543,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.creatures[0].color,
                 saved_member_color,
             )
+            self.assertEqual(restored.creatures[0].fertility_baseline, 0.37)
             self.assertEqual(
                 restored.neat_controller.species_manager.next_species_id,
                 3,
@@ -571,6 +575,36 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertEqual(restored.live_brain_count(), 1)
             self.assertEqual(restored.simulation_paths, world.simulation_paths)
             self.assertFalse(world.simulation_paths.telemetry_database.exists())
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
+
+    def test_legacy_checkpoint_migrates_previous_biome_to_creature(self) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 1
+        self.config.food.initial_food_items = 0
+        world = World(self.config)
+        restored = None
+        try:
+            creature_id = world.creatures[0].creature_id
+            state = PersistenceManager._capture_state(
+                world,
+                world.neat_controller,
+            )
+            state["version"] = 6
+            state["creatures"][0].pop("fertility_baseline")
+            state["world"]["previous_biome"] = {creature_id: 0.42}
+
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+            )
+
+            self.assertEqual(restored.creatures[0].fertility_baseline, 0.42)
         finally:
             world.close()
             if restored is not None:

@@ -53,13 +53,44 @@ class BiomeMap:
         weights = [max(0.0, weight) for weight in self.spawn_weights.values()]
         min_weight = min(weights, default=0.0)
         max_weight = max(weights, default=0.0)
-        current_weight = max(0.0, self.spawn_weight_at(x, y))
         denominator = max_weight - min_weight
 
         if denominator <= 0.0:
-            normalized_fertility = 1.0
-        else:
-            normalized_fertility = (current_weight - min_weight) / denominator
+            return 1.0
+
+        left, bottom, right, top = self.world_bounds
+        cell_width = max(0.0001, right - left) / self.grid_width
+        cell_height = max(0.0001, top - bottom) / self.grid_height
+        grid_x = (x - left) / cell_width - 0.5
+        grid_y = (y - bottom) / cell_height - 0.5
+
+        column0 = floor(grid_x)
+        row0 = floor(grid_y)
+        column1 = column0 + 1
+        row1 = row0 + 1
+        u = grid_x - column0
+        v = grid_y - row0
+
+        column0 = max(0, min(self.grid_width - 1, column0))
+        column1 = max(0, min(self.grid_width - 1, column1))
+        row0 = max(0, min(self.grid_height - 1, row0))
+        row1 = max(0, min(self.grid_height - 1, row1))
+
+        def normalized_fertility_at(column: int, row: int) -> float:
+            biome = Biome(int(self.biome_ids[row, column]))
+            weight = max(0.0, self.spawn_weights[biome])
+            return (weight - min_weight) / denominator
+
+        c00 = normalized_fertility_at(column0, row0)
+        c10 = normalized_fertility_at(column1, row0)
+        c01 = normalized_fertility_at(column0, row1)
+        c11 = normalized_fertility_at(column1, row1)
+        normalized_fertility = (
+            c00 * (1.0 - u) * (1.0 - v)
+            + c10 * u * (1.0 - v)
+            + c01 * (1.0 - u) * v
+            + c11 * u * v
+        )
 
         return max(0.0, min(1.0, normalized_fertility))
 
