@@ -727,7 +727,7 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertAlmostEqual(inputs[22], 0.0)
         self.assertEqual(inputs[23:26], [0.0, 0.0, 0.0])
 
-    def test_flock_inputs_use_same_species_but_separation_uses_nearest_creature(
+    def test_flock_inputs_use_same_species_but_separation_uses_all_creatures(
         self,
     ) -> None:
         observer = creature_at((0.0, 0.0), vision_range=100.0)
@@ -759,8 +759,87 @@ class VisionWallSensorTest(unittest.TestCase):
         )
         self.assertGreater(snapshot.flock.center_angle, 0.0)
         self.assertAlmostEqual(snapshot.flock.average_relative_heading, 0.5)
-        self.assertGreater(snapshot.flock.nearest_neighbor_proximity, 0.0)
-        self.assertLess(snapshot.flock.nearest_neighbor_angle, 0.0)
+        self.assertAlmostEqual(
+            snapshot.flock.average_flockmate_proximity,
+            1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 100.0),
+        )
+        self.assertGreater(snapshot.flock.separation_strength, 0.0)
+        self.assertLess(snapshot.flock.separation_relative_heading, 0.0)
+
+    def test_symmetric_neighbors_cancel_separation_field(self) -> None:
+        observer = creature_at(
+            (0.0, 0.0),
+            vision_range=100.0,
+            vision_angle=2.0 * pi,
+        )
+        left = creature_at((-10.0, 0.0), creature_id=2)
+        right = creature_at((10.0, 0.0), creature_id=3)
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, left, right],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertAlmostEqual(snapshot.flock.separation_strength, 0.0)
+        self.assertAlmostEqual(snapshot.flock.separation_relative_heading, 0.0)
+
+    def test_crowded_left_side_produces_rightward_separation(self) -> None:
+        observer = creature_at(
+            (0.0, 0.0),
+            vision_range=100.0,
+            vision_angle=2.0 * pi,
+        )
+        neighbors = [
+            creature_at((-10.0, -5.0), creature_id=2),
+            creature_at((-10.0, 0.0), creature_id=3),
+            creature_at((-10.0, 5.0), creature_id=4),
+            creature_at((10.0, 0.0), creature_id=5),
+        ]
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, *neighbors],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertGreater(snapshot.flock.separation_strength, 0.0)
+        self.assertAlmostEqual(
+            snapshot.flock.separation_relative_heading,
+            0.0,
+            places=10,
+        )
+
+    def test_average_flockmate_proximity_uses_distance_falloff(self) -> None:
+        observer = creature_at((0.0, 0.0), vision_range=100.0)
+
+        far_snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, creature_at((99.0, 0.0), creature_id=2)],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+        near_snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, creature_at((10.0, 0.0), creature_id=3)],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertAlmostEqual(
+            far_snapshot.flock.average_flockmate_proximity,
+            0.01,
+        )
+        self.assertAlmostEqual(
+            near_snapshot.flock.average_flockmate_proximity,
+            0.90,
+        )
 
     def test_flock_inputs_are_zero_without_same_species_flockmates(self) -> None:
         observer = creature_at((0.0, 0.0), vision_range=100.0)
@@ -780,7 +859,8 @@ class VisionWallSensorTest(unittest.TestCase):
 
         self.assertEqual(snapshot.as_inputs()[23:26], [0.0, 0.0, 0.0])
         self.assertEqual(snapshot.flock.flockmate_count, 0)
-        self.assertGreater(snapshot.flock.nearest_neighbor_proximity, 0.0)
+        self.assertGreater(snapshot.flock.separation_strength, 0.0)
+        self.assertEqual(snapshot.flock.average_flockmate_proximity, 0.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:
         snapshot = self.vision.sense(

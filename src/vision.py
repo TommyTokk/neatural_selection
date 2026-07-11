@@ -67,8 +67,9 @@ class FlockSensorSnapshot:
     center_angle: float = 0.0
     average_relative_heading: float = 0.0
     flockmate_count: int = 0
-    nearest_neighbor_proximity: float = 0.0
-    nearest_neighbor_angle: float = 0.0
+    separation_relative_heading: float = 0.0
+    separation_strength: float = 0.0
+    average_flockmate_proximity: float = 0.0
 
 
 @dataclass(slots=True)
@@ -290,28 +291,66 @@ class VisionSystem:
             for target in visible_targets
             if target.kind == "creature" and target.source is not None
         ]
-        nearest = visible_creatures[0] if visible_creatures else None
-        nearest_proximity = 0.0 if nearest is None else self._clamp01(nearest.closeness)
-        nearest_angle = (
+
+        separation_x = 0.0
+        separation_y = 0.0
+        vision_range = creature.vision.range
+        for target in visible_creatures:
+            neighbor = target.source
+            away_x = creature.position[0] - neighbor.position[0]
+            away_y = creature.position[1] - neighbor.position[1]
+            distance = hypot(away_x, away_y)
+            if distance <= 1e-12:
+                continue
+            proximity = (
+                0.0
+                if vision_range <= 0.0
+                else self._clamp01(1.0 - distance / vision_range)
+            )
+            separation_x += (away_x / distance) * proximity
+            separation_y += (away_y / distance) * proximity
+
+        if visible_creatures:
+            separation_x /= len(visible_creatures)
+            separation_y /= len(visible_creatures)
+        separation_strength = self._clamp01(hypot(separation_x, separation_y))
+        separation_relative_heading = (
             0.0
-            if nearest is None
-            else self._normalized_view_angle(
-                nearest.signed_angle,
-                creature.vision.angle,
+            if separation_strength <= 1e-12
+            else self._signed_angle(
+                atan2(separation_y, separation_x) - creature.heading
             )
         )
 
         species_id = self._species_id(creature)
-        flockmates = [
-            target.source
+        flockmate_targets = [
+            target
             for target in visible_creatures
             if self._species_id(target.source) == species_id
         ]
+        flockmates = [target.source for target in flockmate_targets]
         if not flockmates:
             return FlockSensorSnapshot(
-                nearest_neighbor_proximity=nearest_proximity,
-                nearest_neighbor_angle=nearest_angle,
+                separation_relative_heading=separation_relative_heading,
+                separation_strength=separation_strength,
             )
+
+        average_flockmate_proximity = (
+            0.0
+            if vision_range <= 0.0
+            else sum(
+                self._clamp01(
+                    1.0
+                    - hypot(
+                        flockmate.position[0] - creature.position[0],
+                        flockmate.position[1] - creature.position[1],
+                    )
+                    / vision_range
+                )
+                for flockmate in flockmates
+            )
+            / len(flockmates)
+        )
 
         center_x = sum(flockmate.position[0] for flockmate in flockmates) / len(
             flockmates
@@ -346,8 +385,9 @@ class VisionSystem:
             ),
             average_relative_heading=self._clamp(relative_heading / pi, -1.0, 1.0),
             flockmate_count=len(flockmates),
-            nearest_neighbor_proximity=nearest_proximity,
-            nearest_neighbor_angle=nearest_angle,
+            separation_relative_heading=separation_relative_heading,
+            separation_strength=separation_strength,
+            average_flockmate_proximity=average_flockmate_proximity,
         )
 
     def _normalized_view_angle(self, angle: float, field_of_view: float) -> float:

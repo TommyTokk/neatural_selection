@@ -1504,10 +1504,10 @@ class World:
         flock = snapshot.flock
         separation = self._steering_toward_relative_angle(
             creature,
-            flock.nearest_neighbor_angle * (creature.vision.angle / 2.0) + pi,
+            flock.separation_relative_heading,
             max_speed,
             max_force,
-            flock.nearest_neighbor_proximity,
+            flock.separation_strength,
         )
 
         if flock.flockmate_count <= 0:
@@ -1519,7 +1519,7 @@ class World:
                 flock.average_relative_heading * pi,
                 max_speed,
                 max_force,
-                1.0,
+                flock.average_flockmate_proximity,
             )
             cohesion = self._steering_toward_relative_angle(
                 creature,

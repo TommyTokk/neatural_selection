@@ -164,8 +164,9 @@ class WorldFlockingMotionTest(unittest.TestCase):
             center_angle=0.5,
             average_relative_heading=0.5,
             flockmate_count=1,
-            nearest_neighbor_proximity=1.0,
-            nearest_neighbor_angle=0.0,
+            separation_relative_heading=pi,
+            separation_strength=1.0,
+            average_flockmate_proximity=0.75,
         )
         snapshot = SimpleNamespace(flock=flock)
 
@@ -197,14 +198,41 @@ class WorldFlockingMotionTest(unittest.TestCase):
         self.assertGreater(cohesion[0], 0.0)
         self.assertGreater(cohesion[1], 0.0)
 
+    def test_alignment_force_is_attenuated_by_flockmate_proximity(self) -> None:
+        def alignment_force(proximity: float) -> tuple[float, float]:
+            flock = FlockSensorSnapshot(
+                average_relative_heading=0.5,
+                flockmate_count=1,
+                average_flockmate_proximity=proximity,
+            )
+            return self.world._flock_steering_force(
+                self.creature,
+                action(weight_alignment=1.0),
+                SimpleNamespace(flock=flock),
+                self.world.MAX_SPEED,
+                self.world.config.action.max_forward_force,
+            )
+
+        far_magnitude = hypot(*alignment_force(0.01))
+        near_magnitude = hypot(*alignment_force(0.90))
+        unattenuated_magnitude = min(
+            self.world.MAX_SPEED,
+            self.world.config.action.max_forward_force,
+        )
+
+        self.assertAlmostEqual(far_magnitude, unattenuated_magnitude * 0.01)
+        self.assertAlmostEqual(near_magnitude, unattenuated_magnitude * 0.90)
+        self.assertAlmostEqual(near_magnitude / far_magnitude, 90.0)
+
     def test_combined_voluntary_and_flock_force_is_bounded(self) -> None:
         flock = FlockSensorSnapshot(
             center_proximity=0.0,
             center_angle=1.0,
             average_relative_heading=0.5,
             flockmate_count=1,
-            nearest_neighbor_proximity=1.0,
-            nearest_neighbor_angle=-1.0,
+            separation_relative_heading=-pi / 2.0,
+            separation_strength=1.0,
+            average_flockmate_proximity=1.0,
         )
         self.world._apply_action(
             self.creature,
