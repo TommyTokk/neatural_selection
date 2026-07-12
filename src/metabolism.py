@@ -14,7 +14,7 @@ from src.vision import VisionSystem
 class FoodConsumption:
     creature_id: int
     food: Food
-    energy_gained: float
+    energy_swallowed: float
     depleted: bool
 
 
@@ -23,6 +23,7 @@ class MetabolismReport:
     depleted_foods: list[Food] = field(default_factory=list)
     touched_foods: list[Food] = field(default_factory=list)
     food_consumptions: list[FoodConsumption] = field(default_factory=list)
+    digested_energy_gained: dict[int, float] = field(default_factory=dict)
     dead_creatures: list[Creature] = field(default_factory=list)
 
 
@@ -69,8 +70,13 @@ class Metabolism:
         touched_foods: list[Food] = []
         food_consumptions: list[FoodConsumption] = []
         dead_creatures: list[Creature] = []
+        digested_energy_gained: dict[int, float] = {}
 
         for creature in creatures:
+            energy_gained = self.digest(creature, delta_time)
+            if energy_gained > 0.0:
+                digested_energy_gained[creature.creature_id] = energy_gained
+
             # Consume the energy from the creatures
             sprint_intensity = (
                 0.0
@@ -106,8 +112,8 @@ class Metabolism:
             food = self.find_eatable_food(creature, candidate_foods, touched_foods)
 
             if food is not None:
-                consumption = self.eat(creature, food)
-                if consumption.energy_gained > 0.0 or consumption.depleted:
+                consumption = self.eat(creature, food, delta_time)
+                if consumption.energy_swallowed > 0.0 or consumption.depleted:
                     touched_foods.append(food)
                     if consumption.depleted:
                         depleted_foods.append(food)
@@ -115,7 +121,7 @@ class Metabolism:
                         FoodConsumption(
                             creature_id=creature.creature_id,
                             food=food,
-                            energy_gained=consumption.energy_gained,
+                            energy_swallowed=consumption.energy_swallowed,
                             depleted=consumption.depleted,
                         )
                     )
@@ -127,8 +133,28 @@ class Metabolism:
             depleted_foods=depleted_foods,
             touched_foods=touched_foods,
             food_consumptions=food_consumptions,
+            digested_energy_gained=digested_energy_gained,
             dead_creatures=dead_creatures,
         )
+
+    def digest(self, creature: Creature, delta_time: float) -> float:
+        stomach_energy = max(0.0, getattr(creature, "stomach_energy", 0.0))
+        to_digest = min(
+            stomach_energy,
+            max(0.0, self.config.digestion_rate_per_second) * max(0.0, delta_time),
+        )
+        if to_digest <= 0.0:
+            creature.stomach_energy = stomach_energy
+            return 0.0
+
+        creature.stomach_energy = stomach_energy - to_digest
+        previous_energy = creature.energy
+        net_energy = to_digest * max(0.0, self.config.digestion_efficiency)
+        creature.energy = min(
+            self.config.max_energy,
+            creature.energy + net_energy,
+        )
+        return max(0.0, creature.energy - previous_energy)
 
     def consume_energy(
         self,
@@ -227,23 +253,41 @@ class Metabolism:
             + len(connections) * self.config.brain_upkeep_per_connection
         )
 
-    def eat(self, creature: Creature, food: Food) -> FoodConsumption:
-        previous_energy = creature.energy
-        energy_capacity = max(0.0, self.config.max_energy - creature.energy)
+    def eat(
+        self,
+        creature: Creature,
+        food: Food,
+        delta_time: float,
+    ) -> FoodConsumption:
+        stomach_capacity = max(
+            0.0,
+            creature.radius * self.config.stomach_capacity_per_radius,
+        )
+        stomach_energy = max(0.0, creature.stomach_energy)
+        stomach_space = max(0.0, stomach_capacity - stomach_energy)
+        bite_limit = (
+            max(0.0, self.config.max_bite_size_per_second)
+            * max(0.0, delta_time)
+        )
+        bite = min(stomach_space, bite_limit, max(0.0, food.energy_value))
         result = food.consume_energy(
-            energy_capacity,
-            self.config.micro_food_remainder_ratio,
+            bite,
+            0.0,
         )
-        creature.energy = min(
-            self.config.max_energy,
-            creature.energy + result.energy_removed,
+        creature.stomach_energy = min(
+            stomach_capacity,
+            stomach_energy + result.energy_removed,
         )
-        energy_gained = creature.energy - previous_energy
+        depleted = result.depleted or (
+            result.energy_removed > 0.0 and food.energy_value <= 0.01
+        )
+        if depleted:
+            food.energy_value = 0.0
         return FoodConsumption(
             creature_id=creature.creature_id,
             food=food,
-            energy_gained=energy_gained,
-            depleted=result.depleted,
+            energy_swallowed=result.energy_removed,
+            depleted=depleted,
         )
 
     def find_eatable_food(

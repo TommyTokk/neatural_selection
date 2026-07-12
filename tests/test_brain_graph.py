@@ -58,6 +58,27 @@ def layout_for(genome: FakeGenome):
 
 
 class BrainGraphLayoutTest(unittest.TestCase):
+    def test_input_column_preserves_configured_top_to_bottom_order(self) -> None:
+        input_keys = list(range(-1, -28, -1))
+        layout = build_brain_graph_layout(
+            genome_with_connections([], []),
+            input_keys=input_keys,
+            output_keys=[0],
+            bounds=FakeBounds(),
+            input_labels=[str(key) for key in input_keys],
+            output_labels=["action"],
+        )
+
+        visual_order = sorted(
+            input_keys,
+            key=lambda key: layout.positions[key][1],
+            reverse=True,
+        )
+
+        self.assertEqual(visual_order, input_keys)
+        self.assertEqual(layout.nodes[-1].label, "-1")
+        self.assertEqual(layout.nodes[-27].label, "-27")
+
     def test_direct_input_to_output_graph_uses_outer_columns(self) -> None:
         layout = layout_for(genome_with_connections([], [(-1, 0)]))
 

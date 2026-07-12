@@ -121,37 +121,44 @@ _ACTION_LABELS = {
 
 _HIDDEN_ACTION = "Sensory Processing (Hidden)"
 
-_SENSORY_LEXICON = (
-    "Endogenous Baseline Drive",
-    "Nutritional Deficit (Hunger)",
-    "Developmental Maturity",
-    "Metabolic Reserve (Energy)",
-    "Self-Velocity",
-    "Visual Field: Local Crowd Density",
-    "Visual Foraging Field: Local Resource Density",
-    "Biological Pacemaker (Alternating Drive)",
-    "Dynamic Interval Timer (Chronometer)",
-    "Absolute Longevity Sensation (Age)",
-    "Nearest Food Distance (Sight/Olfaction)",
-    "Nearest Food Direction (Sight/Olfactory)",
-    "Nearest Neighbor Distance (Social Sight)",
-    "Nearest Neighbor Direction (Social Sight)",
-    "Boundary Proximity (Wall Tactile)",
-    "Boundary Direction (Wall Tactile)",
-    "Load Carriage State (Carrying Object)",
-    "Local Soil Quality (Fertility Here)",
-    "Left-Forward Soil Nutrient Gradient",
-    "Right-Forward Soil Nutrient Gradient",
-    "Temporal Nutrient Flux (Fertility Delta)",
-    "Nearest Offspring Distance",
-    "Nearest Offspring Direction",
-    "Cohort Cohesion Distance",
-    "Cohort Cohesion Direction",
-    "Cohort Alignment Delta (Average Heading)",
-)
+_SENSORY_DESCRIPTIONS = {
+    "constant": "Endogenous Baseline Drive",
+    "hungriness": "Nutritional Deficit (Hunger)",
+    "maturity": "Developmental Maturity",
+    "energy_percent": "Metabolic Reserve (Energy)",
+    "speed": "Self-Velocity",
+    "creature_count": "Visual Field: Local Crowd Density",
+    "food_count": "Visual Foraging Field: Local Resource Density",
+    "clock_tik_tok": "Biological Pacemaker (Alternating Drive)",
+    "clock_chronometer": "Dynamic Interval Timer (Chronometer)",
+    "clock_time_alive": "Absolute Longevity Sensation (Age)",
+    "food_proximity": "Nearest Food Distance (Sight/Olfaction)",
+    "food_angle": "Nearest Food Direction (Sight/Olfactory)",
+    "creature_proximity": "Nearest Neighbor Distance (Social Sight)",
+    "creature_angle": "Nearest Neighbor Direction (Social Sight)",
+    "wall_proximity": "Boundary Proximity (Wall Tactile)",
+    "wall_angle": "Boundary Direction (Wall Tactile)",
+    "is_grabbing": "Load Carriage State (Carrying Object)",
+    "biome_fertility_here": "Local Soil Quality (Fertility Here)",
+    "biome_fertility_forward_left": "Left-Forward Soil Nutrient Gradient",
+    "biome_fertility_forward_right": "Right-Forward Soil Nutrient Gradient",
+    "biome_fertility_delta": "Temporal Nutrient Flux (Fertility Delta)",
+    "own_infant_proximity": "Nearest Offspring Distance",
+    "own_infant_angle": "Nearest Offspring Direction",
+    "flock_center_proximity": "Cohort Cohesion Distance",
+    "flock_center_angle": "Cohort Cohesion Direction",
+    "flock_average_relative_heading": (
+        "Cohort Alignment Delta (Average Heading)"
+    ),
+    "stomach_fullness": "Stomach Fullness (Satiety)",
+}
 
-if len(_SENSORY_LEXICON) != len(SENSOR_INPUT_NAMES):
-    raise RuntimeError("Sensory lexicon must match SensorSnapshot.as_inputs().")
+if set(_SENSORY_DESCRIPTIONS) != set(SENSOR_INPUT_NAMES):
+    raise RuntimeError("Sensory descriptions must match SensorSnapshot.as_inputs().")
+
+_SENSORY_LEXICON = tuple(
+    _SENSORY_DESCRIPTIONS[name] for name in SENSOR_INPUT_NAMES
+)
 
 
 def calculate_behavior_scores(
@@ -432,10 +439,14 @@ def profile_neuroethology(
     output_keys: Iterable[int],
     input_keys: Iterable[int] | None = None,
 ) -> tuple[tuple[NeuroIntegrationHub, ...], tuple[EthogramReflex, ...]]:
-    action_by_target = _action_labels_by_output_key(output_keys)
-    sense_by_source = _sense_labels_by_input_key(input_keys)
-    integrations: dict[int, list[str]] = {}
-    modulations: dict[int, list[str]] = {}
+    output_key_sequence = tuple(int(key) for key in output_keys)
+    input_key_sequence = _ordered_input_keys(input_keys)
+    action_by_target = _action_labels_by_output_key(output_key_sequence)
+    sense_by_source = _sense_labels_by_input_key(input_key_sequence)
+    input_rank = {key: index for index, key in enumerate(input_key_sequence)}
+    output_rank = {key: index for index, key in enumerate(output_key_sequence)}
+    integrations: dict[int, list[tuple[int, str]]] = {}
+    modulations: dict[int, list[tuple[int, str]]] = {}
     reflexes: list[EthogramReflex] = []
 
     for target, source, shift_type, delta in neural_shifts:
@@ -469,27 +480,45 @@ def profile_neuroethology(
 
         if sense is not None and target_id >= 0:
             integrations.setdefault(target_id, []).append(
-                f"Integration Hub {target_id} is now integrating "
-                f"[{sense}] into its internal state "
-                f"(Delta: {weight_delta:+.2f})"
+                (
+                    input_rank[source_id],
+                    f"Integration Hub {target_id} is now integrating "
+                    f"[{sense}] into its internal state "
+                    f"(Delta: {weight_delta:+.2f})",
+                )
             )
             continue
 
         if source_id >= 0 and behavior is not None:
             modulations.setdefault(source_id, []).append(
-                f"{behavior} is now modulated by abstract concepts from "
-                f"[Integration Hub {source_id}] "
-                f"(Delta: {weight_delta:+.2f})"
+                (
+                    output_rank[target_id],
+                    f"{behavior} is now modulated by abstract concepts from "
+                    f"[Integration Hub {source_id}] "
+                    f"(Delta: {weight_delta:+.2f})",
+                )
             )
 
     hub_ids = sorted(set(integrations) | set(modulations))
     hubs = tuple(
         NeuroIntegrationHub(
             hub_id=hub_id,
-            sensory_integrations=tuple(integrations.get(hub_id, ())),
-            behavioral_modulations=tuple(modulations.get(hub_id, ())),
+            sensory_integrations=tuple(
+                description
+                for _, description in sorted(integrations.get(hub_id, ()))
+            ),
+            behavioral_modulations=tuple(
+                description
+                for _, description in sorted(modulations.get(hub_id, ()))
+            ),
         )
         for hub_id in hub_ids
+    )
+    reflexes.sort(
+        key=lambda reflex: (
+            input_rank.get(reflex.source_node_id, len(input_rank)),
+            output_rank.get(reflex.target_node_id, len(output_rank)),
+        )
     )
     return hubs, tuple(reflexes)
 
@@ -532,15 +561,17 @@ def _action_labels_by_output_key(
 def _sense_labels_by_input_key(
     input_keys: Iterable[int] | None,
 ) -> dict[int, str]:
-    keys = (
-        tuple(-(index + 1) for index in range(len(_SENSORY_LEXICON)))
-        if input_keys is None
-        else tuple(int(key) for key in input_keys)
-    )
+    keys = _ordered_input_keys(input_keys)
     return {
         key: _SENSORY_LEXICON[index]
         for index, key in enumerate(keys[: len(_SENSORY_LEXICON)])
     }
+
+
+def _ordered_input_keys(input_keys: Iterable[int] | None) -> tuple[int, ...]:
+    if input_keys is None:
+        return tuple(-(index + 1) for index in range(len(SENSOR_INPUT_NAMES)))
+    return tuple(int(key) for key in input_keys)
 
 
 def _reflex_description(

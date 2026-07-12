@@ -12,6 +12,8 @@ from src.food import Food
 
 class EnvironmentRenderer:
     FOOD_SPRITE_TEXTURE_DIAMETER = 64
+    FOOD_OUTLINE_ENABLE_COUNT = 225
+    FOOD_OUTLINE_DISABLE_COUNT = 275
     CREATURE_BASE_TEXTURE_RADIUS = 100
     CREATURE_BASE_TEXTURE_DIAMETER = CREATURE_BASE_TEXTURE_RADIUS * 2
 
@@ -22,9 +24,11 @@ class EnvironmentRenderer:
         self._biome_texture: object | None = None
         self._biome_texture_key: int | None = None
         self._food_sprite_list: object | None = None
+        self._food_sprite_list_keys: set[int] = set()
         self._food_sprite_cache: dict[int, object] = {}
         self._food_sprite_texture: object | None = None
         self._food_batch_disabled = False
+        self._food_outlines_enabled: bool | None = None
         self._creature_sprite_list: object | None = None
         self._creature_detail_sprite_list: object | None = None
         self._creature_sprite_cache: dict[int, object] = {}
@@ -51,6 +55,7 @@ class EnvironmentRenderer:
                 world.selected_creature_id,
             )
             self._draw_selected_overlay(world, bounds)
+            self._draw_selected_creature_status(world, bounds)
 
         self._draw_environment_header(bounds, world)
 
@@ -307,7 +312,7 @@ class EnvironmentRenderer:
         world: World,
     ) -> None:
         zoom = world.environment_zoom
-        draw_outlines = len(foods) <= 250 or zoom >= 1.25
+        draw_outlines = self._should_draw_food_outlines(len(foods), zoom)
         visible_foods: list[tuple[Food, float, float, float]] = []
         for food in foods:
             pos_x, pos_y = food.position
@@ -336,7 +341,7 @@ class EnvironmentRenderer:
         self,
         visible_foods: list[tuple[Food, float, float, float]],
     ) -> bool:
-        if self._food_batch_disabled or not visible_foods:
+        if self._food_batch_disabled:
             return False
 
         if not self._has_active_window():
@@ -357,13 +362,21 @@ class EnvironmentRenderer:
                 self._food_batch_disabled = True
                 return False
             self._food_sprite_list = sprite_list
+            self._food_sprite_list_keys.clear()
 
         try:
-            sprite_list.clear()
-            visible_keys: set[int] = set()
+            visible_keys = {
+                self._food_sprite_key(food)
+                for food, _draw_x, _draw_y, _radius in visible_foods
+            }
+            for food_key in self._food_sprite_list_keys - visible_keys:
+                sprite = self._food_sprite_cache.get(food_key)
+                if sprite is not None:
+                    sprite_list.remove(sprite)
+            self._food_sprite_list_keys.intersection_update(visible_keys)
+
             for food, draw_x, draw_y, radius in visible_foods:
                 food_key = self._food_sprite_key(food)
-                visible_keys.add(food_key)
                 sprite = self._food_sprite_cache.get(food_key)
                 if sprite is None:
                     sprite = self._create_food_sprite()
@@ -373,15 +386,33 @@ class EnvironmentRenderer:
                 sprite.center_y = draw_y
                 sprite.width = radius * 2
                 sprite.height = radius * 2
-                sprite_list.append(sprite)
+                if food_key not in self._food_sprite_list_keys:
+                    sprite_list.append(sprite)
+                    self._food_sprite_list_keys.add(food_key)
 
             self._prune_food_sprite_cache(visible_keys)
-            sprite_list.draw()
+            if visible_foods:
+                sprite_list.draw()
         except Exception:
             self._food_batch_disabled = True
             return False
 
         return True
+
+    def _should_draw_food_outlines(self, food_count: int, zoom: float) -> bool:
+        if self._food_outlines_enabled is None:
+            self._food_outlines_enabled = food_count <= 250
+        elif (
+            self._food_outlines_enabled
+            and food_count >= self.FOOD_OUTLINE_DISABLE_COUNT
+        ):
+            self._food_outlines_enabled = False
+        elif (
+            not self._food_outlines_enabled
+            and food_count <= self.FOOD_OUTLINE_ENABLE_COUNT
+        ):
+            self._food_outlines_enabled = True
+        return zoom >= 1.25 or self._food_outlines_enabled
 
     def _has_active_window(self) -> bool:
         try:
@@ -456,18 +487,7 @@ class EnvironmentRenderer:
 
         if not self._draw_creature_sprite_batch(visible_creatures, zoom, world.creatures):
             self._draw_creatures_immediate(visible_creatures, world, zoom)
-
-        for creature, draw_x, draw_y, radius in visible_creatures:
-            if selected_creature_id != creature.creature_id:
-                continue
-            arcade.draw_circle_outline(
-                draw_x,
-                draw_y,
-                radius,
-                self.theme.selected_outline,
-                2,
-            )
-            self._draw_energy_bar(creature, bounds, world)
+        del selected_creature_id
 
     def _draw_creatures_immediate(
         self,
@@ -691,7 +711,36 @@ class EnvironmentRenderer:
             if key in active_keys
         }
 
-    def _draw_energy_bar(
+    def _draw_selected_creature_status(
+        self,
+        world: World,
+        bounds: arcade.Rect,
+    ) -> None:
+        creature = world.selected_creature
+        if creature is None:
+            return
+
+        zoom = world.environment_zoom
+        draw_x, draw_y = world.environment_to_screen(*creature.position)
+        radius = max(3.0, creature.radius * zoom)
+        if not self._circle_intersects_visible_bounds(
+            bounds,
+            draw_x,
+            draw_y,
+            radius,
+        ):
+            return
+
+        arcade.draw_circle_outline(
+            draw_x,
+            draw_y,
+            radius,
+            self.theme.selected_outline,
+            2,
+        )
+        self._draw_metabolism_bars(creature, bounds, world)
+
+    def _draw_metabolism_bars(
         self,
         creature: Creature,
         bounds: arcade.Rect,
@@ -704,28 +753,55 @@ class EnvironmentRenderer:
 
         width = max(20.0, radius * 2.1)
         height = max(3.0, 5.0 * zoom)
+        gap = max(1.0, 2.0 * zoom)
         left = draw_x - width / 2
-        bottom = draw_y + radius + (8.0 * zoom)
-        ratio = max(0.0, min(1.0, creature.energy))
+        energy_bottom = draw_y + radius + (8.0 * zoom)
+        stomach_bottom = energy_bottom - height - gap
+        max_energy = max(0.0001, self.config.metabolism.max_energy)
+        energy_ratio = max(0.0, min(1.0, creature.energy / max_energy))
+        stomach_capacity = max(
+            0.0,
+            creature.radius * self.config.metabolism.stomach_capacity_per_radius,
+        )
+        stomach_ratio = (
+            0.0
+            if stomach_capacity <= 0.0
+            else max(
+                0.0,
+                min(
+                    1.0,
+                    getattr(creature, "stomach_energy", 0.0) / stomach_capacity,
+                ),
+            )
+        )
         if not self._rect_fits_visible_bounds(
-            bounds, left, bottom, left + width, bottom + height
+            bounds,
+            left,
+            stomach_bottom,
+            left + width,
+            energy_bottom + height,
         ):
             return
 
-        arcade.draw_lrbt_rectangle_filled(
-            left,
-            left + width,
-            bottom,
-            bottom + height,
-            (25, 30, 36, 180),
-        )
-        arcade.draw_lrbt_rectangle_filled(
-            left,
-            left + width * ratio,
-            bottom,
-            bottom + height,
-            self.theme.accent_soft,
-        )
+        for bottom, ratio, color in (
+            (energy_bottom, energy_ratio, self.theme.accent_soft),
+            (stomach_bottom, stomach_ratio, (236, 153, 45, 230)),
+        ):
+            arcade.draw_lrbt_rectangle_filled(
+                left,
+                left + width,
+                bottom,
+                bottom + height,
+                (25, 30, 36, 180),
+            )
+            if ratio > 0.0:
+                arcade.draw_lrbt_rectangle_filled(
+                    left,
+                    left + width * ratio,
+                    bottom,
+                    bottom + height,
+                    color,
+                )
 
     def _draw_selected_overlay(
         self,

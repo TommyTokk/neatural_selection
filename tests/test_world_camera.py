@@ -118,6 +118,7 @@ class FakeCreature:
     radius: float = 16.0
     heading: float = 0.0
     energy: float = 1.0
+    stomach_energy: float = 0.0
     color: tuple[int, int, int] = (86, 156, 214)
     vision: object = field(
         default_factory=lambda: SimpleNamespace(range=120.0, angle=1.5)
@@ -462,12 +463,101 @@ class WorldCameraTest(unittest.TestCase):
             arcade.draw_circle_filled = original_draw_circle_filled
             arcade.draw_circle_outline = original_draw_circle_outline
 
-        sprite_list = FakeSpriteList.last_instance
+        sprite_list = FakeSpriteList.instances[-1]
         self.assertIsNotNone(sprite_list)
         self.assertEqual(fill_calls, [])
         self.assertEqual(len(outline_calls), 1)
         self.assertEqual(len(sprite_list.sprites), 1)
         self.assertEqual(sprite_list.draw_count, 1)
+
+    def test_food_batch_keeps_sprite_list_stable_between_frames(self) -> None:
+        world = self.make_world_shell()
+        renderer = EnvironmentRenderer(world.config)
+        food = FakeFood(position=(0.0, 0.0), radius=8.0)
+        replacement = FakeFood(position=(20.0, 0.0), radius=6.0)
+
+        class FakeSprite:
+            def __init__(self, texture: object) -> None:
+                self.texture = texture
+                self.center_x = 0.0
+                self.center_y = 0.0
+                self.width = 0.0
+                self.height = 0.0
+
+        class FakeSpriteList:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                self.sprites: list[FakeSprite] = []
+                self.clear_count = 0
+                self.draw_count = 0
+
+            def clear(self) -> None:
+                self.clear_count += 1
+                self.sprites.clear()
+
+            def append(self, sprite: FakeSprite) -> None:
+                self.sprites.append(sprite)
+
+            def remove(self, sprite: FakeSprite) -> None:
+                self.sprites.remove(sprite)
+
+            def draw(self) -> None:
+                self.draw_count += 1
+
+        original_get_window = getattr(arcade, "get_window", None)
+        original_make_circle_texture = getattr(arcade, "make_circle_texture", None)
+        original_sprite = getattr(arcade, "Sprite", None)
+        original_sprite_list = getattr(arcade, "SpriteList", None)
+        arcade.get_window = lambda: object()
+        arcade.make_circle_texture = lambda *args, **kwargs: object()
+        arcade.Sprite = FakeSprite
+        arcade.SpriteList = FakeSpriteList
+
+        try:
+            renderer._draw_food([food], world.layout.environment, world)
+            sprite = next(iter(renderer._food_sprite_cache.values()))
+            food.radius = 5.0
+            renderer._draw_food([food], world.layout.environment, world)
+            renderer._draw_food([replacement], world.layout.environment, world)
+            replacement_sprite = renderer._food_sprite_cache[
+                renderer._food_sprite_key(replacement)
+            ]
+            renderer._draw_food([], world.layout.environment, world)
+        finally:
+            if original_get_window is None:
+                delattr(arcade, "get_window")
+            else:
+                arcade.get_window = original_get_window
+            if original_make_circle_texture is None:
+                delattr(arcade, "make_circle_texture")
+            else:
+                arcade.make_circle_texture = original_make_circle_texture
+            if original_sprite is None:
+                delattr(arcade, "Sprite")
+            else:
+                arcade.Sprite = original_sprite
+            if original_sprite_list is None:
+                delattr(arcade, "SpriteList")
+            else:
+                arcade.SpriteList = original_sprite_list
+
+        sprite_list = renderer._food_sprite_list
+        self.assertIsNotNone(sprite_list)
+        self.assertEqual(sprite_list.clear_count, 0)
+        self.assertEqual(sprite_list.draw_count, 3)
+        self.assertEqual(sprite_list.sprites, [])
+        self.assertAlmostEqual(sprite.width, 10.0)
+        self.assertAlmostEqual(replacement_sprite.width, 12.0)
+
+    def test_food_outline_threshold_uses_hysteresis(self) -> None:
+        renderer = EnvironmentRenderer(build_sim_config())
+
+        self.assertTrue(renderer._should_draw_food_outlines(249, 1.0))
+        self.assertTrue(renderer._should_draw_food_outlines(251, 1.0))
+        self.assertFalse(renderer._should_draw_food_outlines(276, 1.0))
+        self.assertFalse(renderer._should_draw_food_outlines(249, 1.0))
+        self.assertTrue(renderer._should_draw_food_outlines(224, 1.0))
+        self.assertTrue(renderer._should_draw_food_outlines(300, 1.25))
 
     def test_creature_batch_draws_sprites_without_immediate_body(self) -> None:
         world = self.make_world_shell()
@@ -607,10 +697,16 @@ class WorldCameraTest(unittest.TestCase):
         self.assertEqual(image.getpixel((center - 34, center + 42)), (255, 255, 255, 255))
         self.assertEqual(image.getpixel((center + 34, center + 42)), (255, 255, 255, 255))
 
-    def test_selected_creature_keeps_immediate_overlay_with_batch(self) -> None:
+    def test_selected_creature_keeps_metabolism_overlay_with_batch(self) -> None:
         world = self.make_world_shell()
-        creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        creature = FakeCreature(
+            creature_id=1,
+            position=(0.0, 0.0),
+            energy=0.5,
+            stomach_energy=0.8,
+        )
         world.creatures = [creature]
+        world.selected_creature_id = creature.creature_id
         renderer = EnvironmentRenderer(world.config)
         outline_calls: list[object] = []
         bar_calls: list[object] = []
@@ -658,6 +754,10 @@ class WorldCameraTest(unittest.TestCase):
                 world,
                 selected_creature_id=creature.creature_id,
             )
+            renderer._draw_selected_creature_status(
+                world,
+                world.layout.environment,
+            )
         finally:
             if original_get_window is None:
                 delattr(arcade, "get_window")
@@ -683,7 +783,40 @@ class WorldCameraTest(unittest.TestCase):
             arcade.draw_lrbt_rectangle_filled = original_draw_lrbt
 
         self.assertEqual(len(outline_calls), 1)
-        self.assertEqual(len(bar_calls), 2)
+        self.assertEqual(len(bar_calls), 4)
+        energy_background, energy_fill, stomach_background, stomach_fill = bar_calls
+        self.assertAlmostEqual(
+            energy_fill[1] - energy_fill[0],
+            (energy_background[1] - energy_background[0]) * 0.5,
+        )
+        self.assertAlmostEqual(
+            stomach_fill[1] - stomach_fill[0],
+            (stomach_background[1] - stomach_background[0]) * 0.5,
+        )
+        self.assertEqual(energy_fill[4], renderer.theme.accent_soft)
+        self.assertEqual(stomach_fill[4], (236, 153, 45, 230))
+
+    def test_debug_overlay_draws_before_selected_status_bars(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        world.creatures = [creature]
+        world.selected_creature_id = creature.creature_id
+        world.debug_vision_enabled = True
+        renderer = EnvironmentRenderer(world.config)
+        calls: list[str] = []
+        self._stub_renderer_draw_dependencies(renderer, world)
+        world.creatures = [creature]
+        world.selected_creature_id = creature.creature_id
+        renderer._draw_selected_overlay = (
+            lambda active_world, bounds: calls.append("debug")
+        )
+        renderer._draw_selected_creature_status = (
+            lambda active_world, bounds: calls.append("status")
+        )
+
+        renderer.draw(world)
+
+        self.assertEqual(calls, ["debug", "status"])
 
     def test_creature_sprite_cache_prunes_dead_creatures(self) -> None:
         world = self.make_world_shell()
@@ -875,6 +1008,7 @@ class WorldCameraTest(unittest.TestCase):
             lambda creatures, bounds, active_world, selected_creature_id: None
         )
         renderer._draw_selected_overlay = lambda active_world, bounds: None
+        renderer._draw_selected_creature_status = lambda active_world, bounds: None
         renderer._draw_environment_header = lambda bounds, active_world: None
 
 

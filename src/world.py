@@ -131,7 +131,11 @@ class World:
         self.environment_zoom = config.zoom.default
         self.environment_pan_x = 0.0
         self.environment_pan_y = 0.0
-        self.vision = VisionSystem(config.vision, config.metabolism.eating_distance)
+        self.vision = VisionSystem(
+            config.vision,
+            config.metabolism.eating_distance,
+            config.metabolism.stomach_capacity_per_radius,
+        )
         self.space = pymunk.Space()
         self.space.gravity = (0.0, 0.0)
         self.space.damping = 0.90
@@ -1970,9 +1974,18 @@ class World:
             fitness = self.fitness.get(consumption.creature_id)
             if fitness is not None:
                 fitness.record_food(
-                    consumption.energy_gained,
+                    0.0,
                     depleted=consumption.depleted,
                 )
+
+        for creature_id, energy_gained in getattr(
+            report,
+            "digested_energy_gained",
+            {},
+        ).items():
+            fitness = self.fitness.get(creature_id)
+            if fitness is not None:
+                fitness.record_food(energy_gained, depleted=False)
 
         for food in report.touched_foods:
             reindex_shape = getattr(self.space, "reindex_shape", None)
@@ -2423,7 +2436,11 @@ class World:
         return self._creature_energy() + self._plant_energy()
 
     def _creature_energy(self) -> float:
-        return sum(creature.energy for creature in self.creatures)
+        return sum(
+            creature.energy
+            + max(0.0, getattr(creature, "stomach_energy", 0.0))
+            for creature in self.creatures
+        )
 
     def _plant_energy(self) -> float:
         return sum(food.energy_value for food in self.foods)

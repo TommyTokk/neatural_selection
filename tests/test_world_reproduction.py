@@ -52,6 +52,7 @@ from src.world import ArchivedCreatureTraits, World
 class FakeCreature:
     creature_id: int
     energy: float = 1.0
+    stomach_energy: float = 0.0
     heading: float = 0.0
     position: tuple[float, float] = (0.0, 0.0)
     speed: float = 0.0
@@ -181,6 +182,15 @@ class FakeGenome:
 
 
 class WorldReproductionTest(unittest.TestCase):
+    def test_creature_biomass_includes_stomach_contents(self) -> None:
+        world = object.__new__(World)
+        world.creatures = [
+            FakeCreature(creature_id=1, energy=0.4, stomach_energy=0.3),
+            FakeCreature(creature_id=2, energy=0.2, stomach_energy=0.1),
+        ]
+
+        self.assertAlmostEqual(world._creature_energy(), 1.0)
+
     def test_initial_creatures_share_species_one_color(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()

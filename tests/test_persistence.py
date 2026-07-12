@@ -493,6 +493,7 @@ class PersistenceManagerTest(unittest.TestCase):
             saved_member_color = (77, 88, 199)
             world.creatures[0].color = saved_member_color
             world.creatures[0].fertility_baseline = 0.37
+            world.creatures[0].stomach_energy = 0.42
             world.foods[0].consume_energy(
                 world.foods[0].energy_value * 0.25,
                 min_remainder_ratio=0.0,
@@ -544,6 +545,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 saved_member_color,
             )
             self.assertEqual(restored.creatures[0].fertility_baseline, 0.37)
+            self.assertAlmostEqual(restored.creatures[0].stomach_energy, 0.42)
             self.assertEqual(
                 restored.neat_controller.species_manager.next_species_id,
                 3,
@@ -754,8 +756,8 @@ class PersistenceManagerTest(unittest.TestCase):
 
 
 class SpeciesHistoryReconstructionTest(unittest.TestCase):
-    def test_checkpoint_versions_two_through_six_are_supported(self) -> None:
-        for version in (2, 3, 4, 5, 6):
+    def test_checkpoint_versions_two_through_seven_are_supported(self) -> None:
+        for version in (2, 3, 4, 5, 6, 7):
             PersistenceManager._validate_state({"version": version})
         with self.assertRaises(ValueError):
             PersistenceManager._validate_state({"version": 1})

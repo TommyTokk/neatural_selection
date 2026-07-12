@@ -184,7 +184,10 @@ def _layout_positions(
     horizontal_step = (right - left) / max(1, max_depth)
 
     for depth, depth_nodes in grouped.items():
-        ordered_nodes = sorted(depth_nodes, key=lambda node: (node.kind.value, node.key))
+        # Nodes are inserted in their configured input/output order when the
+        # graph is built. Preserve that sequence here: numerically sorting
+        # negative NEAT input keys would reverse -1 .. -N on screen.
+        ordered_nodes = depth_nodes
         x = left + horizontal_step * depth
         vertical_padding = 28.0
         bottom = bounds.bottom + vertical_padding

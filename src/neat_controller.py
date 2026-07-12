@@ -414,7 +414,12 @@ class NeatBrainController:
         return brain
 
     def migrate_legacy_brain_contract(self) -> None:
-        """Add inert output nodes required by the current brain contract."""
+        """Bring saved genomes forward to the current brain contract.
+
+        New input keys need no genome nodes and therefore remain unconnected
+        until mutation evolves a connection. Missing action outputs do require
+        explicit, inert nodes.
+        """
         genomes = self._known_genomes()
         seen: set[int] = set()
         for genome in genomes:

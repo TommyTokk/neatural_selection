@@ -7,7 +7,7 @@ from configs.sim_config import MetabolismConfig, VisionConfig
 from src.creature import Creature
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 26
+SENSOR_INPUT_COUNT = 27
 SENSOR_INPUT_NAMES = (
     "constant",
     "hungriness",
@@ -35,7 +35,11 @@ SENSOR_INPUT_NAMES = (
     "flock_center_proximity",
     "flock_center_angle",
     "flock_average_relative_heading",
+    "stomach_fullness",
 )
+
+if len(SENSOR_INPUT_NAMES) != SENSOR_INPUT_COUNT:
+    raise RuntimeError("Sensor names must match SensorSnapshot.as_inputs().")
 
 
 @dataclass(slots=True)
@@ -100,6 +104,7 @@ class SensorSnapshot:
     clock_chronometer: float
     clock_time_alive: float
     is_grabbing: float
+    stomach_fullness: float = 0.0
     own_infants: VisionTargetSnapshot = field(
         default_factory=lambda: VisionTargetSnapshot(
             visible=0.0,
@@ -142,6 +147,7 @@ class SensorSnapshot:
             self.flock.center_proximity,
             self.flock.center_angle,
             self.flock.average_relative_heading,
+            self.stomach_fullness,
         ]
 
 
@@ -156,9 +162,13 @@ class VisionSystem:
         self,
         config: VisionConfig,
         eating_distance: float = MetabolismConfig().eating_distance,
+        stomach_capacity_per_radius: float = (
+            MetabolismConfig().stomach_capacity_per_radius
+        ),
     ) -> None:
         self.config = config
         self.eating_distance = eating_distance
+        self.stomach_capacity_per_radius = stomach_capacity_per_radius
 
     def sense(
         self,
@@ -278,7 +288,19 @@ class VisionSystem:
             clock_chronometer=clock_chronometer,
             clock_time_alive=clock_time_alive,
             is_grabbing=1.0 if is_grabbing else 0.0,
+            stomach_fullness=self.stomach_fullness(creature),
             flock=flock_snapshot,
+        )
+
+    def stomach_fullness(self, creature: Creature) -> float:
+        capacity = max(
+            0.0,
+            creature.radius * self.stomach_capacity_per_radius,
+        )
+        if capacity <= 0.0:
+            return 0.0
+        return self._clamp01(
+            max(0.0, getattr(creature, "stomach_energy", 0.0)) / capacity
         )
 
     def _flock_snapshot(

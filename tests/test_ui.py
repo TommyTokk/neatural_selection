@@ -102,6 +102,7 @@ from src.speciation import (
     SpeciesTraitSnapshot,
 )
 from src.ui import UiRenderer
+from src.vision import SENSOR_INPUT_NAMES
 
 
 class UiRendererBrainWindowScrollTest(unittest.TestCase):
@@ -222,6 +223,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
             sensor_snapshot_for=lambda selected_creature: SimpleNamespace(
                 food=SimpleNamespace(visible=2.0, density=0.25),
                 creatures=SimpleNamespace(visible=1.0, density=0.1),
+                stomach_fullness=0.6,
             ),
             fitness_for=lambda selected_creature: None,
             neat_controller=SimpleNamespace(
@@ -693,7 +695,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertNotIn("open_brain_window", self.renderer._control_hitboxes)
         self.assertNotIn("kill_selected_creature", self.renderer._control_hitboxes)
 
-    def test_inspector_progress_bar_uses_energy_ratio(self) -> None:
+    def test_inspector_progress_bars_use_energy_and_stomach_ratios(self) -> None:
         world = self.make_inspector_world(energy=0.5, max_energy=2.0, vision_range=160.0)
         ratios = []
         original_draw_progress_bar = self.renderer._draw_progress_bar
@@ -708,7 +710,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
         finally:
             self.renderer._draw_progress_bar = original_draw_progress_bar
 
-        self.assertEqual(ratios, [0.25])
+        self.assertEqual(ratios, [0.25, 0.6])
 
     def test_creature_inspector_marker_matches_selected_creature(self) -> None:
         selected = SimpleNamespace(
@@ -1393,7 +1395,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
-                        input_keys=tuple(range(-1, -27, -1)),
+                        input_keys=tuple(range(-1, -28, -1)),
                         output_keys=tuple(range(12)),
                     )
                 ),
@@ -2045,7 +2047,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
-                        input_keys=list(range(-1, -27, -1)),
+                        input_keys=list(range(-1, -28, -1)),
                         output_keys=list(range(12)),
                     )
                 )
@@ -2054,7 +2056,12 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
         labels = self.renderer._species_tree_neat_node_labels(world)
 
+        self.assertEqual(
+            [labels[key] for key in range(-1, -28, -1)],
+            list(SENSOR_INPUT_NAMES),
+        )
         self.assertEqual(labels[-11], "food_proximity")
+        self.assertEqual(labels[-27], "stomach_fullness")
         self.assertEqual(labels[0], "accelerate")
         self.assertEqual(labels[3], "want_eat")
 

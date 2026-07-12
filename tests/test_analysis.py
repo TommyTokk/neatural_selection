@@ -137,6 +137,82 @@ class InspectorAnalysisTest(unittest.TestCase):
             "triggers/sensitizes [Threat Avoidance Reflexes]",
         )
 
+    def test_stomach_fullness_sensor_has_satiety_lexicon_entry(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=((3, -27, "added", 0.8),),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+        )
+
+        self.assertIn(
+            "Stomach Fullness (Satiety)",
+            report.behavioral_ethogram[0].description,
+        )
+
+    def test_species_reflex_summary_uses_canonical_input_order(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=tuple(
+                (3, input_key, "added", 0.8)
+                for input_key in range(-27, 0)
+            ),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+            range(-1, -28, -1),
+        )
+
+        self.assertEqual(
+            [reflex.source_node_id for reflex in report.behavioral_ethogram],
+            list(range(-1, -28, -1)),
+        )
+        self.assertIn(
+            "Stomach Fullness (Satiety)",
+            report.behavioral_ethogram[-1].description,
+        )
+
+    def test_species_hub_summary_uses_canonical_input_order(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=(
+                (99, -27, "added", 0.8),
+                (99, -11, "added", 0.8),
+                (99, -1, "added", 0.8),
+            ),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+            range(-1, -28, -1),
+        )
+
+        integrations = report.neuro_integration_hubs[0].sensory_integrations
+        self.assertIn("Endogenous Baseline Drive", integrations[0])
+        self.assertIn("Nearest Food Distance", integrations[1])
+        self.assertIn("Stomach Fullness (Satiety)", integrations[2])
+
     def test_direct_reflex_translation_for_inhibitory_shift(self) -> None:
         child = record(
             2,

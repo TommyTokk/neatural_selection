@@ -127,6 +127,10 @@ class MetabolismConfig:
     sprint_energy_cost_per_second: float = 0.04
     eating_distance: float = 8
     micro_food_remainder_ratio: float = 0.10
+    stomach_capacity_per_radius: float = 0.1
+    digestion_rate_per_second: float = 0.2
+    digestion_efficiency: float = 0.9
+    max_bite_size_per_second: float = 0.5
     starvation_energy_threshold: float = 0.3
 
 
@@ -138,7 +142,7 @@ class PopulationConfig:
     fitness_archive_size: int = 256
     extinction_recovery_creatures: int = 35
     extinction_recovery_parent_pool: int = 5
-    senescence_age_seconds: float = 90.0
+    senescence_age_seconds: float = 200.0
     senescence_cost_multiplier: float = 0.05
     min_reproduction_age: float = 20.0
     reproduction_cooldown: float = 12.0

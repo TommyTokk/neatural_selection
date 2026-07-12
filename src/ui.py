@@ -488,11 +488,15 @@ class UiRenderer:
             selected,
         )
         energy_ratio = self._inspector_energy_ratio(world)
+        stomach_ratio = max(
+            0.0,
+            min(1.0, float(getattr(snapshot, "stomach_fullness", 0.0))),
+        )
         padding = 18.0
         section_gap = 18.0
         species_row_height = 28.0 if species_id is not None else 0.0
         total_height = (
-            (680.0 if fitness_score is not None else 648.0)
+            (724.0 if fitness_score is not None else 692.0)
             + species_row_height
         )
         scroll_limit = max(0.0, total_height - viewport.height)
@@ -593,6 +597,30 @@ class UiRenderer:
                 energy_bar,
                 energy_ratio,
                 fill_color=self._inspector_energy_color(energy_ratio),
+            )
+
+        y -= 24.0
+        self._draw_inspector_section_label(
+            viewport, "inspector_stomach_section", "STOMACH", left, y
+        )
+        self._draw_text_in_viewport(
+            viewport,
+            "inspector_stomach_value",
+            f"{stomach_ratio:.0%}",
+            right,
+            y,
+            (236, 153, 45),
+            13,
+            bold=True,
+            anchor_x="right",
+        )
+        y -= 18.0
+        stomach_bar = arcade.LBWH(left, y - 4, width, 8)
+        if self._rect_intersects(stomach_bar, viewport):
+            self._draw_progress_bar(
+                stomach_bar,
+                stomach_ratio,
+                fill_color=(236, 153, 45),
             )
 
         y -= 22.0 + section_gap

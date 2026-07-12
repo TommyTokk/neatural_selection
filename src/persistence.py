@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 7
-LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6}
+CHECKPOINT_VERSION = 8
+LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7}
 
 
 def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
@@ -393,6 +393,10 @@ class PersistenceManager:
                     "velocity": (body.velocity.x, body.velocity.y),
                     "angular_velocity": body.angular_velocity,
                     "energy": creature.energy,
+                    "stomach_energy": max(
+                        0.0,
+                        float(getattr(creature, "stomach_energy", 0.0)),
+                    ),
                     "vision": copy.deepcopy(creature.vision),
                     "physical_traits": copy.deepcopy(creature.physical_traits),
                     "color": tuple(creature.color),
@@ -440,7 +444,7 @@ class PersistenceManager:
             "genome_config",
             None,
         )
-        input_count = 26 if genome_config is None else len(genome_config.input_keys)
+        input_count = 27 if genome_config is None else len(genome_config.input_keys)
         output_count = 12 if genome_config is None else len(genome_config.output_keys)
         next_creature_id = getattr(world, "_next_creature_id_value", None)
         if next_creature_id is None:
@@ -1191,6 +1195,10 @@ class PersistenceManager:
                     lineage=creature_state["lineage"],
                 )
                 creature.name = creature_state["name"]
+                creature.stomach_energy = max(
+                    0.0,
+                    float(creature_state.get("stomach_energy", 0.0)),
+                )
                 creature.body.velocity = creature_state["velocity"]
                 creature.body.angular_velocity = creature_state["angular_velocity"]
                 creature.fertility_baseline = float(

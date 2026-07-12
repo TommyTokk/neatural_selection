@@ -47,6 +47,7 @@ class Creature:
     vision: VisionTraits
     physical_traits: PhysicalTraits
     color: Color
+    stomach_energy: float = 0.0
     lineage: LineageInfo = field(default_factory=LineageInfo)
     render_sprite: object | None = None
     last_action: object | None = None
