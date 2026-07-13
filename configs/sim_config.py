@@ -110,6 +110,20 @@ class BiomeSensorConfig:
 
 
 @dataclass(slots=True)
+class CommunicationConfig:
+    acoustic_range: float = 480.0
+    acoustic_min_emission: float = 0.05
+    acoustic_energy_cost_per_second: float = 0.006
+
+    pheromone_update_interval: float = 0.25
+    pheromone_diffusion_coefficient: float = 0.15
+    pheromone_evaporation_rate: float = 0.08
+    pheromone_max_concentration: float = 1.0
+    pheromone_deposit_rate: float = 0.75
+    pheromone_energy_cost_per_second: float = 0.002
+
+
+@dataclass(slots=True)
 class ZoomConfig:
     default: float = 1.0
     minimum: float = 0.3
@@ -326,6 +340,9 @@ class SimConfig:
 
     # Biome smell sensor config
     biome_sensor: BiomeSensorConfig = field(default_factory=BiomeSensorConfig)
+
+    # Acoustic and pheromone communication
+    communication: CommunicationConfig = field(default_factory=CommunicationConfig)
 
 
 def build_sim_config() -> SimConfig:

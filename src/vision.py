@@ -5,9 +5,10 @@ from math import atan2, cos, hypot, pi, sin
 
 from configs.sim_config import MetabolismConfig, VisionConfig
 from src.creature import Creature
+from src.communication import AcousticSnapshot, PheromoneSnapshot
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 27
+SENSOR_INPUT_COUNT = 37
 SENSOR_INPUT_NAMES = (
     "constant",
     "hungriness",
@@ -36,6 +37,16 @@ SENSOR_INPUT_NAMES = (
     "flock_center_angle",
     "flock_average_relative_heading",
     "stomach_fullness",
+    "sound_strength",
+    "sound_dir_sin",
+    "sound_dir_cos",
+    "sound_tone",
+    "trail_pheromone_here",
+    "trail_pheromone_forward_left",
+    "trail_pheromone_forward_right",
+    "alarm_pheromone_here",
+    "alarm_pheromone_forward_left",
+    "alarm_pheromone_forward_right",
 )
 
 if len(SENSOR_INPUT_NAMES) != SENSOR_INPUT_COUNT:
@@ -116,6 +127,8 @@ class SensorSnapshot:
     )
     biome: BiomeSensorSnapshot = field(default_factory=BiomeSensorSnapshot)
     flock: FlockSensorSnapshot = field(default_factory=FlockSensorSnapshot)
+    acoustic: AcousticSnapshot = field(default_factory=AcousticSnapshot)
+    pheromones: PheromoneSnapshot = field(default_factory=PheromoneSnapshot)
 
     def as_inputs(self) -> list[float]:
         # Inputs 18-21 are body-relative biome smell samples, not a direct
@@ -148,6 +161,16 @@ class SensorSnapshot:
             self.flock.center_angle,
             self.flock.average_relative_heading,
             self.stomach_fullness,
+            self.acoustic.strength,
+            self.acoustic.direction_sin,
+            self.acoustic.direction_cos,
+            self.acoustic.tone,
+            self.pheromones.trail_here,
+            self.pheromones.trail_forward_left,
+            self.pheromones.trail_forward_right,
+            self.pheromones.alarm_here,
+            self.pheromones.alarm_forward_left,
+            self.pheromones.alarm_forward_right,
         ]
 
 

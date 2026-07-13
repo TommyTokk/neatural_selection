@@ -711,7 +711,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
         first_seventeen_inputs = inputs[:17]
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 27)
+        self.assertEqual(SENSOR_INPUT_COUNT, 37)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertAlmostEqual(first_seventeen_inputs[0], 1.0)
         self.assertAlmostEqual(first_seventeen_inputs[1], 0.25)
@@ -727,6 +727,7 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertAlmostEqual(inputs[21], 0.0)
         self.assertAlmostEqual(inputs[22], 0.0)
         self.assertEqual(inputs[23:27], [0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(inputs[27:37], [0.0] * 10)
 
     def test_stomach_fullness_is_the_27th_input_and_clamps(self) -> None:
         creature = creature_at((50.0, 50.0), radius=10.0)

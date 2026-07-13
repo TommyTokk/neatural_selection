@@ -136,6 +136,50 @@ class FakeBiomeMap:
 
 
 class WorldVisionMutationTest(unittest.TestCase):
+    def test_communication_intents_commit_together_and_scale_deposits_by_dt(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.creatures = [
+            SimpleNamespace(creature_id=1, position=(10.0, 20.0)),
+            SimpleNamespace(creature_id=2, position=(30.0, 40.0)),
+        ]
+        world._last_actions = {
+            1: Action(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                emit_sound=0.8,
+                sound_tone=-0.25,
+                emit_trail_pheromone=0.5,
+                emit_alarm_pheromone=0.25,
+            ),
+            2: Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        }
+        captured_signals: list[object] = []
+        deposits: list[tuple[tuple[float, float], float, float]] = []
+        world.acoustics = SimpleNamespace(
+            replace_signals=lambda signals: captured_signals.extend(signals)
+        )
+        world.pheromones = SimpleNamespace(
+            deposit=lambda position, trail_amount, alarm_amount: deposits.append(
+                (position, trail_amount, alarm_amount)
+            )
+        )
+
+        world._commit_communication_intents(1.0 / 60.0)
+
+        self.assertEqual(len(captured_signals), 1)
+        self.assertEqual(captured_signals[0].emitter_id, 1)
+        self.assertAlmostEqual(captured_signals[0].tone, -0.25)
+        rate_per_step = world.config.communication.pheromone_deposit_rate / 60.0
+        self.assertAlmostEqual(deposits[0][1], 0.5 * rate_per_step)
+        self.assertAlmostEqual(deposits[0][2], 0.25 * rate_per_step)
+        self.assertEqual(deposits[1][1:], (0.0, 0.0))
+
     def make_world_with_mutations(self, mutations: list[float]) -> World:
         world = object.__new__(World)
         world.config = build_sim_config()

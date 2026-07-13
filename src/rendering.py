@@ -815,6 +815,8 @@ class EnvironmentRenderer:
         if world.debug_vision_enabled:
             self._draw_vision_cone(selected, bounds, world)
             self._draw_biome_sensor_markers(selected, bounds, world)
+            self._draw_acoustic_debug(selected, bounds, world)
+            self._draw_pheromone_debug(selected, bounds, world)
             self._draw_visible_food_highlights(
                 world.visible_foods_for(selected),
                 bounds,
@@ -824,6 +826,84 @@ class EnvironmentRenderer:
                 world.visible_creatures_for(selected),
                 bounds,
                 world,
+            )
+
+    def _draw_acoustic_debug(
+        self,
+        creature: Creature,
+        bounds: arcade.Rect,
+        world: World,
+    ) -> None:
+        snapshots = getattr(world, "_last_sensor_snapshots", {})
+        snapshot = snapshots.get(creature.creature_id)
+        acoustic = None if snapshot is None else getattr(snapshot, "acoustic", None)
+        source_position = (
+            None if acoustic is None else getattr(acoustic, "source_position", None)
+        )
+        strength = 0.0 if acoustic is None else float(acoustic.strength)
+        if source_position is None or strength <= 0.0:
+            return
+        start_x, start_y = world.environment_to_screen(*creature.position)
+        end_x, end_y = world.environment_to_screen(*source_position)
+        alpha = int(80 + 175 * max(0.0, min(1.0, strength)))
+        color = (125, 205, 255, alpha)
+        arcade.draw_line(start_x, start_y, end_x, end_y, color, 1.0 + 2.0 * strength)
+        arcade.draw_circle_outline(end_x, end_y, 7.0, color, 2)
+        self._draw_text(
+            f"sound_strength_{creature.creature_id}",
+            f"SND {strength:.2f}",
+            start_x + 12,
+            start_y + 12,
+            color,
+            10,
+            bold=True,
+        )
+
+    def _draw_pheromone_debug(
+        self,
+        creature: Creature,
+        bounds: arcade.Rect,
+        world: World,
+    ) -> None:
+        snapshots = getattr(world, "_last_sensor_snapshots", {})
+        snapshot = snapshots.get(creature.creature_id)
+        pheromones = None if snapshot is None else getattr(snapshot, "pheromones", None)
+        positions_for = getattr(world, "pheromone_sensor_positions_for", None)
+        if pheromones is None or positions_for is None:
+            return
+        trail_values = (
+            pheromones.trail_here,
+            pheromones.trail_forward_left,
+            pheromones.trail_forward_right,
+        )
+        alarm_values = (
+            pheromones.alarm_here,
+            pheromones.alarm_forward_left,
+            pheromones.alarm_forward_right,
+        )
+        radius = max(4.0, 5.0 * world.environment_zoom)
+        for position, trail, alarm in zip(
+            positions_for(creature),
+            trail_values,
+            alarm_values,
+        ):
+            draw_x, draw_y = world.environment_to_screen(*position)
+            if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
+                continue
+            trail_alpha = int(45 + 210 * max(0.0, min(1.0, trail)))
+            alarm_alpha = int(45 + 210 * max(0.0, min(1.0, alarm)))
+            arcade.draw_circle_outline(
+                draw_x,
+                draw_y,
+                radius + 2.0,
+                (80, 230, 145, trail_alpha),
+                2,
+            )
+            arcade.draw_circle_filled(
+                draw_x,
+                draw_y,
+                radius,
+                (245, 90, 100, alarm_alpha),
             )
 
     def _draw_vision_cone(

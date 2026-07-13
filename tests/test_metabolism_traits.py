@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unittest
 
-from configs.sim_config import MetabolismConfig, TraitConfig
+from configs.sim_config import CommunicationConfig, MetabolismConfig, TraitConfig
 from src.creature import PhysicalTraits
 from src.metabolism import Metabolism
 
@@ -27,6 +27,33 @@ class FakeVision:
 
 
 class MetabolismTraitCostTest(unittest.TestCase):
+    def test_communication_costs_are_charged_and_reported_as_trait_cost(self) -> None:
+        metabolism = Metabolism(
+            MetabolismConfig(basic_metabolism_rate=0.0),
+            FakeVision(cost=0.0),
+            TraitConfig(body_metabolism_cost_factor=0.0),
+            communication_config=CommunicationConfig(
+                acoustic_energy_cost_per_second=0.006,
+                pheromone_energy_cost_per_second=0.002,
+            ),
+        )
+        creature = FakeCreature(
+            radius=16.0,
+            speed=0.0,
+            energy=1.0,
+            physical_traits=PhysicalTraits(radius=16.0),
+        )
+
+        cost = metabolism.energy_cost_breakdown_per_second(
+            creature,
+            max_speed=100.0,
+            communication_intensities=(0.5, 1.0, 0.5),
+        )
+
+        self.assertAlmostEqual(cost.acoustic, 0.0015)
+        self.assertAlmostEqual(cost.pheromone, 0.003)
+        self.assertAlmostEqual(cost.total, 0.0045)
+        self.assertAlmostEqual(cost.trait, 0.0045)
     def test_large_body_and_movement_multiplier_increase_energy_cost(self) -> None:
         metabolism = Metabolism(
             MetabolismConfig(

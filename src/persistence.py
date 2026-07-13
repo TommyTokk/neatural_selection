@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 8
-LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7}
+CHECKPOINT_VERSION = 9
+LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7, 8}
 
 
 def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
@@ -444,8 +444,8 @@ class PersistenceManager:
             "genome_config",
             None,
         )
-        input_count = 27 if genome_config is None else len(genome_config.input_keys)
-        output_count = 12 if genome_config is None else len(genome_config.output_keys)
+        input_count = 37 if genome_config is None else len(genome_config.input_keys)
+        output_count = 16 if genome_config is None else len(genome_config.output_keys)
         next_creature_id = getattr(world, "_next_creature_id_value", None)
         if next_creature_id is None:
             next_creature_id = max(
@@ -483,6 +483,17 @@ class PersistenceManager:
             if allocator_state_getter is not None
             else {}
         )
+        pheromones = getattr(world, "pheromones", None)
+        acoustics = getattr(world, "acoustics", None)
+        communication_state = None
+        if pheromones is not None and acoustics is not None:
+            communication_state = {
+                "pheromone_accumulator": float(pheromones.accumulator),
+                "trail": pheromones.trail.copy(),
+                "alarm": pheromones.alarm.copy(),
+                "acoustic_signals": copy.deepcopy(acoustics.signals),
+            }
+
         return {
             "version": CHECKPOINT_VERSION,
             "brain_contract": {
@@ -511,6 +522,7 @@ class PersistenceManager:
             },
             "creatures": creatures,
             "foods": foods,
+            "communication": communication_state,
             "food_spawner": {
                 "next_food_id": spawner._next_food_id,
                 "spawn_credit": spawner._spawn_credit,
@@ -1143,6 +1155,20 @@ class PersistenceManager:
             world.is_paused = runtime["is_paused"]
             world.selected_creature_id = runtime["selected_creature_id"]
             legacy_fertility_baselines = runtime.get("previous_biome", {})
+
+            communication_state = state.get("communication")
+            if communication_state:
+                world.pheromones.restore(
+                    communication_state["trail"],
+                    communication_state["alarm"],
+                    communication_state.get("pheromone_accumulator", 0.0),
+                )
+                saved_signals = communication_state.get("acoustic_signals", {})
+                world.acoustics.replace_signals(
+                    saved_signals.values()
+                    if isinstance(saved_signals, dict)
+                    else saved_signals
+                )
 
             controller = world.neat_controller
             population_state = state["population"]

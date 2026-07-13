@@ -87,6 +87,10 @@ class NeatBrain:
             weight_separation=outputs[9],# Use the tenth output directly for separation weight in flocking behavior
             weight_alignment=outputs[10],# Use the eleventh output directly for alignment weight in flocking behavior
             weight_cohesion=outputs[11],# Use the twelfth output directly for cohesion weight in flocking behavior
+            emit_sound=self._positive_action_output(outputs[12]),
+            sound_tone=self._signed_action_output(outputs[13]),
+            emit_trail_pheromone=self._positive_action_output(outputs[14]),
+            emit_alarm_pheromone=self._positive_action_output(outputs[15]),
         ).clamped()
         return self.last_action
 
@@ -149,3 +153,6 @@ class NeatBrain:
 
     def _signed_action_output(self, value: float) -> float:
         return self._clamp(signed_output(value), -1.0, 1.0)
+
+    def _positive_action_output(self, value: float) -> float:
+        return self._clamp(signed_output(value), 0.0, 1.0)

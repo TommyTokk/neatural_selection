@@ -36,6 +36,7 @@ from src.speciation import (
 )
 from src.telemetry import TelemetryDatabase
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
+from src.communication import AcousticSignal, AcousticSystem, PheromoneSystem
 
 from src.layout import build_screen_layout
 
@@ -167,6 +168,13 @@ class World:
         self.biome_map = BiomeGenerationHandler(config.biome).generate(
             self.environment_world_bounds
         )
+        self.acoustics = AcousticSystem(config.communication)
+        self.pheromones = PheromoneSystem(
+            config.communication,
+            self.biome_map.grid_width,
+            self.biome_map.grid_height,
+            self.environment_world_bounds,
+        )
         for creature in self.creatures:
             self._initialize_creature_fertility_baseline(creature)
         self.food_spawner = FoodSpawner(config.food, self.rng, self.biome_map)
@@ -217,6 +225,7 @@ class World:
             self.vision,
             config.trait,
             genome_for_creature_id=self._genome_for_creature_id,
+            communication_config=config.communication,
         )
         self.rt_neat = RtNeatManager(self.neat_controller)
         self._trait_archive_by_genome_id: dict[int, ArchivedCreatureTraits] = {}
@@ -268,6 +277,7 @@ class World:
             and steps < self.MAX_FRAME_STEPS
         ):
             self._apply_creature_intents()
+            self._commit_communication_intents(self.FIXED_TIMESTEP)
             self.space.step(self.FIXED_TIMESTEP)
             self.physics_step_count += 1
             self._settle_food_motion()
@@ -277,6 +287,7 @@ class World:
             self._update_fitness_survival(self.FIXED_TIMESTEP)
             self._update_chronometers(self.FIXED_TIMESTEP)
             self._update_metabolism(self.FIXED_TIMESTEP)
+            self.pheromones.accumulate(self.FIXED_TIMESTEP)
             self._physics_accumulator -= self.FIXED_TIMESTEP
             steps += 1
 
@@ -775,7 +786,25 @@ class World:
             )
 
         snapshot.biome = self._biome_sensor_snapshot_for(creature)
+        acoustics = getattr(self, "acoustics", None)
+        if acoustics is not None:
+            snapshot.acoustic = acoustics.sense(
+                creature.creature_id,
+                creature.position,
+                creature.heading,
+            )
+        pheromones = getattr(self, "pheromones", None)
+        if pheromones is not None:
+            snapshot.pheromones = pheromones.sense(
+                self.pheromone_sensor_positions_for(creature)
+            )
         return snapshot
+
+    def pheromone_sensor_positions_for(
+        self,
+        creature: Creature,
+    ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+        return self.biome_sensor_positions_for(creature)
 
     def _biome_sensor_snapshot_for(self, creature: Creature) -> BiomeSensorSnapshot:
         here, forward_left, forward_right = self.biome_sensor_positions_for(creature)
@@ -1325,6 +1354,44 @@ class World:
                 apply_stabilizers=not self.use_neat_brains,
             )
 
+    def _commit_communication_intents(self, delta_time: float) -> None:
+        acoustics = getattr(self, "acoustics", None)
+        pheromones = getattr(self, "pheromones", None)
+        if acoustics is None or pheromones is None:
+            return
+
+        signals: list[AcousticSignal] = []
+        deposit_rate = max(0.0, self.config.communication.pheromone_deposit_rate)
+        elapsed = max(0.0, delta_time)
+        for creature in self.creatures:
+            action = self._last_actions.get(creature.creature_id)
+            if action is None:
+                continue
+            sound_strength = max(0.0, min(1.0, action.emit_sound))
+            if sound_strength >= self.config.communication.acoustic_min_emission:
+                signals.append(
+                    AcousticSignal(
+                        emitter_id=creature.creature_id,
+                        position=creature.position,
+                        strength=sound_strength,
+                        tone=max(-1.0, min(1.0, action.sound_tone)),
+                    )
+                )
+            pheromones.deposit(
+                creature.position,
+                trail_amount=(
+                    deposit_rate
+                    * max(0.0, min(1.0, action.emit_trail_pheromone))
+                    * elapsed
+                ),
+                alarm_amount=(
+                    deposit_rate
+                    * max(0.0, min(1.0, action.emit_alarm_pheromone))
+                    * elapsed
+                ),
+            )
+        acoustics.replace_signals(signals)
+
     def _apply_action(
         self,
         creature: Creature,
@@ -1817,6 +1884,7 @@ class World:
                     self.metabolism.trait_energy_cost_per_second(
                         creature,
                         self.MAX_SPEED,
+                        self._communication_intensities_for(creature.creature_id),
                     ),
                     delta_time,
                 )
@@ -1966,6 +2034,12 @@ class World:
                     creature.creature_id: self._creature_age_seconds(creature)
                     for creature in self.creatures
                 },
+                communication_intensities={
+                    creature.creature_id: self._communication_intensities_for(
+                        creature.creature_id
+                    )
+                    for creature in self.creatures
+                },
             )
         finally:
             self._restore_movement_multipliers(with_infant_penalties)
@@ -2008,6 +2082,19 @@ class World:
 
         if self.selected_creature_id is not None and self.selected_creature is None:
             self.selected_creature_id = None
+
+    def _communication_intensities_for(
+        self,
+        creature_id: int,
+    ) -> tuple[float, float, float]:
+        action = self._last_actions.get(creature_id)
+        if action is None:
+            return (0.0, 0.0, 0.0)
+        return (
+            max(0.0, min(1.0, action.emit_sound)),
+            max(0.0, min(1.0, action.emit_trail_pheromone)),
+            max(0.0, min(1.0, action.emit_alarm_pheromone)),
+        )
 
     def _eatable_foods_for(self, creature: Creature) -> list[Food]:
         radius = (
@@ -2324,6 +2411,9 @@ class World:
             motion_commands = getattr(self, "_motion_commands", None)
             if motion_commands is not None:
                 motion_commands.pop(creature.creature_id, None)
+            acoustics = getattr(self, "acoustics", None)
+            if acoustics is not None:
+                acoustics.remove_emitter(creature.creature_id)
 
         fitness = self.fitness.pop(creature.creature_id, None)
         self.rt_neat.record_death(fitness)

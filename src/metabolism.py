@@ -6,7 +6,7 @@ from math import cos, sin
 
 from src.food import Food
 from src.creature import Creature
-from configs.sim_config import MetabolismConfig, TraitConfig
+from configs.sim_config import CommunicationConfig, MetabolismConfig, TraitConfig
 from src.vision import VisionSystem
 
 
@@ -35,10 +35,20 @@ class EnergyCostBreakdown:
     body: float
     trait: float
     sprint: float = 0.0
+    acoustic: float = 0.0
+    pheromone: float = 0.0
 
     @property
     def total(self) -> float:
-        return self.base + self.movement + self.sprint + self.vision + self.body
+        return (
+            self.base
+            + self.movement
+            + self.sprint
+            + self.vision
+            + self.body
+            + self.acoustic
+            + self.pheromone
+        )
 
 
 class Metabolism:
@@ -48,11 +58,13 @@ class Metabolism:
         vision: VisionSystem,
         trait_config: TraitConfig | None = None,
         genome_for_creature_id: Callable[[int], object | None] | None = None,
+        communication_config: CommunicationConfig | None = None,
     ) -> None:
         self.config = config
         self.vision = vision
         self.trait_config = trait_config or TraitConfig()
         self.genome_for_creature_id = genome_for_creature_id
+        self.communication_config = communication_config or CommunicationConfig()
 
     def update(
         self,
@@ -65,6 +77,7 @@ class Metabolism:
         sprint_intensities: dict[int, float] | None = None,
         energy_cost_multipliers: dict[int, float] | None = None,
         creature_age_seconds: dict[int, float] | None = None,
+        communication_intensities: dict[int, tuple[float, float, float]] | None = None,
     ) -> MetabolismReport:
         depleted_foods: list[Food] = []
         touched_foods: list[Food] = []
@@ -97,6 +110,14 @@ class Metabolism:
                     None
                     if creature_age_seconds is None
                     else creature_age_seconds.get(creature.creature_id)
+                ),
+                communication_intensities=(
+                    (0.0, 0.0, 0.0)
+                    if communication_intensities is None
+                    else communication_intensities.get(
+                        creature.creature_id,
+                        (0.0, 0.0, 0.0),
+                    )
                 ),
             )
 
@@ -164,6 +185,7 @@ class Metabolism:
         sprint_intensity: float = 0.0,
         energy_cost_multiplier: float = 1.0,
         age_seconds: float | None = None,
+        communication_intensities: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> None:
         energy_cost = (
             self.energy_cost_breakdown_per_second(
@@ -171,6 +193,7 @@ class Metabolism:
                 max_speed,
                 sprint_intensity=sprint_intensity,
                 age_seconds=age_seconds,
+                communication_intensities=communication_intensities,
             ).total
             * delta_time
             * energy_cost_multiplier
@@ -185,6 +208,7 @@ class Metabolism:
         max_speed: float,
         sprint_intensity: float = 0.0,
         age_seconds: float | None = None,
+        communication_intensities: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> EnergyCostBreakdown:
         speed_ratio: float = 0.0
         if max_speed > 0:
@@ -202,7 +226,25 @@ class Metabolism:
         )
         vision = self.vision.energy_cost_per_second(creature)
         body = self.body_energy_cost_per_second(creature)
-        trait = vision + body + max(0.0, movement - base_movement)
+        sound, trail, alarm = communication_intensities
+        acoustic = (
+            max(0.0, self.communication_config.acoustic_energy_cost_per_second)
+            * min(max(sound, 0.0), 1.0) ** 2
+        )
+        pheromone = (
+            max(0.0, self.communication_config.pheromone_energy_cost_per_second)
+            * (
+                min(max(trail, 0.0), 1.0)
+                + min(max(alarm, 0.0), 1.0)
+            )
+        )
+        trait = (
+            vision
+            + body
+            + max(0.0, movement - base_movement)
+            + acoustic
+            + pheromone
+        )
 
         return EnergyCostBreakdown(
             base=(
@@ -217,14 +259,21 @@ class Metabolism:
             vision=vision,
             body=body,
             trait=trait,
+            acoustic=acoustic,
+            pheromone=pheromone,
         )
 
     def trait_energy_cost_per_second(
         self,
         creature: Creature,
         max_speed: float,
+        communication_intensities: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> float:
-        return self.energy_cost_breakdown_per_second(creature, max_speed).trait
+        return self.energy_cost_breakdown_per_second(
+            creature,
+            max_speed,
+            communication_intensities=communication_intensities,
+        ).trait
 
     def body_energy_cost_per_second(self, creature: Creature) -> float:
         max_radius = max(self.trait_config.max_radius, 0.0001)

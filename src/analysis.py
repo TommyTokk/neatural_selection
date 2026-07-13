@@ -117,6 +117,10 @@ _ACTION_LABELS = {
     "weight_separation": "Cohort Spacing Reflexes",
     "weight_alignment": "Cohort Alignment Reflexes",
     "weight_cohesion": "Cohort Cohesion Reflexes",
+    "emit_sound": "Acoustic Communication Reflexes",
+    "sound_tone": "Acoustic Communication Reflexes",
+    "emit_trail_pheromone": "Trail Pheromone Reflexes",
+    "emit_alarm_pheromone": "Alarm Pheromone Reflexes",
 }
 
 _HIDDEN_ACTION = "Sensory Processing (Hidden)"
@@ -151,6 +155,16 @@ _SENSORY_DESCRIPTIONS = {
         "Cohort Alignment Delta (Average Heading)"
     ),
     "stomach_fullness": "Stomach Fullness (Satiety)",
+    "sound_strength": "Acoustic Signal Strength",
+    "sound_dir_sin": "Acoustic Relative Direction (Sine)",
+    "sound_dir_cos": "Acoustic Relative Direction (Cosine)",
+    "sound_tone": "Acoustic Signal Tone",
+    "trail_pheromone_here": "Trail Pheromone Concentration (Here)",
+    "trail_pheromone_forward_left": "Trail Pheromone Concentration (Forward Left)",
+    "trail_pheromone_forward_right": "Trail Pheromone Concentration (Forward Right)",
+    "alarm_pheromone_here": "Alarm Pheromone Concentration (Here)",
+    "alarm_pheromone_forward_left": "Alarm Pheromone Concentration (Forward Left)",
+    "alarm_pheromone_forward_right": "Alarm Pheromone Concentration (Forward Right)",
 }
 
 if set(_SENSORY_DESCRIPTIONS) != set(SENSOR_INPUT_NAMES):

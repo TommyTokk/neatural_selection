@@ -479,6 +479,7 @@ class PersistenceManagerTest(unittest.TestCase):
             )
 
     def test_real_world_round_trip_reuses_simulation_directory(self) -> None:
+        from src.communication import AcousticSignal
         from src.world import World
 
         self.config.persistence.enable_telemetry = False
@@ -494,6 +495,22 @@ class PersistenceManagerTest(unittest.TestCase):
             world.creatures[0].color = saved_member_color
             world.creatures[0].fertility_baseline = 0.37
             world.creatures[0].stomach_energy = 0.42
+            world.pheromones.deposit(
+                world.creatures[0].position,
+                trail_amount=0.4,
+                alarm_amount=0.2,
+            )
+            world.pheromones.accumulator = 0.1
+            world.acoustics.replace_signals(
+                [
+                    AcousticSignal(
+                        emitter_id=world.creatures[0].creature_id,
+                        position=world.creatures[0].position,
+                        strength=0.8,
+                        tone=-0.25,
+                    )
+                ]
+            )
             world.foods[0].consume_energy(
                 world.foods[0].energy_value * 0.25,
                 min_remainder_ratio=0.0,
@@ -546,6 +563,16 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             self.assertEqual(restored.creatures[0].fertility_baseline, 0.37)
             self.assertAlmostEqual(restored.creatures[0].stomach_energy, 0.42)
+            self.assertAlmostEqual(restored.pheromones.accumulator, 0.1)
+            self.assertAlmostEqual(
+                float(restored.pheromones.trail.sum()),
+                float(world.pheromones.trail.sum()),
+            )
+            self.assertAlmostEqual(
+                float(restored.pheromones.alarm.sum()),
+                float(world.pheromones.alarm.sum()),
+            )
+            self.assertEqual(restored.acoustics.signals, world.acoustics.signals)
             self.assertEqual(
                 restored.neat_controller.species_manager.next_species_id,
                 3,

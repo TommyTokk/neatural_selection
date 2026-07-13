@@ -2047,8 +2047,8 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
-                        input_keys=list(range(-1, -28, -1)),
-                        output_keys=list(range(12)),
+                        input_keys=list(range(-1, -38, -1)),
+                        output_keys=list(range(16)),
                     )
                 )
             )
@@ -2057,13 +2057,16 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         labels = self.renderer._species_tree_neat_node_labels(world)
 
         self.assertEqual(
-            [labels[key] for key in range(-1, -28, -1)],
+            [labels[key] for key in range(-1, -38, -1)],
             list(SENSOR_INPUT_NAMES),
         )
         self.assertEqual(labels[-11], "food_proximity")
         self.assertEqual(labels[-27], "stomach_fullness")
+        self.assertEqual(labels[-28], "sound_strength")
+        self.assertEqual(labels[-37], "alarm_pheromone_forward_right")
         self.assertEqual(labels[0], "accelerate")
         self.assertEqual(labels[3], "want_eat")
+        self.assertEqual(labels[12], "emit_sound")
 
     def test_species_tree_reuses_and_invalidates_neat_label_cache(self) -> None:
         genome_config = SimpleNamespace(

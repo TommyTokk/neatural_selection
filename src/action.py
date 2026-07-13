@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import cos, sin
 
-ACTION_OUTPUT_COUNT = 12
+ACTION_OUTPUT_COUNT = 16
 ACTION_OUTPUT_NAMES = (
     "accelerate",
     "rotate",
@@ -17,6 +17,10 @@ ACTION_OUTPUT_NAMES = (
     "weight_separation",
     "weight_alignment",
     "weight_cohesion",
+    "emit_sound",
+    "sound_tone",
+    "emit_trail_pheromone",
+    "emit_alarm_pheromone",
 )
 NEUTRAL_NETWORK_OUTPUT = 0.5
 
@@ -35,6 +39,10 @@ class Action:
     weight_separation: float = 0.0
     weight_alignment: float = 0.0
     weight_cohesion: float = 0.0
+    emit_sound: float = 0.0
+    sound_tone: float = 0.0
+    emit_trail_pheromone: float = 0.0
+    emit_alarm_pheromone: float = 0.0
 
     def clamped(self) -> Action:
         return Action(
@@ -53,6 +61,16 @@ class Action:
             weight_separation=max(0.0, min(1.0, self.weight_separation)),
             weight_alignment=max(0.0, min(1.0, self.weight_alignment)),
             weight_cohesion=max(0.0, min(1.0, self.weight_cohesion)),
+            emit_sound=max(0.0, min(1.0, self.emit_sound)),
+            sound_tone=max(-1.0, min(1.0, self.sound_tone)),
+            emit_trail_pheromone=max(
+                0.0,
+                min(1.0, self.emit_trail_pheromone),
+            ),
+            emit_alarm_pheromone=max(
+                0.0,
+                min(1.0, self.emit_alarm_pheromone),
+            ),
         )
 
 

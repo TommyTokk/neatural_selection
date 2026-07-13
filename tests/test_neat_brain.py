@@ -144,6 +144,18 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.weight_alignment, 0.0)
         self.assertEqual(action.weight_cohesion, 0.75)
 
+    def test_communication_outputs_are_appended_and_neutral_at_half(self) -> None:
+        neutral = self.decide_with_outputs([0.5] * 16)
+        active = self.decide_with_outputs([0.5] * 12 + [0.75, 0.25, 1.0, 0.6])
+
+        self.assertEqual(neutral.emit_sound, 0.0)
+        self.assertEqual(neutral.emit_trail_pheromone, 0.0)
+        self.assertEqual(neutral.emit_alarm_pheromone, 0.0)
+        self.assertAlmostEqual(active.emit_sound, 0.5)
+        self.assertAlmostEqual(active.sound_tone, -0.5)
+        self.assertAlmostEqual(active.emit_trail_pheromone, 1.0)
+        self.assertAlmostEqual(active.emit_alarm_pheromone, 0.2)
+
 
 class NeatBrainNetworkCachingTest(unittest.TestCase):
     def test_from_genome_compiles_network_once_and_reuses_it(self) -> None:
@@ -197,7 +209,7 @@ class LegacyBrainContractMigrationTest(unittest.TestCase):
             connections={},
         )
         genome_config = SimpleNamespace(
-            output_keys=list(range(12)),
+            output_keys=list(range(16)),
             node_gene_type=FakeNode,
             bias_min_value=-5.0,
         )
@@ -208,8 +220,8 @@ class LegacyBrainContractMigrationTest(unittest.TestCase):
 
         controller.migrate_legacy_brain_contract()
 
-        self.assertEqual(set(genome.nodes), set(range(12)))
-        for key in range(8, 12):
+        self.assertEqual(set(genome.nodes), set(range(16)))
+        for key in range(8, 16):
             self.assertEqual(genome.nodes[key].bias, -5.0)
         self.assertEqual(genome.connections, {})
 
