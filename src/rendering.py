@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from math import ceil, cos, degrees, floor, sin
-from src.world import World
+
 import arcade
+import numpy as np
 
 from configs.sim_config import SimConfig
 from src.creature import Creature
 from src.food import Food
+from src.world import World
 
 
 class EnvironmentRenderer:
@@ -23,6 +25,8 @@ class EnvironmentRenderer:
         self._text_cache: dict[str, arcade.Text] = {}
         self._biome_texture: object | None = None
         self._biome_texture_key: int | None = None
+        self._pheromone_texture: object | None = None
+        self._pheromone_texture_key: tuple[int, int] | None = None
         self._food_sprite_list: object | None = None
         self._food_sprite_list_keys: set[int] = set()
         self._food_sprite_cache: dict[int, object] = {}
@@ -44,8 +48,11 @@ class EnvironmentRenderer:
         pan_y = world.environment_pan_y
 
         with self._environment_clip(bounds):
-            if getattr(world, "show_biome_background", False):
+            map_mode = self._environment_map_mode(world)
+            if map_mode == "biome":
                 self._draw_biomes(bounds, world)
+            elif map_mode == "pheromones":
+                self._draw_pheromones(bounds, world)
             self._draw_grid(bounds, world.environment_zoom, pan_x, pan_y)
             self._draw_food(world.visible_foods_for_viewport(), bounds, world)
             self._draw_creatures(
@@ -58,6 +65,17 @@ class EnvironmentRenderer:
             self._draw_selected_creature_status(world, bounds)
 
         self._draw_environment_header(bounds, world)
+
+    @staticmethod
+    def _environment_map_mode(world: World) -> str:
+        mode = getattr(world, "environment_map_mode", None)
+        if mode in {"none", "biome", "pheromones"}:
+            return mode
+        return (
+            "biome"
+            if getattr(world, "show_biome_background", False)
+            else "none"
+        )
 
     @contextmanager
     def _environment_clip(self, bounds: arcade.Rect):
@@ -215,7 +233,28 @@ class EnvironmentRenderer:
         if biome_map is None:
             return
 
-        texture = self._texture_for_biome_map(biome_map)
+        self._draw_world_map_texture(
+            bounds,
+            world,
+            self._texture_for_biome_map(biome_map),
+        )
+
+    def _draw_pheromones(self, bounds: arcade.Rect, world: World) -> None:
+        pheromones = getattr(world, "pheromones", None)
+        if pheromones is None:
+            return
+        self._draw_world_map_texture(
+            bounds,
+            world,
+            self._texture_for_pheromones(pheromones),
+        )
+
+    def _draw_world_map_texture(
+        self,
+        bounds: arcade.Rect,
+        world: World,
+        texture: object | None,
+    ) -> None:
         draw_texture_rect = getattr(arcade, "draw_texture_rect", None)
         if texture is None or draw_texture_rect is None:
             return
@@ -266,6 +305,69 @@ class EnvironmentRenderer:
 
         self._biome_texture = texture
         self._biome_texture_key = texture_key
+        return texture
+
+    @staticmethod
+    def _pheromone_rgba(pheromones: object) -> np.ndarray:
+        trail = np.asarray(getattr(pheromones, "trail"), dtype=np.float32)
+        alarm = np.asarray(getattr(pheromones, "alarm"), dtype=np.float32)
+        if trail.shape != alarm.shape:
+            raise ValueError(
+                "Trail and alarm pheromone fields must have the same shape."
+            )
+
+        config = getattr(pheromones, "config", None)
+        maximum = max(
+            0.0,
+            float(getattr(config, "pheromone_max_concentration", 1.0)),
+        )
+        output = np.zeros((*trail.shape, 4), dtype=np.uint8)
+        if maximum <= 0.0:
+            return output
+
+        trail_normalized = np.clip(trail / maximum, 0.0, 1.0)
+        alarm_normalized = np.clip(alarm / maximum, 0.0, 1.0)
+        combined = trail_normalized + alarm_normalized
+        denominator = np.where(combined > 0.0, combined, 1.0)
+        trail_color = np.asarray((60.0, 220.0, 155.0), dtype=np.float32)
+        alarm_color = np.asarray((240.0, 70.0, 110.0), dtype=np.float32)
+        rgb = (
+            trail_normalized[..., None] * trail_color
+            + alarm_normalized[..., None] * alarm_color
+        ) / denominator[..., None]
+        output[..., :3] = np.clip(rgb, 0.0, 255.0).astype(np.uint8)
+        output[..., 3] = (
+            190.0 * np.sqrt(np.maximum(trail_normalized, alarm_normalized))
+        ).astype(np.uint8)
+        return output
+
+    def _texture_for_pheromones(self, pheromones: object) -> object | None:
+        revision = int(getattr(pheromones, "update_count", 0))
+        texture_key = (id(pheromones), revision)
+        if (
+            self._pheromone_texture is not None
+            and self._pheromone_texture_key == texture_key
+        ):
+            return self._pheromone_texture
+
+        texture_factory = getattr(arcade, "Texture", None)
+        if texture_factory is None:
+            return None
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+
+        image = Image.fromarray(self._pheromone_rgba(pheromones)[::-1])
+        try:
+            texture = texture_factory(
+                image,
+                hash=f"pheromones-{texture_key[0]}-{texture_key[1]}",
+            )
+        except TypeError:
+            texture = texture_factory(image)
+        self._pheromone_texture = texture
+        self._pheromone_texture_key = texture_key
         return texture
 
     def _draw_environment_header(self, bounds: arcade.Rect, world: World) -> None:

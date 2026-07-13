@@ -187,6 +187,7 @@ class WorldCameraTest(unittest.TestCase):
         world.environment_zoom = config.zoom.default
         world.environment_pan_x = 0.0
         world.environment_pan_y = 0.0
+        world.environment_map_mode = "none"
         world.foods = []
         world.creatures = []
         world._food_grid = {}
@@ -896,29 +897,178 @@ class WorldCameraTest(unittest.TestCase):
         self.assertEqual(set(renderer._creature_sprite_cache), {live.creature_id})
         self.assertEqual(set(renderer._creature_detail_sprite_cache), {live.creature_id})
 
-    def test_renderer_skips_biome_background_when_toggle_is_off(self) -> None:
+    def test_environment_map_selection_is_exclusive_and_compatible(self) -> None:
         world = self.make_world_shell()
-        world.show_biome_background = False
+
+        self.assertEqual(world.environment_map_mode, "none")
+        self.assertFalse(world.show_biome_background)
+        world.select_environment_map("biome")
+        self.assertEqual(world.environment_map_mode, "biome")
+        self.assertTrue(world.show_biome_background)
+        world.select_environment_map("pheromones")
+        self.assertEqual(world.environment_map_mode, "pheromones")
+        self.assertFalse(world.show_biome_background)
+        world.select_environment_map("pheromones")
+        self.assertEqual(world.environment_map_mode, "none")
+        world.toggle_biome_background()
+        self.assertEqual(world.environment_map_mode, "biome")
+        world.toggle_biome_background()
+        self.assertEqual(world.environment_map_mode, "none")
+
+    def test_renderer_skips_environment_maps_when_mode_is_none(self) -> None:
+        world = self.make_world_shell()
+        world.environment_map_mode = "none"
         renderer = EnvironmentRenderer(world.config)
-        draw_calls: list[object] = []
+        draw_calls: list[str] = []
         self._stub_renderer_draw_dependencies(renderer, world)
-        renderer._draw_biomes = lambda bounds, active_world: draw_calls.append(bounds)
+        renderer._draw_biomes = (
+            lambda bounds, active_world: draw_calls.append("biome")
+        )
+        renderer._draw_pheromones = (
+            lambda bounds, active_world: draw_calls.append("pheromones")
+        )
 
         renderer.draw(world)
 
         self.assertEqual(draw_calls, [])
 
-    def test_renderer_draws_biome_background_when_toggle_is_on(self) -> None:
+    def test_renderer_draws_only_selected_environment_map(self) -> None:
         world = self.make_world_shell()
-        world.show_biome_background = True
         renderer = EnvironmentRenderer(world.config)
-        draw_calls: list[object] = []
+        draw_calls: list[str] = []
         self._stub_renderer_draw_dependencies(renderer, world)
-        renderer._draw_biomes = lambda bounds, active_world: draw_calls.append(bounds)
+        renderer._draw_biomes = (
+            lambda bounds, active_world: draw_calls.append("biome")
+        )
+        renderer._draw_pheromones = (
+            lambda bounds, active_world: draw_calls.append("pheromones")
+        )
+        renderer._draw_grid = (
+            lambda bounds, zoom, pan_x, pan_y: draw_calls.append("grid")
+        )
+
+        world.environment_map_mode = "biome"
+        renderer.draw(world)
+        world.environment_map_mode = "pheromones"
+        renderer.draw(world)
+
+        self.assertEqual(
+            draw_calls,
+            ["biome", "grid", "pheromones", "grid"],
+        )
+
+    def test_pheromone_heatmap_colors_alpha_and_clamping(self) -> None:
+        pheromones = SimpleNamespace(
+            trail=np.asarray([[0.0, 1.0, 0.25, 4.0]], dtype=np.float32),
+            alarm=np.asarray([[0.0, 0.0, 0.75, -2.0]], dtype=np.float32),
+            config=SimpleNamespace(pheromone_max_concentration=1.0),
+        )
+
+        rgba = EnvironmentRenderer._pheromone_rgba(pheromones)
+
+        np.testing.assert_array_equal(rgba[0, 0], (0, 0, 0, 0))
+        np.testing.assert_array_equal(rgba[0, 1], (60, 220, 155, 190))
+        np.testing.assert_array_equal(rgba[0, 2], (195, 107, 121, 164))
+        np.testing.assert_array_equal(rgba[0, 3], (60, 220, 155, 190))
+
+    def test_pheromone_heatmap_uses_alarm_color(self) -> None:
+        pheromones = SimpleNamespace(
+            trail=np.zeros((1, 1), dtype=np.float32),
+            alarm=np.ones((1, 1), dtype=np.float32),
+            config=SimpleNamespace(pheromone_max_concentration=1.0),
+        )
+
+        rgba = EnvironmentRenderer._pheromone_rgba(pheromones)
+
+        np.testing.assert_array_equal(rgba[0, 0], (240, 70, 110, 190))
+
+    def test_pheromone_texture_flips_vertically_and_caches_by_revision(self) -> None:
+        world = self.make_world_shell()
+        world.pheromones = SimpleNamespace(
+            trail=np.asarray([[1.0], [0.0]], dtype=np.float32),
+            alarm=np.zeros((2, 1), dtype=np.float32),
+            config=SimpleNamespace(pheromone_max_concentration=1.0),
+            update_count=7,
+        )
+        renderer = EnvironmentRenderer(world.config)
+        created_textures: list[object] = []
+        original_texture = getattr(arcade, "Texture", None)
+
+        def fake_texture(image: object, **kwargs: object) -> object:
+            texture = SimpleNamespace(image=image, kwargs=kwargs)
+            created_textures.append(texture)
+            return texture
+
+        arcade.Texture = fake_texture
+        try:
+            first = renderer._texture_for_pheromones(world.pheromones)
+            second = renderer._texture_for_pheromones(world.pheromones)
+            world.pheromones.trail[1, 0] = 1.0
+            unchanged_revision = renderer._texture_for_pheromones(world.pheromones)
+            world.pheromones.update_count += 1
+            revised = renderer._texture_for_pheromones(world.pheromones)
+        finally:
+            if original_texture is None:
+                delattr(arcade, "Texture")
+            else:
+                arcade.Texture = original_texture
+
+        self.assertIs(first, second)
+        self.assertIs(first, unchanged_revision)
+        self.assertIsNot(first, revised)
+        self.assertEqual(len(created_textures), 2)
+        first_image = np.asarray(created_textures[0].image)
+        np.testing.assert_array_equal(first_image[0, 0], (0, 0, 0, 0))
+        np.testing.assert_array_equal(first_image[1, 0], (60, 220, 155, 190))
+
+    def test_hidden_pheromone_map_performs_no_conversion(self) -> None:
+        world = self.make_world_shell()
+        world.environment_map_mode = "none"
+        renderer = EnvironmentRenderer(world.config)
+        self._stub_renderer_draw_dependencies(renderer, world)
+        conversions: list[object] = []
+        renderer._texture_for_pheromones = (
+            lambda pheromones: conversions.append(pheromones)
+        )
 
         renderer.draw(world)
 
-        self.assertEqual(draw_calls, [world.layout.environment])
+        self.assertEqual(conversions, [])
+
+    def test_pheromone_overlay_uses_environment_world_bounds(self) -> None:
+        world = self.make_world_shell()
+        world.environment_zoom = 1.4
+        world.environment_pan_x = -75.0
+        world.environment_pan_y = 32.0
+        renderer = EnvironmentRenderer(world.config)
+        drawn_rects: list[object] = []
+        original_draw_texture_rect = getattr(arcade, "draw_texture_rect", None)
+        def capture_rect(texture: object, rect: object, **kwargs: object) -> None:
+            del texture, kwargs
+            drawn_rects.append(rect)
+
+        arcade.draw_texture_rect = capture_rect
+        try:
+            renderer._draw_world_map_texture(
+                world.layout.environment,
+                world,
+                object(),
+            )
+        finally:
+            if original_draw_texture_rect is None:
+                delattr(arcade, "draw_texture_rect")
+            else:
+                arcade.draw_texture_rect = original_draw_texture_rect
+
+        self.assertEqual(len(drawn_rects), 1)
+        rect = drawn_rects[0]
+        left, bottom, right, top = world.environment_world_bounds
+        screen_left, screen_bottom = world.environment_to_screen(left, bottom)
+        screen_right, screen_top = world.environment_to_screen(right, top)
+        self.assertAlmostEqual(rect.left, min(screen_left, screen_right))
+        self.assertAlmostEqual(rect.bottom, min(screen_bottom, screen_top))
+        self.assertAlmostEqual(rect.right, max(screen_left, screen_right))
+        self.assertAlmostEqual(rect.top, max(screen_bottom, screen_top))
 
     def test_debug_vision_cone_draws_single_unified_cone(self) -> None:
         world = self.make_world_shell()

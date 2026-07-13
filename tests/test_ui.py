@@ -333,15 +333,15 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertTrue(self.renderer._panel_open["stats"])
         self.assertFalse(self.renderer._panel_open["settings"])
 
-    def test_left_rail_registers_biome_toggle_button(self) -> None:
+    def test_left_rail_registers_map_submenu_button(self) -> None:
         world = SimpleNamespace(
             layout=build_screen_layout(1440, 900, build_sim_config().layout),
-            show_biome_background=False,
+            environment_map_mode="none",
         )
 
         self.renderer._draw_icon_rail(world)
 
-        self.assertIn("toggle_biome_background", self.renderer._control_hitboxes)
+        self.assertIn("open_map_submenu", self.renderer._control_hitboxes)
 
     def test_left_rail_registers_save_button_with_save_sim_icon(self) -> None:
         world = SimpleNamespace(
@@ -413,7 +413,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
             "panel_toggle_inspector",
             "panel_toggle_stats",
             "panel_toggle_settings",
-            "toggle_biome_background",
+            "open_map_submenu",
             "save_simulation",
             "open_species_tree",
         )
@@ -446,14 +446,9 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertIn(("open_species_tree", "speciation", False), calls)
         self.assertTrue(self.renderer._icon_path("speciation").is_file())
 
-    def test_biome_toggle_button_flips_world_visibility(self) -> None:
-        world = SimpleNamespace(show_biome_background=False)
-
-        def toggle_biome_background() -> None:
-            world.show_biome_background = not world.show_biome_background
-
-        world.toggle_biome_background = toggle_biome_background
-        self.renderer._control_hitboxes["toggle_biome_background"] = arcade.LBWH(
+    def test_globe_button_opens_and_closes_map_submenu(self) -> None:
+        world = SimpleNamespace()
+        self.renderer._control_hitboxes["open_map_submenu"] = arcade.LBWH(
             0,
             0,
             20,
@@ -461,14 +456,14 @@ class FloatingSimulationUiTest(unittest.TestCase):
         )
 
         self.assertTrue(self.renderer.handle_mouse_press(world, 10, 10))
-        self.assertTrue(world.show_biome_background)
+        self.assertTrue(self.renderer._map_submenu_open)
         self.assertTrue(self.renderer.handle_mouse_press(world, 10, 10))
-        self.assertFalse(world.show_biome_background)
+        self.assertFalse(self.renderer._map_submenu_open)
 
-    def test_biome_toggle_button_active_state_follows_world(self) -> None:
+    def test_globe_button_active_state_follows_selected_map(self) -> None:
         world = SimpleNamespace(
             layout=build_screen_layout(1440, 900, build_sim_config().layout),
-            show_biome_background=True,
+            environment_map_mode="pheromones",
         )
         calls: list[tuple[str, str, bool]] = []
         original_draw_icon_button = self.renderer._draw_icon_button
@@ -483,7 +478,143 @@ class FloatingSimulationUiTest(unittest.TestCase):
         finally:
             self.renderer._draw_icon_button = original_draw_icon_button
 
-        self.assertIn(("toggle_biome_background", "globe", True), calls)
+        self.assertIn(("open_map_submenu", "globe", True), calls)
+
+    def test_globe_button_is_active_while_map_submenu_is_open(self) -> None:
+        world = SimpleNamespace(
+            layout=build_screen_layout(1440, 900, build_sim_config().layout),
+            environment_map_mode="none",
+        )
+        calls: list[tuple[str, str, bool]] = []
+        original_draw_icon_button = self.renderer._draw_icon_button
+        original_draw_map_submenu = self.renderer._draw_map_submenu
+        self.renderer._map_submenu_open = True
+        self.renderer._draw_icon_button = (
+            lambda bounds, icon_name, key, active: calls.append(
+                (key, icon_name, active)
+            )
+        )
+        self.renderer._draw_map_submenu = lambda active_world, anchor: None
+        try:
+            self.renderer._draw_icon_rail(world)
+        finally:
+            self.renderer._draw_icon_button = original_draw_icon_button
+            self.renderer._draw_map_submenu = original_draw_map_submenu
+
+        self.assertIn(("open_map_submenu", "globe", True), calls)
+
+    def test_map_submenu_uses_supplied_icons_and_stays_inside_window(self) -> None:
+        world = SimpleNamespace(
+            layout=SimpleNamespace(window=arcade.LBWH(0, 0, 240, 180)),
+            environment_map_mode="none",
+        )
+        icons: list[tuple[str, str]] = []
+        original_draw_icon = self.renderer._draw_icon
+        self.renderer._draw_icon = (
+            lambda bounds, icon_name, key: icons.append((key, icon_name))
+        )
+        try:
+            self.renderer._draw_map_submenu(
+                world,
+                arcade.LBWH(8, 8, 58, 58),
+            )
+        finally:
+            self.renderer._draw_icon = original_draw_icon
+
+        card = self.renderer._control_hitboxes["map_submenu"]
+        self.assertGreaterEqual(card.left, world.layout.window.left)
+        self.assertLessEqual(card.right, world.layout.window.right)
+        self.assertGreaterEqual(card.bottom, world.layout.window.bottom)
+        self.assertLessEqual(card.top, world.layout.window.top)
+        self.assertIn(("map_layer_biome", "biome_map"), icons)
+        self.assertIn(("map_layer_pheromones", "pheromone_map"), icons)
+        self.assertTrue(self.renderer._icon_path("biome_map").is_file())
+        self.assertTrue(self.renderer._icon_path("pheromone_map").is_file())
+
+    def test_map_submenu_highlights_only_active_layer(self) -> None:
+        world = SimpleNamespace(
+            layout=SimpleNamespace(window=arcade.LBWH(0, 0, 800, 600)),
+            environment_map_mode="biome",
+        )
+        fills: list[tuple[object, object]] = []
+        original_draw_rounded_rect = self.renderer._draw_rounded_rect
+        original_draw_icon = self.renderer._draw_icon
+        original_draw_text = self.renderer._draw_text
+        self.renderer._draw_rounded_rect = (
+            lambda bounds, fill, border, radius, width: fills.append(
+                (bounds, fill)
+            )
+        )
+        self.renderer._draw_icon = lambda *args, **kwargs: None
+        self.renderer._draw_text = lambda *args, **kwargs: None
+        try:
+            self.renderer._draw_map_submenu(
+                world,
+                arcade.LBWH(20, 250, 58, 58),
+            )
+        finally:
+            self.renderer._draw_rounded_rect = original_draw_rounded_rect
+            self.renderer._draw_icon = original_draw_icon
+            self.renderer._draw_text = original_draw_text
+
+        biome_row = self.renderer._control_hitboxes["map_layer_biome"]
+        pheromone_row = self.renderer._control_hitboxes["map_layer_pheromones"]
+        fill_by_id = {id(bounds): fill for bounds, fill in fills}
+        self.assertEqual(
+            fill_by_id[id(biome_row)],
+            self.renderer.theme.accent_soft,
+        )
+        self.assertEqual(
+            fill_by_id[id(pheromone_row)],
+            self.renderer.theme.panel_background_alt,
+        )
+
+    def test_map_selection_is_exclusive_toggles_off_and_closes_menu(self) -> None:
+        world = SimpleNamespace(environment_map_mode="none")
+
+        def select_environment_map(mode: str) -> None:
+            world.environment_map_mode = (
+                "none" if world.environment_map_mode == mode else mode
+            )
+
+        world.select_environment_map = select_environment_map
+        self.renderer._map_submenu_open = True
+        self.renderer._control_hitboxes["map_submenu"] = arcade.LBWH(
+            0, 0, 80, 80
+        )
+        self.renderer._control_hitboxes["map_layer_biome"] = arcade.LBWH(
+            0, 40, 80, 40
+        )
+        self.renderer._control_hitboxes["map_layer_pheromones"] = arcade.LBWH(
+            0, 0, 80, 40
+        )
+
+        self.assertTrue(self.renderer.handle_mouse_press(world, 20, 60))
+        self.assertEqual(world.environment_map_mode, "biome")
+        self.assertFalse(self.renderer._map_submenu_open)
+
+        self.renderer._map_submenu_open = True
+        self.assertTrue(self.renderer.handle_mouse_press(world, 20, 20))
+        self.assertEqual(world.environment_map_mode, "pheromones")
+
+        self.renderer._map_submenu_open = True
+        self.assertTrue(self.renderer.handle_mouse_press(world, 20, 20))
+        self.assertEqual(world.environment_map_mode, "none")
+
+    def test_outside_submenu_click_closes_it_and_reaches_control(self) -> None:
+        self.renderer._map_submenu_open = True
+        self.renderer._control_hitboxes["map_submenu"] = arcade.LBWH(
+            100, 100, 100, 100
+        )
+        self.renderer._control_hitboxes["panel_toggle_stats"] = arcade.LBWH(
+            0, 0, 20, 20
+        )
+
+        handled = self.renderer.handle_mouse_press(SimpleNamespace(), 10, 10)
+
+        self.assertTrue(handled)
+        self.assertFalse(self.renderer._map_submenu_open)
+        self.assertTrue(self.renderer._panel_open["stats"])
 
     def test_floating_panel_hitbox_consumes_click(self) -> None:
         self.renderer._control_hitboxes["stats_panel"] = arcade.LBWH(100, 100, 200, 120)

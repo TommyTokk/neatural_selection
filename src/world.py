@@ -4,6 +4,7 @@ from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field
 from math import atan2, cos, floor, hypot, pi, sin
 from random import Random, choice
+from typing import Literal
 
 import pymunk
 
@@ -39,6 +40,9 @@ from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
 from src.communication import AcousticSignal, AcousticSystem, PheromoneSystem
 
 from src.layout import build_screen_layout
+
+
+EnvironmentMapMode = Literal["none", "biome", "pheromones"]
 
 
 @dataclass(slots=True)
@@ -117,7 +121,7 @@ class World:
         self.fps = 0.0
         self.is_paused = False
         self.simulation_speed = 1.0
-        self.show_biome_background = False
+        self.environment_map_mode: EnvironmentMapMode = "none"
         self._physics_accumulator = 0.0
         self._reproduction_accumulator = 0.0
         self._speciation_adjustment_accumulator = 0.0
@@ -511,7 +515,26 @@ class World:
         self.show_brain_view = not self.show_brain_view
 
     def toggle_biome_background(self) -> None:
-        self.show_biome_background = not self.show_biome_background
+        self.select_environment_map("biome")
+
+    def select_environment_map(self, mode: EnvironmentMapMode) -> None:
+        if mode not in {"none", "biome", "pheromones"}:
+            raise ValueError(f"Unsupported environment map mode: {mode!r}")
+        self.environment_map_mode = (
+            "none" if self.environment_map_mode == mode else mode
+        )
+
+    @property
+    def show_biome_background(self) -> bool:
+        return getattr(self, "environment_map_mode", "none") == "biome"
+
+    @show_biome_background.setter
+    def show_biome_background(self, visible: bool) -> None:
+        current = getattr(self, "environment_map_mode", "none")
+        if visible:
+            self.environment_map_mode = "biome"
+        elif current == "biome":
+            self.environment_map_mode = "none"
 
     def set_simulation_speed(self, speed: float) -> None:
         clamped_speed = max(

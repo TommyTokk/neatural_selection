@@ -67,6 +67,7 @@ class UiRenderer:
             "stats": False,
             "settings": False,
         }
+        self._map_submenu_open = False
         self._panel_bounds: dict[str, arcade.Rect] = {}
         self._active_panel_drag: str | None = None
         self._panel_drag_offset = (0.0, 0.0)
@@ -233,6 +234,7 @@ class UiRenderer:
             )
         top = bounds.top - self.RAIL_VERTICAL_PADDING / 2.0 - button_size / 2.0
         step = button_size + button_gap
+        environment_map_mode = self._environment_map_mode(world)
         icon_buttons = (
             (
                 "panel_toggle_inspector",
@@ -253,9 +255,9 @@ class UiRenderer:
                 top - step * 2,
             ),
             (
-                "toggle_biome_background",
+                "open_map_submenu",
                 "globe",
-                getattr(world, "show_biome_background", False),
+                self._map_submenu_open or environment_map_mode != "none",
                 top - step * 3,
             ),
             (
@@ -271,6 +273,7 @@ class UiRenderer:
                 top - step * 5,
             ),
         )
+        map_button = None
         for key, icon_name, active, center_y in icon_buttons:
             button = arcade.LBWH(
                 bounds.center_x - button_size / 2.0,
@@ -279,11 +282,105 @@ class UiRenderer:
                 button_size,
             )
             self._control_hitboxes[key] = button
+            if key == "open_map_submenu":
+                map_button = button
             self._draw_icon_button(
                 button,
                 icon_name,
                 key,
                 active=active,
+            )
+        if self._map_submenu_open and map_button is not None:
+            self._draw_map_submenu(world, map_button)
+
+    @staticmethod
+    def _environment_map_mode(world: World) -> str:
+        mode = getattr(world, "environment_map_mode", None)
+        if mode in {"none", "biome", "pheromones"}:
+            return mode
+        return (
+            "biome"
+            if getattr(world, "show_biome_background", False)
+            else "none"
+        )
+
+    def _draw_map_submenu(
+        self,
+        world: World,
+        anchor: arcade.Rect,
+    ) -> None:
+        window = world.layout.window
+        padding = 8.0
+        row_height = 48.0
+        row_gap = 6.0
+        width = min(184.0, max(142.0, window.width - 16.0))
+        height = padding * 2.0 + row_height * 2.0 + row_gap
+        left = min(anchor.right + 10.0, window.right - width - 8.0)
+        left = max(window.left + 8.0, left)
+        bottom = anchor.center_y - height / 2.0
+        bottom = min(bottom, window.top - height - 8.0)
+        bottom = max(window.bottom + 8.0, bottom)
+        card = arcade.LBWH(left, bottom, width, height)
+        self._control_hitboxes["map_submenu"] = card
+        self._draw_rounded_rect(
+            card,
+            self.theme.panel_background,
+            self.theme.panel_border,
+            12.0,
+            1.5,
+        )
+
+        mode = self._environment_map_mode(world)
+        rows = (
+            ("map_layer_biome", "biome_map", "Biome Map", "biome"),
+            (
+                "map_layer_pheromones",
+                "pheromone_map",
+                "Pheromones",
+                "pheromones",
+            ),
+        )
+        row_top = card.top - padding
+        for index, (key, icon_name, label, row_mode) in enumerate(rows):
+            row = arcade.LBWH(
+                card.left + padding,
+                row_top - row_height - index * (row_height + row_gap),
+                card.width - padding * 2.0,
+                row_height,
+            )
+            active = mode == row_mode
+            self._control_hitboxes[key] = row
+            self._draw_rounded_rect(
+                row,
+                (
+                    self.theme.accent_soft
+                    if active
+                    else self.theme.panel_background_alt
+                ),
+                self.theme.accent if active else self.theme.panel_border,
+                8.0,
+                1.0,
+            )
+            icon_size = 30.0
+            self._draw_icon(
+                arcade.LBWH(
+                    row.left + 9.0,
+                    row.center_y - icon_size / 2.0,
+                    icon_size,
+                    icon_size,
+                ),
+                icon_name,
+                key,
+            )
+            self._draw_text(
+                f"{key}_label",
+                label,
+                row.left + 48.0,
+                row.center_y,
+                self.theme.text_primary,
+                11.0,
+                bold=active,
+                anchor_y="center",
             )
 
     def _draw_floating_panels(self, world: World) -> None:
@@ -3590,6 +3687,22 @@ class UiRenderer:
                 return True
             return True
 
+        if self._contains_hitbox("open_map_submenu", x, y):
+            self._map_submenu_open = not self._map_submenu_open
+            return True
+        if self._map_submenu_open:
+            if self._contains_hitbox("map_layer_biome", x, y):
+                world.select_environment_map("biome")
+                self._map_submenu_open = False
+                return True
+            if self._contains_hitbox("map_layer_pheromones", x, y):
+                world.select_environment_map("pheromones")
+                self._map_submenu_open = False
+                return True
+            if self._contains_hitbox("map_submenu", x, y):
+                return True
+            self._map_submenu_open = False
+
         for panel_name in self.PANEL_KEYS:
             if self._contains_hitbox(f"{panel_name}_close", x, y):
                 self._panel_open[panel_name] = False
@@ -3603,9 +3716,6 @@ class UiRenderer:
             return True
         if self._contains_hitbox("panel_toggle_settings", x, y):
             self._panel_open["settings"] = not self._panel_open["settings"]
-            return True
-        if self._contains_hitbox("toggle_biome_background", x, y):
-            world.toggle_biome_background()
             return True
         if self._contains_hitbox("save_simulation", x, y):
             world.save_now()
