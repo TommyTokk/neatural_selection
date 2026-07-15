@@ -50,6 +50,12 @@ class BrainGraphLayout:
     max_depth: int
 
 
+@dataclass(frozen=True, slots=True)
+class BrainGraphHighlight:
+    nodes: frozenset[int]
+    edges: frozenset[tuple[int, int]]
+
+
 def build_brain_graph_layout(
     genome: Any,
     input_keys: list[int],
@@ -100,6 +106,53 @@ def build_brain_graph_layout(
         edges=edges,
         positions=positions,
         max_depth=max_depth,
+    )
+
+
+def highlighted_path_through_node(
+    layout: BrainGraphLayout,
+    node_key: int,
+) -> BrainGraphHighlight:
+    """Return the complete enabled signal route through ``node_key``."""
+    if node_key not in layout.nodes:
+        return BrainGraphHighlight(frozenset(), frozenset())
+
+    incoming: dict[int, list[BrainGraphEdge]] = {}
+    outgoing: dict[int, list[BrainGraphEdge]] = {}
+    for edge in layout.edges:
+        if not edge.enabled:
+            continue
+        incoming.setdefault(edge.target, []).append(edge)
+        outgoing.setdefault(edge.source, []).append(edge)
+
+    highlighted_nodes = {node_key}
+    highlighted_edges: set[tuple[int, int]] = set()
+
+    def traverse(
+        start: int,
+        adjacency: dict[int, list[BrainGraphEdge]],
+        *,
+        upstream: bool,
+    ) -> None:
+        pending = [start]
+        visited: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            for edge in adjacency.get(current, ()):
+                highlighted_edges.add((edge.source, edge.target))
+                highlighted_nodes.update((edge.source, edge.target))
+                neighbor = edge.source if upstream else edge.target
+                if neighbor not in visited:
+                    pending.append(neighbor)
+
+    traverse(node_key, incoming, upstream=True)
+    traverse(node_key, outgoing, upstream=False)
+    return BrainGraphHighlight(
+        nodes=frozenset(highlighted_nodes),
+        edges=frozenset(highlighted_edges),
     )
 
 

@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unittest
 
-from src.brain_graph import BrainEdgeKind, BrainNodeKind, build_brain_graph_layout
+from src.brain_graph import (
+    BrainEdgeKind,
+    BrainNodeKind,
+    build_brain_graph_layout,
+    highlighted_path_through_node,
+)
 
 
 @dataclass(slots=True)
@@ -159,6 +164,52 @@ class BrainGraphLayoutTest(unittest.TestCase):
         self.assertEqual(layout.nodes[1].kind, BrainNodeKind.HIDDEN)
         self.assertIn(1, layout.positions)
         self.assertEqual(layout.nodes[1].depth, 1)
+
+    def test_highlighted_path_includes_full_upstream_and_downstream_route(self) -> None:
+        genome = genome_with_connections(
+            [1, 2, 3],
+            [(-1, 1), (1, 2), (2, 0), (-1, 3), (3, 0)],
+        )
+
+        highlight = highlighted_path_through_node(layout_for(genome), 1)
+
+        self.assertEqual(highlight.nodes, {-1, 1, 2, 0})
+        self.assertEqual(highlight.edges, {(-1, 1), (1, 2), (2, 0)})
+
+    def test_highlighted_path_excludes_disabled_connections(self) -> None:
+        genome = genome_with_connections([1, 2], [(-1, 1), (1, 0), (1, 2), (2, 0)])
+        genome.connections[(1, 2)].enabled = False
+
+        highlight = highlighted_path_through_node(layout_for(genome), 1)
+
+        self.assertEqual(highlight.nodes, {-1, 1, 0})
+        self.assertEqual(highlight.edges, {(-1, 1), (1, 0)})
+
+    def test_highlighted_path_handles_input_output_recurrence_and_self_loop(self) -> None:
+        genome = genome_with_connections(
+            [1, 2],
+            [(-1, 1), (1, 2), (2, 1), (1, 1), (2, 0)],
+        )
+        layout = layout_for(genome)
+
+        input_highlight = highlighted_path_through_node(layout, -1)
+        output_highlight = highlighted_path_through_node(layout, 0)
+
+        expected_edges = {(-1, 1), (1, 2), (2, 1), (1, 1), (2, 0)}
+        self.assertEqual(input_highlight.edges, expected_edges)
+        self.assertEqual(output_highlight.edges, expected_edges)
+
+    def test_highlighted_path_for_isolated_or_unknown_node(self) -> None:
+        layout = layout_for(genome_with_connections([1], [(-1, 0)]))
+
+        self.assertEqual(
+            highlighted_path_through_node(layout, 1).nodes,
+            {1},
+        )
+        self.assertEqual(
+            highlighted_path_through_node(layout, 999).nodes,
+            set(),
+        )
 
 
 if __name__ == "__main__":

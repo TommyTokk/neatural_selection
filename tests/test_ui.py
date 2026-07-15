@@ -93,6 +93,12 @@ for optional_module in ("neat", "pymunk"):
 
 from configs.sim_config import build_sim_config
 from src.analysis import generate_inspector_report
+from src.brain_graph import (
+    BrainEdgeKind,
+    BrainGraphEdge,
+    BrainNodeKind,
+    build_brain_graph_layout,
+)
 from src.creature import LineageInfo, PhysicalTraits, TraitMutationDelta
 from src.layout import build_screen_layout
 from src.speciation import (
@@ -163,7 +169,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
 
         self.assertFalse(handled)
 
-    def test_default_brain_window_uses_moderate_smaller_size(self) -> None:
+    def test_default_brain_window_uses_large_centered_workspace(self) -> None:
         world = SimpleNamespace(
             layout=SimpleNamespace(
                 environment=arcade.LBWH(340, 20, 1000, 700),
@@ -177,8 +183,539 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         bounds = self.renderer._brain_window_bounds
         self.assertIsNotNone(bounds)
         assert bounds is not None
-        self.assertEqual(bounds.width, 620)
-        self.assertEqual(bounds.height, 406)
+        self.assertEqual(bounds.left, 40)
+        self.assertEqual(bounds.bottom, 40)
+        self.assertEqual(bounds.width, 1360)
+        self.assertEqual(bounds.height, 820)
+
+    def test_clicking_node_selects_it_and_empty_graph_clears_it(self) -> None:
+        self.renderer._brain_node_bounds[7] = arcade.LBWH(180, 180, 24, 24)
+        world = SimpleNamespace()
+
+        selected = self.renderer.handle_mouse_press(world, 190, 190)
+        cleared = self.renderer.handle_mouse_press(world, 300, 200)
+
+        self.assertTrue(selected)
+        self.assertTrue(cleared)
+        self.assertIsNone(self.renderer._brain_selected_node_key)
+
+    def test_inspector_toggle_preserves_selected_node(self) -> None:
+        self.renderer._brain_selected_node_key = 7
+        self.renderer._control_hitboxes["brain_node_inspector_toggle"] = arcade.LBWH(
+            450,
+            350,
+            24,
+            24,
+        )
+        world = SimpleNamespace()
+
+        handled = self.renderer.handle_mouse_press(world, 460, 360)
+
+        self.assertTrue(handled)
+        self.assertFalse(self.renderer._brain_node_inspector_open)
+        self.assertEqual(self.renderer._brain_selected_node_key, 7)
+
+        reopened = self.renderer.handle_mouse_press(world, 460, 360)
+
+        self.assertTrue(reopened)
+        self.assertTrue(self.renderer._brain_node_inspector_open)
+        self.assertEqual(self.renderer._brain_selected_node_key, 7)
+
+    def test_closing_brain_window_clears_selection_but_preserves_panel_preference(
+        self,
+    ) -> None:
+        self.renderer._brain_selected_node_key = 7
+        self.renderer._brain_selection_identity = (5, 10)
+        self.renderer._brain_node_inspector_open = False
+        self.renderer._control_hitboxes["brain_window_close"] = arcade.LBWH(
+            450,
+            350,
+            24,
+            24,
+        )
+
+        handled = self.renderer.handle_mouse_press(SimpleNamespace(), 460, 360)
+
+        self.assertTrue(handled)
+        self.assertFalse(self.renderer._brain_window_open)
+        self.assertIsNone(self.renderer._brain_selected_node_key)
+        self.assertIsNone(self.renderer._brain_selection_identity)
+        self.assertFalse(self.renderer._brain_node_inspector_open)
+
+    def test_scroll_inside_node_inspector_updates_its_offset(self) -> None:
+        self.renderer._scroll_regions["brain_node_inspector"] = arcade.LBWH(
+            200,
+            180,
+            200,
+            120,
+        )
+        self.renderer._scroll_limits["brain_node_inspector"] = 100
+
+        handled = self.renderer.handle_mouse_scroll(250, 220, -1)
+
+        self.assertTrue(handled)
+        self.assertEqual(self.renderer._scroll_offsets["brain_node_inspector"], 24)
+
+    def make_brain_world(self, *, branched: bool = False) -> SimpleNamespace:
+        gene = lambda: SimpleNamespace(
+            activation="tanh",
+            aggregation="sum",
+            bias=0.25,
+            response=1.0,
+        )
+        nodes = {0: gene(), 1: gene()}
+        connection_specs = [(-1, 1, 0.8, True), (1, 0, -0.6, True)]
+        if branched:
+            nodes[2] = gene()
+            connection_specs.extend([(-1, 2, 0.4, True), (2, 0, 0.3, True)])
+        connections = {
+            (source, target): SimpleNamespace(
+                key=(source, target),
+                weight=weight,
+                enabled=enabled,
+            )
+            for source, target, weight, enabled in connection_specs
+        }
+        genome = SimpleNamespace(nodes=nodes, connections=connections)
+        brain = SimpleNamespace(
+            genome_id=10,
+            genome=genome,
+            last_inputs=[0.5],
+            last_outputs=[0.25],
+            last_action=None,
+            sensor_usage=lambda input_keys, output_keys: tuple(
+                SimpleNamespace(
+                    current_value=0.5,
+                    has_enabled_path=True,
+                    reachable_action_outputs=("accelerate",),
+                )
+                for _ in input_keys
+            ),
+        )
+        selected = SimpleNamespace(creature_id=5, name="Herbivore 5")
+        world = SimpleNamespace(
+            selected_creature=selected,
+            neat_controller=SimpleNamespace(
+                brain_for=lambda creature_id: brain,
+                config=SimpleNamespace(
+                    genome_config=SimpleNamespace(input_keys=[-1], output_keys=[0])
+                ),
+            ),
+            layout=SimpleNamespace(
+                window=arcade.LBWH(0, 0, 1440, 900),
+                environment=arcade.LBWH(0, 0, 1440, 900),
+            ),
+            config=self.renderer.config,
+            fitness_for=lambda creature: None,
+        )
+        return SimpleNamespace(world=world, selected=selected, brain=brain)
+
+    def test_inspector_lines_show_static_metadata_and_disabled_connections(self) -> None:
+        fixture = self.make_brain_world()
+        fixture.brain.genome.connections[(-1, 1)].enabled = False
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+
+        lines = self.renderer._brain_node_inspector_lines(
+            fixture.brain,
+            layout,
+            layout.nodes[1],
+        )
+        text = "\n".join(lines)
+
+        self.assertIn("Layer: Hidden 1", text)
+        self.assertIn("Activation: tanh", text)
+        self.assertIn("sensor | +0.800 | Disabled", text)
+        self.assertIn("accelerate | -0.600 | Enabled", text)
+        self.assertNotIn("Current value", text)
+        self.assertNotIn("Contrib", text)
+
+    def test_workspace_registers_nodes_and_expands_when_inspector_collapses(self) -> None:
+        fixture = self.make_brain_world()
+
+        self.renderer._draw_brain_window(fixture.world)
+        open_width = self.renderer._control_hitboxes["brain_window_graph"].width
+        self.assertEqual(set(self.renderer._brain_node_bounds), {-1, 0, 1})
+        self.assertTrue(
+            all(bounds.width >= 20 for bounds in self.renderer._brain_node_bounds.values())
+        )
+        input_bounds = self.renderer._brain_node_bounds[-1]
+        hidden_bounds = self.renderer._brain_node_bounds[1]
+        self.assertGreater(input_bounds.width, hidden_bounds.width)
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                fixture.world,
+                input_bounds.left + 2.0,
+                input_bounds.center_y,
+            )
+        )
+        self.assertEqual(self.renderer._brain_selected_node_key, -1)
+
+        self.renderer._brain_node_inspector_open = False
+        self.renderer._draw_brain_window(fixture.world)
+        collapsed_width = self.renderer._control_hitboxes["brain_window_graph"].width
+
+        self.assertGreater(collapsed_width, open_width)
+
+    def test_overlapping_node_hitboxes_select_nearest_node_center(self) -> None:
+        self.renderer._brain_node_bounds = {
+            1: arcade.LBWH(100, 90, 24, 24),
+            2: arcade.LBWH(100, 100, 24, 24),
+        }
+
+        self.assertEqual(self.renderer._brain_node_at(112, 110), 2)
+
+    def test_selected_node_draws_highlighted_and_dimmed_edge_groups(self) -> None:
+        fixture = self.make_brain_world(branched=True)
+        self.renderer._brain_selected_node_key = 1
+        self.renderer._brain_selection_identity = (5, 10)
+        calls: list[tuple[bool, bool]] = []
+        original = self.renderer._draw_brain_graph_edge
+
+        def capture_edge(*args: object, **kwargs: object) -> None:
+            calls.append(
+                (
+                    bool(kwargs.get("highlighted")),
+                    bool(kwargs.get("dimmed")),
+                )
+            )
+
+        self.renderer._draw_brain_graph_edge = capture_edge
+        try:
+            self.renderer._draw_brain_graph(
+                fixture.world,
+                arcade.LBWH(0, 0, 800, 500),
+            )
+        finally:
+            self.renderer._draw_brain_graph_edge = original
+
+        self.assertIn((True, False), calls)
+        self.assertIn((False, True), calls)
+
+    def test_changing_genome_clears_node_selection(self) -> None:
+        fixture = self.make_brain_world()
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+        self.renderer._brain_selected_node_key = 1
+        self.renderer._brain_selection_identity = (5, 10)
+        replacement_brain = SimpleNamespace(genome_id=11)
+
+        self.renderer._sync_brain_graph_selection(
+            fixture.selected,
+            replacement_brain,
+            layout,
+        )
+
+        self.assertIsNone(self.renderer._brain_selected_node_key)
+
+    def test_reference_lane_geometry_leaves_wide_routing_gaps(self) -> None:
+        bounds = arcade.LBWH(0, 0, 1000, 500)
+
+        lanes = self.renderer._brain_graph_lane_bounds(bounds)
+
+        input_lane = lanes[BrainNodeKind.INPUT]
+        hidden_lane = lanes[BrainNodeKind.HIDDEN]
+        output_lane = lanes[BrainNodeKind.OUTPUT]
+        self.assertAlmostEqual(input_lane.width, 210)
+        self.assertAlmostEqual(hidden_lane.width, 250)
+        self.assertAlmostEqual(output_lane.width, 180)
+        self.assertAlmostEqual(hidden_lane.left - input_lane.right, 180)
+        self.assertAlmostEqual(output_lane.left - hidden_lane.right, 180)
+
+    def test_reference_positions_put_nodes_on_facing_card_edges(self) -> None:
+        fixture = self.make_brain_world()
+        bounds = arcade.LBWH(0, 0, 800, 500)
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            bounds,
+            ["sensor"],
+            ["accelerate"],
+        )
+        lanes = self.renderer._brain_graph_lane_bounds(bounds)
+
+        positions = self.renderer._brain_graph_node_positions(layout, lanes)
+
+        self.assertGreater(positions[-1][0], lanes[BrainNodeKind.INPUT].center_x)
+        self.assertLess(positions[0][0], lanes[BrainNodeKind.OUTPUT].center_x)
+        self.assertAlmostEqual(
+            positions[1][0],
+            lanes[BrainNodeKind.HIDDEN].center_x,
+        )
+
+    def test_graph_labels_face_away_from_routing_gaps(self) -> None:
+        lane = arcade.LBWH(20, 20, 180, 300)
+
+        input_bounds = self.renderer._draw_brain_graph_label(
+            -1,
+            "sensor",
+            BrainNodeKind.INPUT,
+            (170, 160),
+            lane,
+            radius=8,
+            font_size=9,
+        )
+        input_text = self.renderer._text_cache["brain_window_node_label_-1"]
+        output_bounds = self.renderer._draw_brain_graph_label(
+            0,
+            "accelerate",
+            BrainNodeKind.OUTPUT,
+            (50, 160),
+            lane,
+            radius=8,
+            font_size=9,
+        )
+        output_text = self.renderer._text_cache["brain_window_node_label_0"]
+
+        self.assertEqual(input_text.anchor_x, "right")
+        self.assertLess(input_text.x, 170)
+        self.assertEqual(output_text.anchor_x, "left")
+        self.assertGreater(output_text.x, 50)
+        self.assertIsNotNone(input_bounds)
+        self.assertIsNotNone(output_bounds)
+        assert input_bounds is not None and output_bounds is not None
+        self.assertTrue(self.renderer._contains_bounds(input_bounds, input_text.x, 160))
+        self.assertTrue(
+            self.renderer._contains_bounds(output_bounds, output_text.x, 160)
+        )
+
+    def test_dense_input_layout_reduces_node_and_label_size_without_hiding(self) -> None:
+        dense_input_keys = list(range(-1, -38, -1))
+        genome = SimpleNamespace(
+            nodes={0: SimpleNamespace()},
+            connections={},
+        )
+        bounds = arcade.LBWH(0, 0, 800, 500)
+        sparse_layout = build_brain_graph_layout(
+            genome,
+            [-1],
+            [0],
+            bounds,
+            ["sensor"],
+            ["action"],
+        )
+        dense_layout = build_brain_graph_layout(
+            genome,
+            dense_input_keys,
+            [0],
+            bounds,
+            [str(key) for key in dense_input_keys],
+            ["action"],
+        )
+
+        sparse_radius, sparse_font = self.renderer._brain_graph_node_metrics(
+            sparse_layout,
+            bounds,
+        )
+        dense_radius, dense_font = self.renderer._brain_graph_node_metrics(
+            dense_layout,
+            bounds,
+        )
+
+        self.assertEqual(len(dense_layout.nodes), 38)
+        self.assertLess(dense_radius, sparse_radius)
+        self.assertLess(dense_font, sparse_font)
+        self.assertGreaterEqual(dense_radius, 5.0)
+        self.assertGreaterEqual(dense_font, 8.0)
+
+    def test_graph_nodes_use_static_white_fill_and_hide_hidden_canvas_labels(
+        self,
+    ) -> None:
+        fixture = self.make_brain_world()
+        fills: list[object] = []
+        original = self.renderer._draw_brain_node
+        self.renderer._draw_brain_node = (
+            lambda position, fill, outline, **kwargs: fills.append(fill)
+        )
+        try:
+            self.renderer._draw_brain_graph(
+                fixture.world,
+                arcade.LBWH(0, 0, 800, 500),
+            )
+        finally:
+            self.renderer._draw_brain_node = original
+
+        self.assertEqual(fills, [self.renderer.theme.panel_background] * 3)
+        self.assertNotIn("brain_window_node_label_1", self.renderer._text_cache)
+
+    def test_forward_edges_use_curves_and_enabled_arrowheads(self) -> None:
+        edge = BrainGraphEdge(
+            source=-1,
+            target=0,
+            weight=0.8,
+            enabled=True,
+            kind=BrainEdgeKind.FORWARD,
+        )
+        curves: list[list[tuple[float, float]]] = []
+        arrows: list[list[tuple[float, float]]] = []
+        original_curve = self.renderer._draw_curve
+        original_arrow = self.renderer._draw_brain_arrowhead
+        self.renderer._draw_curve = lambda points, color, width: curves.append(points)
+        self.renderer._draw_brain_arrowhead = (
+            lambda points, color, width: arrows.append(points)
+        )
+        try:
+            self.renderer._draw_brain_graph_edge(
+                edge,
+                {-1: (100, 100), 0: (500, 240)},
+                arcade.LBWH(0, 0, 600, 300),
+            )
+        finally:
+            self.renderer._draw_curve = original_curve
+            self.renderer._draw_brain_arrowhead = original_arrow
+
+        self.assertEqual(len(curves), 1)
+        self.assertEqual(len(arrows), 1)
+        self.assertGreater(len(curves[0]), 20)
+        self.assertEqual(curves[0][0], (100, 100))
+        self.assertEqual(curves[0][-1], (500, 240))
+
+    def test_disabled_edges_are_curved_without_arrowheads(self) -> None:
+        edge = BrainGraphEdge(
+            source=-1,
+            target=0,
+            weight=0.8,
+            enabled=False,
+            kind=BrainEdgeKind.FORWARD,
+        )
+        curves: list[object] = []
+        arrows: list[object] = []
+        original_curve = self.renderer._draw_curve
+        original_arrow = self.renderer._draw_brain_arrowhead
+        self.renderer._draw_curve = lambda *args: curves.append(args)
+        self.renderer._draw_brain_arrowhead = lambda *args: arrows.append(args)
+        try:
+            self.renderer._draw_brain_graph_edge(
+                edge,
+                {-1: (100, 100), 0: (500, 240)},
+                arcade.LBWH(0, 0, 600, 300),
+                disabled=True,
+            )
+        finally:
+            self.renderer._draw_curve = original_curve
+            self.renderer._draw_brain_arrowhead = original_arrow
+
+        self.assertEqual(len(curves), 1)
+        self.assertEqual(arrows, [])
+
+    def test_graph_sends_disabled_connections_to_background_group(self) -> None:
+        fixture = self.make_brain_world()
+        fixture.brain.genome.connections[(-1, 1)].enabled = False
+        calls: list[dict[str, object]] = []
+        original = self.renderer._draw_brain_graph_edge
+        self.renderer._draw_brain_graph_edge = (
+            lambda *args, **kwargs: calls.append(kwargs)
+        )
+        try:
+            self.renderer._draw_brain_graph(
+                fixture.world,
+                arcade.LBWH(0, 0, 800, 500),
+            )
+        finally:
+            self.renderer._draw_brain_graph_edge = original
+
+        self.assertTrue(any(call.get("disabled") for call in calls))
+        self.assertTrue(any(not call.get("disabled") for call in calls))
+
+    def test_node_badge_stays_inside_summary_without_overlapping_name(self) -> None:
+        labels = ("Input Node", "Hidden Node", "Output Node")
+        for inspector_width in (220, 280, 360):
+            summary = arcade.LBWH(14, 100, inspector_width - 28, 56)
+            for label in labels:
+                with self.subTest(width=inspector_width, label=label):
+                    badge, name = self.renderer._brain_node_badge_layout(
+                        summary,
+                        label,
+                    )
+                    self.assertGreaterEqual(badge.left, summary.left)
+                    self.assertLessEqual(badge.right, summary.right)
+                    self.assertGreaterEqual(badge.width, len(label) * 5.0 + 16)
+                    self.assertLessEqual(name.right + 10, badge.left)
+                    self.assertGreater(name.width, 0)
+
+    def test_long_node_name_wraps_inside_fixed_name_area(self) -> None:
+        fixture = self.make_brain_world()
+        long_name = "temperature_gradient_sensor_with_extended_range"
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            [long_name],
+            ["accelerate"],
+        )
+        bounds = arcade.LBWH(100, 100, 260, 420)
+        self.renderer._brain_selected_node_key = -1
+
+        self.renderer._draw_brain_node_inspector(fixture.brain, layout, bounds)
+
+        rendered = self.renderer._text_cache["brain_node_inspector_name"]
+        summary = arcade.LBWH(
+            bounds.left + 14,
+            bounds.top - 44 - 68,
+            bounds.width - 28,
+            56,
+        )
+        badge, name = self.renderer._brain_node_badge_layout(summary, "Input Node")
+        self.assertTrue(rendered.multiline)
+        self.assertEqual(rendered.width, name.width)
+        self.assertIn("\n", rendered.text)
+        self.assertLessEqual(len(rendered.text.splitlines()), 2)
+        self.assertLessEqual(rendered.x + rendered.width + 10, badge.left)
+
+    def test_brain_footer_cells_and_text_are_centered_with_colored_titles(
+        self,
+    ) -> None:
+        fixture = self.make_brain_world()
+        bounds = arcade.LBWH(40, 30, 1000, 72)
+
+        self.renderer._draw_brain_footer(
+            fixture.world,
+            fixture.selected,
+            fixture.brain,
+            bounds,
+        )
+
+        cell_width = bounds.width / 5
+        title_colors: list[object] = []
+        for index in range(5):
+            expected_x = bounds.left + (index + 0.5) * cell_width
+            label = self.renderer._text_cache[f"brain_footer_label_{index}"]
+            value = self.renderer._text_cache[f"brain_footer_value_{index}"]
+            with self.subTest(index=index):
+                self.assertEqual(label.x, round(expected_x))
+                self.assertEqual(value.x, round(expected_x))
+                self.assertEqual(label.anchor_x, "center")
+                self.assertEqual(value.anchor_x, "center")
+                self.assertEqual(label.anchor_y, "center")
+                self.assertEqual(value.anchor_y, "center")
+                self.assertEqual(label.font_size, 11)
+                self.assertTrue(label.bold)
+            title_colors.append(label.color)
+
+        self.assertEqual(len(set(title_colors)), 5)
+
+    def test_node_badge_uses_opaque_soft_color(self) -> None:
+        color = self.renderer._brain_blend_color(
+            self.renderer.theme.panel_background,
+            self.renderer._brain_node_kind_color(BrainNodeKind.HIDDEN),
+            0.12,
+        )
+
+        self.assertEqual(len(color), 3)
 
 
 class FloatingSimulationUiTest(unittest.TestCase):

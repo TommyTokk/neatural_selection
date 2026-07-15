@@ -21,8 +21,11 @@ from src.analysis import (
 from src.brain_graph import (
     BrainEdgeKind,
     BrainGraphEdge,
+    BrainGraphLayout,
+    BrainGraphNode,
     BrainNodeKind,
     build_brain_graph_layout,
+    highlighted_path_through_node,
 )
 from src.speciation import SpeciesRecord
 from src.species_tree import (
@@ -73,9 +76,11 @@ class UiRenderer:
         self._panel_drag_offset = (0.0, 0.0)
         self._brain_window_open = False
         self._brain_window_bounds: arcade.Rect | None = None
-        self._brain_window_drag_offset = (0.0, 0.0)
         self._brain_graph_zoom = 1.0
-        self._active_brain_window_drag = False
+        self._brain_node_bounds: dict[int, arcade.Rect] = {}
+        self._brain_selected_node_key: int | None = None
+        self._brain_node_inspector_open = True
+        self._brain_selection_identity: tuple[int, int] | None = None
         self._species_tree_open = False
         self._species_tree_previous_pause: bool | None = None
         self._species_tree_mouse = (0.0, 0.0)
@@ -132,6 +137,7 @@ class UiRenderer:
     def draw(self, world: World) -> None:
         self._sync_species_tree_layout(world)
         self._control_hitboxes.clear()
+        self._brain_node_bounds.clear()
         self._scroll_regions.clear()
         self._scroll_limits.clear()
         self._draw_icon_rail(world)
@@ -1319,7 +1325,7 @@ class UiRenderer:
 
         selected = world.selected_creature
         if selected is None:
-            self._brain_window_open = False
+            self._close_brain_window()
             return
 
         brain = world.neat_controller.brain_for(selected.creature_id)
@@ -1330,56 +1336,135 @@ class UiRenderer:
 
         self._draw_rounded_rect(
             bounds,
-            self.theme.panel_background_alt,
+            self.theme.panel_background,
             self.theme.panel_border,
             14,
             1.5,
         )
 
-        title_bar = arcade.LBWH(bounds.left, bounds.top - 54, bounds.width, 54)
-        close_button = arcade.LBWH(bounds.right - 46, bounds.top - 40, 28, 28)
-        self._control_hitboxes["brain_window_title"] = title_bar
-        self._control_hitboxes["brain_window_close"] = close_button
+        header_height = 64.0
         header = arcade.LBWH(
-            bounds.left + 1.5, bounds.top - 54, bounds.width - 3.0, 52.5
+            bounds.left + 1.5,
+            bounds.top - header_height,
+            bounds.width - 3.0,
+            header_height - 1.5,
         )
         self._draw_rounded_rect_fill(header, self.theme.panel_background, 12.5)
-
+        arcade.draw_line(
+            bounds.left,
+            header.bottom,
+            bounds.right,
+            header.bottom,
+            self.theme.panel_border,
+            1.0,
+        )
+        close_button = arcade.LBWH(bounds.right - 48, bounds.top - 45, 28, 28)
+        self._control_hitboxes["brain_window_close"] = close_button
         genome_label = f"Genome {brain.genome_id}" if brain is not None else "No genome"
         self._draw_text(
             "brain_window_title_text",
-            f"Brain: {selected.name} / {genome_label}",
-            bounds.left + 24,
-            bounds.top - 30,
+            f"Brain: {getattr(selected, 'name', selected.creature_id)}  /  {genome_label}",
+            bounds.left + 26,
+            bounds.top - 33,
             self.theme.text_primary,
-            15,
+            17,
             bold=True,
             anchor_y="center",
         )
         self._draw_panel_close_button(close_button, "brain_window")
 
-        graph_bounds = arcade.LBWH(
-            bounds.left + 22,
-            bounds.bottom + 72,
-            bounds.width - 44,
-            max(120.0, bounds.height - 144),
+        footer_bounds = arcade.LBWH(
+            bounds.left + 20,
+            bounds.bottom + 16,
+            bounds.width - 40,
+            72,
         )
-        self._control_hitboxes["brain_window_graph"] = graph_bounds
-        self._draw_rounded_rect(
-            graph_bounds,
-            self.theme.card_background,
-            self.theme.panel_border,
-            self.config.layout.card_radius,
-            1.5,
+        body_bounds = arcade.LBWH(
+            bounds.left + 20,
+            footer_bounds.top + 14,
+            bounds.width - 40,
+            max(120.0, header.bottom - 14 - (footer_bounds.top + 14)),
         )
 
-        footer_bounds = arcade.LBWH(
-            bounds.left + 22,
-            bounds.bottom + 14,
-            bounds.width - 44,
-            42,
+        inspector_bounds: arcade.Rect | None = None
+        gap = 14.0
+        if self._brain_node_inspector_open:
+            desired_width = max(280.0, min(360.0, bounds.width * 0.24))
+            inspector_width = min(
+                desired_width,
+                max(220.0, body_bounds.width - 360.0),
+            )
+            inspector_bounds = arcade.LBWH(
+                body_bounds.right - inspector_width,
+                body_bounds.bottom,
+                inspector_width,
+                body_bounds.height,
+            )
+            main_right = inspector_bounds.left - gap
+        else:
+            toggle_bounds = arcade.LBWH(
+                body_bounds.right - 34,
+                body_bounds.bottom,
+                34,
+                body_bounds.height,
+            )
+            self._control_hitboxes["brain_node_inspector_toggle"] = toggle_bounds
+            self._draw_rounded_rect(
+                toggle_bounds,
+                self.theme.card_background,
+                self.theme.panel_border,
+                8,
+                1,
+            )
+            self._draw_text(
+                "brain_node_inspector_reopen",
+                ">",
+                toggle_bounds.center_x,
+                toggle_bounds.center_y,
+                self.theme.accent,
+                16,
+                bold=True,
+                anchor_x="center",
+                anchor_y="center",
+            )
+            main_right = toggle_bounds.left - gap
+
+        main_bounds = arcade.LBWH(
+            body_bounds.left,
+            body_bounds.bottom,
+            max(220.0, main_right - body_bounds.left),
+            body_bounds.height,
         )
+        desired_legend_width = max(160.0, min(210.0, bounds.width * 0.16))
+        legend_width = min(
+            desired_legend_width,
+            max(120.0, main_bounds.width - 320.0),
+        )
+        legend_bounds = arcade.LBWH(
+            main_bounds.right - legend_width,
+            main_bounds.bottom,
+            legend_width,
+            main_bounds.height,
+        )
+        graph_bounds = arcade.LBWH(
+            main_bounds.left,
+            main_bounds.bottom,
+            max(180.0, legend_bounds.left - gap - main_bounds.left),
+            main_bounds.height,
+        )
+        self._control_hitboxes["brain_window_graph"] = graph_bounds
+
+        layout: BrainGraphLayout | None = None
         if brain is None:
+            self._brain_selection_identity = None
+            self._brain_selected_node_key = None
+            self._draw_rounded_rect(
+                graph_bounds,
+                self.theme.card_background,
+                self.theme.panel_border,
+                self.config.layout.card_radius,
+                1.0,
+            )
             self._draw_text(
                 "brain_window_empty",
                 "No brain assigned.",
@@ -1388,11 +1473,828 @@ class UiRenderer:
                 self.theme.text_muted,
                 13,
             )
+        else:
+            layout = self._draw_brain_graph(world, graph_bounds)
+
+        self._draw_brain_legend(legend_bounds)
+        if inspector_bounds is not None:
+            self._draw_brain_node_inspector(brain, layout, inspector_bounds)
+        if brain is not None:
+            self._draw_brain_footer(world, selected, brain, footer_bounds)
+
+    def _draw_brain_graph(
+        self,
+        world: World,
+        bounds: arcade.Rect,
+    ) -> BrainGraphLayout | None:
+        selected = world.selected_creature
+        if selected is None:
+            return None
+
+        brain = world.neat_controller.brain_for(selected.creature_id)
+        if brain is None:
+            return None
+
+        layout_bounds = arcade.LBWH(
+            bounds.left + 8,
+            bounds.bottom + 10,
+            max(1.0, bounds.width - 16),
+            max(1.0, bounds.height - 54),
+        )
+
+        input_keys = list(world.neat_controller.config.genome_config.input_keys)
+        output_keys = list(world.neat_controller.config.genome_config.output_keys)
+        layout = build_brain_graph_layout(
+            brain.genome,
+            input_keys,
+            output_keys,
+            layout_bounds,
+            SENSOR_INPUT_NAMES,
+            ACTION_OUTPUT_NAMES,
+        )
+        lanes = self._draw_brain_graph_lanes(bounds, layout)
+        self._sync_brain_graph_selection(selected, brain, layout)
+        positions = self._brain_graph_node_positions(layout, lanes)
+        base_radius, label_size = self._brain_graph_node_metrics(
+            layout,
+            layout_bounds,
+        )
+        selected_key = self._brain_selected_node_key
+        highlight = (
+            highlighted_path_through_node(layout, selected_key)
+            if selected_key is not None
+            else None
+        )
+
+        disabled_edges = [edge for edge in layout.edges if not edge.enabled]
+        enabled_edges = [edge for edge in layout.edges if edge.enabled]
+        edge_groups: list[tuple[list[BrainGraphEdge], bool, bool, bool]] = [
+            (disabled_edges, True, False, False)
+        ]
+        if highlight is None:
+            edge_groups.append((enabled_edges, False, False, False))
+        else:
+            edge_groups.extend(
+                (
+                    (
+                        [
+                            edge
+                            for edge in enabled_edges
+                            if (edge.source, edge.target) not in highlight.edges
+                        ],
+                        False,
+                        False,
+                        True,
+                    ),
+                    (
+                        [
+                            edge
+                            for edge in enabled_edges
+                            if (edge.source, edge.target) in highlight.edges
+                        ],
+                        False,
+                        True,
+                        False,
+                    ),
+                )
+            )
+        for edges, disabled, highlighted, dimmed in edge_groups:
+            for edge in edges:
+                self._draw_brain_graph_edge(
+                    edge,
+                    positions,
+                    layout_bounds,
+                    disabled=disabled,
+                    highlighted=highlighted,
+                    dimmed=dimmed,
+                )
+
+        for key, node in layout.nodes.items():
+            position = positions.get(key)
+            if position is None:
+                continue
+
+            fill_color = self.theme.panel_background
+            outline_color = self._brain_node_kind_color(node.kind)
+            radius = min(
+                13.0,
+                base_radius + (1.5 if node.kind == BrainNodeKind.HIDDEN else 0.0),
+            )
+
+            in_path = highlight is None or key in highlight.nodes
+            if not in_path:
+                outline_color = self._brain_color_alpha(outline_color, 70)
+            if key == selected_key:
+                arcade.draw_circle_outline(
+                    position[0],
+                    position[1],
+                    radius + 7.0,
+                    self._brain_node_kind_color(node.kind),
+                    3.0,
+                )
+                arcade.draw_circle_outline(
+                    position[0],
+                    position[1],
+                    radius + 11.0,
+                    self._brain_color_alpha(self._brain_node_kind_color(node.kind), 90),
+                    2.0,
+                )
+            self._draw_brain_node(position, fill_color, outline_color, radius=radius)
+            hit_radius = max(12.0, radius + 4.0)
+            self._brain_node_bounds[key] = arcade.LBWH(
+                position[0] - hit_radius,
+                position[1] - hit_radius,
+                hit_radius * 2.0,
+                hit_radius * 2.0,
+            )
+            if node.kind != BrainNodeKind.HIDDEN:
+                label_bounds = self._draw_brain_graph_label(
+                    key,
+                    self._brain_node_display_name(node),
+                    node.kind,
+                    position,
+                    lanes[node.kind],
+                    radius=radius,
+                    font_size=label_size,
+                    color=(
+                        self.theme.text_muted
+                        if in_path
+                        else self._brain_color_alpha(self.theme.text_muted, 70)
+                    ),
+                )
+                if label_bounds is not None:
+                    node_bounds = self._brain_node_bounds[key]
+                    left = min(node_bounds.left, label_bounds.left)
+                    right = max(node_bounds.right, label_bounds.right)
+                    bottom = min(node_bounds.bottom, label_bounds.bottom)
+                    top = max(node_bounds.top, label_bounds.top)
+                    self._brain_node_bounds[key] = arcade.LBWH(
+                        left,
+                        bottom,
+                        right - left,
+                        top - bottom,
+                    )
+        return layout
+
+    def _draw_brain_graph_edge(
+        self,
+        edge: BrainGraphEdge,
+        positions: dict[int, tuple[float, float]],
+        bounds: arcade.Rect,
+        *,
+        disabled: bool = False,
+        highlighted: bool = False,
+        dimmed: bool = False,
+    ) -> None:
+        start = positions.get(edge.source)
+        end = positions.get(edge.target)
+        if start is None or end is None:
             return
 
-        self._draw_brain_graph(world, graph_bounds)
+        color = self._brain_edge_color(edge.weight)
+        width = max(1.0, min(4.5, 0.9 + abs(edge.weight) * 0.65))
+        draw_arrow = not disabled
+        if disabled:
+            color = self._brain_color_alpha(self.theme.panel_border, 34)
+            width = 0.75
+            draw_arrow = False
+        elif dimmed:
+            color = self._brain_color_alpha(color, 38)
+            width = max(0.75, width * 0.62)
+        elif highlighted:
+            color = self._brain_color_alpha(color, 245)
+            width += 1.75
+        else:
+            color = self._brain_color_alpha(color, 105)
+        if edge.kind == BrainEdgeKind.SELF_LOOP:
+            self._draw_self_loop(start, color, width)
+            return
+        if edge.kind == BrainEdgeKind.RECURRENT:
+            control_y = (
+                bounds.top - 18.0 if start[1] <= end[1] else bounds.bottom + 18.0
+            )
+            control = ((start[0] + end[0]) * 0.5, control_y)
+            points = self._quadratic_bezier_points(start, control, end)
+            self._draw_curve(points, color, width)
+            if draw_arrow:
+                self._draw_brain_arrowhead(points, color, width)
+            return
+
+        direction = 1.0 if end[0] >= start[0] else -1.0
+        handle = max(28.0, abs(end[0] - start[0]) * 0.42)
+        first_control = (start[0] + direction * handle, start[1])
+        second_control = (end[0] - direction * handle, end[1])
+        points = self._cubic_bezier_points(
+            start,
+            first_control,
+            second_control,
+            end,
+        )
+        self._draw_curve(points, color, width)
+        if draw_arrow:
+            self._draw_brain_arrowhead(points, color, width)
+
+    def _draw_brain_graph_label(
+        self,
+        node_key: int,
+        label: str,
+        kind: BrainNodeKind,
+        position: tuple[float, float],
+        lane: arcade.Rect,
+        *,
+        radius: float,
+        font_size: float,
+        color: arcade.Color | tuple[int, ...] | None = None,
+    ) -> arcade.Rect | None:
+        label_text = self._short_brain_label(label)
+        if kind == BrainNodeKind.INPUT:
+            anchor_x = "right"
+            x = position[0] - radius - 8.0
+            label_width = max(24.0, x - lane.left - 10.0)
+        elif kind == BrainNodeKind.OUTPUT:
+            anchor_x = "left"
+            x = position[0] + radius + 8.0
+            label_width = max(24.0, lane.right - x - 10.0)
+        else:
+            return None
+
+        cache_key = f"brain_window_node_label_{node_key}"
+        self._draw_text(
+            cache_key,
+            self._fit_line(label_text, label_width),
+            x,
+            position[1],
+            color or self.theme.text_muted,
+            font_size,
+            anchor_x=anchor_x,
+            anchor_y="center",
+        )
+        rendered_height = max(24.0, font_size + 8.0)
+        label_left = x - label_width if anchor_x == "right" else x
+        return arcade.LBWH(
+            label_left - 5.0,
+            position[1] - rendered_height / 2.0,
+            label_width + 10.0,
+            rendered_height,
+        )
+
+    def _draw_brain_graph_lanes(
+        self,
+        bounds: arcade.Rect,
+        layout: BrainGraphLayout,
+    ) -> dict[BrainNodeKind, arcade.Rect]:
+        lane_bounds = self._brain_graph_lane_bounds(bounds)
+        input_count = sum(
+            node.kind == BrainNodeKind.INPUT for node in layout.nodes.values()
+        )
+        hidden_nodes = [
+            node
+            for node in layout.nodes.values()
+            if node.kind == BrainNodeKind.HIDDEN
+        ]
+        output_count = sum(
+            node.kind == BrainNodeKind.OUTPUT for node in layout.nodes.values()
+        )
+        hidden_layer_count = len({node.depth for node in hidden_nodes})
+        hidden_heading = "HIDDEN LAYER" if hidden_layer_count <= 1 else "HIDDEN LAYERS"
+        lane_specs = (
+            (
+                BrainNodeKind.INPUT,
+                "brain_lane_inputs",
+                f"INPUTS ({input_count})",
+                (232, 241, 255),
+            ),
+            (
+                BrainNodeKind.HIDDEN,
+                "brain_lane_hidden",
+                f"{hidden_heading} ({len(hidden_nodes)})",
+                (246, 238, 255),
+            ),
+            (
+                BrainNodeKind.OUTPUT,
+                "brain_lane_outputs",
+                f"OUTPUTS ({output_count})",
+                (235, 247, 239),
+            ),
+        )
+        for kind, key, label, header_fill in lane_specs:
+            lane = lane_bounds[kind]
+            self._draw_rounded_rect(
+                lane,
+                self.theme.panel_background,
+                self.theme.panel_border,
+                self.config.layout.card_radius,
+                1.0,
+            )
+            lane_header = arcade.LBWH(
+                lane.left + 1,
+                lane.top - 38,
+                max(1.0, lane.width - 2),
+                37,
+            )
+            self._draw_rounded_rect_fill(lane_header, header_fill, 7)
+            self._draw_text(
+                key,
+                label,
+                lane.center_x,
+                lane_header.center_y,
+                self._brain_node_kind_color(kind),
+                10,
+                bold=True,
+                anchor_x="center",
+                anchor_y="center",
+            )
+        return lane_bounds
+
+    def _brain_graph_lane_bounds(
+        self,
+        bounds: arcade.Rect,
+    ) -> dict[BrainNodeKind, arcade.Rect]:
+        input_width = bounds.width * 0.21
+        first_gap = bounds.width * 0.18
+        hidden_width = bounds.width * 0.25
+        second_gap = bounds.width * 0.18
+        output_width = max(
+            1.0,
+            bounds.width - input_width - first_gap - hidden_width - second_gap,
+        )
+        input_lane = arcade.LBWH(
+            bounds.left,
+            bounds.bottom,
+            input_width,
+            bounds.height,
+        )
+        hidden_lane = arcade.LBWH(
+            input_lane.right + first_gap,
+            bounds.bottom,
+            hidden_width,
+            bounds.height,
+        )
+        output_lane = arcade.LBWH(
+            hidden_lane.right + second_gap,
+            bounds.bottom,
+            output_width,
+            bounds.height,
+        )
+        return {
+            BrainNodeKind.INPUT: input_lane,
+            BrainNodeKind.HIDDEN: hidden_lane,
+            BrainNodeKind.OUTPUT: output_lane,
+        }
+
+    def _brain_graph_node_positions(
+        self,
+        layout: BrainGraphLayout,
+        lanes: dict[BrainNodeKind, arcade.Rect],
+    ) -> dict[int, tuple[float, float]]:
+        hidden_depths = sorted(
+            {
+                node.depth
+                for node in layout.nodes.values()
+                if node.kind == BrainNodeKind.HIDDEN
+            }
+        )
+        hidden_x: dict[int, float] = {}
+        hidden_lane = lanes[BrainNodeKind.HIDDEN]
+        hidden_padding = min(28.0, hidden_lane.width * 0.16)
+        if len(hidden_depths) == 1:
+            hidden_x[hidden_depths[0]] = hidden_lane.center_x
+        elif hidden_depths:
+            span = max(0.0, hidden_lane.width - hidden_padding * 2.0)
+            step = span / max(1, len(hidden_depths) - 1)
+            hidden_x = {
+                depth: hidden_lane.left + hidden_padding + index * step
+                for index, depth in enumerate(hidden_depths)
+            }
+
+        positions: dict[int, tuple[float, float]] = {}
+        for key, node in layout.nodes.items():
+            _, y = layout.positions[key]
+            lane = lanes[node.kind]
+            edge_padding = min(30.0, lane.width * 0.18)
+            if node.kind == BrainNodeKind.INPUT:
+                x = lane.right - edge_padding
+            elif node.kind == BrainNodeKind.OUTPUT:
+                x = lane.left + edge_padding
+            else:
+                x = hidden_x.get(node.depth, hidden_lane.center_x)
+            positions[key] = (x, y)
+        return positions
+
+    def _brain_graph_node_metrics(
+        self,
+        layout: BrainGraphLayout,
+        bounds: arcade.Rect,
+    ) -> tuple[float, float]:
+        depth_counts: dict[int, int] = {}
+        for node in layout.nodes.values():
+            depth_counts[node.depth] = depth_counts.get(node.depth, 0) + 1
+        densest_column = max(depth_counts.values(), default=1)
+        usable_height = max(1.0, bounds.height - 56.0)
+        row_step = (
+            usable_height
+            if densest_column <= 1
+            else usable_height / (densest_column - 1)
+        )
+        radius = max(5.0, min(11.0, (row_step - 2.0) * 0.55))
+        font_size = max(8.0, min(11.0, row_step * 0.6))
+        return radius, font_size
+
+    def _draw_brain_legend(self, bounds: arcade.Rect) -> None:
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        x = bounds.left + 20
+        y = bounds.top - 28
+        self._draw_text(
+            "brain_legend_title",
+            "LEGEND",
+            bounds.center_x,
+            y,
+            self.theme.text_primary,
+            10,
+            bold=True,
+            anchor_x="center",
+        )
+        y -= 38
+        for index, (kind, label) in enumerate(
+            (
+                (BrainNodeKind.INPUT, "Input node"),
+                (BrainNodeKind.HIDDEN, "Hidden node"),
+                (BrainNodeKind.OUTPUT, "Output node"),
+            )
+        ):
+            arcade.draw_circle_filled(x + 6, y + 3, 7, self.theme.panel_background)
+            arcade.draw_circle_outline(
+                x + 6,
+                y + 3,
+                7,
+                self._brain_node_kind_color(kind),
+                1.7,
+            )
+            self._draw_text(
+                f"brain_legend_node_{index}",
+                label,
+                x + 28,
+                y,
+                self.theme.text_muted,
+                10,
+            )
+            y -= 34
+
+        arcade.draw_line(
+            bounds.left + 14,
+            y + 12,
+            bounds.right - 14,
+            y + 12,
+            self.theme.panel_border,
+            1,
+        )
+        y -= 18
+        self._draw_text(
+            "brain_legend_weight_title",
+            "WEIGHT",
+            x,
+            y,
+            self.theme.text_primary,
+            9,
+            bold=True,
+        )
+        y -= 31
+        weight_items = (
+            ("Positive", self._brain_edge_color(0.8), 2.0),
+            ("Negative", self._brain_edge_color(-0.8), 2.0),
+            ("Near zero", self._brain_edge_color(0.1), 1.0),
+            (
+                "Disabled gene",
+                self._brain_color_alpha(self.theme.panel_border, 60),
+                0.75,
+            ),
+        )
+        for index, (label, color, width) in enumerate(weight_items):
+            arcade.draw_line(x, y + 4, x + 28, y + 4, color, width)
+            self._draw_text(
+                f"brain_legend_weight_{index}",
+                label,
+                x + 40,
+                y,
+                self.theme.text_muted,
+                10,
+            )
+            y -= 30
+
+        y -= 6
+        self._draw_text(
+            "brain_legend_strength_title",
+            "STRENGTH",
+            x,
+            y,
+            self.theme.text_primary,
+            9,
+            bold=True,
+        )
+        y -= 28
+        for index, width in enumerate((1.0, 2.5, 4.0)):
+            arcade.draw_line(x, y + 4, x + 28, y + 4, self.theme.text_muted, width)
+            self._draw_text(
+                f"brain_legend_strength_{index}",
+                ("Weak", "Medium", "Strong")[index],
+                x + 40,
+                y,
+                self.theme.text_muted,
+                10,
+            )
+            y -= 29
+
+    def _draw_brain_node_inspector(
+        self,
+        brain: object | None,
+        layout: BrainGraphLayout | None,
+        bounds: arcade.Rect,
+    ) -> None:
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.panel_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        header = arcade.LBWH(bounds.left, bounds.top - 44, bounds.width, 44)
+        close_button = arcade.LBWH(bounds.right - 34, bounds.top - 34, 22, 22)
+        self._control_hitboxes["brain_node_inspector_toggle"] = close_button
+        self._draw_text(
+            "brain_node_inspector_title",
+            "NODE INSPECTOR",
+            bounds.left + 16,
+            bounds.top - 26,
+            self.theme.text_primary,
+            10,
+            bold=True,
+            anchor_y="center",
+        )
+        self._draw_panel_close_button(close_button, "brain_node_inspector")
+        arcade.draw_line(
+            bounds.left + 12,
+            header.bottom,
+            bounds.right - 12,
+            header.bottom,
+            self.theme.panel_border,
+            1,
+        )
+
+        selected_key = self._brain_selected_node_key
+        node = (
+            layout.nodes.get(selected_key)
+            if layout is not None and selected_key is not None
+            else None
+        )
+        if brain is None or layout is None or node is None:
+            content = arcade.LBWH(
+                bounds.left + 16,
+                bounds.bottom + 16,
+                bounds.width - 32,
+                max(1.0, header.bottom - bounds.bottom - 28),
+            )
+            self._draw_scrollable_lines_in_bounds(
+                "brain_node_inspector",
+                content,
+                [
+                    "Select a node",
+                    "Click any node to inspect its genome properties and signal path.",
+                ],
+                line_spacing=22,
+                first_line_color=self.theme.text_primary,
+                body_color=self.theme.text_muted,
+                first_line_bold=True,
+                wrap_lines=True,
+            )
+            return
+
+        summary = arcade.LBWH(
+            bounds.left + 14,
+            header.bottom - 68,
+            bounds.width - 28,
+            56,
+        )
+        kind_color = self._brain_node_kind_color(node.kind)
+        arcade.draw_circle_filled(
+            summary.left + 10,
+            summary.center_y,
+            9,
+            self.theme.panel_background,
+        )
+        arcade.draw_circle_outline(
+            summary.left + 10,
+            summary.center_y,
+            9,
+            kind_color,
+            2,
+        )
+        kind_label = f"{node.kind.value.title()} Node"
+        badge, name_bounds = self._brain_node_badge_layout(summary, kind_label)
+        self._draw_rounded_rect(
+            badge,
+            self._brain_blend_color(
+                self.theme.panel_background,
+                kind_color,
+                0.12,
+            ),
+            self._brain_blend_color(
+                self.theme.panel_background,
+                kind_color,
+                0.48,
+            ),
+            6,
+            1,
+        )
+        self._draw_text(
+            "brain_node_inspector_kind",
+            kind_label,
+            badge.center_x,
+            badge.center_y,
+            kind_color,
+            8.5,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+        self._draw_text(
+            "brain_node_inspector_name",
+            self._brain_node_name_text(
+                self._brain_node_display_name(node),
+                name_bounds.width,
+            ),
+            name_bounds.left,
+            summary.center_y,
+            self.theme.text_primary,
+            14,
+            bold=True,
+            width=name_bounds.width,
+            multiline=True,
+            align="left",
+            anchor_y="center",
+        )
+
+        content = arcade.LBWH(
+            bounds.left + 16,
+            bounds.bottom + 14,
+            bounds.width - 32,
+            max(1.0, summary.bottom - bounds.bottom - 22),
+        )
+        self._draw_scrollable_lines_in_bounds(
+            "brain_node_inspector",
+            content,
+            self._brain_node_inspector_lines(brain, layout, node),
+            line_spacing=20,
+            first_line_color=self.theme.text_primary,
+            body_color=self.theme.text_muted,
+            first_line_bold=True,
+            wrap_lines=True,
+        )
+
+    def _brain_node_badge_layout(
+        self,
+        summary: arcade.Rect,
+        label: str,
+    ) -> tuple[arcade.Rect, arcade.Rect]:
+        estimated_width = len(label) * 5.8 + 22.0
+        maximum_width = max(68.0, summary.width * 0.46)
+        badge_width = max(68.0, min(108.0, estimated_width, maximum_width))
+        badge = arcade.LBWH(
+            summary.right - badge_width,
+            summary.center_y - 13.0,
+            badge_width,
+            26.0,
+        )
+        name_left = summary.left + 30.0
+        name_bounds = arcade.LBWH(
+            name_left,
+            summary.bottom,
+            max(16.0, badge.left - 10.0 - name_left),
+            summary.height,
+        )
+        return badge, name_bounds
+
+    def _brain_node_name_text(self, name: str, width: float) -> str:
+        lines = self._wrap_line(name, width)
+        if len(lines) <= 2:
+            return "\n".join(lines)
+
+        max_chars = max(4, int(width / 7.0))
+        second_line = lines[1].rstrip()
+        second_line = second_line[: max(1, max_chars - 3)].rstrip() + "..."
+        return "\n".join((lines[0], second_line))
+
+    def _brain_node_inspector_lines(
+        self,
+        brain: object,
+        layout: BrainGraphLayout,
+        node: BrainGraphNode,
+    ) -> list[str]:
+        if node.kind == BrainNodeKind.INPUT:
+            layer_label = "Input"
+        elif node.kind == BrainNodeKind.OUTPUT:
+            layer_label = "Output"
+        else:
+            layer_label = f"Hidden {node.depth}"
+        lines = [
+            "NODE DETAILS",
+            f"Layer: {layer_label}",
+            f"ID: {node.key}",
+        ]
+        gene = getattr(brain.genome, "nodes", {}).get(node.key)
+        if node.kind == BrainNodeKind.INPUT:
+            lines.append(f"Sensor: {node.label}")
+        elif gene is not None:
+            lines.extend(
+                (
+                    f"Activation: {getattr(gene, 'activation', 'Unavailable')}",
+                    f"Aggregation: {getattr(gene, 'aggregation', 'Unavailable')}",
+                    "Bias: "
+                    + self._format_optional_number(
+                        getattr(gene, "bias", None),
+                        signed=True,
+                    ),
+                    "Response: "
+                    + self._format_optional_number(
+                        getattr(gene, "response", None),
+                    ),
+                )
+            )
+
+        order = {key: index for index, key in enumerate(layout.nodes)}
+        connections = [
+            connection
+            for connection in getattr(brain.genome, "connections", {}).values()
+            if connection.key[0] in layout.nodes and connection.key[1] in layout.nodes
+        ]
+        incoming = sorted(
+            (connection for connection in connections if connection.key[1] == node.key),
+            key=lambda connection: order.get(connection.key[0], len(order)),
+        )
+        outgoing = sorted(
+            (connection for connection in connections if connection.key[0] == node.key),
+            key=lambda connection: order.get(connection.key[1], len(order)),
+        )
+        lines.extend(("", f"INCOMING CONNECTIONS ({len(incoming)})"))
+        if not incoming:
+            lines.append("No incoming connections")
+        else:
+            for connection in incoming:
+                source = layout.nodes[connection.key[0]]
+                lines.append(
+                    self._brain_connection_inspector_line(
+                        self._brain_node_display_name(source),
+                        connection,
+                    )
+                )
+        lines.extend(("", f"OUTGOING CONNECTIONS ({len(outgoing)})"))
+        if not outgoing:
+            lines.append("No outgoing connections")
+        else:
+            for connection in outgoing:
+                target = layout.nodes[connection.key[1]]
+                lines.append(
+                    self._brain_connection_inspector_line(
+                        self._brain_node_display_name(target),
+                        connection,
+                    )
+                )
+        return lines
+
+    def _brain_connection_inspector_line(
+        self,
+        endpoint_label: str,
+        connection: object,
+    ) -> str:
+        try:
+            weight = float(getattr(connection, "weight", 0.0))
+        except (TypeError, ValueError):
+            weight = 0.0
+        state = "Enabled" if bool(getattr(connection, "enabled", False)) else "Disabled"
+        return f"{endpoint_label} | {weight:+.3f} | {state}"
+
+    def _draw_brain_footer(
+        self,
+        world: World,
+        selected: object,
+        brain: object,
+        bounds: arcade.Rect,
+    ) -> None:
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
         enabled_connections = sum(
-            1 for connection in brain.genome.connections.values() if connection.enabled
+            bool(connection.enabled)
+            for connection in brain.genome.connections.values()
         )
         input_keys = list(world.neat_controller.config.genome_config.input_keys)
         output_keys = list(world.neat_controller.config.genome_config.output_keys)
@@ -1402,215 +2304,163 @@ class UiRenderer:
         )
         action = brain.last_action
         action_label = (
-            f"acc {action.accelerate:.2f} rot {action.rotate:.2f}"
+            f"acc {action.accelerate:.2f} / rot {action.rotate:.2f}"
             if action is not None
             else "waiting"
         )
-        footer_lines = [
+        metrics = (
             (
-                f"Nodes: {len(brain.genome.nodes)}  "
-                f"Connections: {enabled_connections}/{len(brain.genome.connections)} enabled"
+                "NODES",
+                str(len(brain.genome.nodes)),
+                self._brain_node_kind_color(BrainNodeKind.INPUT),
             ),
             (
-                f"Fitness: {self._selected_fitness_label(world, selected)}  "
-                f"Signed action: {action_label}  "
-                f"Biome paths: {biome_path_count}/4"
+                "CONNECTIONS",
+                f"{enabled_connections} / {len(brain.genome.connections)} enabled",
+                self._brain_node_kind_color(BrainNodeKind.HIDDEN),
             ),
-        ]
-        self._draw_scrollable_lines_in_bounds(
-            "brain_window_footer",
-            footer_bounds,
-            footer_lines,
-            line_spacing=18,
-            first_line_color=self.theme.text_muted,
-            body_color=self.theme.text_muted,
+            (
+                "FITNESS",
+                self._selected_fitness_label(world, selected),
+                (24, 126, 70),
+            ),
+            ("SIGNED ACTION", action_label, (180, 83, 9)),
+            ("BIOME PATHS", f"{biome_path_count} / 4", (0, 112, 122)),
         )
-
-    def _draw_brain_graph(self, world: World, bounds: arcade.Rect) -> None:
-        selected = world.selected_creature
-        if selected is None:
-            return
-
-        brain = world.neat_controller.brain_for(selected.creature_id)
-        if brain is None:
-            return
-
-        input_keys = list(world.neat_controller.config.genome_config.input_keys)
-        output_keys = list(world.neat_controller.config.genome_config.output_keys)
-        sensor_usage = brain.sensor_usage(input_keys, output_keys)
-        sensor_usage_by_key = dict(zip(input_keys, sensor_usage))
-        layout = build_brain_graph_layout(
-            brain.genome,
-            input_keys,
-            output_keys,
-            bounds,
-            SENSOR_INPUT_NAMES,
-            ACTION_OUTPUT_NAMES,
-        )
-        positions = {
-            key: self._brain_graph_screen_position(position, bounds)
-            for key, position in layout.positions.items()
-        }
-
-        for edge in layout.edges:
-            if not edge.enabled:
-                continue
-            self._draw_brain_graph_edge(edge, positions, bounds)
-
-        for key, node in layout.nodes.items():
-            position = positions.get(key)
-            if position is None:
-                continue
-
-            fill_color = self.theme.panel_background
-            outline_color = self.theme.panel_border
-            radius = 6.0
-            if node.kind == BrainNodeKind.INPUT:
-                index = input_keys.index(key)
-                value = (
-                    brain.last_inputs[index] if index < len(brain.last_inputs) else 0.0
+        cell_width = bounds.width / len(metrics)
+        for index, (label, value, label_color) in enumerate(metrics):
+            cell = arcade.LBWH(
+                bounds.left + index * cell_width,
+                bounds.bottom,
+                cell_width,
+                bounds.height,
+            )
+            if index:
+                arcade.draw_line(
+                    cell.left,
+                    bounds.bottom + 9,
+                    cell.left,
+                    bounds.top - 9,
+                    self.theme.panel_border,
+                    1,
                 )
-                fill_color = self._brain_activity_color(value)
-                usage = sensor_usage_by_key[key]
-                outline_color = (
-                    self.theme.accent
-                    if usage.has_enabled_path
-                    else self.theme.panel_border
-                )
-                radius = 5.0 + min(1.0, abs(value)) * 3.0
-            elif node.kind == BrainNodeKind.OUTPUT:
-                index = output_keys.index(key)
-                value = (
-                    brain.last_outputs[index]
-                    if index < len(brain.last_outputs)
-                    else 0.0
-                )
-                fill_color = self._brain_activity_color(value)
-                outline_color = self.theme.herbivore_outline
-                radius = 5.0 + min(1.0, abs(value)) * 3.0
-
-            self._draw_brain_node(position, fill_color, outline_color, radius=radius)
-            display_label = node.label
-            if node.kind == BrainNodeKind.INPUT:
-                usage = sensor_usage_by_key[key]
-                display_label = (
-                    f"{'on' if usage.has_enabled_path else 'off'} "
-                    f"{self._short_brain_label(node.label)} "
-                    f"{usage.current_value:.2f}"
-                )
-            self._draw_brain_graph_label(
-                key,
-                display_label,
-                node.kind,
-                position,
-                bounds,
+            self._draw_text(
+                f"brain_footer_label_{index}",
+                label,
+                cell.center_x,
+                cell.center_y + 13,
+                label_color,
+                11,
+                bold=True,
+                anchor_x="center",
+                anchor_y="center",
+            )
+            self._draw_text(
+                f"brain_footer_value_{index}",
+                self._fit_line(value, cell_width - 18),
+                cell.center_x,
+                cell.center_y - 13,
+                self.theme.text_primary,
+                12,
+                bold=True,
+                anchor_x="center",
+                anchor_y="center",
             )
 
-    def _draw_brain_graph_edge(
+    def _sync_brain_graph_selection(
         self,
-        edge: BrainGraphEdge,
-        positions: dict[int, tuple[float, float]],
-        bounds: arcade.Rect,
+        selected: object,
+        brain: object,
+        layout: BrainGraphLayout,
     ) -> None:
-        start = positions.get(edge.source)
-        end = positions.get(edge.target)
-        if start is None or end is None:
-            return
+        identity = (int(selected.creature_id), int(brain.genome_id))
+        if identity != self._brain_selection_identity:
+            self._brain_selection_identity = identity
+            self._brain_selected_node_key = None
+            self._scroll_offsets["brain_node_inspector"] = 0.0
+        elif (
+            self._brain_selected_node_key is not None
+            and self._brain_selected_node_key not in layout.nodes
+        ):
+            self._brain_selected_node_key = None
+            self._scroll_offsets["brain_node_inspector"] = 0.0
 
-        color = self._brain_edge_color(edge.weight)
-        width = max(1.0, min(5.0, abs(edge.weight) * 0.7))
-        if edge.kind == BrainEdgeKind.SELF_LOOP:
-            self._draw_self_loop(start, color, width)
-            return
-        if edge.kind == BrainEdgeKind.RECURRENT:
-            control_y = (
-                bounds.top - 18.0 if start[1] <= end[1] else bounds.bottom + 18.0
-            )
-            control = ((start[0] + end[0]) * 0.5, control_y)
-            self._draw_curve(
-                self._quadratic_bezier_points(start, control, end),
-                color,
-                width,
-            )
-            return
+    def _close_brain_window(self) -> None:
+        self._brain_window_open = False
+        self._brain_selected_node_key = None
+        self._brain_selection_identity = None
+        self._brain_node_bounds.clear()
+        self._scroll_offsets["brain_node_inspector"] = 0.0
 
-        arcade.draw_line(start[0], start[1], end[0], end[1], color, width)
+    def _brain_node_at(self, x: float, y: float) -> int | None:
+        candidates = (
+            (node_key, node_bounds)
+            for node_key, node_bounds in self._brain_node_bounds.items()
+            if self._contains_bounds(node_bounds, x, y)
+        )
+        nearest = min(
+            candidates,
+            key=lambda item: (
+                (item[1].center_x - x) ** 2 + (item[1].center_y - y) ** 2
+            ),
+            default=None,
+        )
+        return None if nearest is None else nearest[0]
 
-    def _draw_brain_graph_label(
+    def _brain_node_display_name(self, node: BrainGraphNode) -> str:
+        if node.kind == BrainNodeKind.HIDDEN:
+            return f"Hidden {node.key}"
+        return node.label
+
+    def _brain_node_kind_color(
         self,
-        node_key: int,
-        label: str,
         kind: BrainNodeKind,
-        position: tuple[float, float],
-        bounds: arcade.Rect,
-    ) -> None:
-        label_text = self._short_brain_label(label)
-        label_width = 62.0
+    ) -> arcade.Color | tuple[int, ...]:
         if kind == BrainNodeKind.INPUT:
-            x = max(bounds.left + 8, position[0] + 10)
-            anchor_x = "left"
-        elif kind == BrainNodeKind.OUTPUT:
-            x = min(bounds.right - 8, position[0] - 10)
-            anchor_x = "right"
-        else:
-            x = position[0]
-            anchor_x = "center"
+            return (39, 110, 241)
+        if kind == BrainNodeKind.OUTPUT:
+            return (31, 168, 82)
+        return (130, 54, 224)
 
-        y = max(bounds.bottom + 8, min(bounds.top - 16, position[1] - 15))
-        self._draw_text(
-            f"brain_window_node_label_{node_key}",
-            self._fit_line(label_text, label_width),
-            x,
-            y,
-            self.theme.text_muted,
-            9,
-            anchor_x=anchor_x,
+    def _brain_color_alpha(
+        self,
+        color: arcade.Color | tuple[int, ...],
+        alpha: int,
+    ) -> tuple[int, int, int, int]:
+        components = tuple(color)
+        return (
+            int(components[0]),
+            int(components[1]),
+            int(components[2]),
+            max(0, min(255, int(alpha))),
+        )
+
+    def _brain_blend_color(
+        self,
+        background: arcade.Color | tuple[int, ...],
+        foreground: arcade.Color | tuple[int, ...],
+        amount: float,
+    ) -> tuple[int, int, int]:
+        background_components = tuple(background)
+        foreground_components = tuple(foreground)
+        mix = max(0.0, min(1.0, amount))
+        return tuple(
+            int(background_components[index] * (1.0 - mix) + foreground_components[index] * mix)
+            for index in range(3)
         )
 
     def _ensure_brain_window_bounds(self, world: World) -> None:
-        if self._brain_window_bounds is not None:
-            self._brain_window_bounds = self._clamped_brain_window_bounds(
-                world,
-                self._brain_window_bounds.left,
-                self._brain_window_bounds.bottom,
-                self._brain_window_bounds.width,
-                self._brain_window_bounds.height,
-            )
-            return
-
-        environment = world.layout.environment
-        width = max(360.0, min(environment.width * 0.62, 720.0))
-        height = max(260.0, min(environment.height * 0.58, 500.0))
-        left = environment.center_x - width / 2
-        bottom = environment.center_y - height / 2
-        self._brain_window_bounds = self._clamped_brain_window_bounds(
-            world,
-            left,
-            bottom,
-            width,
-            height,
+        window = world.layout.window
+        shorter_side = max(1.0, min(window.width, window.height))
+        margin = max(
+            8.0,
+            min(self.config.layout.outer_padding * 2.0, shorter_side * 0.05),
         )
-
-    def _clamped_brain_window_bounds(
-        self,
-        world: World,
-        left: float,
-        bottom: float,
-        width: float,
-        height: float,
-    ) -> arcade.Rect:
-        outer_padding = self.config.layout.outer_padding
-        min_left = outer_padding
-        min_bottom = outer_padding
-        max_left = max(min_left, world.layout.window.width - outer_padding - width)
-        max_bottom = max(
-            min_bottom, world.layout.window.height - outer_padding - height
-        )
-        return arcade.LBWH(
-            max(min_left, min(max_left, left)),
-            max(min_bottom, min(max_bottom, bottom)),
-            width,
-            height,
+        self._brain_window_bounds = arcade.LBWH(
+            window.left + margin,
+            window.bottom + margin,
+            max(1.0, window.width - margin * 2.0),
+            max(1.0, window.height - margin * 2.0),
         )
 
     def _brain_graph_screen_position(
@@ -3515,7 +4365,9 @@ class UiRenderer:
         return f"{number:+.{digits}f}" if signed else f"{number:.{digits}f}"
 
     def _brain_edge_color(self, weight: float) -> arcade.Color | tuple[int, ...]:
-        return self.theme.accent if weight >= 0.0 else self.theme.selected_outline
+        if abs(weight) < 0.25:
+            return (180, 188, 200)
+        return (43, 108, 246) if weight >= 0.0 else (245, 62, 62)
 
     def _draw_self_loop(
         self,
@@ -3572,6 +4424,74 @@ class UiRenderer:
                 )
             )
         return points
+
+    def _cubic_bezier_points(
+        self,
+        start: tuple[float, float],
+        first_control: tuple[float, float],
+        second_control: tuple[float, float],
+        end: tuple[float, float],
+        *,
+        steps: int = 28,
+    ) -> list[tuple[float, float]]:
+        points: list[tuple[float, float]] = []
+        for index in range(steps + 1):
+            t = index / steps
+            inverse = 1.0 - t
+            points.append(
+                (
+                    inverse**3 * start[0]
+                    + 3.0 * inverse * inverse * t * first_control[0]
+                    + 3.0 * inverse * t * t * second_control[0]
+                    + t**3 * end[0],
+                    inverse**3 * start[1]
+                    + 3.0 * inverse * inverse * t * first_control[1]
+                    + 3.0 * inverse * t * t * second_control[1]
+                    + t**3 * end[1],
+                )
+            )
+        return points
+
+    def _draw_brain_arrowhead(
+        self,
+        points: list[tuple[float, float]],
+        color: arcade.Color | tuple[int, ...],
+        width: float,
+    ) -> None:
+        if len(points) < 4:
+            return
+        tip_index = max(2, min(len(points) - 2, int((len(points) - 1) * 0.86)))
+        tip = points[tip_index]
+        previous = points[tip_index - 1]
+        delta_x = tip[0] - previous[0]
+        delta_y = tip[1] - previous[1]
+        length = (delta_x * delta_x + delta_y * delta_y) ** 0.5
+        if length <= 0.0001:
+            return
+        unit_x = delta_x / length
+        unit_y = delta_y / length
+        size = 4.0 + min(3.0, width)
+        base_x = tip[0] - unit_x * size
+        base_y = tip[1] - unit_y * size
+        perpendicular_x = -unit_y * size * 0.55
+        perpendicular_y = unit_x * size * 0.55
+        line_width = max(1.0, width * 0.8)
+        arcade.draw_line(
+            tip[0],
+            tip[1],
+            base_x + perpendicular_x,
+            base_y + perpendicular_y,
+            color,
+            line_width,
+        )
+        arcade.draw_line(
+            tip[0],
+            tip[1],
+            base_x - perpendicular_x,
+            base_y - perpendicular_y,
+            color,
+            line_width,
+        )
 
     def _draw_environment_stats(self, world: World, bounds: arcade.Rect) -> None:
         lines = [
@@ -3724,6 +4644,28 @@ class UiRenderer:
                 return True
             return True
 
+        if (
+            self._brain_window_open
+            and self._brain_window_bounds is not None
+            and self._contains_bounds(self._brain_window_bounds, x, y)
+        ):
+            if self._contains_hitbox("brain_window_close", x, y):
+                self._close_brain_window()
+                return True
+            if self._contains_hitbox("brain_node_inspector_toggle", x, y):
+                self._brain_node_inspector_open = not self._brain_node_inspector_open
+                return True
+            node_key = self._brain_node_at(x, y)
+            if node_key is not None:
+                self._brain_selected_node_key = node_key
+                self._scroll_offsets["brain_node_inspector"] = 0.0
+                return True
+            if self._contains_hitbox("brain_window_graph", x, y):
+                self._brain_selected_node_key = None
+                self._scroll_offsets["brain_node_inspector"] = 0.0
+                return True
+            return True
+
         if self._contains_hitbox("open_map_submenu", x, y):
             self._map_submenu_open = not self._map_submenu_open
             return True
@@ -3760,18 +4702,6 @@ class UiRenderer:
         if self._contains_hitbox("open_species_tree", x, y):
             self.open_species_tree(world)
             return True
-        if self._contains_hitbox("brain_window_close", x, y):
-            self._brain_window_open = False
-            self._active_brain_window_drag = False
-            return True
-        if self._contains_hitbox("brain_window_title", x, y):
-            bounds = self._brain_window_bounds
-            if bounds is not None:
-                self._active_brain_window_drag = True
-                self._brain_window_drag_offset = (x - bounds.left, y - bounds.bottom)
-                return True
-        if self._contains_hitbox("brain_window_graph", x, y):
-            return True
         if self._contains_hitbox("open_brain_window", x, y):
             if world.selected_creature is not None:
                 self._brain_window_open = True
@@ -3779,7 +4709,7 @@ class UiRenderer:
             return True
         if self._contains_hitbox("kill_selected_creature", x, y):
             if world.kill_selected_creature():
-                self._brain_window_open = False
+                self._close_brain_window()
             return True
         if self._contains_hitbox("pause", x, y):
             world.toggle_pause()
@@ -3871,19 +4801,6 @@ class UiRenderer:
                 ),
             )
             return True
-        if self._active_brain_window_drag:
-            bounds = self._brain_window_bounds
-            if bounds is None:
-                return False
-            offset_x, offset_y = self._brain_window_drag_offset
-            self._brain_window_bounds = self._clamped_brain_window_bounds(
-                world,
-                x - offset_x,
-                y - offset_y,
-                bounds.width,
-                bounds.height,
-            )
-            return True
         if not self._active_slider:
             return False
         self._set_speed_from_slider(world, x)
@@ -3892,7 +4809,6 @@ class UiRenderer:
     def handle_mouse_release(self) -> None:
         self._active_slider = False
         self._active_panel_drag = None
-        self._active_brain_window_drag = False
         self._species_tree_scroll_drag = None
         self._species_tree_inspector_resize_drag = False
         if (
@@ -3961,6 +4877,17 @@ class UiRenderer:
             and self._brain_window_bounds is not None
             and self._contains_bounds(self._brain_window_bounds, x, y)
         ):
+            inspector_region = self._scroll_regions.get("brain_node_inspector")
+            if (
+                inspector_region is not None
+                and self._contains_bounds(inspector_region, x, y)
+            ):
+                limit = self._scroll_limits.get("brain_node_inspector", 0.0)
+                current = self._scroll_offsets.get("brain_node_inspector", 0.0)
+                self._scroll_offsets["brain_node_inspector"] = max(
+                    0.0,
+                    min(limit, current - scroll_y * 24.0),
+                )
             return True
 
         for key, bounds in self._scroll_regions.items():
@@ -4906,6 +5833,17 @@ class UiRenderer:
             "flock_center_proximity": "flock_p",
             "flock_center_angle": "flock_a",
             "flock_average_relative_heading": "flock_h",
+            "stomach_fullness": "stomach",
+            "sound_strength": "sound",
+            "sound_dir_sin": "sound_sin",
+            "sound_dir_cos": "sound_cos",
+            "sound_tone": "tone",
+            "trail_pheromone_here": "trail_here",
+            "trail_pheromone_forward_left": "trail_left",
+            "trail_pheromone_forward_right": "trail_right",
+            "alarm_pheromone_here": "alarm_here",
+            "alarm_pheromone_forward_left": "alarm_left",
+            "alarm_pheromone_forward_right": "alarm_right",
             "accelerate": "acc",
             "rotate": "rot",
             "want_reproduce": "repr",
@@ -4918,6 +5856,9 @@ class UiRenderer:
             "weight_separation": "sep",
             "weight_alignment": "align",
             "weight_cohesion": "cohere",
+            "emit_sound": "sound",
+            "emit_trail_pheromone": "trail",
+            "emit_alarm_pheromone": "alarm",
         }
         return replacements.get(label, label)
 

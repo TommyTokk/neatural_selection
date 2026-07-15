@@ -310,8 +310,8 @@ class VisionConfig:
     default_angle: float = 0.95
     fovea_ratio: float = 0.33
 
-    min_range: float = 90.0
-    max_range: float = 160.0
+    min_range: float = 100.0
+    max_range: float = 200.0
     min_angle: float = 0.35
     max_angle: float = pi
 
