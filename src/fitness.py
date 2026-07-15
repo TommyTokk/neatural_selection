@@ -18,6 +18,7 @@ class CreatureFitness:
     offspring_count: int = 0
     matured_offspring_ids: list[int] = field(default_factory=list)
     discovered_food_ids: set[int] = field(default_factory=set)
+    evaluation_start_age_seconds: float = 0.0
 
     def record_tick(self, delta_time: float, speed: float, max_speed: float) -> None:
         self.age_seconds += delta_time
@@ -48,17 +49,22 @@ class CreatureFitness:
         return self.age_seconds - self.last_reproduction_age
 
     def average_speed(self) -> float:
-        if self.age_seconds <= 0.0:
+        evaluation_age = self.evaluation_age_seconds()
+        if evaluation_age <= 0.0:
             return 0.0
-        return self.distance_traveled / self.age_seconds
+        return self.distance_traveled / evaluation_age
+
+    def evaluation_age_seconds(self) -> float:
+        return max(0.0, self.age_seconds - self.evaluation_start_age_seconds)
 
     def score(self, config: FitnessConfig) -> float:
-        scoring_age = max(self.age_seconds, config.efficiency_min_age_seconds)
+        evaluation_age = self.evaluation_age_seconds()
+        scoring_age = max(evaluation_age, config.efficiency_min_age_seconds)
         capped_discoveries = min(self.food_discovered, config.food_discovery_cap)
         energy_efficiency = self.energy_gained / scoring_age
 
         return (
-            self.age_seconds * config.age_weight
+            evaluation_age * config.age_weight
             + capped_discoveries * config.food_discovery_weight
             # + self.food_eaten * config.food_eaten_weight
             + self.energy_gained * config.energy_gained_weight

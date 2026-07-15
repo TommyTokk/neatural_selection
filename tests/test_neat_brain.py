@@ -4,6 +4,7 @@ from itertools import count
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
+from unittest.mock import patch
 
 
 class _Body:
@@ -69,7 +70,7 @@ def sensor_snapshot() -> SensorSnapshot:
         vision_range=0.0,
         vision_angle=0.0,
         vision_energy_cost=0.0,
-        maturity=0.0,
+        reproductive_readiness=0.0,
         visible_food_count=0.0,
         visible_creature_count=0.0,
         clock_tik_tok=0.0,
@@ -101,15 +102,15 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertAlmostEqual(action.rotate, 0.0)
 
     def test_rotation_output_is_signed(self) -> None:
-        left_action = self.decide_with_outputs(
+        right_clockwise_action = self.decide_with_outputs(
             [0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0]
         )
-        right_action = self.decide_with_outputs(
+        left_counterclockwise_action = self.decide_with_outputs(
             [0.5, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0]
         )
 
-        self.assertAlmostEqual(left_action.rotate, -0.5)
-        self.assertAlmostEqual(right_action.rotate, 0.5)
+        self.assertAlmostEqual(right_clockwise_action.rotate, -0.5)
+        self.assertAlmostEqual(left_counterclockwise_action.rotate, 0.5)
 
     def test_intent_outputs_remain_normalized(self) -> None:
         action = self.decide_with_outputs(
@@ -224,6 +225,95 @@ class LegacyBrainContractMigrationTest(unittest.TestCase):
         for key in range(8, 16):
             self.assertEqual(genome.nodes[key].bias, -5.0)
         self.assertEqual(genome.connections, {})
+
+
+class SensorUsageTest(unittest.TestCase):
+    def test_direct_hidden_disabled_and_disconnected_paths(self) -> None:
+        def gene(source: int, target: int, enabled: bool = True) -> SimpleNamespace:
+            return SimpleNamespace(key=(source, target), enabled=enabled)
+
+        genome = SimpleNamespace(
+            connections={
+                (-1, 0): gene(-1, 0),
+                (-2, 10): gene(-2, 10),
+                (10, 1): gene(10, 1),
+                (-3, 0): gene(-3, 0, enabled=False),
+                (-4, 11): gene(-4, 11),
+            }
+        )
+        brain = NeatBrain(
+            genome_id=1,
+            genome=genome,
+            network=FakeNetwork([]),
+            last_inputs=[0.1, 0.2, 0.3, 0.4],
+        )
+
+        usage = brain.sensor_usage([-1, -2, -3, -4], [0, 1])
+
+        self.assertEqual(usage[0].input_name, "constant")
+        self.assertEqual(usage[0].current_value, 0.1)
+        self.assertTrue(usage[0].has_enabled_path)
+        self.assertEqual(usage[0].reachable_action_outputs, ("accelerate",))
+        self.assertTrue(usage[1].has_enabled_path)
+        self.assertEqual(usage[1].reachable_action_outputs, ("rotate",))
+        self.assertFalse(usage[2].has_enabled_path)
+        self.assertEqual(usage[2].reachable_action_outputs, ())
+        self.assertFalse(usage[3].has_enabled_path)
+
+    def test_one_sensor_reaches_multiple_outputs_in_action_order(self) -> None:
+        def gene(source: int, target: int) -> SimpleNamespace:
+            return SimpleNamespace(key=(source, target), enabled=True)
+
+        genome = SimpleNamespace(
+            connections={
+                (-1, 10): gene(-1, 10),
+                (10, 2): gene(10, 2),
+                (-1, 0): gene(-1, 0),
+            }
+        )
+        brain = NeatBrain(
+            genome_id=1,
+            genome=genome,
+            network=FakeNetwork([]),
+            last_inputs=[0.1],
+        )
+
+        usage = brain.sensor_usage([-1], [0, 1, 2])
+
+        self.assertTrue(usage[0].has_enabled_path)
+        self.assertEqual(
+            usage[0].reachable_action_outputs,
+            ("accelerate", "want_reproduce"),
+        )
+
+    def test_disabled_connections_are_not_passed_to_neat_graph_helper(self) -> None:
+        def gene(source: int, target: int, enabled: bool) -> SimpleNamespace:
+            return SimpleNamespace(key=(source, target), enabled=enabled)
+
+        genome = SimpleNamespace(
+            connections={
+                (-1, 0): gene(-1, 0, True),
+                (-2, 1): gene(-2, 1, False),
+            }
+        )
+        brain = NeatBrain(
+            genome_id=1,
+            genome=genome,
+            network=FakeNetwork([]),
+            last_inputs=[0.1, 0.2],
+        )
+
+        with patch(
+            "src.neat_brain.required_for_output",
+            wraps=neat.graphs.required_for_output,
+        ) as graph_helper:
+            usage = brain.sensor_usage([-1, -2], [0, 1])
+
+        self.assertTrue(usage[0].has_enabled_path)
+        self.assertFalse(usage[1].has_enabled_path)
+        self.assertEqual(graph_helper.call_count, 2)
+        for helper_call in graph_helper.call_args_list:
+            self.assertEqual(helper_call.args[2], [(-1, 0)])
 
 
 class NeatArchivePruningTest(unittest.TestCase):

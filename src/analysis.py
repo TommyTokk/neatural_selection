@@ -127,8 +127,8 @@ _HIDDEN_ACTION = "Sensory Processing (Hidden)"
 
 _SENSORY_DESCRIPTIONS = {
     "constant": "Endogenous Baseline Drive",
-    "hungriness": "Nutritional Deficit (Hunger)",
-    "maturity": "Developmental Maturity",
+    "feeding_drive": "Feeding Drive (Energy Need and Stomach Capacity)",
+    "reproductive_readiness": "Reproductive Readiness",
     "energy_percent": "Metabolic Reserve (Energy)",
     "speed": "Self-Velocity",
     "creature_count": "Visual Field: Local Crowd Density",
@@ -144,9 +144,9 @@ _SENSORY_DESCRIPTIONS = {
     "wall_angle": "Boundary Direction (Wall Tactile)",
     "is_grabbing": "Load Carriage State (Carrying Object)",
     "biome_fertility_here": "Local Soil Quality (Fertility Here)",
-    "biome_fertility_forward_left": "Left-Forward Soil Nutrient Gradient",
-    "biome_fertility_forward_right": "Right-Forward Soil Nutrient Gradient",
-    "biome_fertility_delta": "Temporal Nutrient Flux (Fertility Delta)",
+    "biome_fertility_left_gradient": "Left-Forward Fertility Advantage",
+    "biome_fertility_right_gradient": "Right-Forward Fertility Advantage",
+    "biome_fertility_trend": "Temporal Fertility Trend",
     "own_infant_proximity": "Nearest Offspring Distance",
     "own_infant_angle": "Nearest Offspring Direction",
     "flock_center_proximity": "Cohort Cohesion Distance",

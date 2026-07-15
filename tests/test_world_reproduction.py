@@ -56,7 +56,8 @@ class FakeCreature:
     heading: float = 0.0
     position: tuple[float, float] = (0.0, 0.0)
     speed: float = 0.0
-    fertility_baseline: float = 0.0
+    biome_fertility_ema: float = 0.0
+    biome_fertility_ema_updated_at: float = 0.0
     color: tuple[int, int, int] = (86, 156, 214)
     body: object = field(default_factory=object)
     shape: object = field(default_factory=object)

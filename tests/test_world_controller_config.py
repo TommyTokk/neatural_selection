@@ -61,7 +61,7 @@ class WorldControllerConfigTest(unittest.TestCase):
     def test_speciation_config_defaults_and_accepts_custom_threshold(self) -> None:
         config = build_sim_config()
 
-        self.assertEqual(config.speciation.compatibility_threshold, 3.0)
+        self.assertEqual(config.speciation.compatibility_threshold, 3.5)
         self.assertEqual(config.speciation.phenotypic_weight, 2.0)
         self.assertEqual(
             SpeciationConfig(compatibility_threshold=4.25).compatibility_threshold,
@@ -90,7 +90,7 @@ class WorldControllerConfigTest(unittest.TestCase):
             world_module.NeatBrainController = original_neat_controller
 
         self.assertFalse(world.use_neat_brains)
-        self.assertEqual(world.neat_controller.compatibility_threshold, 3.0)
+        self.assertEqual(world.neat_controller.compatibility_threshold, 3.5)
         self.assertEqual(world.neat_controller.phenotypic_weight, 2.0)
         self.assertIs(world.neat_controller.trait_config, config.trait)
         self.assertIs(world.neat_controller.vision_config, config.vision)

@@ -443,8 +443,8 @@ class FloatingSimulationUiTest(unittest.TestCase):
         finally:
             self.renderer._draw_icon_button = original_draw_icon_button
 
-        self.assertIn(("open_species_tree", "speciation", False), calls)
-        self.assertTrue(self.renderer._icon_path("speciation").is_file())
+        self.assertIn(("open_species_tree", "species", False), calls)
+        self.assertTrue(self.renderer._icon_path("species").is_file())
 
     def test_globe_button_opens_and_closes_map_submenu(self) -> None:
         world = SimpleNamespace()

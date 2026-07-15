@@ -1173,6 +1173,7 @@ class UiRenderer:
 
         input_keys = list(world.neat_controller.config.genome_config.input_keys)
         output_keys = list(world.neat_controller.config.genome_config.output_keys)
+        sensor_usage = brain.sensor_usage(input_keys, output_keys)
         hidden_keys = sorted(
             key for key in brain.genome.nodes if key not in output_keys
         )
@@ -1227,10 +1228,11 @@ class UiRenderer:
         for index, key in enumerate(input_keys):
             position = positions[key]
             value = brain.last_inputs[index] if index < len(brain.last_inputs) else 0.0
+            usage = sensor_usage[index]
             self._draw_brain_node(
                 position,
                 self._brain_activity_color(value),
-                self.theme.accent,
+                self.theme.accent if usage.has_enabled_path else self.theme.panel_border,
                 radius=4.0 + min(1.0, abs(value)) * 3.0,
             )
             label = (
@@ -1240,7 +1242,10 @@ class UiRenderer:
             )
             self._draw_brain_node_label(
                 f"brain_input_{index}",
-                f"{self._short_brain_label(label)} {value:.2f}",
+                (
+                    f"{'on' if usage.has_enabled_path else 'off'} "
+                    f"{self._short_brain_label(label)} {value:.2f}"
+                ),
                 position,
                 graph_bounds,
                 side="right",
@@ -1284,6 +1289,9 @@ class UiRenderer:
         enabled_connections = sum(
             1 for connection in brain.genome.connections.values() if connection.enabled
         )
+        biome_path_count = sum(
+            usage.has_enabled_path for usage in sensor_usage[17:21]
+        )
         detail_lines = [
             f"Genome: {brain.genome_id}",
             f"Signed action: {action_label}",
@@ -1292,6 +1300,7 @@ class UiRenderer:
             self._brain_output_readout(brain.last_outputs),
             f"Nodes: {len(brain.genome.nodes)}",
             f"Connections: {enabled_connections}/{len(brain.genome.connections)} enabled",
+            f"Biome sensing paths: {biome_path_count}/4",
             f"Fitness: {self._selected_fitness_label(world, selected)}",
         ]
         self._draw_scrollable_lines_in_bounds(
@@ -1385,6 +1394,12 @@ class UiRenderer:
         enabled_connections = sum(
             1 for connection in brain.genome.connections.values() if connection.enabled
         )
+        input_keys = list(world.neat_controller.config.genome_config.input_keys)
+        output_keys = list(world.neat_controller.config.genome_config.output_keys)
+        biome_path_count = sum(
+            item.has_enabled_path
+            for item in brain.sensor_usage(input_keys, output_keys)[17:21]
+        )
         action = brain.last_action
         action_label = (
             f"acc {action.accelerate:.2f} rot {action.rotate:.2f}"
@@ -1398,7 +1413,8 @@ class UiRenderer:
             ),
             (
                 f"Fitness: {self._selected_fitness_label(world, selected)}  "
-                f"Signed action: {action_label}"
+                f"Signed action: {action_label}  "
+                f"Biome paths: {biome_path_count}/4"
             ),
         ]
         self._draw_scrollable_lines_in_bounds(
@@ -1421,6 +1437,8 @@ class UiRenderer:
 
         input_keys = list(world.neat_controller.config.genome_config.input_keys)
         output_keys = list(world.neat_controller.config.genome_config.output_keys)
+        sensor_usage = brain.sensor_usage(input_keys, output_keys)
+        sensor_usage_by_key = dict(zip(input_keys, sensor_usage))
         layout = build_brain_graph_layout(
             brain.genome,
             input_keys,
@@ -1453,7 +1471,12 @@ class UiRenderer:
                     brain.last_inputs[index] if index < len(brain.last_inputs) else 0.0
                 )
                 fill_color = self._brain_activity_color(value)
-                outline_color = self.theme.accent
+                usage = sensor_usage_by_key[key]
+                outline_color = (
+                    self.theme.accent
+                    if usage.has_enabled_path
+                    else self.theme.panel_border
+                )
                 radius = 5.0 + min(1.0, abs(value)) * 3.0
             elif node.kind == BrainNodeKind.OUTPUT:
                 index = output_keys.index(key)
@@ -1467,7 +1490,21 @@ class UiRenderer:
                 radius = 5.0 + min(1.0, abs(value)) * 3.0
 
             self._draw_brain_node(position, fill_color, outline_color, radius=radius)
-            self._draw_brain_graph_label(key, node.label, node.kind, position, bounds)
+            display_label = node.label
+            if node.kind == BrainNodeKind.INPUT:
+                usage = sensor_usage_by_key[key]
+                display_label = (
+                    f"{'on' if usage.has_enabled_path else 'off'} "
+                    f"{self._short_brain_label(node.label)} "
+                    f"{usage.current_value:.2f}"
+                )
+            self._draw_brain_graph_label(
+                key,
+                display_label,
+                node.kind,
+                position,
+                bounds,
+            )
 
     def _draw_brain_graph_edge(
         self,
@@ -4845,8 +4882,8 @@ class UiRenderer:
     def _short_brain_label(self, label: str) -> str:
         replacements = {
             "constant": "const",
-            "hungriness": "hungry",
-            "maturity": "mat",
+            "feeding_drive": "feed",
+            "reproductive_readiness": "repr",
             "energy_percent": "energy",
             "creature_count": "near",
             "food_count": "food#",
@@ -4860,6 +4897,10 @@ class UiRenderer:
             "wall_proximity": "w_p",
             "wall_angle": "w_a",
             "is_grabbing": "holding",
+            "biome_fertility_here": "bio_here",
+            "biome_fertility_left_gradient": "bio_left",
+            "biome_fertility_right_gradient": "bio_right",
+            "biome_fertility_trend": "bio_trend",
             "own_infant_proximity": "baby_p",
             "own_infant_angle": "baby_a",
             "flock_center_proximity": "flock_p",

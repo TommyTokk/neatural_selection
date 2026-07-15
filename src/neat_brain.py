@@ -5,19 +5,29 @@ from math import isfinite
 from typing import Any
 
 import neat
+from neat.graphs import required_for_output
 
 from src.action import (
     ACTION_OUTPUT_COUNT,
+    ACTION_OUTPUT_NAMES,
     NEUTRAL_NETWORK_OUTPUT,
     Action,
     signed_output,
 )
-from src.vision import SensorSnapshot
+from src.vision import SENSOR_INPUT_NAMES, SensorSnapshot
 
 DEFAULT_ACTION_OUTPUTS = [
     *([NEUTRAL_NETWORK_OUTPUT] * 8),
     *([0.0] * (ACTION_OUTPUT_COUNT - 8)),
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class SensorUsage:
+    input_name: str
+    current_value: float
+    has_enabled_path: bool
+    reachable_action_outputs: tuple[str, ...]
 
 
 @dataclass(slots=True)
@@ -93,6 +103,64 @@ class NeatBrain:
             emit_alarm_pheromone=self._positive_action_output(outputs[15]),
         ).clamped()
         return self.last_action
+
+    def sensor_usage(
+        self,
+        input_keys: list[int] | tuple[int, ...],
+        output_keys: list[int] | tuple[int, ...],
+    ) -> tuple[SensorUsage, ...]:
+        """Report which live inputs can reach actions through enabled genes."""
+        enabled_connections = [
+            connection.key
+            for connection in self.genome.connections.values()
+            if connection.enabled
+        ]
+        input_key_set = set(input_keys)
+        reachable_by_input: dict[int, set[int]] = {
+            input_key: set() for input_key in input_keys
+        }
+        for output_key in output_keys:
+            required_nodes = required_for_output(
+                input_keys,
+                [output_key],
+                enabled_connections,
+            )
+            for source, target in enabled_connections:
+                if source in input_key_set and target in required_nodes:
+                    reachable_by_input[source].add(output_key)
+
+        output_names = {
+            key: (
+                ACTION_OUTPUT_NAMES[index]
+                if index < len(ACTION_OUTPUT_NAMES)
+                else str(key)
+            )
+            for index, key in enumerate(output_keys)
+        }
+        result: list[SensorUsage] = []
+        for index, input_key in enumerate(input_keys):
+            ordered_outputs = tuple(
+                output_names[key]
+                for key in output_keys
+                if key in reachable_by_input[input_key]
+            )
+            result.append(
+                SensorUsage(
+                    input_name=(
+                        SENSOR_INPUT_NAMES[index]
+                        if index < len(SENSOR_INPUT_NAMES)
+                        else str(input_key)
+                    ),
+                    current_value=(
+                        self.last_inputs[index]
+                        if index < len(self.last_inputs)
+                        else 0.0
+                    ),
+                    has_enabled_path=bool(ordered_outputs),
+                    reachable_action_outputs=ordered_outputs,
+                )
+            )
+        return tuple(result)
 
     def _normalize_outputs(self, raw_outputs: Any) -> list[float]:
         try:

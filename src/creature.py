@@ -53,7 +53,8 @@ class Creature:
     last_action: object | None = None
     smoothed_rotation: float = 0.0
     smoothed_acceleration: float = 0.0
-    fertility_baseline: float = 0.0
+    biome_fertility_ema: float = 0.0
+    biome_fertility_ema_updated_at: float = 0.0
 
     @property
     def position(self) -> tuple[float, float]:

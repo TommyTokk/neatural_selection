@@ -9,10 +9,11 @@ from src.communication import AcousticObservation, PheromoneSnapshot
 from src.food import Food
 
 SENSOR_INPUT_COUNT = 37
+SENSING_SCHEMA_VERSION = 2
 SENSOR_INPUT_NAMES = (
     "constant",
-    "hungriness",
-    "maturity",
+    "feeding_drive",
+    "reproductive_readiness",
     "energy_percent",
     "speed",
     "creature_count",
@@ -28,9 +29,9 @@ SENSOR_INPUT_NAMES = (
     "wall_angle",
     "is_grabbing",
     "biome_fertility_here",
-    "biome_fertility_forward_left",
-    "biome_fertility_forward_right",
-    "biome_fertility_delta",
+    "biome_fertility_left_gradient",
+    "biome_fertility_right_gradient",
+    "biome_fertility_trend",
     "own_infant_proximity",
     "own_infant_angle",
     "flock_center_proximity",
@@ -71,9 +72,9 @@ class BoundarySnapshot:
 @dataclass(slots=True)
 class BiomeSensorSnapshot:
     here: float = 0.0
-    forward_left: float = 0.0
-    forward_right: float = 0.0
-    delta: float = 0.0
+    left_gradient: float = 0.0
+    right_gradient: float = 0.0
+    trend: float = 0.0
 
 
 @dataclass(slots=True)
@@ -108,7 +109,7 @@ class SensorSnapshot:
     vision_range: float
     vision_angle: float
     vision_energy_cost: float
-    maturity: float
+    reproductive_readiness: float
     visible_food_count: float
     visible_creature_count: float
     clock_tik_tok: float
@@ -131,13 +132,13 @@ class SensorSnapshot:
     pheromones: PheromoneSnapshot = field(default_factory=PheromoneSnapshot)
 
     def as_inputs(self) -> list[float]:
-        # Inputs 18-21 are body-relative biome smell samples, not a direct
-        # mathematical gradient.
+        stomach_fullness = self._clamp01(self.stomach_fullness)
+        energy = self._clamp01(self.energy)
         return [
             1.0,  # constant
-            1.0 - self.energy,  # hungriness
-            self.maturity,
-            self.energy,
+            (1.0 - energy) * (1.0 - stomach_fullness),
+            self.reproductive_readiness,
+            energy,
             self.speed,
             min(self.visible_creature_count / 5.0, 1.0),
             min(self.visible_food_count / 10.0, 1.0),
@@ -152,15 +153,15 @@ class SensorSnapshot:
             self.walls.angle,
             self.is_grabbing,
             self.biome.here,
-            self.biome.forward_left,
-            self.biome.forward_right,
-            self.biome.delta,
+            self.biome.left_gradient,
+            self.biome.right_gradient,
+            self.biome.trend,
             self.own_infants.proximity,
             self.own_infants.angle,
             self.flock.center_proximity,
             self.flock.center_angle,
             self.flock.average_relative_heading,
-            self.stomach_fullness,
+            stomach_fullness,
             self.acoustic.strength,
             self.acoustic.direction_sin,
             self.acoustic.direction_cos,
@@ -172,6 +173,10 @@ class SensorSnapshot:
             self.pheromones.alarm_forward_left,
             self.pheromones.alarm_forward_right,
         ]
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return max(0.0, min(1.0, value))
 
 
 @dataclass(slots=True)
@@ -200,7 +205,7 @@ class VisionSystem:
         creatures: list[Creature],
         world_bounds: tuple[float, float, float, float],
         max_speed: float,
-        maturity: float = 0.0,
+        reproductive_readiness: float = 0.0,
         clock_tik_tok: float = 0.0,
         clock_chronometer: float = 0.0,
         clock_time_alive: float = 0.0,
@@ -214,7 +219,7 @@ class VisionSystem:
             creatures,
             world_bounds,
             max_speed,
-            maturity=maturity,
+            reproductive_readiness=reproductive_readiness,
             clock_tik_tok=clock_tik_tok,
             clock_chronometer=clock_chronometer,
             clock_time_alive=clock_time_alive,
@@ -230,7 +235,7 @@ class VisionSystem:
         creatures: list[Creature],
         world_bounds: tuple[float, float, float, float],
         max_speed: float,
-        maturity: float = 0.0,
+        reproductive_readiness: float = 0.0,
         clock_tik_tok: float = 0.0,
         clock_chronometer: float = 0.0,
         clock_time_alive: float = 0.0,
@@ -250,7 +255,7 @@ class VisionSystem:
             visible_targets,
             world_bounds,
             max_speed,
-            maturity=maturity,
+            reproductive_readiness=reproductive_readiness,
             clock_tik_tok=clock_tik_tok,
             clock_chronometer=clock_chronometer,
             clock_time_alive=clock_time_alive,
@@ -272,7 +277,7 @@ class VisionSystem:
         visible_targets: list[_VisionCandidate],
         world_bounds: tuple[float, float, float, float],
         max_speed: float,
-        maturity: float = 0.0,
+        reproductive_readiness: float = 0.0,
         clock_tik_tok: float = 0.0,
         clock_chronometer: float = 0.0,
         clock_time_alive: float = 0.0,
@@ -304,7 +309,7 @@ class VisionSystem:
             vision_range=self.normalized_range(creature),
             vision_angle=self.normalized_angle(creature),
             vision_energy_cost=self.normalized_energy_cost(creature),
-            maturity=maturity,
+            reproductive_readiness=reproductive_readiness,
             visible_food_count=food_snapshot.count,
             visible_creature_count=creature_snapshot.count,
             clock_tik_tok=clock_tik_tok,
@@ -780,9 +785,8 @@ class VisionSystem:
         if not visible:
             return self._empty_target_snapshot()
 
-        proximity, angle = self._compute_proximity_and_angle(
-            visible,
-            creature.vision.angle,
+        proximity, angle = self._nearest_proximity_and_angle(
+            visible, creature.vision.angle
         )
 
         return VisionTargetSnapshot(
@@ -857,9 +861,8 @@ class VisionSystem:
         if visible_count == 0:
             return self._empty_target_snapshot()
 
-        proximity, angle = self._compute_proximity_and_angle(
-            wall_candidates,
-            cone_angle,
+        proximity, angle = self._nearest_proximity_and_angle(
+            wall_candidates, cone_angle
         )
         return VisionTargetSnapshot(
             visible=1.0,
@@ -987,31 +990,16 @@ class VisionSystem:
             angle += 2 * pi
         return angle
 
-    def _compute_proximity_and_angle(
+    def _nearest_proximity_and_angle(
         self,
         candidates: list[_VisionCandidate],
         fov: float,
     ) -> tuple[float, float]:
-        if fov <= 0.0:
+        if fov <= 0.0 or not candidates:
             return 0.0, 0.0
-
-        max_proximity = 0.0
-        total_weight = 0.0
-        weighted_angle_sum = 0.0
-
-        for candidate in candidates:
-            angular_width = candidate.interval[1] - candidate.interval[0]
-            weight = candidate.closeness * angular_width
-            max_proximity = max(max_proximity, candidate.closeness)
-            total_weight += weight
-            weighted_angle_sum += candidate.signed_angle * weight
-
-        if total_weight == 0.0:
-            return max_proximity, 0.0
-
-        avg_angle = weighted_angle_sum / total_weight
-        normalized_angle = avg_angle / (fov / 2.0)
-        return max_proximity, self._clamp(normalized_angle, -1.0, 1.0)
+        nearest = min(candidates, key=lambda candidate: candidate.surface_distance)
+        normalized_angle = nearest.signed_angle / (fov / 2.0)
+        return nearest.closeness, self._clamp(normalized_angle, -1.0, 1.0)
 
     def _empty_target_snapshot(self) -> VisionTargetSnapshot:
         return VisionTargetSnapshot(

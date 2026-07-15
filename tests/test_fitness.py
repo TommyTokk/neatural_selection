@@ -12,7 +12,6 @@ class CreatureFitnessScoreTest(unittest.TestCase):
             age_weight=0.0,
             food_discovery_weight=1.0,
             food_discovery_cap=3,
-            food_eaten_weight=0.0,
             energy_gained_weight=0.0,
             energy_efficiency_weight=0.0,
             movement_effort_penalty=0.0,
@@ -26,7 +25,6 @@ class CreatureFitnessScoreTest(unittest.TestCase):
         config = FitnessConfig(
             age_weight=0.0,
             food_discovery_weight=0.0,
-            food_eaten_weight=0.0,
             energy_gained_weight=0.0,
             energy_efficiency_weight=100.0,
             efficiency_min_age_seconds=20.0,
@@ -37,11 +35,10 @@ class CreatureFitnessScoreTest(unittest.TestCase):
 
         self.assertAlmostEqual(fitness.score(config), 5.0)
 
-    def test_eating_and_energy_gain_reward_foraging(self) -> None:
+    def test_energy_gain_rewards_foraging_without_double_counting_food(self) -> None:
         config = FitnessConfig(
             age_weight=0.0,
             food_discovery_weight=0.0,
-            food_eaten_weight=8.0,
             energy_gained_weight=80.0,
             energy_efficiency_weight=0.0,
             movement_effort_penalty=0.0,
@@ -49,7 +46,7 @@ class CreatureFitnessScoreTest(unittest.TestCase):
         )
         fitness = CreatureFitness(food_eaten=2, energy_gained=0.5)
 
-        self.assertAlmostEqual(fitness.score(config), 56.0)
+        self.assertAlmostEqual(fitness.score(config), 40.0)
 
     def test_partial_food_bite_records_energy_without_counting_food_eaten(self) -> None:
         fitness = CreatureFitness()
@@ -90,7 +87,6 @@ class CreatureFitnessScoreTest(unittest.TestCase):
         config = FitnessConfig(
             age_weight=0.0,
             food_discovery_weight=0.0,
-            food_eaten_weight=0.0,
             energy_gained_weight=0.0,
             energy_efficiency_weight=0.0,
             movement_effort_penalty=0.5,
@@ -104,7 +100,6 @@ class CreatureFitnessScoreTest(unittest.TestCase):
         config = FitnessConfig(
             age_weight=0.0,
             food_discovery_weight=0.0,
-            food_eaten_weight=0.0,
             energy_gained_weight=0.0,
             energy_efficiency_weight=0.0,
             movement_effort_penalty=0.0,
@@ -117,6 +112,29 @@ class CreatureFitnessScoreTest(unittest.TestCase):
 
         self.assertAlmostEqual(fitness.trait_energy_cost, 2.5)
         self.assertAlmostEqual(fitness.score(config), -10.0)
+
+    def test_evaluation_epoch_excludes_preserved_biological_age(self) -> None:
+        config = FitnessConfig(
+            age_weight=1.0,
+            food_discovery_weight=0.0,
+            energy_gained_weight=0.0,
+            energy_efficiency_weight=0.0,
+            movement_effort_penalty=0.0,
+            offspring_weight=0.0,
+            matured_offspring_weight=0.0,
+            trait_energy_cost_penalty_weight=0.0,
+        )
+        fitness = CreatureFitness(
+            age_seconds=30.0,
+            evaluation_start_age_seconds=30.0,
+        )
+
+        fitness.record_tick(delta_time=2.0, speed=10.0, max_speed=20.0)
+
+        self.assertEqual(fitness.age_seconds, 32.0)
+        self.assertEqual(fitness.evaluation_age_seconds(), 2.0)
+        self.assertEqual(fitness.average_speed(), 10.0)
+        self.assertEqual(fitness.score(config), 2.0)
 
     def test_record_tick_tracks_distance_and_average_speed(self) -> None:
         fitness = CreatureFitness()

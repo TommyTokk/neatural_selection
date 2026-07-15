@@ -33,7 +33,7 @@ from configs.sim_config import ActionConfig, MetabolismConfig, VisionConfig
 from src.controller import BaselineFoodController
 from src.creature import VisionTraits
 from src.metabolism import Metabolism
-from src.vision import SENSOR_INPUT_COUNT, VisionSystem
+from src.vision import SENSOR_INPUT_COUNT, SENSOR_INPUT_NAMES, VisionSystem
 
 
 @dataclass(slots=True)
@@ -184,6 +184,22 @@ class VisionVisibilityTest(unittest.TestCase):
 
         self.assertEqual(result.snapshot.food.count, 1)
         self.assertEqual(result.visible_food_ids, [exposed_food.id])
+        exposed_candidate = self.vision._vision_candidate(
+            observer,
+            "food",
+            exposed_food,
+            exposed_food.position,
+            exposed_food.radius,
+        )
+        self.assertIsNotNone(exposed_candidate)
+        self.assertAlmostEqual(
+            result.snapshot.food.proximity,
+            exposed_candidate.closeness,
+        )
+        self.assertAlmostEqual(
+            result.snapshot.food.angle,
+            exposed_candidate.signed_angle / (pi / 4.0),
+        )
 
     def test_own_infant_behind_creature_is_occluded(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
@@ -547,25 +563,11 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.proximity, 0.5)
         self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
-    def test_right_food_reports_positive_angle(self) -> None:
-        creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
-        right_food = FakeFood(
-            id=1,
-            position=(50.0 * cos(0.35), 50.0 * sin(0.35)),
-            radius=1.0,
-        )
-
-        snapshot = self.sense_snapshot(creature, [right_food])
-
-        self.assertEqual(snapshot.food.count, 1)
-        self.assertAlmostEqual(snapshot.food.proximity, 0.51)
-        self.assertAlmostEqual(snapshot.food.angle, 0.35 / (pi / 4))
-
-    def test_left_food_reports_negative_angle(self) -> None:
+    def test_left_food_reports_positive_counterclockwise_angle(self) -> None:
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         left_food = FakeFood(
             id=1,
-            position=(50.0 * cos(-0.35), 50.0 * sin(-0.35)),
+            position=(50.0 * cos(0.35), 50.0 * sin(0.35)),
             radius=1.0,
         )
 
@@ -573,9 +575,23 @@ class VisionEyeOriginTest(unittest.TestCase):
 
         self.assertEqual(snapshot.food.count, 1)
         self.assertAlmostEqual(snapshot.food.proximity, 0.51)
+        self.assertAlmostEqual(snapshot.food.angle, 0.35 / (pi / 4))
+
+    def test_right_food_reports_negative_clockwise_angle(self) -> None:
+        creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
+        right_food = FakeFood(
+            id=1,
+            position=(50.0 * cos(-0.35), 50.0 * sin(-0.35)),
+            radius=1.0,
+        )
+
+        snapshot = self.sense_snapshot(creature, [right_food])
+
+        self.assertEqual(snapshot.food.count, 1)
+        self.assertAlmostEqual(snapshot.food.proximity, 0.51)
         self.assertAlmostEqual(snapshot.food.angle, -0.35 / (pi / 4))
 
-    def test_potential_field_uses_max_proximity_and_weighted_angle(self) -> None:
+    def test_nearest_target_supplies_both_proximity_and_angle(self) -> None:
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         left_food = FakeFood(
             id=1,
@@ -583,17 +599,20 @@ class VisionEyeOriginTest(unittest.TestCase):
             radius=5.0,
         )
         center_food = FakeFood(id=2, position=(50.0, 0.0), radius=5.0)
-        right_food = FakeFood(
+        nearest_left_food = FakeFood(
             id=3,
-            position=(50.0 * cos(0.2), 50.0 * sin(0.2)),
+            position=(30.0 * cos(0.4), 30.0 * sin(0.4)),
             radius=5.0,
         )
 
-        snapshot = self.sense_snapshot(creature, [left_food, center_food, right_food])
+        snapshot = self.sense_snapshot(
+            creature,
+            [left_food, center_food, nearest_left_food],
+        )
 
         self.assertEqual(snapshot.food.count, 3)
-        self.assertAlmostEqual(snapshot.food.proximity, 0.55)
-        self.assertAlmostEqual(snapshot.food.angle, (-0.2 / 3.0) / (pi / 4))
+        self.assertAlmostEqual(snapshot.food.proximity, 0.75)
+        self.assertAlmostEqual(snapshot.food.angle, 0.4 / (pi / 4))
 
     def test_close_food_reports_max_proximity_and_center_angle(self) -> None:
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
@@ -713,17 +732,28 @@ class VisionWallSensorTest(unittest.TestCase):
 
         self.assertEqual(SENSOR_INPUT_COUNT, 37)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
+        self.assertEqual(SENSOR_INPUT_NAMES[1], "feeding_drive")
+        self.assertEqual(SENSOR_INPUT_NAMES[2], "reproductive_readiness")
+        self.assertEqual(
+            SENSOR_INPUT_NAMES[17:21],
+            (
+                "biome_fertility_here",
+                "biome_fertility_left_gradient",
+                "biome_fertility_right_gradient",
+                "biome_fertility_trend",
+            ),
+        )
         self.assertAlmostEqual(first_seventeen_inputs[0], 1.0)
         self.assertAlmostEqual(first_seventeen_inputs[1], 0.25)
         self.assertAlmostEqual(first_seventeen_inputs[3], 0.75)
         self.assertAlmostEqual(first_seventeen_inputs[14], 0.2)
         self.assertAlmostEqual(first_seventeen_inputs[15], 0.0)
         self.assertAlmostEqual(first_seventeen_inputs[16], 0.0)
-        for biome_value in inputs[17:20]:
-            self.assertGreaterEqual(biome_value, 0.0)
-            self.assertLessEqual(biome_value, 1.0)
-        self.assertGreaterEqual(inputs[20], -1.0)
-        self.assertLessEqual(inputs[20], 1.0)
+        self.assertGreaterEqual(inputs[17], 0.0)
+        self.assertLessEqual(inputs[17], 1.0)
+        for biome_gradient_or_trend in inputs[18:21]:
+            self.assertGreaterEqual(biome_gradient_or_trend, -1.0)
+            self.assertLessEqual(biome_gradient_or_trend, 1.0)
         self.assertAlmostEqual(inputs[21], 0.0)
         self.assertAlmostEqual(inputs[22], 0.0)
         self.assertEqual(inputs[23:27], [0.0, 0.0, 0.0, 0.0])
@@ -738,6 +768,22 @@ class VisionWallSensorTest(unittest.TestCase):
         creature.stomach_energy = 2.0
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
         self.assertEqual(inputs[26], 1.0)
+
+    def test_feeding_drive_requires_low_energy_and_stomach_capacity(self) -> None:
+        creature = creature_at((50.0, 50.0), radius=10.0, energy=0.2)
+        creature.stomach_energy = 0.25
+
+        inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
+        self.assertAlmostEqual(inputs[1], 0.8 * 0.75)
+
+        creature.stomach_energy = 1.0
+        inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
+        self.assertEqual(inputs[1], 0.0)
+
+        creature.stomach_energy = 0.0
+        creature.energy = 1.0
+        inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
+        self.assertEqual(inputs[1], 0.0)
 
     def test_flock_inputs_use_same_species_but_separation_uses_all_creatures(
         self,

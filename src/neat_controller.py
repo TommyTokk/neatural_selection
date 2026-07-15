@@ -146,9 +146,10 @@ class ContinuousSpeciesManager:
         genome: neat.DefaultGenome,
         physical_traits: PhysicalTraits,
         vision: VisionTraits,
+        species_id: int = 1,
     ) -> None:
         self.representatives.setdefault(
-            1,
+            species_id,
             (
                 genome,
                 copy.deepcopy(physical_traits),
@@ -307,6 +308,51 @@ class NeatBrainController:
             raise ValueError(
                 f"Not enough genomes in the population to assign to all creatures. "
                 f"Genomes: {len(genomes)}, Creatures: {len(creature_ids)}"
+            )
+
+        for creature, (genome_id, genome) in zip(creatures, genomes):
+            self.brains[creature.creature_id] = NeatBrain.from_genome(
+                genome_id,
+                genome,
+                self.config,
+            )
+
+    def reset_for_new_sensing_epoch(
+        self,
+        creatures: list[Creature],
+        root_species_id: int,
+    ) -> None:
+        """Replace all neural evolution state with current-contract genomes."""
+        self.config = neat.Config(
+            neat.DefaultGenome,
+            neat.DefaultReproduction,
+            neat.DefaultSpeciesSet,
+            neat.DefaultStagnation,
+            str(self.config_path),
+        )
+        self._validate_network_contract()
+        self.population = neat.Population(self.config)
+        self.brains = {}
+        self.species_manager.representatives = {}
+        self.species_manager.next_species_id = root_species_id + 1
+        self._next_genome_id_value = (
+            max(self.population.population, default=0) + 1
+        )
+
+        genomes = list(self.population.population.items())
+        if len(genomes) < len(creatures):
+            raise ValueError(
+                "Not enough fresh genomes for sensing epoch reset. "
+                f"Genomes: {len(genomes)}, creatures: {len(creatures)}"
+            )
+        if creatures:
+            first_genome = genomes[0][1]
+            first_creature = creatures[0]
+            self.species_manager.register_initial_representative(
+                first_genome,
+                first_creature.physical_traits,
+                first_creature.vision,
+                species_id=root_species_id,
             )
 
         for creature, (genome_id, genome) in zip(creatures, genomes):

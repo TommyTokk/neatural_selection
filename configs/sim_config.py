@@ -114,8 +114,9 @@ class BiomeConfig:
 
 @dataclass(slots=True)
 class BiomeSensorConfig:
-    forward_distance: float = 48.0
-    side_offset: float = 24.0
+    forward_distance: float = 96.0
+    side_offset: float = 48.0
+    trend_time_constant_seconds: float = 3.0
 
 
 @dataclass(slots=True)
@@ -229,7 +230,7 @@ class MetabolismConfig:
 @dataclass(slots=True)
 class PopulationConfig:
     initial_creatures: int = 40
-    max_creatures: int = 40
+    max_creatures: int = 100
     elite_archive_size: int = 256
     fitness_archive_size: int = 256
     extinction_recovery_creatures: int = 35

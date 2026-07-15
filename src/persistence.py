@@ -13,14 +13,15 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from configs.sim_config import PersistenceConfig, SimConfig
+from src.vision import SENSING_SCHEMA_VERSION
 
 if TYPE_CHECKING:
     from src.neat_controller import NeatBrainController
     from src.world import World
 
 
-CHECKPOINT_VERSION = 10
-LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7, 8, 9}
+CHECKPOINT_VERSION = 11
+LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7, 8, 9, 10}
 
 
 def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
@@ -407,7 +408,10 @@ class PersistenceManager:
                     "chronometer": world._chronometers.get(
                         creature.creature_id, 0.0
                     ),
-                    "fertility_baseline": creature.fertility_baseline,
+                    "biome_fertility_ema": creature.biome_fertility_ema,
+                    "biome_fertility_ema_updated_at": (
+                        creature.biome_fertility_ema_updated_at
+                    ),
                     "genome_id": neat_controller.genome_id_for(
                         creature.creature_id
                     ),
@@ -500,6 +504,7 @@ class PersistenceManager:
             "brain_contract": {
                 "inputs": input_count,
                 "outputs": output_count,
+                "sensor_schema": SENSING_SCHEMA_VERSION,
             },
             "simulation_id": world.simulation_paths.simulation_id,
             "sim_time": world.elapsed_time,
@@ -1183,6 +1188,9 @@ class PersistenceManager:
 
             controller = world.neat_controller
             population_state = state["population"]
+            contract = state.get("brain_contract", {"inputs": 23, "outputs": 8})
+            saved_sensor_schema = int(contract.get("sensor_schema", 1))
+            reset_sensing_epoch = saved_sensor_schema < SENSING_SCHEMA_VERSION
             controller.population.population = population_state["genomes"]
             controller.population.generation = population_state["generation"]
             species_state = state["species_manager"]
@@ -1203,8 +1211,7 @@ class PersistenceManager:
             controller.species_manager.next_species_id = species_state[
                 "next_species_id"
             ]
-            contract = state.get("brain_contract", {"inputs": 23, "outputs": 8})
-            if (
+            if not reset_sensing_epoch and (
                 int(contract.get("inputs", 23)) < len(
                     controller.config.genome_config.input_keys
                 )
@@ -1213,10 +1220,11 @@ class PersistenceManager:
                 )
             ):
                 controller.migrate_legacy_brain_contract()
-            controller.restore_evolution_allocators(
-                population_state.get("next_node_id"),
-                population_state.get("innovation_number"),
-            )
+            if not reset_sensing_epoch:
+                controller.restore_evolution_allocators(
+                    population_state.get("next_node_id"),
+                    population_state.get("innovation_number"),
+                )
 
             world.fitness = {}
             world._chronometers = {}
@@ -1238,13 +1246,22 @@ class PersistenceManager:
                 )
                 creature.body.velocity = creature_state["velocity"]
                 creature.body.angular_velocity = creature_state["angular_velocity"]
-                creature.fertility_baseline = float(
+                creature.biome_fertility_ema = float(
                     creature_state.get(
-                        "fertility_baseline",
-                        legacy_fertility_baselines.get(
-                            creature.creature_id,
-                            world._biome_fertility_at(*creature.position),
+                        "biome_fertility_ema",
+                        creature_state.get(
+                            "fertility_baseline",
+                            legacy_fertility_baselines.get(
+                                creature.creature_id,
+                                world._biome_fertility_at(*creature.position),
+                            ),
                         ),
+                    )
+                )
+                creature.biome_fertility_ema_updated_at = float(
+                    creature_state.get(
+                        "biome_fertility_ema_updated_at",
+                        world.elapsed_time,
                     )
                 )
                 world.creatures.append(creature)
@@ -1259,7 +1276,8 @@ class PersistenceManager:
                     raise CheckpointError(
                         f"Creature {creature.creature_id} has no saved genome ID."
                     )
-                controller.restore_brain(creature.creature_id, genome_id)
+                if not reset_sensing_epoch:
+                    controller.restore_brain(creature.creature_id, genome_id)
 
             for food_state in state["foods"]:
                 food = Food(
@@ -1317,6 +1335,21 @@ class PersistenceManager:
             world.rt_neat._lifespan_at_death_count = rt_state[
                 "lifespan_at_death_count"
             ]
+
+            if reset_sensing_epoch:
+                historical_species_ids = {
+                    *(int(species_id) for species_id in world.species_history),
+                    *(
+                        int(creature.lineage.species_id)
+                        for creature in world.creatures
+                    ),
+                    *(
+                        int(species_id)
+                        for species_id in controller.species_manager.representatives
+                    ),
+                }
+                new_root_species_id = max(historical_species_ids, default=0) + 1
+                world.start_new_sensing_epoch(new_root_species_id)
             next_creature_id = runtime.get("next_creature_id")
             if next_creature_id is None:
                 next_creature_id = max(
@@ -1335,21 +1368,22 @@ class PersistenceManager:
                 ) + 1
             world._next_creature_id_value = next_creature_id
 
-            next_genome_id = population_state.get("next_genome_id")
-            if next_genome_id is None:
-                next_genome_id = max(
-                    [
-                        0,
-                        *controller.population.population,
-                        *(
-                            getattr(representative[0], "key", 0)
-                            for representative in (
-                                controller.species_manager.representatives.values()
-                            )
-                        ),
-                    ]
-                ) + 1
-            controller._next_genome_id_value = next_genome_id
+            if not reset_sensing_epoch:
+                next_genome_id = population_state.get("next_genome_id")
+                if next_genome_id is None:
+                    next_genome_id = max(
+                        [
+                            0,
+                            *controller.population.population,
+                            *(
+                                getattr(representative[0], "key", 0)
+                                for representative in (
+                                    controller.species_manager.representatives.values()
+                                )
+                            ),
+                        ]
+                    ) + 1
+                controller._next_genome_id_value = next_genome_id
             world._prune_historical_archives()
             world._refresh_stats()
             return world

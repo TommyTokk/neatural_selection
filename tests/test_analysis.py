@@ -107,7 +107,7 @@ class InspectorAnalysisTest(unittest.TestCase):
         self.assertEqual(len(report.neuro_integration_hubs), 1)
         self.assertEqual(report.neuro_integration_hubs[0].hub_id, 99)
         self.assertIn(
-            "Nutritional Deficit (Hunger)",
+            "Feeding Drive (Energy Need and Stomach Capacity)",
             report.neuro_integration_hubs[0].sensory_integrations[0],
         )
         self.assertEqual(report.legacy.descendant_count, 1)

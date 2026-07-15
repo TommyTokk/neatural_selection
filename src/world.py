@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field
-from math import atan2, cos, floor, hypot, pi, sin
+from math import atan2, cos, exp, floor, hypot, pi, sin
 from random import Random, choice
 from typing import Literal
 
@@ -193,7 +193,7 @@ class World:
             self.environment_world_bounds,
         )
         for creature in self.creatures:
-            self._initialize_creature_fertility_baseline(creature)
+            self._initialize_creature_biome_memory(creature)
         self.food_spawner = FoodSpawner(config.food, self.rng, self.biome_map)
         self.foods: list[Food] = []
         self._held_food_by_creature_id: dict[int, int] = {}
@@ -452,6 +452,91 @@ class World:
             emergence_pop_ratio=population_ratio,
             neural_shifts=(),
         )
+
+    def start_new_sensing_epoch(self, root_species_id: int) -> None:
+        """Reset behavioral evolution while preserving the living world."""
+        self.neat_controller.reset_for_new_sensing_epoch(
+            self.creatures,
+            root_species_id,
+        )
+
+        for creature in self.creatures:
+            previous_fitness = self.fitness.get(creature.creature_id)
+            biological_age = (
+                previous_fitness.age_seconds
+                if previous_fitness is not None
+                else 0.0
+            )
+            self.fitness[creature.creature_id] = CreatureFitness(
+                age_seconds=biological_age,
+                evaluation_start_age_seconds=biological_age,
+                last_reproduction_age=biological_age,
+            )
+            creature.lineage.species_id = root_species_id
+            creature.lineage.generation = 0
+            creature.lineage.mutation_delta = TraitMutationDelta()
+            creature.last_action = None
+            creature.smoothed_rotation = 0.0
+            creature.smoothed_acceleration = 0.0
+            self._initialize_creature_biome_memory(creature)
+
+        self.fitness_archive = {}
+        self._trait_archive_by_genome_id = {}
+        self._last_actions = {}
+        self._last_sensor_snapshots = {}
+        self._last_acoustic_debug = {}
+        self._motion_commands = {}
+        self.rt_neat.stats = type(self.rt_neat.stats)()
+        self.rt_neat.eligible_parent_ids = []
+        self.rt_neat._lifespan_at_death_total = 0.0
+        self.rt_neat._lifespan_at_death_count = 0
+
+        if not self.creatures:
+            return
+
+        founder = self.creatures[0]
+        food_ratio, population_ratio = self._species_emergence_ratios()
+        zero_traits = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+        self.species_history[root_species_id] = SpeciesRecord(
+            species_id=root_species_id,
+            parent_species_id=None,
+            founder_creature_id=founder.creature_id,
+            founder_genome_id=self.neat_controller.genome_id_for(
+                founder.creature_id
+            ),
+            emerged_at=self.elapsed_time,
+            founder_color=tuple(founder.color[:3]),
+            data_quality="exact",
+            founder_traits=SpeciesTraitSnapshot.from_traits(
+                founder.physical_traits,
+                founder.vision,
+            ),
+            trait_deltas=zero_traits,
+            distances=SpeciesDistanceBreakdown(
+                neat_distance=0.0,
+                phenotypic_distance=0.0,
+                weighted_phenotypic_distance=0.0,
+                composite_distance=0.0,
+                compatibility_threshold=(
+                    self.neat_controller.species_manager.compatibility_threshold
+                ),
+                phenotypic_weight=(
+                    self.neat_controller.species_manager.phenotypic_weight
+                ),
+                radius_component=0.0,
+                vision_range_component=0.0,
+                vision_angle_component=0.0,
+                movement_cost_component=0.0,
+            ),
+            neat_changes=NeatChangeSummary.empty(),
+            emergence_food_ratio=food_ratio,
+            emergence_pop_ratio=population_ratio,
+            neural_shifts=(),
+        )
+
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.log_species_record(self.species_history[root_species_id])
 
     def _record_new_species(
         self,
@@ -778,8 +863,8 @@ class World:
         age_seconds = 0.0 if fitness is None else fitness.age_seconds
         chronometer = self._chronometers.get(creature.creature_id, 0.0)
 
-        maturity = min(
-            age_seconds / self.config.population.min_reproduction_age,
+        reproductive_readiness = min(
+            age_seconds / max(self.config.population.min_reproduction_age, 0.0001),
             1.0,
         )
 
@@ -796,7 +881,7 @@ class World:
                 nearby_creatures,
                 self.environment_world_bounds,
                 self.MAX_SPEED,
-                maturity=maturity,
+                reproductive_readiness=reproductive_readiness,
                 clock_tik_tok=clock_tik_tok,
                 clock_chronometer=clock_chronometer,
                 clock_time_alive=clock_time_alive,
@@ -813,7 +898,7 @@ class World:
                 nearby_creatures,
                 self.environment_world_bounds,
                 self.MAX_SPEED,
-                maturity=maturity,
+                reproductive_readiness=reproductive_readiness,
                 clock_tik_tok=clock_tik_tok,
                 clock_chronometer=clock_chronometer,
                 clock_time_alive=clock_time_alive,
@@ -866,28 +951,43 @@ class World:
     def _biome_sensor_snapshot_for(self, creature: Creature) -> BiomeSensorSnapshot:
         here, forward_left, forward_right = self.biome_sensor_positions_for(creature)
         biome_here = self._biome_fertility_at(*here)
-        baseline = getattr(creature, "fertility_baseline", biome_here)
-        biome_delta = self._clamp(biome_here - baseline, -1.0, 1.0)
+        left_fertility = self._biome_fertility_at(*forward_left)
+        right_fertility = self._biome_fertility_at(*forward_right)
+        fertility_ema = getattr(creature, "biome_fertility_ema", biome_here)
 
         return BiomeSensorSnapshot(
             here=biome_here,
-            forward_left=self._biome_fertility_at(*forward_left),
-            forward_right=self._biome_fertility_at(*forward_right),
-            delta=biome_delta,
+            left_gradient=self._clamp(left_fertility - biome_here, -1.0, 1.0),
+            right_gradient=self._clamp(right_fertility - biome_here, -1.0, 1.0),
+            trend=self._clamp(biome_here - fertility_ema, -1.0, 1.0),
         )
 
-    def _initialize_creature_fertility_baseline(self, creature: Creature) -> None:
-        creature.fertility_baseline = self._biome_fertility_at(*creature.position)
+    def _initialize_creature_biome_memory(self, creature: Creature) -> None:
+        creature.biome_fertility_ema = self._biome_fertility_at(*creature.position)
+        creature.biome_fertility_ema_updated_at = getattr(
+            self,
+            "elapsed_time",
+            0.0,
+        )
 
-    def _adapt_creature_fertility_baseline(
+    def _adapt_creature_biome_memory(
         self,
         creature: Creature,
         snapshot: SensorSnapshot,
     ) -> None:
-        baseline = getattr(creature, "fertility_baseline", snapshot.biome.here)
-        creature.fertility_baseline = (
-            baseline * 0.90 + snapshot.biome.here * 0.10
+        previous = getattr(creature, "biome_fertility_ema", snapshot.biome.here)
+        updated_at = getattr(
+            creature, "biome_fertility_ema_updated_at", self.elapsed_time
         )
+        delta_time = max(0.0, self.elapsed_time - updated_at)
+        time_constant = max(
+            0.0, self.config.biome_sensor.trend_time_constant_seconds
+        )
+        alpha = 1.0 if time_constant <= 0.0 else 1.0 - exp(-delta_time / time_constant)
+        creature.biome_fertility_ema = (
+            previous + (snapshot.biome.here - previous) * alpha
+        )
+        creature.biome_fertility_ema_updated_at = self.elapsed_time
 
     def _biome_fertility_at(self, x: float, y: float) -> float:
         biome_map = getattr(self, "biome_map", None)
@@ -1420,7 +1520,7 @@ class World:
                     self._chronometers[creature.creature_id] = 0.0
 
                 self._apply_carry_intent(creature, action)
-                self._adapt_creature_fertility_baseline(creature, snapshot)
+                self._adapt_creature_biome_memory(creature, snapshot)
 
             if action is None:
                 continue
@@ -2755,7 +2855,7 @@ class World:
                 self._record_new_species(child, speciation_result)
 
             self.creatures.append(child)
-            self._initialize_creature_fertility_baseline(child)
+            self._initialize_creature_biome_memory(child)
             self.fitness[child_id] = CreatureFitness()
             self._chronometers[child_id] = 0.0
             self._log_creature_birth(child)
@@ -2904,7 +3004,7 @@ class World:
             self._record_new_species(child, speciation_result)
 
         self.creatures.append(child)
-        self._initialize_creature_fertility_baseline(child)
+        self._initialize_creature_biome_memory(child)
         self.fitness[child_id] = CreatureFitness()
         self._chronometers[child_id] = 0.0
         self._log_creature_birth(child)

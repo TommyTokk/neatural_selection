@@ -49,8 +49,9 @@ class PersistenceManagerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_checkpoint_version_9_remains_loadable(self) -> None:
+    def test_checkpoint_versions_9_and_10_remain_loadable(self) -> None:
         PersistenceManager._validate_state({"version": 9})
+        PersistenceManager._validate_state({"version": 10})
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
         first_state = {"version": CHECKPOINT_VERSION, "value": "first"}
@@ -357,7 +358,8 @@ class PersistenceManagerTest(unittest.TestCase):
             ),
             color=(1, 2, 3),
             lineage=SimpleNamespace(species_id=2),
-            fertility_baseline=0.37,
+            biome_fertility_ema=0.37,
+            biome_fertility_ema_updated_at=8.5,
         )
         spawner = SimpleNamespace(
             _next_food_id=1,
@@ -411,7 +413,12 @@ class PersistenceManagerTest(unittest.TestCase):
 
         self.assertEqual(state["simulation_id"], self.simulation_paths.simulation_id)
         self.assertEqual(state["creatures"][0]["genome_id"], 17)
-        self.assertEqual(state["creatures"][0]["fertility_baseline"], 0.37)
+        self.assertEqual(state["creatures"][0]["biome_fertility_ema"], 0.37)
+        self.assertEqual(
+            state["creatures"][0]["biome_fertility_ema_updated_at"],
+            8.5,
+        )
+        self.assertEqual(state["brain_contract"]["sensor_schema"], 2)
         self.assertNotIn("previous_biome", state["world"])
         self.assertEqual(state["world"]["time_since_last_quick_save"], 20.0)
         self.assertEqual(state["world"]["time_since_last_archive_save"], 50.0)
@@ -488,7 +495,7 @@ class PersistenceManagerTest(unittest.TestCase):
         self.config.persistence.enable_telemetry = False
         self.config.population.initial_creatures = 1
         self.config.food.initial_food_items = 1
-        world = World(self.config)
+        world = World(self.config, simulation_paths=self.simulation_paths)
         restored = None
         try:
             original_brain = world.neat_controller.brain_for(
@@ -496,7 +503,8 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             saved_member_color = (77, 88, 199)
             world.creatures[0].color = saved_member_color
-            world.creatures[0].fertility_baseline = 0.37
+            world.creatures[0].biome_fertility_ema = 0.37
+            world.creatures[0].biome_fertility_ema_updated_at = 4.25
             world.creatures[0].stomach_energy = 0.42
             world.pheromones.deposit(
                 world.creatures[0].position,
@@ -571,7 +579,11 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.creatures[0].color,
                 saved_member_color,
             )
-            self.assertEqual(restored.creatures[0].fertility_baseline, 0.37)
+            self.assertEqual(restored.creatures[0].biome_fertility_ema, 0.37)
+            self.assertEqual(
+                restored.creatures[0].biome_fertility_ema_updated_at,
+                4.25,
+            )
             self.assertAlmostEqual(restored.creatures[0].stomach_energy, 0.42)
             self.assertAlmostEqual(restored.pheromones.accumulator, 0.1)
             self.assertAlmostEqual(
@@ -619,13 +631,13 @@ class PersistenceManagerTest(unittest.TestCase):
             if restored is not None:
                 restored.close()
 
-    def test_legacy_checkpoint_migrates_previous_biome_to_creature(self) -> None:
+    def test_legacy_checkpoint_initializes_new_biome_memory_at_location(self) -> None:
         from src.world import World
 
         self.config.persistence.enable_telemetry = False
         self.config.population.initial_creatures = 1
         self.config.food.initial_food_items = 0
-        world = World(self.config)
+        world = World(self.config, simulation_paths=self.simulation_paths)
         restored = None
         try:
             creature_id = world.creatures[0].creature_id
@@ -633,8 +645,10 @@ class PersistenceManagerTest(unittest.TestCase):
                 world,
                 world.neat_controller,
             )
-            state["version"] = 6
-            state["creatures"][0].pop("fertility_baseline")
+            state["version"] = 10
+            state["brain_contract"]["sensor_schema"] = 1
+            state["creatures"][0].pop("biome_fertility_ema")
+            state["creatures"][0].pop("biome_fertility_ema_updated_at")
             state["world"]["previous_biome"] = {creature_id: 0.42}
 
             restored = PersistenceManager._restore_world(
@@ -643,11 +657,123 @@ class PersistenceManagerTest(unittest.TestCase):
                 self.simulation_paths,
             )
 
-            self.assertEqual(restored.creatures[0].fertility_baseline, 0.42)
+            expected = restored._biome_fertility_at(
+                *restored.creatures[0].position
+            )
+            self.assertEqual(restored.creatures[0].biome_fertility_ema, expected)
+            self.assertEqual(
+                restored.creatures[0].biome_fertility_ema_updated_at,
+                restored.elapsed_time,
+            )
         finally:
             world.close()
             if restored is not None:
                 restored.close()
+
+    def test_version_10_starts_one_fresh_sensing_epoch(self) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 2
+        self.config.food.initial_food_items = 1
+        world = World(self.config, simulation_paths=self.simulation_paths)
+        restored = None
+        round_tripped = None
+        try:
+            parent, infant = world.creatures
+            infant.lineage.parent_id = parent.creature_id
+            world.fitness[parent.creature_id].age_seconds = 28.0
+            world.fitness[parent.creature_id].energy_gained = 3.5
+            world.fitness[infant.creature_id].age_seconds = 7.0
+            historical_root = replace(
+                world.species_history[1],
+                species_id=5,
+                founder_creature_id=99,
+                founder_genome_id=99,
+            )
+            world.species_history[5] = historical_root
+            saved_positions = [creature.position for creature in world.creatures]
+            saved_energies = [creature.energy for creature in world.creatures]
+
+            state = PersistenceManager._capture_state(
+                world,
+                world.neat_controller,
+            )
+            old_genomes = state["population"]["genomes"]
+            state["version"] = 10
+            state["brain_contract"]["sensor_schema"] = 1
+            state["fitness_archive"] = {
+                99: copy.deepcopy(state["creatures"][0]["fitness"])
+            }
+            state["rt_neat"]["eligible_parent_ids"] = [parent.creature_id]
+            state["rt_neat"]["stats"].births = 12
+
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+            )
+
+            self.assertEqual(
+                [creature.position for creature in restored.creatures],
+                saved_positions,
+            )
+            self.assertEqual(
+                [creature.energy for creature in restored.creatures],
+                saved_energies,
+            )
+            self.assertEqual(
+                restored.creatures[1].lineage.parent_id,
+                parent.creature_id,
+            )
+            self.assertEqual(set(restored.species_history), {1, 5, 6})
+            self.assertEqual(
+                {creature.lineage.species_id for creature in restored.creatures},
+                {6},
+            )
+            self.assertEqual(
+                set(restored.neat_controller.species_manager.representatives),
+                {6},
+            )
+            for creature, age in zip(restored.creatures, (28.0, 7.0)):
+                fitness = restored.fitness[creature.creature_id]
+                self.assertEqual(fitness.age_seconds, age)
+                self.assertEqual(fitness.evaluation_start_age_seconds, age)
+                self.assertEqual(fitness.energy_gained, 0.0)
+                brain = restored.neat_controller.brain_for(creature.creature_id)
+                self.assertIsNot(brain.genome, old_genomes[brain.genome_id])
+            self.assertEqual(restored.fitness_archive, {})
+            self.assertEqual(restored.rt_neat.eligible_parent_ids, [])
+            self.assertEqual(restored.rt_neat.stats.births, 0)
+
+            current_state = PersistenceManager._capture_state(
+                restored,
+                restored.neat_controller,
+            )
+            self.assertEqual(current_state["version"], 11)
+            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 2)
+            saved_ema = current_state["creatures"][0]["biome_fertility_ema"]
+            round_tripped = PersistenceManager._restore_world(
+                current_state,
+                self.config,
+                self.simulation_paths,
+            )
+
+            self.assertEqual(set(round_tripped.species_history), {1, 5, 6})
+            self.assertEqual(
+                set(round_tripped.neat_controller.species_manager.representatives),
+                {6},
+            )
+            self.assertEqual(
+                round_tripped.creatures[0].biome_fertility_ema,
+                saved_ema,
+            )
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
+            if round_tripped is not None:
+                round_tripped.close()
 
     def test_legacy_checkpoint_reconstructs_neat_allocators_before_mutation(
         self,
@@ -657,7 +783,7 @@ class PersistenceManagerTest(unittest.TestCase):
         self.config.persistence.enable_telemetry = False
         self.config.population.initial_creatures = 1
         self.config.food.initial_food_items = 0
-        world = World(self.config)
+        world = World(self.config, simulation_paths=self.simulation_paths)
         restored = None
         try:
             controller = world.neat_controller
