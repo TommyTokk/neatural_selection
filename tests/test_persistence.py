@@ -49,6 +49,9 @@ class PersistenceManagerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
+    def test_checkpoint_version_9_remains_loadable(self) -> None:
+        PersistenceManager._validate_state({"version": 9})
+
     def test_atomic_write_rotates_quick_backup(self) -> None:
         first_state = {"version": CHECKPOINT_VERSION, "value": "first"}
         second_state = {"version": CHECKPOINT_VERSION, "value": "second"}
@@ -528,6 +531,13 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             world.species_history[2] = second_species
             world.neat_controller.species_manager.next_species_id = 2
+            captured = PersistenceManager._capture_state(
+                world,
+                world.neat_controller,
+            )
+            metadata = captured["communication"]["pheromone_metadata"]
+            self.assertEqual(metadata, world.pheromones.state_metadata())
+            self.assertEqual(captured["version"], CHECKPOINT_VERSION)
             world.persistence_manager.save_simulation(
                 world,
                 world.neat_controller,

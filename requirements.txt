@@ -6,3 +6,4 @@ opensimplex
 Pillow
 matplotlib
 seaborn
+pytest

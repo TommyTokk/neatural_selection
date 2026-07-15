@@ -165,8 +165,15 @@ class WorldVisionMutationTest(unittest.TestCase):
             replace_signals=lambda signals: captured_signals.extend(signals)
         )
         world.pheromones = SimpleNamespace(
-            deposit=lambda position, trail_amount, alarm_amount: deposits.append(
-                (position, trail_amount, alarm_amount)
+            deposit_many=lambda positions, trail_amounts, alarm_amounts: deposits.extend(
+                (
+                    (tuple(position), float(trail_amount), float(alarm_amount))
+                    for position, trail_amount, alarm_amount in zip(
+                        positions,
+                        trail_amounts,
+                        alarm_amounts,
+                    )
+                )
             )
         )
 

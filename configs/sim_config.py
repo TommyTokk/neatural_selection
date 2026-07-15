@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import pi
+from enum import Enum
+from math import isfinite, pi
 
 Color = tuple[int, int, int] | tuple[int, int, int, int]
+
+
+class PheromoneBoundaryMode(str, Enum):
+    """Boundary behavior for diffusion and world-position mapping."""
+
+    REFLECT = "reflect"
+    WRAP = "wrap"
+    ABSORB = "absorb"
 
 
 @dataclass(slots=True)
@@ -112,15 +121,84 @@ class BiomeSensorConfig:
 @dataclass(slots=True)
 class CommunicationConfig:
     acoustic_range: float = 480.0
-    acoustic_min_emission: float = 0.05
+    acoustic_min_emission_strength: float = 0.05
+    acoustic_hearing_threshold: float = 0.05
     acoustic_energy_cost_per_second: float = 0.006
 
     pheromone_update_interval: float = 0.25
-    pheromone_diffusion_coefficient: float = 0.15
+    # World distance squared per simulated second. This preserves the previous
+    # visual rate on the default 64 x 44 grid while remaining resolution-aware.
+    pheromone_diffusion_coefficient: float = 390.0
     pheromone_evaporation_rate: float = 0.08
     pheromone_max_concentration: float = 1.0
     pheromone_deposit_rate: float = 0.75
     pheromone_energy_cost_per_second: float = 0.002
+    pheromone_max_updates_per_tick: int = 4
+    pheromone_boundary_mode: PheromoneBoundaryMode = PheromoneBoundaryMode.REFLECT
+
+    def __post_init__(self) -> None:
+        finite_nonnegative = (
+            "acoustic_range",
+            "acoustic_energy_cost_per_second",
+            "pheromone_diffusion_coefficient",
+            "pheromone_evaporation_rate",
+            "pheromone_max_concentration",
+            "pheromone_deposit_rate",
+            "pheromone_energy_cost_per_second",
+        )
+        for name in finite_nonnegative:
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be a finite number, got {value!r}.")
+            if not isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"{name} must be finite and nonnegative, got {value!r}."
+                )
+
+        for name in (
+            "acoustic_min_emission_strength",
+            "acoustic_hearing_threshold",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(
+                    f"{name} must be finite and within [0, 1], got {value!r}."
+                )
+
+        interval = self.pheromone_update_interval
+        if (
+            isinstance(interval, bool)
+            or not isinstance(interval, (int, float))
+            or not isfinite(interval)
+            or interval <= 0.0
+        ):
+            raise ValueError(
+                "pheromone_update_interval must be finite and positive, "
+                f"got {interval!r}."
+            )
+
+        update_cap = self.pheromone_max_updates_per_tick
+        if type(update_cap) is not int or update_cap < 1:
+            raise ValueError(
+                "pheromone_max_updates_per_tick must be a positive integer, "
+                f"got {update_cap!r}."
+            )
+
+        try:
+            self.pheromone_boundary_mode = PheromoneBoundaryMode(
+                self.pheromone_boundary_mode
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "pheromone_boundary_mode must be one of "
+                f"{[mode.value for mode in PheromoneBoundaryMode]}, got "
+                f"{self.pheromone_boundary_mode!r}."
+            ) from error
 
 
 @dataclass(slots=True)

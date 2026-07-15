@@ -939,9 +939,9 @@ class EnvironmentRenderer:
         snapshots = getattr(world, "_last_sensor_snapshots", {})
         snapshot = snapshots.get(creature.creature_id)
         acoustic = None if snapshot is None else getattr(snapshot, "acoustic", None)
-        source_position = (
-            None if acoustic is None else getattr(acoustic, "source_position", None)
-        )
+        debug_by_creature = getattr(world, "_last_acoustic_debug", {})
+        debug = debug_by_creature.get(creature.creature_id)
+        source_position = None if debug is None else debug.source_position
         strength = 0.0 if acoustic is None else float(acoustic.strength)
         if source_position is None or strength <= 0.0:
             return

@@ -5,7 +5,7 @@ from math import atan2, cos, hypot, pi, sin
 
 from configs.sim_config import MetabolismConfig, VisionConfig
 from src.creature import Creature
-from src.communication import AcousticSnapshot, PheromoneSnapshot
+from src.communication import AcousticObservation, PheromoneSnapshot
 from src.food import Food
 
 SENSOR_INPUT_COUNT = 37
@@ -127,7 +127,7 @@ class SensorSnapshot:
     )
     biome: BiomeSensorSnapshot = field(default_factory=BiomeSensorSnapshot)
     flock: FlockSensorSnapshot = field(default_factory=FlockSensorSnapshot)
-    acoustic: AcousticSnapshot = field(default_factory=AcousticSnapshot)
+    acoustic: AcousticObservation = field(default_factory=AcousticObservation)
     pheromones: PheromoneSnapshot = field(default_factory=PheromoneSnapshot)
 
     def as_inputs(self) -> list[float]:

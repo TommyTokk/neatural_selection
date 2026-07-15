@@ -7,6 +7,7 @@ from random import Random, choice
 from typing import Literal
 
 import pymunk
+import numpy as np
 
 from configs.sim_config import SimConfig
 import src.utils as ut
@@ -37,7 +38,13 @@ from src.speciation import (
 )
 from src.telemetry import TelemetryDatabase
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
-from src.communication import AcousticSignal, AcousticSystem, PheromoneSystem
+from src.communication import (
+    AcousticDebugInfo,
+    AcousticSignal,
+    AcousticSystem,
+    PheromoneSnapshot,
+    PheromoneSystem,
+)
 
 from src.layout import build_screen_layout
 
@@ -128,7 +135,13 @@ class World:
         self.physics_step_count = 0
         self._last_actions: dict[int, Action] = {}
         self._last_sensor_snapshots: dict[int, SensorSnapshot] = {}
+        self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
         self._motion_commands: dict[int, MotionCommand] = {}
+        self._communication_positions = np.empty((0, 2), dtype=np.float64)
+        self._communication_trail_amounts = np.empty(0, dtype=np.float64)
+        self._communication_alarm_amounts = np.empty(0, dtype=np.float64)
+        self._pheromone_sensor_positions = np.empty((0, 3, 2), dtype=np.float64)
+        self._pheromone_sensor_values = np.empty((0, 6), dtype=np.float32)
         self.debug_vision_enabled = config.debug.show_debug_vision_by_default
         self.layout = build_screen_layout(
             config.display.width, config.display.height, config.layout
@@ -750,6 +763,7 @@ class World:
         creature: Creature,
         *,
         record_food_discoveries: bool,
+        pheromone_values: np.ndarray | None = None,
     ) -> SensorSnapshot:
         nearby_foods = self._nearby_foods_for(
             creature,
@@ -811,16 +825,36 @@ class World:
         snapshot.biome = self._biome_sensor_snapshot_for(creature)
         acoustics = getattr(self, "acoustics", None)
         if acoustics is not None:
-            snapshot.acoustic = acoustics.sense(
-                creature.creature_id,
-                creature.position,
-                creature.heading,
-            )
+            if (
+                self.debug_vision_enabled
+                and self.selected_creature_id == creature.creature_id
+            ):
+                acoustic_result = acoustics.sense_with_debug(
+                    creature.creature_id,
+                    creature.position,
+                    creature.heading,
+                )
+                snapshot.acoustic = acoustic_result.observation
+                self._last_acoustic_debug[creature.creature_id] = (
+                    acoustic_result.debug
+                )
+            else:
+                snapshot.acoustic = acoustics.sense(
+                    creature.creature_id,
+                    creature.position,
+                    creature.heading,
+                )
+                self._last_acoustic_debug.pop(creature.creature_id, None)
         pheromones = getattr(self, "pheromones", None)
         if pheromones is not None:
-            snapshot.pheromones = pheromones.sense(
-                self.pheromone_sensor_positions_for(creature)
-            )
+            if pheromone_values is None:
+                snapshot.pheromones = pheromones.sense(
+                    self.pheromone_sensor_positions_for(creature)
+                )
+            else:
+                snapshot.pheromones = PheromoneSnapshot(
+                    *(float(value) for value in pheromone_values)
+                )
         return snapshot
 
     def pheromone_sensor_positions_for(
@@ -1328,20 +1362,47 @@ class World:
         if not hasattr(self, "_last_actions"):
             self._last_actions = {}
 
+        thinking_rows: dict[int, int] = {}
+        thinking_creatures: list[Creature] = []
+        physics_step_count = getattr(self, "physics_step_count", 0)
+        for creature in self.creatures:
+            creature_id = creature.creature_id
+            if (
+                self._last_actions.get(creature_id) is None
+                or self._last_sensor_snapshots.get(creature_id) is None
+                or (physics_step_count + creature_id) % 2 == 0
+            ):
+                thinking_rows[creature_id] = len(thinking_creatures)
+                thinking_creatures.append(creature)
+
+        pheromones = getattr(self, "pheromones", None)
+        if pheromones is not None and thinking_creatures:
+            self._ensure_pheromone_sensor_buffer_capacity(len(thinking_creatures))
+            for row, creature in enumerate(thinking_creatures):
+                self._pheromone_sensor_positions[row] = (
+                    self.pheromone_sensor_positions_for(creature)
+                )
+            pheromones.sense_many(
+                self._pheromone_sensor_positions[: len(thinking_creatures)],
+                out=self._pheromone_sensor_values[: len(thinking_creatures)],
+            )
+
         for creature in self.creatures:
             creature_id = creature.creature_id
             action = self._last_actions.get(creature_id)
             snapshot = self._last_sensor_snapshots.get(creature_id)
-            should_think = (
-                action is None
-                or snapshot is None
-                or (getattr(self, "physics_step_count", 0) + creature_id) % 2 == 0
-            )
+            thinking_row = thinking_rows.get(creature_id)
+            should_think = thinking_row is not None
 
             if should_think:
                 snapshot = self._sensor_snapshot_for(
                     creature,
                     record_food_discoveries=True,
+                    pheromone_values=(
+                        None
+                        if pheromones is None
+                        else self._pheromone_sensor_values[thinking_row]
+                    ),
                 )
                 if self.use_neat_brains:
                     action = self.neat_controller.decide(creature_id, snapshot)
@@ -1386,12 +1447,17 @@ class World:
         signals: list[AcousticSignal] = []
         deposit_rate = max(0.0, self.config.communication.pheromone_deposit_rate)
         elapsed = max(0.0, delta_time)
+        self._ensure_communication_buffer_capacity(len(self.creatures))
+        deposit_count = 0
         for creature in self.creatures:
             action = self._last_actions.get(creature.creature_id)
             if action is None:
                 continue
             sound_strength = max(0.0, min(1.0, action.emit_sound))
-            if sound_strength >= self.config.communication.acoustic_min_emission:
+            if (
+                sound_strength
+                >= self.config.communication.acoustic_min_emission_strength
+            ):
                 signals.append(
                     AcousticSignal(
                         emitter_id=creature.creature_id,
@@ -1400,20 +1466,50 @@ class World:
                         tone=max(-1.0, min(1.0, action.sound_tone)),
                     )
                 )
-            pheromones.deposit(
-                creature.position,
-                trail_amount=(
-                    deposit_rate
-                    * max(0.0, min(1.0, action.emit_trail_pheromone))
-                    * elapsed
-                ),
-                alarm_amount=(
-                    deposit_rate
-                    * max(0.0, min(1.0, action.emit_alarm_pheromone))
-                    * elapsed
-                ),
+            self._communication_positions[deposit_count] = creature.position
+            self._communication_trail_amounts[deposit_count] = (
+                deposit_rate
+                * max(0.0, min(1.0, action.emit_trail_pheromone))
+                * elapsed
+            )
+            self._communication_alarm_amounts[deposit_count] = (
+                deposit_rate
+                * max(0.0, min(1.0, action.emit_alarm_pheromone))
+                * elapsed
+            )
+            deposit_count += 1
+        if deposit_count:
+            pheromones.deposit_many(
+                self._communication_positions[:deposit_count],
+                self._communication_trail_amounts[:deposit_count],
+                self._communication_alarm_amounts[:deposit_count],
             )
         acoustics.replace_signals(signals)
+
+    def _ensure_communication_buffer_capacity(self, required: int) -> None:
+        positions = getattr(self, "_communication_positions", None)
+        current = 0 if positions is None else positions.shape[0]
+        if current >= required:
+            return
+        capacity = max(16, required, current * 2)
+        self._communication_positions = np.empty((capacity, 2), dtype=np.float64)
+        self._communication_trail_amounts = np.empty(capacity, dtype=np.float64)
+        self._communication_alarm_amounts = np.empty(capacity, dtype=np.float64)
+
+    def _ensure_pheromone_sensor_buffer_capacity(self, required: int) -> None:
+        positions = getattr(self, "_pheromone_sensor_positions", None)
+        current = 0 if positions is None else positions.shape[0]
+        if current >= required:
+            return
+        capacity = max(16, required, current * 2)
+        self._pheromone_sensor_positions = np.empty(
+            (capacity, 3, 2),
+            dtype=np.float64,
+        )
+        self._pheromone_sensor_values = np.empty(
+            (capacity, 6),
+            dtype=np.float32,
+        )
 
     def _apply_action(
         self,
@@ -2431,6 +2527,9 @@ class World:
             last_snapshots = getattr(self, "_last_sensor_snapshots", None)
             if last_snapshots is not None:
                 last_snapshots.pop(creature.creature_id, None)
+            acoustic_debug = getattr(self, "_last_acoustic_debug", None)
+            if acoustic_debug is not None:
+                acoustic_debug.pop(creature.creature_id, None)
             motion_commands = getattr(self, "_motion_commands", None)
             if motion_commands is not None:
                 motion_commands.pop(creature.creature_id, None)

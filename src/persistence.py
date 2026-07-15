@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 9
-LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7, 8}
+CHECKPOINT_VERSION = 10
+LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7, 8, 9}
 
 
 def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
@@ -491,6 +491,7 @@ class PersistenceManager:
                 "pheromone_accumulator": float(pheromones.accumulator),
                 "trail": pheromones.trail.copy(),
                 "alarm": pheromones.alarm.copy(),
+                "pheromone_metadata": pheromones.state_metadata(),
                 "acoustic_signals": copy.deepcopy(acoustics.signals),
             }
 
@@ -1158,10 +1159,20 @@ class PersistenceManager:
 
             communication_state = state.get("communication")
             if communication_state:
+                pheromone_metadata = communication_state.get(
+                    "pheromone_metadata"
+                )
+                if state.get("version") == CHECKPOINT_VERSION and (
+                    pheromone_metadata is None
+                ):
+                    raise ValueError(
+                        "Current checkpoint is missing pheromone metadata."
+                    )
                 world.pheromones.restore(
                     communication_state["trail"],
                     communication_state["alarm"],
                     communication_state.get("pheromone_accumulator", 0.0),
+                    pheromone_metadata,
                 )
                 saved_signals = communication_state.get("acoustic_signals", {})
                 world.acoustics.replace_signals(
