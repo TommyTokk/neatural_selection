@@ -341,11 +341,18 @@ class VisionSystem:
             for target in visible_targets
             if target.kind == "creature" and target.source is not None
         ]
+        species_id = self._species_id(creature)
+        flockmate_targets = [
+            target
+            for target in visible_creatures
+            if self._species_id(target.source) == species_id
+        ]
+        flockmates = [target.source for target in flockmate_targets]
 
         separation_x = 0.0
         separation_y = 0.0
         vision_range = creature.vision.range
-        for target in visible_creatures:
+        for target in flockmate_targets:
             neighbor = target.source
             away_x = creature.position[0] - neighbor.position[0]
             away_y = creature.position[1] - neighbor.position[1]
@@ -360,9 +367,9 @@ class VisionSystem:
             separation_x += (away_x / distance) * proximity
             separation_y += (away_y / distance) * proximity
 
-        if visible_creatures:
-            separation_x /= len(visible_creatures)
-            separation_y /= len(visible_creatures)
+        if flockmate_targets:
+            separation_x /= len(flockmate_targets)
+            separation_y /= len(flockmate_targets)
         separation_strength = self._clamp01(hypot(separation_x, separation_y))
         separation_relative_heading = (
             0.0
@@ -372,13 +379,6 @@ class VisionSystem:
             )
         )
 
-        species_id = self._species_id(creature)
-        flockmate_targets = [
-            target
-            for target in visible_creatures
-            if self._species_id(target.source) == species_id
-        ]
-        flockmates = [target.source for target in flockmate_targets]
         if not flockmates:
             return FlockSensorSnapshot(
                 separation_relative_heading=separation_relative_heading,

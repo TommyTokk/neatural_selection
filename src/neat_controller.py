@@ -11,7 +11,7 @@ import neat
 
 from configs.sim_config import TraitConfig, VisionConfig
 from src.action import ACTION_OUTPUT_COUNT, Action
-from src.creature import Creature, PhysicalTraits, VisionTraits
+from src.creature import Creature, FlockingTraits, PhysicalTraits, VisionTraits
 from src.neat_brain import NeatBrain
 from src.speciation import (
     NeatChangeSummary,
@@ -32,13 +32,11 @@ FALLBACK_ACTION = Action(
     want_release=0.0,
     want_nurse=0.0,
     flee_panic_intensity=0.0,
-    weight_separation=0.0,
-    weight_alignment=0.0,
-    weight_cohesion=0.0,
+    herding=0.0,
 )
 
 
-SpeciesRepresentative = tuple[Any, PhysicalTraits, VisionTraits]
+SpeciesRepresentative = tuple[Any, PhysicalTraits, VisionTraits, FlockingTraits]
 
 
 def _normalized_trait_difference(
@@ -114,6 +112,17 @@ def calculate_phenotypic_distance_components(
     )
 
 
+def calculate_flocking_trait_distance(
+    first: FlockingTraits,
+    second: FlockingTraits,
+) -> tuple[float, float, float, float]:
+    """Return mean and per-gene bounded flocking-trait distances."""
+    separation = abs(first.separation_gene - second.separation_gene)
+    alignment = abs(first.alignment_gene - second.alignment_gene)
+    cohesion = abs(first.cohesion_gene - second.cohesion_gene)
+    return (separation + alignment + cohesion) / 3.0, separation, alignment, cohesion
+
+
 @dataclass(frozen=True, slots=True)
 class SpeciationResult:
     species_id: int
@@ -133,11 +142,16 @@ class ContinuousSpeciesManager:
         phenotypic_weight: float = 2.0,
         trait_config: TraitConfig | None = None,
         vision_config: VisionConfig | None = None,
+        flocking_trait_distance_coefficient: float = 1.0,
     ) -> None:
         self.compatibility_threshold = compatibility_threshold
         self.phenotypic_weight = phenotypic_weight
         self.trait_config = trait_config or TraitConfig()
         self.vision_config = vision_config or VisionConfig()
+        self.flocking_trait_distance_coefficient = max(
+            0.0,
+            float(flocking_trait_distance_coefficient),
+        )
         self.representatives: dict[int, SpeciesRepresentative] = {}
         self.next_species_id = 2
 
@@ -147,6 +161,7 @@ class ContinuousSpeciesManager:
         physical_traits: PhysicalTraits,
         vision: VisionTraits,
         species_id: int = 1,
+        flocking_traits: FlockingTraits | None = None,
     ) -> None:
         self.representatives.setdefault(
             species_id,
@@ -154,6 +169,7 @@ class ContinuousSpeciesManager:
                 genome,
                 copy.deepcopy(physical_traits),
                 copy.deepcopy(vision),
+                copy.deepcopy(flocking_traits or FlockingTraits()),
             ),
         )
 
@@ -164,12 +180,15 @@ class ContinuousSpeciesManager:
         child_vision: VisionTraits,
         parent_species_id: int,
         genome_config: Any,
+        child_flocking_traits: FlockingTraits | None = None,
     ) -> SpeciationResult:
         (
             representative_genome,
             representative_physical_traits,
             representative_vision,
+            representative_flocking_traits,
         ) = self.representatives[parent_species_id]
+        child_flocking_traits = child_flocking_traits or FlockingTraits()
         neat_distance = child_genome.distance(
             representative_genome,
             genome_config,
@@ -191,8 +210,23 @@ class ContinuousSpeciesManager:
         weighted_phenotypic_distance = (
             self.phenotypic_weight * phenotypic_distance
         )
+        (
+            flocking_trait_distance,
+            separation_gene_component,
+            alignment_gene_component,
+            cohesion_gene_component,
+        ) = calculate_flocking_trait_distance(
+            child_flocking_traits,
+            representative_flocking_traits,
+        )
+        weighted_flocking_trait_distance = (
+            self.flocking_trait_distance_coefficient
+            * flocking_trait_distance
+        )
         composite_distance = (
-            neat_distance + weighted_phenotypic_distance
+            neat_distance
+            + weighted_phenotypic_distance
+            + weighted_flocking_trait_distance
         )
         trait_deltas = SpeciesTraitSnapshot(
             radius=(
@@ -204,6 +238,18 @@ class ContinuousSpeciesManager:
             movement_cost_multiplier=(
                 child_physical_traits.movement_cost_multiplier
                 - representative_physical_traits.movement_cost_multiplier
+            ),
+            separation_gene=(
+                child_flocking_traits.separation_gene
+                - representative_flocking_traits.separation_gene
+            ),
+            alignment_gene=(
+                child_flocking_traits.alignment_gene
+                - representative_flocking_traits.alignment_gene
+            ),
+            cohesion_gene=(
+                child_flocking_traits.cohesion_gene
+                - representative_flocking_traits.cohesion_gene
             ),
         )
         distances = SpeciesDistanceBreakdown(
@@ -219,6 +265,14 @@ class ContinuousSpeciesManager:
             movement_cost_component=(
                 phenotype_components.movement_cost_multiplier
             ),
+            flocking_trait_distance=flocking_trait_distance,
+            weighted_flocking_trait_distance=weighted_flocking_trait_distance,
+            flocking_trait_distance_coefficient=(
+                self.flocking_trait_distance_coefficient
+            ),
+            separation_gene_component=separation_gene_component,
+            alignment_gene_component=alignment_gene_component,
+            cohesion_gene_component=cohesion_gene_component,
         )
         if composite_distance > self.compatibility_threshold:
             neural_shifts = extract_neural_shifts(
@@ -230,6 +284,7 @@ class ContinuousSpeciesManager:
                 child_genome,
                 copy.deepcopy(child_physical_traits),
                 copy.deepcopy(child_vision),
+                copy.deepcopy(child_flocking_traits),
             )
             self.next_species_id += 1
             return SpeciationResult(
@@ -239,6 +294,7 @@ class ContinuousSpeciesManager:
                 founder_traits=SpeciesTraitSnapshot.from_traits(
                     child_physical_traits,
                     child_vision,
+                    child_flocking_traits,
                 ),
                 trait_deltas=trait_deltas,
                 distances=distances,
@@ -252,6 +308,7 @@ class ContinuousSpeciesManager:
             founder_traits=SpeciesTraitSnapshot.from_traits(
                 child_physical_traits,
                 child_vision,
+                child_flocking_traits,
             ),
             trait_deltas=trait_deltas,
             distances=distances,
@@ -270,6 +327,7 @@ class NeatBrainController:
         phenotypic_weight: float = 2.0,
         trait_config: TraitConfig | None = None,
         vision_config: VisionConfig | None = None,
+        flocking_trait_distance_coefficient: float = 1.0,
     ) -> None:
         self.config_path = Path(config_path)
         self.config = neat.Config(
@@ -290,6 +348,7 @@ class NeatBrainController:
             phenotypic_weight,
             trait_config,
             vision_config,
+            flocking_trait_distance_coefficient,
         )
 
     def assign_initial_brains(self, creatures: list[Creature]) -> None:
@@ -302,6 +361,11 @@ class NeatBrainController:
                 genomes[0][1],
                 first_creature.physical_traits,
                 first_creature.vision,
+                flocking_traits=getattr(
+                    first_creature,
+                    "flocking_traits",
+                    FlockingTraits(),
+                ),
             )
 
         if len(genomes) < len(creature_ids):
@@ -353,6 +417,11 @@ class NeatBrainController:
                 first_creature.physical_traits,
                 first_creature.vision,
                 species_id=root_species_id,
+                flocking_traits=getattr(
+                    first_creature,
+                    "flocking_traits",
+                    FlockingTraits(),
+                ),
             )
 
         for creature, (genome_id, genome) in zip(creatures, genomes):
@@ -380,9 +449,7 @@ class NeatBrainController:
             want_release=FALLBACK_ACTION.want_release,
             want_nurse=FALLBACK_ACTION.want_nurse,
             flee_panic_intensity=FALLBACK_ACTION.flee_panic_intensity,
-            weight_separation=FALLBACK_ACTION.weight_separation,
-            weight_alignment=FALLBACK_ACTION.weight_alignment,
-            weight_cohesion=FALLBACK_ACTION.weight_cohesion,
+            herding=FALLBACK_ACTION.herding,
         )
 
     def remove_brain(self, creature_id: int) -> None:
@@ -596,6 +663,7 @@ class NeatBrainController:
         parent_species_id: int,
         child_physical_traits: PhysicalTraits,
         child_vision: VisionTraits,
+        child_flocking_traits: FlockingTraits | None = None,
     ) -> tuple[NeatBrain | None, SpeciationResult | None]:
         parent_brain = self.brains.get(parent_creature_id)
         if parent_brain is None:
@@ -607,6 +675,7 @@ class NeatBrainController:
             parent_species_id,
             child_physical_traits,
             child_vision,
+            child_flocking_traits,
         )
 
     def create_mutated_brain_from_genome(
@@ -616,6 +685,7 @@ class NeatBrainController:
         parent_species_id: int,
         child_physical_traits: PhysicalTraits,
         child_vision: VisionTraits,
+        child_flocking_traits: FlockingTraits | None = None,
     ) -> tuple[NeatBrain, SpeciationResult]:
         child_genome = copy.deepcopy(parent_genome)
         child_genome.key = self._next_genome_id()
@@ -627,6 +697,7 @@ class NeatBrainController:
             child_vision,
             parent_species_id,
             self.config.genome_config,
+            child_flocking_traits,
         )
         self.population.population[child_genome.key] = child_genome
 

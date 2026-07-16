@@ -161,6 +161,7 @@ class FakeNeatBrainController:
         phenotypic_weight: float = 2.0,
         trait_config: object | None = None,
         vision_config: object | None = None,
+        flocking_trait_distance_coefficient: float = 1.0,
     ) -> None:
         del (
             config_path,
@@ -168,6 +169,7 @@ class FakeNeatBrainController:
             phenotypic_weight,
             trait_config,
             vision_config,
+            flocking_trait_distance_coefficient,
         )
 
     def assign_initial_brains(self, creatures: list[object]) -> None:

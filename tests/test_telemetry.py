@@ -24,8 +24,12 @@ def species_record() -> SpeciesRecord:
         emerged_at=4.5,
         founder_color=(10, 20, 30),
         data_quality="exact",
-        founder_traits=SpeciesTraitSnapshot(17.0, 123.0, 1.2, 1.1),
-        trait_deltas=SpeciesTraitSnapshot(1.0, 5.0, 0.1, 0.05),
+        founder_traits=SpeciesTraitSnapshot(
+            17.0, 123.0, 1.2, 1.1, 0.8, 0.3, 0.6
+        ),
+        trait_deltas=SpeciesTraitSnapshot(
+            1.0, 5.0, 0.1, 0.05, 0.1, -0.2, 0.05
+        ),
         distances=SpeciesDistanceBreakdown(
             neat_distance=2.0,
             phenotypic_distance=0.6,
@@ -37,6 +41,12 @@ def species_record() -> SpeciesRecord:
             vision_range_component=0.2,
             vision_angle_component=0.1,
             movement_cost_component=0.2,
+            flocking_trait_distance=0.25,
+            weighted_flocking_trait_distance=0.25,
+            flocking_trait_distance_coefficient=1.0,
+            separation_gene_component=0.1,
+            alignment_gene_component=0.2,
+            cohesion_gene_component=0.45,
         ),
         neat_changes=NeatChangeSummary(
             nodes_added=1,

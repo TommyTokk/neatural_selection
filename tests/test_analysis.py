@@ -424,7 +424,7 @@ class BehaviorRadarAnalysisTest(unittest.TestCase):
         scores = calculate_behavior_scores(genome, range(12))
 
         self.assertAlmostEqual(scores[1], 0.5)
-        self.assertAlmostEqual(scores[2], (0.75 + 0.25 + 0.75) / 3.0)
+        self.assertAlmostEqual(scores[2], 0.25)
         self.assertEqual(len(scores), len(BEHAVIOR_RADAR_LABELS))
 
     def test_missing_output_nodes_are_neutral(self) -> None:

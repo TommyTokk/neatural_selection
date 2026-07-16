@@ -581,6 +581,9 @@ class UiRenderer:
             if physical_traits is not None
             else 1.0
         )
+        flocking_traits = getattr(selected, "flocking_traits", None)
+        current_action = getattr(selected, "last_action", None)
+        herding = float(getattr(current_action, "herding", 0.0))
         parent_id = getattr(lineage, "parent_id", None)
         generation = getattr(lineage, "generation", 0)
         fitness_score = (
@@ -599,7 +602,7 @@ class UiRenderer:
         section_gap = 18.0
         species_row_height = 28.0 if species_id is not None else 0.0
         total_height = (
-            (724.0 if fitness_score is not None else 692.0)
+            (799.0 if fitness_score is not None else 767.0)
             + species_row_height
         )
         scroll_limit = max(0.0, total_height - viewport.height)
@@ -796,6 +799,44 @@ class UiRenderer:
             "inspector_body",
             "Body",
             f"{radius:.1f}px / {movement_cost_multiplier:.2f}x move",
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_flocking_genes",
+            "Flocking genes (inherited)",
+            (
+                "Unavailable"
+                if flocking_traits is None
+                else (
+                    f"S {flocking_traits.separation_gene:.2f} / "
+                    f"A {flocking_traits.alignment_gene:.2f} / "
+                    f"C {flocking_traits.cohesion_gene:.2f}"
+                )
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_herding",
+            "Herding (current)",
+            f"{herding:.2f}",
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_collision_avoidance",
+            "Collision avoidance",
+            "Universal / automatic",
             left,
             y,
             width,
@@ -3929,7 +3970,7 @@ class UiRenderer:
 
     @staticmethod
     def _species_representative_genome(representative: object) -> object | None:
-        if not isinstance(representative, tuple) or len(representative) != 3:
+        if not isinstance(representative, tuple) or len(representative) != 4:
             return None
         genome = representative[0]
         if not hasattr(genome, "nodes") or not hasattr(genome, "connections"):
@@ -4107,6 +4148,11 @@ class UiRenderer:
                         "Movement cost: "
                         f"{traits.movement_cost_multiplier:.3f}x"
                     ),
+                    "",
+                    "Inherited Flocking Style",
+                    f"Separation gene: {traits.separation_gene:.3f}",
+                    f"Alignment gene: {traits.alignment_gene:.3f}",
+                    f"Cohesion gene: {traits.cohesion_gene:.3f}",
                 )
             )
 
@@ -5646,9 +5692,13 @@ class UiRenderer:
         vision_angle = getattr(mutation_delta, "vision_angle", 0.0)
         radius = getattr(mutation_delta, "radius", 0.0)
         movement_cost = getattr(mutation_delta, "movement_cost_multiplier", 0.0)
+        separation = getattr(mutation_delta, "separation_gene", 0.0)
+        alignment = getattr(mutation_delta, "alignment_gene", 0.0)
+        cohesion = getattr(mutation_delta, "cohesion_gene", 0.0)
         return (
             f"R {radius:+.1f}, V {vision_range:+.1f}/"
-            f"{vision_angle:+.2f}, M {movement_cost:+.2f}"
+            f"{vision_angle:+.2f}, M {movement_cost:+.2f}, "
+            f"F {separation:+.2f}/{alignment:+.2f}/{cohesion:+.2f}"
         )
 
     def _draw_card(self, bounds: arcade.Rect, title: str) -> None:
@@ -5853,9 +5903,7 @@ class UiRenderer:
             "want_release": "drop",
             "want_nurse": "nurse",
             "flee_panic_intensity": "panic",
-            "weight_separation": "sep",
-            "weight_alignment": "align",
-            "weight_cohesion": "cohere",
+            "herding": "herd",
             "emit_sound": "sound",
             "emit_trail_pheromone": "trail",
             "emit_alarm_pheromone": "alarm",
@@ -5909,8 +5957,8 @@ class UiRenderer:
             f"Intent: {value(2, outputs):.2f}/{value(3, outputs):.2f}/"
             f"{value(4, outputs):.2f}  "
             f"Carry: {value(5, outputs):.2f}/{value(6, outputs):.2f}  "
-            f"Flock: {value(8, outputs):.2f}/{value(9, outputs):.2f}/"
-            f"{value(10, outputs):.2f}/{value(11, outputs):.2f}"
+            f"Social: panic {value(8, outputs):.2f} / "
+            f"herding {value(9, outputs):.2f}"
         )
 
     def _contains_hitbox(self, key: str, x: float, y: float) -> bool:

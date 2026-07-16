@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from math import isclose
 from typing import Any
 
-from src.creature import PhysicalTraits, VisionTraits
+from src.creature import FlockingTraits, PhysicalTraits, VisionTraits
 
 NeuralShift = tuple[int, int, str, float]
 
@@ -15,18 +15,26 @@ class SpeciesTraitSnapshot:
     vision_range: float
     vision_angle: float
     movement_cost_multiplier: float
+    separation_gene: float = 0.0
+    alignment_gene: float = 0.0
+    cohesion_gene: float = 0.0
 
     @classmethod
     def from_traits(
         cls,
         physical_traits: PhysicalTraits,
         vision: VisionTraits,
+        flocking_traits: FlockingTraits | None = None,
     ) -> SpeciesTraitSnapshot:
+        flocking = flocking_traits or FlockingTraits()
         return cls(
             radius=physical_traits.radius,
             vision_range=vision.range,
             vision_angle=vision.angle,
             movement_cost_multiplier=physical_traits.movement_cost_multiplier,
+            separation_gene=flocking.separation_gene,
+            alignment_gene=flocking.alignment_gene,
+            cohesion_gene=flocking.cohesion_gene,
         )
 
 
@@ -42,6 +50,12 @@ class SpeciesDistanceBreakdown:
     vision_range_component: float | None
     vision_angle_component: float | None
     movement_cost_component: float | None
+    flocking_trait_distance: float | None = None
+    weighted_flocking_trait_distance: float | None = None
+    flocking_trait_distance_coefficient: float | None = None
+    separation_gene_component: float | None = None
+    alignment_gene_component: float | None = None
+    cohesion_gene_component: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

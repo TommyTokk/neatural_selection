@@ -37,6 +37,7 @@ except ModuleNotFoundError:
     sys.modules["neat"] = ModuleType("neat")
     import neat
 
+from src.action import ACTION_OUTPUT_COUNT, ACTION_OUTPUT_NAMES, BrainOutputIndex
 from src.neat_brain import NeatBrain
 from src.neat_controller import NeatBrainController
 from src.vision import BoundarySnapshot, SensorSnapshot, VisionTargetSnapshot
@@ -84,6 +85,20 @@ def sensor_snapshot() -> SensorSnapshot:
 
 
 class NeatBrainActionMappingTest(unittest.TestCase):
+    def test_output_schema_is_contiguous_and_named(self) -> None:
+        self.assertEqual(
+            [int(output) for output in BrainOutputIndex],
+            list(range(14)),
+        )
+        self.assertEqual(ACTION_OUTPUT_COUNT, 14)
+        self.assertEqual(ACTION_OUTPUT_NAMES[9], "herding")
+        self.assertEqual(ACTION_OUTPUT_NAMES[10:], (
+            "emit_sound",
+            "sound_tone",
+            "emit_trail_pheromone",
+            "emit_alarm_pheromone",
+        ))
+
     def make_brain(
         self,
         outputs: object,
@@ -94,7 +109,9 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             genome=SimpleNamespace(),
             network=FakeNetwork(outputs),
             output_activations=(
-                ["clamped"] * 16 if activations is None else activations
+                ["clamped"] * ACTION_OUTPUT_COUNT
+                if activations is None
+                else activations
             ),
         )
 
@@ -107,18 +124,18 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         return brain.decide(sensor_snapshot())
 
     def test_neutral_centered_outputs_produce_neutral_action(self) -> None:
-        brain = self.make_brain([0.0] * 16)
+        brain = self.make_brain([0.0] * ACTION_OUTPUT_COUNT)
 
         action = brain.decide(sensor_snapshot())
 
-        self.assertEqual(brain.last_outputs, [0.0] * 16)
+        self.assertEqual(brain.last_outputs, [0.0] * ACTION_OUTPUT_COUNT)
         self.assertTrue(all(value == 0.0 for value in astuple(action)))
 
     def test_signed_controls_use_centered_values_directly(self) -> None:
-        outputs = [0.0] * 16
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[0] = -1.0
         outputs[1] = 0.4
-        outputs[13] = 1.0
+        outputs[BrainOutputIndex.ACOUSTIC_TONE] = 1.0
 
         action = self.decide_with_outputs(outputs)
 
@@ -127,7 +144,7 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.sound_tone, 1.0)
 
     def test_positive_outputs_discard_negative_evidence(self) -> None:
-        outputs = [0.0] * 16
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[2:6] = [-1.0, 0.0, 0.4, 1.0]
 
         action = self.decide_with_outputs(outputs)
@@ -136,6 +153,21 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.want_eat, 0.0)
         self.assertEqual(action.reset_chronometer, 0.4)
         self.assertEqual(action.want_grab, 1.0)
+
+    def test_herding_uses_positive_centered_evidence_only(self) -> None:
+        for centered, expected in (
+            (-1.0, 0.0),
+            (0.0, 0.0),
+            (0.4, 0.4),
+            (1.0, 1.0),
+        ):
+            with self.subTest(centered=centered):
+                outputs = [0.0] * ACTION_OUTPUT_COUNT
+                outputs[BrainOutputIndex.HERDING] = centered
+                self.assertEqual(
+                    self.decide_with_outputs(outputs).herding,
+                    expected,
+                )
 
     def test_all_action_fields_remain_within_their_documented_ranges(self) -> None:
         outputs = [-2.0, 2.0] * 8
@@ -156,9 +188,7 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             "want_release",
             "want_nurse",
             "flee_panic_intensity",
-            "weight_separation",
-            "weight_alignment",
-            "weight_cohesion",
+            "herding",
             "emit_sound",
             "emit_trail_pheromone",
             "emit_alarm_pheromone",
@@ -173,14 +203,17 @@ class NeatBrainActionMappingTest(unittest.TestCase):
 
         action = brain.decide(sensor_snapshot())
 
-        self.assertEqual(brain.last_outputs, [0.4, -0.4] + [0.0] * 14)
+        self.assertEqual(
+            brain.last_outputs,
+            [0.4, -0.4] + [0.0] * (ACTION_OUTPUT_COUNT - 2),
+        )
         self.assertEqual(action.accelerate, 0.4)
         self.assertEqual(action.rotate, -0.4)
         self.assertEqual(action.want_reproduce, 0.0)
         self.assertEqual(action.emit_alarm_pheromone, 0.0)
 
-    def test_exactly_sixteen_outputs_are_preserved(self) -> None:
-        outputs = [index / 20.0 for index in range(16)]
+    def test_exactly_fourteen_outputs_are_preserved(self) -> None:
+        outputs = [index / 20.0 for index in range(ACTION_OUTPUT_COUNT)]
         brain = self.make_brain(outputs)
 
         brain.decide(sensor_snapshot())
@@ -188,24 +221,26 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(brain.last_outputs, outputs)
 
     def test_excess_outputs_are_ignored(self) -> None:
-        brain = self.make_brain([0.0] * 16 + [1.0, -1.0])
+        brain = self.make_brain(
+            [0.0] * ACTION_OUTPUT_COUNT + [1.0, -1.0]
+        )
 
         brain.decide(sensor_snapshot())
 
-        self.assertEqual(brain.last_outputs, [0.0] * 16)
+        self.assertEqual(brain.last_outputs, [0.0] * ACTION_OUTPUT_COUNT)
 
     def test_non_iterable_network_result_produces_neutral_action(self) -> None:
         brain = self.make_brain(1.0)
 
         action = brain.decide(sensor_snapshot())
 
-        self.assertEqual(brain.last_outputs, [0.0] * 16)
+        self.assertEqual(brain.last_outputs, [0.0] * ACTION_OUTPUT_COUNT)
         self.assertTrue(all(value == 0.0 for value in astuple(action)))
 
     def test_communication_outputs_use_centered_action_semantics(self) -> None:
-        neutral = self.decide_with_outputs([0.0] * 16)
+        neutral = self.decide_with_outputs([0.0] * ACTION_OUTPUT_COUNT)
         active = self.decide_with_outputs(
-            [0.0] * 12 + [0.5, -0.5, 1.0, 0.2]
+            [0.0] * 10 + [0.5, -0.5, 1.0, 0.2]
         )
 
         self.assertEqual(neutral.emit_sound, 0.0)
@@ -217,10 +252,10 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(active.emit_alarm_pheromone, 0.2)
 
     def test_relu_signed_outputs_are_intentionally_one_sided(self) -> None:
-        outputs = [0.0] * 16
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[1] = 0.4
-        outputs[13] = 1.2
-        brain = self.make_brain(outputs, ["relu"] * 16)
+        outputs[BrainOutputIndex.ACOUSTIC_TONE] = 1.2
+        brain = self.make_brain(outputs, ["relu"] * ACTION_OUTPUT_COUNT)
 
         action = brain.decide(sensor_snapshot())
 
@@ -372,6 +407,7 @@ class NeatConfigurationTest(unittest.TestCase):
         )
 
         genome_config = config.genome_config
+        self.assertEqual(len(genome_config.output_keys), ACTION_OUTPUT_COUNT)
         self.assertEqual(genome_config.activation_default, "sigmoid")
         self.assertEqual(genome_config.activation_mutate_rate, 0.01)
         self.assertEqual(
@@ -401,7 +437,7 @@ class LegacyBrainContractMigrationTest(unittest.TestCase):
             connections={},
         )
         genome_config = SimpleNamespace(
-            output_keys=list(range(16)),
+            output_keys=list(range(ACTION_OUTPUT_COUNT)),
             node_gene_type=FakeNode,
             bias_min_value=-5.0,
         )
@@ -412,8 +448,8 @@ class LegacyBrainContractMigrationTest(unittest.TestCase):
 
         controller.migrate_legacy_brain_contract()
 
-        self.assertEqual(set(genome.nodes), set(range(16)))
-        for key in range(8, 16):
+        self.assertEqual(set(genome.nodes), set(range(ACTION_OUTPUT_COUNT)))
+        for key in range(8, ACTION_OUTPUT_COUNT):
             self.assertEqual(genome.nodes[key].bias, -5.0)
         self.assertEqual(genome.connections, {})
 

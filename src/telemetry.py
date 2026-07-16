@@ -55,10 +55,16 @@ class TelemetryDatabase:
                 vision_range REAL,
                 vision_angle REAL,
                 movement_cost_multiplier REAL,
+                separation_gene REAL,
+                alignment_gene REAL,
+                cohesion_gene REAL,
                 radius_delta REAL,
                 vision_range_delta REAL,
                 vision_angle_delta REAL,
                 movement_cost_delta REAL,
+                separation_gene_delta REAL,
+                alignment_gene_delta REAL,
+                cohesion_gene_delta REAL,
                 neat_distance REAL,
                 phenotypic_distance REAL,
                 weighted_phenotypic_distance REAL,
@@ -69,6 +75,12 @@ class TelemetryDatabase:
                 vision_range_component REAL,
                 vision_angle_component REAL,
                 movement_cost_component REAL,
+                flocking_trait_distance REAL,
+                weighted_flocking_trait_distance REAL,
+                flocking_trait_distance_coefficient REAL,
+                separation_gene_component REAL,
+                alignment_gene_component REAL,
+                cohesion_gene_component REAL,
                 neat_changes_json TEXT,
                 emergence_food_ratio REAL,
                 emergence_pop_ratio REAL,
@@ -99,26 +111,29 @@ class TelemetryDatabase:
                 "PRAGMA table_info(species_history)"
             ).fetchall()
         }
-        if "neat_changes_json" not in columns:
-            self.connection.execute(
-                "ALTER TABLE species_history "
-                "ADD COLUMN neat_changes_json TEXT"
-            )
-        if "emergence_food_ratio" not in columns:
-            self.connection.execute(
-                "ALTER TABLE species_history "
-                "ADD COLUMN emergence_food_ratio REAL"
-            )
-        if "emergence_pop_ratio" not in columns:
-            self.connection.execute(
-                "ALTER TABLE species_history "
-                "ADD COLUMN emergence_pop_ratio REAL"
-            )
-        if "neural_shifts_json" not in columns:
-            self.connection.execute(
-                "ALTER TABLE species_history "
-                "ADD COLUMN neural_shifts_json TEXT"
-            )
+        required_columns = {
+            "neat_changes_json": "TEXT",
+            "emergence_food_ratio": "REAL",
+            "emergence_pop_ratio": "REAL",
+            "neural_shifts_json": "TEXT",
+            "separation_gene": "REAL",
+            "alignment_gene": "REAL",
+            "cohesion_gene": "REAL",
+            "separation_gene_delta": "REAL",
+            "alignment_gene_delta": "REAL",
+            "cohesion_gene_delta": "REAL",
+            "flocking_trait_distance": "REAL",
+            "weighted_flocking_trait_distance": "REAL",
+            "flocking_trait_distance_coefficient": "REAL",
+            "separation_gene_component": "REAL",
+            "alignment_gene_component": "REAL",
+            "cohesion_gene_component": "REAL",
+        }
+        for name, column_type in required_columns.items():
+            if name not in columns:
+                self.connection.execute(
+                    f"ALTER TABLE species_history ADD COLUMN {name} {column_type}"
+                )
 
     def log_species(
         self,
@@ -153,60 +168,73 @@ class TelemetryDatabase:
                 record.emerged_at,
             ),
         )
+        columns = (
+            "species_id", "parent_species_id", "founder_creature_id",
+            "founder_genome_id", "time_emerged", "color_red", "color_green",
+            "color_blue", "data_quality", "radius", "vision_range",
+            "vision_angle", "movement_cost_multiplier", "separation_gene",
+            "alignment_gene", "cohesion_gene", "radius_delta",
+            "vision_range_delta", "vision_angle_delta", "movement_cost_delta",
+            "separation_gene_delta", "alignment_gene_delta",
+            "cohesion_gene_delta", "neat_distance", "phenotypic_distance",
+            "weighted_phenotypic_distance", "composite_distance",
+            "compatibility_threshold", "phenotypic_weight", "radius_component",
+            "vision_range_component", "vision_angle_component",
+            "movement_cost_component", "flocking_trait_distance",
+            "weighted_flocking_trait_distance",
+            "flocking_trait_distance_coefficient", "separation_gene_component",
+            "alignment_gene_component", "cohesion_gene_component",
+            "neat_changes_json", "emergence_food_ratio", "emergence_pop_ratio",
+            "neural_shifts_json",
+        )
+        values = (
+            record.species_id,
+            record.parent_species_id,
+            record.founder_creature_id,
+            record.founder_genome_id,
+            record.emerged_at,
+            *color,
+            record.data_quality,
+            None if traits is None else traits.radius,
+            None if traits is None else traits.vision_range,
+            None if traits is None else traits.vision_angle,
+            None if traits is None else traits.movement_cost_multiplier,
+            None if traits is None else traits.separation_gene,
+            None if traits is None else traits.alignment_gene,
+            None if traits is None else traits.cohesion_gene,
+            None if deltas is None else deltas.radius,
+            None if deltas is None else deltas.vision_range,
+            None if deltas is None else deltas.vision_angle,
+            None if deltas is None else deltas.movement_cost_multiplier,
+            None if deltas is None else deltas.separation_gene,
+            None if deltas is None else deltas.alignment_gene,
+            None if deltas is None else deltas.cohesion_gene,
+            distances.neat_distance,
+            distances.phenotypic_distance,
+            distances.weighted_phenotypic_distance,
+            distances.composite_distance,
+            distances.compatibility_threshold,
+            distances.phenotypic_weight,
+            distances.radius_component,
+            distances.vision_range_component,
+            distances.vision_angle_component,
+            distances.movement_cost_component,
+            distances.flocking_trait_distance,
+            distances.weighted_flocking_trait_distance,
+            distances.flocking_trait_distance_coefficient,
+            distances.separation_gene_component,
+            distances.alignment_gene_component,
+            distances.cohesion_gene_component,
+            _serialize_neat_changes(getattr(record, "neat_changes", None)),
+            getattr(record, "emergence_food_ratio", None),
+            getattr(record, "emergence_pop_ratio", None),
+            _serialize_neural_shifts(getattr(record, "neural_shifts", ())),
+        )
         self.connection.execute(
-            """
-            INSERT OR REPLACE INTO species_history (
-                species_id, parent_species_id, founder_creature_id,
-                founder_genome_id, time_emerged, color_red, color_green,
-                color_blue, data_quality, radius, vision_range, vision_angle,
-                movement_cost_multiplier, radius_delta, vision_range_delta,
-                vision_angle_delta, movement_cost_delta, neat_distance,
-                phenotypic_distance, weighted_phenotypic_distance,
-                composite_distance, compatibility_threshold,
-                phenotypic_weight, radius_component, vision_range_component,
-                vision_angle_component, movement_cost_component,
-                neat_changes_json, emergence_food_ratio,
-                emergence_pop_ratio, neural_shifts_json
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )
-            """,
-            (
-                record.species_id,
-                record.parent_species_id,
-                record.founder_creature_id,
-                record.founder_genome_id,
-                record.emerged_at,
-                *color,
-                record.data_quality,
-                None if traits is None else traits.radius,
-                None if traits is None else traits.vision_range,
-                None if traits is None else traits.vision_angle,
-                None if traits is None else traits.movement_cost_multiplier,
-                None if deltas is None else deltas.radius,
-                None if deltas is None else deltas.vision_range,
-                None if deltas is None else deltas.vision_angle,
-                None if deltas is None else deltas.movement_cost_multiplier,
-                distances.neat_distance,
-                distances.phenotypic_distance,
-                distances.weighted_phenotypic_distance,
-                distances.composite_distance,
-                distances.compatibility_threshold,
-                distances.phenotypic_weight,
-                distances.radius_component,
-                distances.vision_range_component,
-                distances.vision_angle_component,
-                distances.movement_cost_component,
-                _serialize_neat_changes(
-                    getattr(record, "neat_changes", None)
-                ),
-                getattr(record, "emergence_food_ratio", None),
-                getattr(record, "emergence_pop_ratio", None),
-                _serialize_neural_shifts(
-                    getattr(record, "neural_shifts", ())
-                ),
-            ),
+            "INSERT OR REPLACE INTO species_history "
+            f"({', '.join(columns)}) VALUES "
+            f"({', '.join('?' for _ in columns)})",
+            values,
         )
         self.connection.commit()
 
@@ -233,12 +261,17 @@ class TelemetryDatabase:
                 species_id, parent_species_id, founder_creature_id,
                 founder_genome_id, time_emerged, color_red, color_green,
                 color_blue, data_quality, radius, vision_range, vision_angle,
-                movement_cost_multiplier, radius_delta, vision_range_delta,
-                vision_angle_delta, movement_cost_delta, neat_distance,
+                movement_cost_multiplier, separation_gene, alignment_gene,
+                cohesion_gene, radius_delta, vision_range_delta,
+                vision_angle_delta, movement_cost_delta, separation_gene_delta,
+                alignment_gene_delta, cohesion_gene_delta, neat_distance,
                 phenotypic_distance, weighted_phenotypic_distance,
                 composite_distance, compatibility_threshold,
                 phenotypic_weight, radius_component, vision_range_component,
                 vision_angle_component, movement_cost_component,
+                flocking_trait_distance, weighted_flocking_trait_distance,
+                flocking_trait_distance_coefficient, separation_gene_component,
+                alignment_gene_component, cohesion_gene_component,
                 neat_changes_json, emergence_food_ratio,
                 emergence_pop_ratio, neural_shifts_json
             FROM species_history
@@ -265,10 +298,16 @@ class TelemetryDatabase:
                 vision_range,
                 vision_angle,
                 movement_cost_multiplier,
+                separation_gene,
+                alignment_gene,
+                cohesion_gene,
                 radius_delta,
                 vision_range_delta,
                 vision_angle_delta,
                 movement_cost_delta,
+                separation_gene_delta,
+                alignment_gene_delta,
+                cohesion_gene_delta,
                 neat_distance,
                 phenotypic_distance,
                 weighted_phenotypic_distance,
@@ -279,6 +318,12 @@ class TelemetryDatabase:
                 vision_range_component,
                 vision_angle_component,
                 movement_cost_component,
+                flocking_trait_distance,
+                weighted_flocking_trait_distance,
+                flocking_trait_distance_coefficient,
+                separation_gene_component,
+                alignment_gene_component,
+                cohesion_gene_component,
                 neat_changes_json,
                 emergence_food_ratio,
                 emergence_pop_ratio,
@@ -303,12 +348,22 @@ class TelemetryDatabase:
                     vision_range,
                     vision_angle,
                     movement_cost_multiplier,
+                    separation_gene,
+                    alignment_gene,
+                    cohesion_gene,
+                    gene_default=0.5,
+                    bounded_genes=True,
                 ),
                 trait_deltas=_trait_snapshot(
                     radius_delta,
                     vision_range_delta,
                     vision_angle_delta,
                     movement_cost_delta,
+                    separation_gene_delta,
+                    alignment_gene_delta,
+                    cohesion_gene_delta,
+                    gene_default=0.0,
+                    bounded_genes=False,
                 ),
                 distances=SpeciesDistanceBreakdown(
                     neat_distance=neat_distance,
@@ -321,6 +376,16 @@ class TelemetryDatabase:
                     vision_range_component=vision_range_component,
                     vision_angle_component=vision_angle_component,
                     movement_cost_component=movement_cost_component,
+                    flocking_trait_distance=flocking_trait_distance,
+                    weighted_flocking_trait_distance=(
+                        weighted_flocking_trait_distance
+                    ),
+                    flocking_trait_distance_coefficient=(
+                        flocking_trait_distance_coefficient
+                    ),
+                    separation_gene_component=separation_gene_component,
+                    alignment_gene_component=alignment_gene_component,
+                    cohesion_gene_component=cohesion_gene_component,
                 ),
                 neat_changes=_deserialize_neat_changes(neat_changes_json),
                 emergence_food_ratio=_optional_float(emergence_food_ratio),
@@ -472,6 +537,12 @@ def _trait_snapshot(
     vision_range: float | None,
     vision_angle: float | None,
     movement_cost_multiplier: float | None,
+    separation_gene: float | None,
+    alignment_gene: float | None,
+    cohesion_gene: float | None,
+    *,
+    gene_default: float,
+    bounded_genes: bool,
 ) -> SpeciesTraitSnapshot | None:
     if (
         radius is None
@@ -480,11 +551,21 @@ def _trait_snapshot(
         or movement_cost_multiplier is None
     ):
         return None
+    genes = [
+        gene_default if separation_gene is None else float(separation_gene),
+        gene_default if alignment_gene is None else float(alignment_gene),
+        gene_default if cohesion_gene is None else float(cohesion_gene),
+    ]
+    if bounded_genes:
+        genes = [max(0.0, min(1.0, gene)) for gene in genes]
     return SpeciesTraitSnapshot(
         radius=float(radius),
         vision_range=float(vision_range),
         vision_angle=float(vision_angle),
         movement_cost_multiplier=float(movement_cost_multiplier),
+        separation_gene=genes[0],
+        alignment_gene=genes[1],
+        cohesion_gene=genes[2],
     )
 
 

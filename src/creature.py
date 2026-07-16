@@ -21,12 +21,34 @@ class PhysicalTraits:
     movement_cost_multiplier: float = 1.0
 
 
+@dataclass(frozen=True, slots=True)
+class FlockingTraits:
+    separation_gene: float = 0.5
+    alignment_gene: float = 0.5
+    cohesion_gene: float = 0.5
+
+    def __post_init__(self) -> None:
+        for name in (
+            "separation_gene",
+            "alignment_gene",
+            "cohesion_gene",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                max(0.0, min(1.0, float(getattr(self, name)))),
+            )
+
+
 @dataclass(slots=True)
 class TraitMutationDelta:
     vision_range: float = 0.0
     vision_angle: float = 0.0
     radius: float = 0.0
     movement_cost_multiplier: float = 0.0
+    separation_gene: float = 0.0
+    alignment_gene: float = 0.0
+    cohesion_gene: float = 0.0
 
 
 @dataclass(slots=True)
@@ -47,6 +69,7 @@ class Creature:
     vision: VisionTraits
     physical_traits: PhysicalTraits
     color: Color
+    flocking_traits: FlockingTraits = field(default_factory=FlockingTraits)
     stomach_energy: float = 0.0
     lineage: LineageInfo = field(default_factory=LineageInfo)
     render_sprite: object | None = None

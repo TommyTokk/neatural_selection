@@ -20,7 +20,7 @@ except ModuleNotFoundError:
     )
 
 from configs.sim_config import TraitConfig, VisionConfig
-from src.creature import PhysicalTraits, VisionTraits
+from src.creature import FlockingTraits, PhysicalTraits, VisionTraits
 from src.neat_controller import (
     ContinuousSpeciesManager,
     NeatBrainController,
@@ -75,28 +75,38 @@ def vision(range_: float = 100.0, angle: float = 1.0) -> VisionTraits:
 
 class PhenotypicDistanceTest(unittest.TestCase):
     def test_radius_and_vision_range_are_normalized_by_configured_ranges(self) -> None:
-        representative_physical = physical(radius=12.0)
-        representative_vision = vision(range_=90.0)
+        trait_config = TraitConfig()
+        vision_config = VisionConfig()
+        representative_physical = physical(radius=trait_config.min_radius)
+        representative_vision = vision(range_=vision_config.min_range)
+        radius_delta = 2.0
+        vision_range_delta = 15.0
 
         radius_distance = calculate_phenotypic_distance(
-            physical(radius=14.0),
+            physical(radius=trait_config.min_radius + radius_delta),
             representative_vision,
             representative_physical,
             representative_vision,
-            TraitConfig(),
-            VisionConfig(),
+            trait_config,
+            vision_config,
         )
         vision_distance = calculate_phenotypic_distance(
             representative_physical,
-            vision(range_=105.0),
+            vision(range_=vision_config.min_range + vision_range_delta),
             representative_physical,
             representative_vision,
-            TraitConfig(),
-            VisionConfig(),
+            trait_config,
+            vision_config,
         )
 
-        self.assertAlmostEqual(radius_distance, 0.20)
-        self.assertAlmostEqual(vision_distance, 15.0 / 70.0)
+        self.assertAlmostEqual(
+            radius_distance,
+            radius_delta / (trait_config.max_radius - trait_config.min_radius),
+        )
+        self.assertAlmostEqual(
+            vision_distance,
+            vision_range_delta / (vision_config.max_range - vision_config.min_range),
+        )
 
     def test_values_are_clamped_and_custom_ranges_are_used(self) -> None:
         trait_config = TraitConfig(
@@ -146,13 +156,23 @@ class PhenotypicDistanceTest(unittest.TestCase):
 
 class ContinuousSpeciesManagerTest(unittest.TestCase):
     def setUp(self) -> None:
+        self.trait_config = TraitConfig()
+        self.vision_config = VisionConfig()
         self.manager = ContinuousSpeciesManager(
             compatibility_threshold=3.0,
             phenotypic_weight=2.0,
+            trait_config=self.trait_config,
+            vision_config=self.vision_config,
         )
         self.representative = FakeGenome()
-        self.representative_physical = physical(radius=12.0, movement=0.75)
-        self.representative_vision = vision(range_=90.0, angle=0.35)
+        self.representative_physical = physical(
+            radius=self.trait_config.min_radius,
+            movement=self.trait_config.min_movement_cost_multiplier,
+        )
+        self.representative_vision = vision(
+            range_=self.vision_config.min_range,
+            angle=self.vision_config.min_angle,
+        )
         self.manager.register_initial_representative(
             self.representative,
             self.representative_physical,
@@ -206,8 +226,10 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
     def test_body_only_change_creates_species(self) -> None:
         result = self.evaluate(
             FakeGenome(distance=0.0),
-            physical(radius=22.0, movement=0.75),
-            vision(range_=132.0, angle=0.35),
+            physical(
+                radius=self.trait_config.max_radius,
+                movement=self.trait_config.max_movement_cost_multiplier,
+            ),
         )
 
         self.assertEqual(result.species_id, 2)
@@ -251,7 +273,7 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertTrue(first_result.is_new_species)
         self.assertEqual(second_result.species_id, 3)
         self.assertTrue(second_result.is_new_species)
-        stored_genome, stored_physical, stored_vision = (
+        stored_genome, stored_physical, stored_vision, stored_flocking = (
             self.manager.representatives[2]
         )
         self.assertIs(stored_genome, first_founder)
@@ -259,6 +281,7 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(stored_vision, first_vision)
         self.assertIsNot(stored_physical, first_physical)
         self.assertIsNot(stored_vision, first_vision)
+        self.assertEqual(stored_flocking, FlockingTraits())
         self.assertEqual(self.manager.next_species_id, 4)
 
     def test_initial_brain_assignment_uses_first_creature_as_luca(self) -> None:
@@ -298,6 +321,7 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertIs(representative[0], first_genome)
         self.assertEqual(representative[1], creatures[0].physical_traits)
         self.assertEqual(representative[2], creatures[0].vision)
+        self.assertEqual(representative[3], FlockingTraits())
         self.assertEqual(set(controller.brains), {1, 2})
 
     def test_child_brain_creation_returns_species_result(self) -> None:
@@ -344,6 +368,25 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(result.species_id, 2)
         self.assertTrue(result.is_new_species)
         self.assertIs(controller.brains[20], brain)
+
+    def test_flocking_gene_distance_contributes_to_species_compatibility(
+        self,
+    ) -> None:
+        self.manager.compatibility_threshold = 0.49
+        self.manager.flocking_trait_distance_coefficient = 1.0
+
+        result = self.manager.evaluate_species(
+            FakeGenome(distance=0.0),
+            self.representative_physical,
+            self.representative_vision,
+            1,
+            object(),
+            FlockingTraits(1.0, 1.0, 1.0),
+        )
+
+        self.assertTrue(result.is_new_species)
+        self.assertEqual(result.distances.flocking_trait_distance, 0.5)
+        self.assertEqual(result.distances.composite_distance, 0.5)
 
 
 class NeatChangeSummaryTest(unittest.TestCase):

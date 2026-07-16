@@ -99,7 +99,12 @@ from src.brain_graph import (
     BrainNodeKind,
     build_brain_graph_layout,
 )
-from src.creature import LineageInfo, PhysicalTraits, TraitMutationDelta
+from src.creature import (
+    FlockingTraits,
+    LineageInfo,
+    PhysicalTraits,
+    TraitMutationDelta,
+)
 from src.layout import build_screen_layout
 from src.speciation import (
     NeatChangeSummary,
@@ -1488,6 +1493,8 @@ class FloatingSimulationUiTest(unittest.TestCase):
                 radius=18.0,
                 movement_cost_multiplier=1.12,
             ),
+            flocking_traits=FlockingTraits(0.8, 0.3, 0.6),
+            last_action=SimpleNamespace(herding=0.7),
             lineage=LineageInfo(
                 parent_id=12,
                 generation=3,
@@ -1523,7 +1530,22 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertEqual(rows["inspector_lineage"], ("Lineage", "Parent 12 / Gen 3"))
         self.assertEqual(
             rows["inspector_mutations"],
-            ("Mutations", "R +1.0, V +2.0/-0.03, M +0.04"),
+            (
+                "Mutations",
+                "R +1.0, V +2.0/-0.03, M +0.04, F +0.00/+0.00/+0.00",
+            ),
+        )
+        self.assertEqual(
+            rows["inspector_flocking_genes"],
+            ("Flocking genes (inherited)", "S 0.80 / A 0.30 / C 0.60"),
+        )
+        self.assertEqual(
+            rows["inspector_herding"],
+            ("Herding (current)", "0.70"),
+        )
+        self.assertEqual(
+            rows["inspector_collision_avoidance"],
+            ("Collision avoidance", "Universal / automatic"),
         )
 
     def test_progress_bar_zero_ratio_skips_fill(self) -> None:
@@ -2312,7 +2334,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             },
             connections={},
         )
-        representative = (genome, object(), object())
+        representative = (genome, object(), object(), object())
         world = self.make_world(
             records,
             representatives={1: representative, 2: representative},
@@ -2722,7 +2744,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
                         input_keys=list(range(-1, -38, -1)),
-                        output_keys=list(range(16)),
+                        output_keys=list(range(14)),
                     )
                 )
             )
@@ -2740,7 +2762,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertEqual(labels[-37], "alarm_pheromone_forward_right")
         self.assertEqual(labels[0], "accelerate")
         self.assertEqual(labels[3], "want_eat")
-        self.assertEqual(labels[12], "emit_sound")
+        self.assertEqual(labels[10], "emit_sound")
 
     def test_species_tree_reuses_and_invalidates_neat_label_cache(self) -> None:
         genome_config = SimpleNamespace(

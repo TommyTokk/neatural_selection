@@ -1,27 +1,48 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntEnum
 from math import cos, sin
 
-ACTION_OUTPUT_COUNT = 16
-ACTION_OUTPUT_NAMES = (
-    "accelerate",
-    "rotate",
-    "want_reproduce",
-    "want_eat",
-    "reset_chronometer",
-    "want_grab",
-    "want_release",
-    "want_nurse",
-    "flee_panic_intensity",
-    "weight_separation",
-    "weight_alignment",
-    "weight_cohesion",
-    "emit_sound",
-    "sound_tone",
-    "emit_trail_pheromone",
-    "emit_alarm_pheromone",
+
+class BrainOutputIndex(IntEnum):
+    ACCELERATE = 0
+    ROTATE = 1
+    REPRODUCE = 2
+    EAT = 3
+    RESET_CHRONOMETER = 4
+    GRAB_FOOD = 5
+    RELEASE_FOOD = 6
+    NURSE = 7
+    PANIC = 8
+    HERDING = 9
+    ACOUSTIC_EMISSION = 10
+    ACOUSTIC_TONE = 11
+    TRAIL_PHEROMONE = 12
+    ALARM_PHEROMONE = 13
+
+
+ACTION_SCHEMA_VERSION = 1
+_ACTION_OUTPUT_NAME_BY_INDEX = {
+    BrainOutputIndex.ACCELERATE: "accelerate",
+    BrainOutputIndex.ROTATE: "rotate",
+    BrainOutputIndex.REPRODUCE: "want_reproduce",
+    BrainOutputIndex.EAT: "want_eat",
+    BrainOutputIndex.RESET_CHRONOMETER: "reset_chronometer",
+    BrainOutputIndex.GRAB_FOOD: "want_grab",
+    BrainOutputIndex.RELEASE_FOOD: "want_release",
+    BrainOutputIndex.NURSE: "want_nurse",
+    BrainOutputIndex.PANIC: "flee_panic_intensity",
+    BrainOutputIndex.HERDING: "herding",
+    BrainOutputIndex.ACOUSTIC_EMISSION: "emit_sound",
+    BrainOutputIndex.ACOUSTIC_TONE: "sound_tone",
+    BrainOutputIndex.TRAIL_PHEROMONE: "emit_trail_pheromone",
+    BrainOutputIndex.ALARM_PHEROMONE: "emit_alarm_pheromone",
+}
+ACTION_OUTPUT_NAMES = tuple(
+    _ACTION_OUTPUT_NAME_BY_INDEX[output] for output in BrainOutputIndex
 )
+ACTION_OUTPUT_COUNT = len(ACTION_OUTPUT_NAMES)
 INTENT_THRESHOLD = 0.1
 
 
@@ -41,9 +62,7 @@ class Action:
     want_release: float
     want_nurse: float = 0.0
     flee_panic_intensity: float = 0.0
-    weight_separation: float = 0.0
-    weight_alignment: float = 0.0
-    weight_cohesion: float = 0.0
+    herding: float = 0.0
     emit_sound: float = 0.0
     sound_tone: float = 0.0
     emit_trail_pheromone: float = 0.0
@@ -63,9 +82,7 @@ class Action:
                 0.0,
                 min(1.0, self.flee_panic_intensity),
             ),
-            weight_separation=max(0.0, min(1.0, self.weight_separation)),
-            weight_alignment=max(0.0, min(1.0, self.weight_alignment)),
-            weight_cohesion=max(0.0, min(1.0, self.weight_cohesion)),
+            herding=max(0.0, min(1.0, self.herding)),
             emit_sound=max(0.0, min(1.0, self.emit_sound)),
             sound_tone=max(-1.0, min(1.0, self.sound_tone)),
             emit_trail_pheromone=max(
@@ -77,6 +94,28 @@ class Action:
                 min(1.0, self.emit_alarm_pheromone),
             ),
         )
+
+
+def calculate_flocking_weights(
+    *,
+    herding: float,
+    panic: float,
+    separation_gene: float,
+    alignment_gene: float,
+    cohesion_gene: float,
+) -> tuple[float, float, float]:
+    """Return bounded same-species social flocking weights."""
+    herding = max(0.0, min(1.0, herding))
+    panic = max(0.0, min(1.0, panic))
+    separation_gene = max(0.0, min(1.0, separation_gene))
+    alignment_gene = max(0.0, min(1.0, alignment_gene))
+    cohesion_gene = max(0.0, min(1.0, cohesion_gene))
+    calm = 1.0 - panic
+    return (
+        separation_gene * herding,
+        alignment_gene * herding * calm,
+        cohesion_gene * herding * calm,
+    )
 
 
 def acceleration_force_vector(

@@ -11,6 +11,7 @@ from src.action import (
     ACTION_OUTPUT_COUNT,
     ACTION_OUTPUT_NAMES,
     Action,
+    BrainOutputIndex,
 )
 from src.vision import SENSOR_INPUT_NAMES, SensorSnapshot
 
@@ -70,27 +71,41 @@ class NeatBrain:
         self.last_outputs = centered_outputs
 
         self.last_action = Action(
-            accelerate=centered_outputs[0],
-            rotate=centered_outputs[1],
-            want_reproduce=self._positive_action_output(centered_outputs[2]),
-            want_eat=self._positive_action_output(centered_outputs[3]),
-            reset_chronometer=self._positive_action_output(centered_outputs[4]),
-            want_grab=self._positive_action_output(centered_outputs[5]),
-            want_release=self._positive_action_output(centered_outputs[6]),
-            want_nurse=self._positive_action_output(centered_outputs[7]),
-            flee_panic_intensity=self._positive_action_output(
-                centered_outputs[8]
+            accelerate=centered_outputs[BrainOutputIndex.ACCELERATE],
+            rotate=centered_outputs[BrainOutputIndex.ROTATE],
+            want_reproduce=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.REPRODUCE]
             ),
-            weight_separation=self._positive_action_output(centered_outputs[9]),
-            weight_alignment=self._positive_action_output(centered_outputs[10]),
-            weight_cohesion=self._positive_action_output(centered_outputs[11]),
-            emit_sound=self._positive_action_output(centered_outputs[12]),
-            sound_tone=centered_outputs[13],
+            want_eat=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.EAT]
+            ),
+            reset_chronometer=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.RESET_CHRONOMETER]
+            ),
+            want_grab=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.GRAB_FOOD]
+            ),
+            want_release=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.RELEASE_FOOD]
+            ),
+            want_nurse=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.NURSE]
+            ),
+            flee_panic_intensity=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.PANIC]
+            ),
+            herding=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.HERDING]
+            ),
+            emit_sound=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.ACOUSTIC_EMISSION]
+            ),
+            sound_tone=centered_outputs[BrainOutputIndex.ACOUSTIC_TONE],
             emit_trail_pheromone=self._positive_action_output(
-                centered_outputs[14]
+                centered_outputs[BrainOutputIndex.TRAIL_PHEROMONE]
             ),
             emit_alarm_pheromone=self._positive_action_output(
-                centered_outputs[15]
+                centered_outputs[BrainOutputIndex.ALARM_PHEROMONE]
             ),
         ).clamped()
         return self.last_action
@@ -154,7 +169,7 @@ class NeatBrain:
         return tuple(result)
 
     def _normalize_outputs(self, raw_outputs: Any) -> list[float]:
-        """Return 16 independent, finite neural outputs centered in [-1, 1]."""
+        """Return 14 independent, finite neural outputs centered in [-1, 1]."""
         try:
             output_values = list(raw_outputs)
         except TypeError:

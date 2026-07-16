@@ -15,7 +15,7 @@ import unittest
 import weakref
 
 from configs.sim_config import build_sim_config
-from src.creature import PhysicalTraits, VisionTraits
+from src.creature import FlockingTraits, PhysicalTraits, VisionTraits
 from src.persistence import (
     CHECKPOINT_VERSION,
     CheckpointError,
@@ -49,9 +49,10 @@ class PersistenceManagerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_checkpoint_versions_9_and_10_remain_loadable(self) -> None:
+    def test_checkpoint_versions_9_through_11_remain_loadable(self) -> None:
         PersistenceManager._validate_state({"version": 9})
         PersistenceManager._validate_state({"version": 10})
+        PersistenceManager._validate_state({"version": 11})
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
         first_state = {"version": CHECKPOINT_VERSION, "value": "first"}
@@ -458,6 +459,7 @@ class PersistenceManagerTest(unittest.TestCase):
         self.assertIs(migrated[2][0], genome)
         self.assertEqual(migrated[2][1], physical_traits)
         self.assertEqual(migrated[2][2], vision)
+        self.assertEqual(migrated[2][3], FlockingTraits())
         self.assertIsNot(migrated[2][1], physical_traits)
         self.assertIsNot(migrated[2][2], vision)
 
@@ -601,7 +603,7 @@ class PersistenceManagerTest(unittest.TestCase):
             )
 
             species_manager = restored.neat_controller.species_manager
-            representative_genome, physical_traits, vision = (
+            representative_genome, physical_traits, vision, flocking_traits = (
                 species_manager.representatives[1]
             )
             species_manager.compatibility_threshold = -1.0
@@ -611,6 +613,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 copy.deepcopy(vision),
                 1,
                 restored.neat_controller.config.genome_config,
+                copy.deepcopy(flocking_traits),
             )
             founder = restored.creatures[0]
             founder.lineage.species_id = result.species_id
@@ -750,8 +753,10 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored,
                 restored.neat_controller,
             )
-            self.assertEqual(current_state["version"], 11)
+            self.assertEqual(current_state["version"], 12)
             self.assertEqual(current_state["brain_contract"]["sensor_schema"], 2)
+            self.assertEqual(current_state["brain_contract"]["outputs"], 14)
+            self.assertEqual(current_state["brain_contract"]["action_schema"], 1)
             saved_ema = current_state["creatures"][0]["biome_fertility_ema"]
             round_tripped = PersistenceManager._restore_world(
                 current_state,
@@ -774,6 +779,52 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.close()
             if round_tripped is not None:
                 round_tripped.close()
+
+    def test_version_11_output_schema_migrates_genes_and_resets_brains(self) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 1
+        self.config.food.initial_food_items = 0
+        world = World(self.config, simulation_paths=self.simulation_paths)
+        restored = None
+        try:
+            state = PersistenceManager._capture_state(world, world.neat_controller)
+            original_brain = world.neat_controller.brain_for(1)
+            state["version"] = 11
+            state["brain_contract"]["outputs"] = 16
+            state["brain_contract"].pop("action_schema")
+            state["creatures"][0].pop("flocking_traits")
+            state["creatures"][0]["lineage"].parent_id = 77
+            state["creatures"][0]["lineage"].generation = 4
+            state["creatures"][0]["lineage"].mutation_delta.radius = 1.25
+
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+            )
+
+            self.assertEqual(
+                restored.creatures[0].flocking_traits,
+                FlockingTraits(0.5, 0.5, 0.5),
+            )
+            self.assertEqual(restored.creatures[0].lineage.parent_id, 77)
+            self.assertEqual(restored.creatures[0].lineage.generation, 4)
+            self.assertEqual(
+                restored.creatures[0].lineage.mutation_delta.radius,
+                1.25,
+            )
+            restored_brain = restored.neat_controller.brain_for(1)
+            self.assertIsNot(restored_brain.genome, original_brain.genome)
+            self.assertEqual(
+                len(restored.neat_controller.config.genome_config.output_keys),
+                14,
+            )
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
 
     def test_legacy_checkpoint_reconstructs_neat_allocators_before_mutation(
         self,
@@ -961,6 +1012,14 @@ class SpeciesHistoryReconstructionTest(unittest.TestCase):
         lineage: list[tuple[int, int | None, float | None]],
     ) -> tuple[object, object]:
         config = build_sim_config()
+        root_radius = config.trait.min_radius
+        child_radius = root_radius + 0.5 * (
+            config.trait.max_radius - config.trait.min_radius
+        )
+        root_vision_range = config.vision.min_range
+        child_vision_range = root_vision_range + 0.2 * (
+            config.vision.max_range - config.vision.min_range
+        )
         root_genome = SimpleNamespace(key=1)
         child_genome = SimpleNamespace(
             key=2,
@@ -970,13 +1029,19 @@ class SpeciesHistoryReconstructionTest(unittest.TestCase):
             representatives={
                 1: (
                     root_genome,
-                    PhysicalTraits(radius=12.0),
-                    VisionTraits(range=90.0, angle=0.35),
+                    PhysicalTraits(radius=root_radius),
+                    VisionTraits(
+                        range=root_vision_range,
+                        angle=config.vision.min_angle,
+                    ),
                 ),
                 2: (
                     child_genome,
-                    PhysicalTraits(radius=17.0),
-                    VisionTraits(range=104.0, angle=0.35),
+                    PhysicalTraits(radius=child_radius),
+                    VisionTraits(
+                        range=child_vision_range,
+                        angle=config.vision.min_angle,
+                    ),
                 ),
             },
             compatibility_threshold=3.0,

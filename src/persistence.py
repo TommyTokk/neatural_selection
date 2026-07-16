@@ -7,12 +7,15 @@ from enum import IntEnum
 from pathlib import Path
 import os
 import pickle
+import logging
 import shutil
 from threading import Condition, Thread
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from configs.sim_config import PersistenceConfig, SimConfig
+from src.action import ACTION_OUTPUT_COUNT, ACTION_SCHEMA_VERSION
+from src.creature import FlockingTraits
 from src.vision import SENSING_SCHEMA_VERSION
 
 if TYPE_CHECKING:
@@ -20,8 +23,9 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 11
-LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7, 8, 9, 10}
+CHECKPOINT_VERSION = 12
+LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+LOGGER = logging.getLogger(__name__)
 
 
 def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
@@ -400,6 +404,9 @@ class PersistenceManager:
                     ),
                     "vision": copy.deepcopy(creature.vision),
                     "physical_traits": copy.deepcopy(creature.physical_traits),
+                    "flocking_traits": copy.deepcopy(
+                        getattr(creature, "flocking_traits", FlockingTraits())
+                    ),
                     "color": tuple(creature.color),
                     "lineage": copy.deepcopy(creature.lineage),
                     "fitness": copy.deepcopy(
@@ -449,7 +456,11 @@ class PersistenceManager:
             None,
         )
         input_count = 37 if genome_config is None else len(genome_config.input_keys)
-        output_count = 16 if genome_config is None else len(genome_config.output_keys)
+        output_count = (
+            ACTION_OUTPUT_COUNT
+            if genome_config is None
+            else len(genome_config.output_keys)
+        )
         next_creature_id = getattr(world, "_next_creature_id_value", None)
         if next_creature_id is None:
             next_creature_id = max(
@@ -505,6 +516,7 @@ class PersistenceManager:
                 "inputs": input_count,
                 "outputs": output_count,
                 "sensor_schema": SENSING_SCHEMA_VERSION,
+                "action_schema": ACTION_SCHEMA_VERSION,
             },
             "simulation_id": world.simulation_paths.simulation_id,
             "sim_time": world.elapsed_time,
@@ -548,6 +560,13 @@ class PersistenceManager:
                     species_manager.compatibility_threshold
                 ),
                 "phenotypic_weight": species_manager.phenotypic_weight,
+                "flocking_trait_distance_coefficient": (
+                    getattr(
+                        species_manager,
+                        "flocking_trait_distance_coefficient",
+                        1.0,
+                    )
+                ),
                 "representatives": evolution_state["representatives"],
                 "next_species_id": species_manager.next_species_id,
             },
@@ -626,19 +645,69 @@ class PersistenceManager:
         representatives: dict[int, Any],
         creature_states: list[dict[str, Any]],
         archived_traits: dict[int, Any],
+        default_flocking_traits: FlockingTraits | None = None,
     ) -> dict[int, Any]:
+        default_flocking = default_flocking_traits or FlockingTraits()
+
+        def normalized_flocking(value: object) -> FlockingTraits:
+            return FlockingTraits(
+                separation_gene=getattr(
+                    value,
+                    "separation_gene",
+                    default_flocking.separation_gene,
+                ),
+                alignment_gene=getattr(
+                    value,
+                    "alignment_gene",
+                    default_flocking.alignment_gene,
+                ),
+                cohesion_gene=getattr(
+                    value,
+                    "cohesion_gene",
+                    default_flocking.cohesion_gene,
+                ),
+            )
+
         living_traits = {
             creature_state["genome_id"]: (
                 creature_state["physical_traits"],
                 creature_state["vision"],
+                creature_state.get("flocking_traits", default_flocking),
             )
             for creature_state in creature_states
             if creature_state.get("genome_id") is not None
         }
         migrated: dict[int, Any] = {}
         for species_id, representative in representatives.items():
+            if isinstance(representative, tuple) and len(representative) == 4:
+                genome, physical_traits, vision, flocking = representative
+                migrated[species_id] = (
+                    genome,
+                    copy.deepcopy(physical_traits),
+                    copy.deepcopy(vision),
+                    normalized_flocking(flocking),
+                )
+                continue
+
             if isinstance(representative, tuple) and len(representative) == 3:
-                migrated[species_id] = representative
+                genome, physical_traits, vision = representative
+                genome_id = getattr(genome, "key", None)
+                known_traits = living_traits.get(genome_id)
+                if known_traits is None:
+                    archived = archived_traits.get(genome_id)
+                    flocking = getattr(
+                        archived,
+                        "flocking_traits",
+                        default_flocking,
+                    )
+                else:
+                    flocking = known_traits[2]
+                migrated[species_id] = (
+                    genome,
+                    copy.deepcopy(physical_traits),
+                    copy.deepcopy(vision),
+                    normalized_flocking(flocking),
+                )
                 continue
 
             genome_id = getattr(representative, "key", None)
@@ -646,7 +715,15 @@ class PersistenceManager:
             if traits is None:
                 archived = archived_traits.get(genome_id)
                 if archived is not None:
-                    traits = (archived.physical_traits, archived.vision)
+                    traits = (
+                        archived.physical_traits,
+                        archived.vision,
+                        getattr(
+                            archived,
+                            "flocking_traits",
+                            default_flocking,
+                        ),
+                    )
             if traits is None:
                 raise CheckpointError(
                     "Cannot migrate species "
@@ -654,11 +731,12 @@ class PersistenceManager:
                     "has no living or archived phenotype."
                 )
 
-            physical_traits, vision = traits
+            physical_traits, vision, flocking_traits = traits
             migrated[species_id] = (
                 representative,
                 copy.deepcopy(physical_traits),
                 copy.deepcopy(vision),
+                normalized_flocking(flocking_traits),
             )
         return migrated
 
@@ -669,7 +747,10 @@ class PersistenceManager:
         *,
         up_to_time: float | None = None,
     ) -> dict[int, Any]:
-        from src.neat_controller import calculate_phenotypic_distance_components
+        from src.neat_controller import (
+            calculate_flocking_trait_distance,
+            calculate_phenotypic_distance_components,
+        )
         from src.speciation import (
             NeatChangeSummary,
             SpeciesDistanceBreakdown,
@@ -691,9 +772,26 @@ class PersistenceManager:
             for species_id, parent_species_id, emerged_at in lineage_rows
         }
         manager = neat_controller.species_manager
+        flocking_coefficient = getattr(
+            manager,
+            "flocking_trait_distance_coefficient",
+            1.0,
+        )
+
+        def complete_representative(
+            representative: tuple[Any, ...],
+        ) -> tuple[Any, Any, Any, FlockingTraits]:
+            if len(representative) == 4:
+                genome, physical_traits, vision, flocking_traits = representative
+                return genome, physical_traits, vision, flocking_traits
+            genome, physical_traits, vision = representative
+            return genome, physical_traits, vision, FlockingTraits()
+
         records: dict[int, SpeciesRecord] = {}
         for species_id, representative in sorted(manager.representatives.items()):
-            genome, physical_traits, vision = representative
+            genome, physical_traits, vision, flocking_traits = (
+                complete_representative(representative)
+            )
             parent_species_id, emerged_at = lineage.get(
                 species_id,
                 (None, 0.0 if species_id == 1 else None),
@@ -732,6 +830,11 @@ class PersistenceManager:
                 vision_range_component=None,
                 vision_angle_component=None,
                 movement_cost_component=None,
+                flocking_trait_distance=None,
+                weighted_flocking_trait_distance=None,
+                flocking_trait_distance_coefficient=(
+                    flocking_coefficient
+                ),
             )
             can_reconstruct = (
                 parent_species_id is not None
@@ -751,9 +854,22 @@ class PersistenceManager:
                     vision_range_component=0.0,
                     vision_angle_component=0.0,
                     movement_cost_component=0.0,
+                    flocking_trait_distance=0.0,
+                    weighted_flocking_trait_distance=0.0,
+                    flocking_trait_distance_coefficient=(
+                        flocking_coefficient
+                    ),
+                    separation_gene_component=0.0,
+                    alignment_gene_component=0.0,
+                    cohesion_gene_component=0.0,
                 )
             elif can_reconstruct:
-                parent_genome, parent_physical, parent_vision = (
+                (
+                    parent_genome,
+                    parent_physical,
+                    parent_vision,
+                    parent_flocking,
+                ) = complete_representative(
                     manager.representatives[parent_species_id]
                 )
                 components = calculate_phenotypic_distance_components(
@@ -778,6 +894,19 @@ class PersistenceManager:
                 weighted_distance = (
                     phenotypic_distance * manager.phenotypic_weight
                 )
+                (
+                    flocking_distance,
+                    separation_component,
+                    alignment_component,
+                    cohesion_component,
+                ) = calculate_flocking_trait_distance(
+                    flocking_traits,
+                    parent_flocking,
+                )
+                weighted_flocking_distance = (
+                    flocking_distance
+                    * flocking_coefficient
+                )
                 deltas = SpeciesTraitSnapshot(
                     radius=physical_traits.radius - parent_physical.radius,
                     vision_range=vision.range - parent_vision.range,
@@ -786,12 +915,28 @@ class PersistenceManager:
                         physical_traits.movement_cost_multiplier
                         - parent_physical.movement_cost_multiplier
                     ),
+                    separation_gene=(
+                        flocking_traits.separation_gene
+                        - parent_flocking.separation_gene
+                    ),
+                    alignment_gene=(
+                        flocking_traits.alignment_gene
+                        - parent_flocking.alignment_gene
+                    ),
+                    cohesion_gene=(
+                        flocking_traits.cohesion_gene
+                        - parent_flocking.cohesion_gene
+                    ),
                 )
                 distances = SpeciesDistanceBreakdown(
                     neat_distance=neat_distance,
                     phenotypic_distance=phenotypic_distance,
                     weighted_phenotypic_distance=weighted_distance,
-                    composite_distance=neat_distance + weighted_distance,
+                    composite_distance=(
+                        neat_distance
+                        + weighted_distance
+                        + weighted_flocking_distance
+                    ),
                     compatibility_threshold=manager.compatibility_threshold,
                     phenotypic_weight=manager.phenotypic_weight,
                     radius_component=components.radius,
@@ -800,6 +945,16 @@ class PersistenceManager:
                     movement_cost_component=(
                         components.movement_cost_multiplier
                     ),
+                    flocking_trait_distance=flocking_distance,
+                    weighted_flocking_trait_distance=(
+                        weighted_flocking_distance
+                    ),
+                    flocking_trait_distance_coefficient=(
+                        flocking_coefficient
+                    ),
+                    separation_gene_component=separation_component,
+                    alignment_gene_component=alignment_component,
+                    cohesion_gene_component=cohesion_component,
                 )
 
             records[species_id] = SpeciesRecord(
@@ -817,6 +972,7 @@ class PersistenceManager:
                 founder_traits=SpeciesTraitSnapshot.from_traits(
                     physical_traits,
                     vision,
+                    flocking_traits,
                 ),
                 trait_deltas=deltas,
                 distances=distances,
@@ -829,7 +985,12 @@ class PersistenceManager:
 
     @staticmethod
     def _normalize_species_record(record: Any) -> Any:
-        from src.speciation import NeatChangeSummary, SpeciesRecord
+        from src.speciation import (
+            NeatChangeSummary,
+            SpeciesDistanceBreakdown,
+            SpeciesRecord,
+            SpeciesTraitSnapshot,
+        )
 
         if not isinstance(record, SpeciesRecord):
             return record
@@ -846,6 +1007,79 @@ class PersistenceManager:
                 node_parameters_changed=legacy_summary.node_parameters_changed,
                 key_changes=(),
             )
+
+        def normalize_traits(
+            value: object | None,
+            gene_default: float,
+            *,
+            bounded_genes: bool,
+        ) -> SpeciesTraitSnapshot | None:
+            if value is None:
+                return None
+            genes = [
+                float(getattr(value, "separation_gene", gene_default)),
+                float(getattr(value, "alignment_gene", gene_default)),
+                float(getattr(value, "cohesion_gene", gene_default)),
+            ]
+            if bounded_genes:
+                genes = [max(0.0, min(1.0, gene)) for gene in genes]
+            return SpeciesTraitSnapshot(
+                radius=float(getattr(value, "radius")),
+                vision_range=float(getattr(value, "vision_range")),
+                vision_angle=float(getattr(value, "vision_angle")),
+                movement_cost_multiplier=float(
+                    getattr(value, "movement_cost_multiplier")
+                ),
+                separation_gene=genes[0],
+                alignment_gene=genes[1],
+                cohesion_gene=genes[2],
+            )
+
+        raw_distances = record.distances
+        distances = SpeciesDistanceBreakdown(
+            neat_distance=raw_distances.neat_distance,
+            phenotypic_distance=raw_distances.phenotypic_distance,
+            weighted_phenotypic_distance=(
+                raw_distances.weighted_phenotypic_distance
+            ),
+            composite_distance=raw_distances.composite_distance,
+            compatibility_threshold=raw_distances.compatibility_threshold,
+            phenotypic_weight=raw_distances.phenotypic_weight,
+            radius_component=raw_distances.radius_component,
+            vision_range_component=raw_distances.vision_range_component,
+            vision_angle_component=raw_distances.vision_angle_component,
+            movement_cost_component=raw_distances.movement_cost_component,
+            flocking_trait_distance=getattr(
+                raw_distances,
+                "flocking_trait_distance",
+                None,
+            ),
+            weighted_flocking_trait_distance=getattr(
+                raw_distances,
+                "weighted_flocking_trait_distance",
+                None,
+            ),
+            flocking_trait_distance_coefficient=getattr(
+                raw_distances,
+                "flocking_trait_distance_coefficient",
+                None,
+            ),
+            separation_gene_component=getattr(
+                raw_distances,
+                "separation_gene_component",
+                None,
+            ),
+            alignment_gene_component=getattr(
+                raw_distances,
+                "alignment_gene_component",
+                None,
+            ),
+            cohesion_gene_component=getattr(
+                raw_distances,
+                "cohesion_gene_component",
+                None,
+            ),
+        )
         return SpeciesRecord(
             species_id=record.species_id,
             parent_species_id=record.parent_species_id,
@@ -854,9 +1088,17 @@ class PersistenceManager:
             emerged_at=record.emerged_at,
             founder_color=_checkpoint_rgb(record.founder_color),
             data_quality=record.data_quality,
-            founder_traits=record.founder_traits,
-            trait_deltas=record.trait_deltas,
-            distances=record.distances,
+            founder_traits=normalize_traits(
+                record.founder_traits,
+                0.5,
+                bounded_genes=True,
+            ),
+            trait_deltas=normalize_traits(
+                record.trait_deltas,
+                0.0,
+                bounded_genes=False,
+            ),
+            distances=distances,
             neat_changes=legacy_summary,
             emergence_food_ratio=getattr(
                 record,
@@ -895,9 +1137,9 @@ class PersistenceManager:
             parent = representatives.get(int(record.parent_species_id))
             if (
                 isinstance(child, tuple)
-                and len(child) == 3
+                and len(child) == 4
                 and isinstance(parent, tuple)
-                and len(parent) == 3
+                and len(parent) == 4
                 and hasattr(child[0], "nodes")
                 and hasattr(child[0], "connections")
                 and hasattr(parent[0], "nodes")
@@ -1084,6 +1326,7 @@ class PersistenceManager:
                     founder_traits=SpeciesTraitSnapshot.from_traits(
                         founder.physical_traits,
                         founder.vision,
+                        getattr(founder, "flocking_traits", FlockingTraits()),
                     ),
                     trait_deltas=None,
                     distances=unknown_distances,
@@ -1130,8 +1373,81 @@ class PersistenceManager:
         config: SimConfig,
         simulation_paths: SimulationPaths,
     ) -> World:
+        from src.creature import LineageInfo, TraitMutationDelta
         from src.food import Food
-        from src.world import World
+        from src.world import ArchivedCreatureTraits, World
+
+        trait_config = config.trait
+        default_flocking_traits = FlockingTraits(
+            separation_gene=trait_config.default_separation_gene,
+            alignment_gene=trait_config.default_alignment_gene,
+            cohesion_gene=trait_config.default_cohesion_gene,
+        )
+
+        def normalized_flocking(value: object | None) -> FlockingTraits:
+            value = value or default_flocking_traits
+            return FlockingTraits(
+                separation_gene=getattr(
+                    value,
+                    "separation_gene",
+                    default_flocking_traits.separation_gene,
+                ),
+                alignment_gene=getattr(
+                    value,
+                    "alignment_gene",
+                    default_flocking_traits.alignment_gene,
+                ),
+                cohesion_gene=getattr(
+                    value,
+                    "cohesion_gene",
+                    default_flocking_traits.cohesion_gene,
+                ),
+            )
+
+        def normalized_lineage(value: object) -> LineageInfo:
+            delta = getattr(value, "mutation_delta", None)
+            return LineageInfo(
+                parent_id=getattr(value, "parent_id", None),
+                generation=int(getattr(value, "generation", 0)),
+                species_id=int(getattr(value, "species_id", 1)),
+                mutation_delta=TraitMutationDelta(
+                    vision_range=float(getattr(delta, "vision_range", 0.0)),
+                    vision_angle=float(getattr(delta, "vision_angle", 0.0)),
+                    radius=float(getattr(delta, "radius", 0.0)),
+                    movement_cost_multiplier=float(
+                        getattr(delta, "movement_cost_multiplier", 0.0)
+                    ),
+                    separation_gene=float(
+                        getattr(delta, "separation_gene", 0.0)
+                    ),
+                    alignment_gene=float(
+                        getattr(delta, "alignment_gene", 0.0)
+                    ),
+                    cohesion_gene=float(getattr(delta, "cohesion_gene", 0.0)),
+                ),
+            )
+
+        for creature_state in state["creatures"]:
+            creature_state["flocking_traits"] = normalized_flocking(
+                creature_state.get("flocking_traits")
+            )
+            creature_state["lineage"] = normalized_lineage(
+                creature_state["lineage"]
+            )
+
+        normalized_archives: dict[int, ArchivedCreatureTraits] = {}
+        for genome_id, archived in state.get("archived_traits", {}).items():
+            normalized_archives[int(genome_id)] = ArchivedCreatureTraits(
+                creature_id=int(archived.creature_id),
+                vision=copy.deepcopy(archived.vision),
+                physical_traits=copy.deepcopy(archived.physical_traits),
+                color=copy.deepcopy(archived.color),
+                lineage=normalized_lineage(archived.lineage),
+                flocking_traits=normalized_flocking(
+                    getattr(archived, "flocking_traits", None)
+                ),
+            )
+        state["archived_traits"] = normalized_archives
 
         world = World(
             config,
@@ -1190,7 +1506,24 @@ class PersistenceManager:
             population_state = state["population"]
             contract = state.get("brain_contract", {"inputs": 23, "outputs": 8})
             saved_sensor_schema = int(contract.get("sensor_schema", 1))
-            reset_sensing_epoch = saved_sensor_schema < SENSING_SCHEMA_VERSION
+            saved_action_schema = int(contract.get("action_schema", 0))
+            saved_output_count = int(contract.get("outputs", 8))
+            reset_brain_epoch = (
+                saved_sensor_schema < SENSING_SCHEMA_VERSION
+                or saved_action_schema != ACTION_SCHEMA_VERSION
+                or saved_output_count != ACTION_OUTPUT_COUNT
+            )
+            if reset_brain_epoch:
+                LOGGER.warning(
+                    "Checkpoint brain contract (action schema %s, %s outputs) "
+                    "is incompatible with the current action schema %s (%s "
+                    "outputs); preserving biological world state and starting "
+                    "a fresh neural/species epoch.",
+                    saved_action_schema,
+                    saved_output_count,
+                    ACTION_SCHEMA_VERSION,
+                    ACTION_OUTPUT_COUNT,
+                )
             controller.population.population = population_state["genomes"]
             controller.population.generation = population_state["generation"]
             species_state = state["species_manager"]
@@ -1201,17 +1534,26 @@ class PersistenceManager:
                 "phenotypic_weight",
                 controller.species_manager.phenotypic_weight,
             )
+            controller.species_manager.flocking_trait_distance_coefficient = (
+                float(
+                    species_state.get(
+                        "flocking_trait_distance_coefficient",
+                        controller.species_manager.flocking_trait_distance_coefficient,
+                    )
+                )
+            )
             controller.species_manager.representatives = (
                 PersistenceManager._migrate_species_representatives(
                     species_state["representatives"],
                     state["creatures"],
                     state.get("archived_traits", {}),
+                    default_flocking_traits,
                 )
             )
             controller.species_manager.next_species_id = species_state[
                 "next_species_id"
             ]
-            if not reset_sensing_epoch and (
+            if not reset_brain_epoch and (
                 int(contract.get("inputs", 23)) < len(
                     controller.config.genome_config.input_keys
                 )
@@ -1220,7 +1562,7 @@ class PersistenceManager:
                 )
             ):
                 controller.migrate_legacy_brain_contract()
-            if not reset_sensing_epoch:
+            if not reset_brain_epoch:
                 controller.restore_evolution_allocators(
                     population_state.get("next_node_id"),
                     population_state.get("innovation_number"),
@@ -1237,6 +1579,7 @@ class PersistenceManager:
                     color=creature_state["color"],
                     vision=creature_state["vision"],
                     physical_traits=creature_state["physical_traits"],
+                    flocking_traits=creature_state["flocking_traits"],
                     lineage=creature_state["lineage"],
                 )
                 creature.name = creature_state["name"]
@@ -1276,7 +1619,7 @@ class PersistenceManager:
                     raise CheckpointError(
                         f"Creature {creature.creature_id} has no saved genome ID."
                     )
-                if not reset_sensing_epoch:
+                if not reset_brain_epoch:
                     controller.restore_brain(creature.creature_id, genome_id)
 
             for food_state in state["foods"]:
@@ -1336,7 +1679,7 @@ class PersistenceManager:
                 "lifespan_at_death_count"
             ]
 
-            if reset_sensing_epoch:
+            if reset_brain_epoch:
                 historical_species_ids = {
                     *(int(species_id) for species_id in world.species_history),
                     *(
@@ -1368,7 +1711,7 @@ class PersistenceManager:
                 ) + 1
             world._next_creature_id_value = next_creature_id
 
-            if not reset_sensing_epoch:
+            if not reset_brain_epoch:
                 next_genome_id = population_state.get("next_genome_id")
                 if next_genome_id is None:
                     next_genome_id = max(

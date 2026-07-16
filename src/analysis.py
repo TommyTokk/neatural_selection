@@ -114,9 +114,7 @@ _ACTION_LABELS = {
     "want_release": "Foraging / Object Manipulation Reflexes",
     "want_nurse": "Parental Care / Nurturing Reflexes",
     "flee_panic_intensity": "Threat Avoidance Reflexes",
-    "weight_separation": "Cohort Spacing Reflexes",
-    "weight_alignment": "Cohort Alignment Reflexes",
-    "weight_cohesion": "Cohort Cohesion Reflexes",
+    "herding": "Same-Species Herding Reflexes",
     "emit_sound": "Acoustic Communication Reflexes",
     "sound_tone": "Acoustic Communication Reflexes",
     "emit_trail_pheromone": "Trail Pheromone Reflexes",
@@ -219,12 +217,7 @@ def calculate_behavior_scores(
     voracity = (
         output_score("want_eat") + output_score("want_grab")
     ) / 2.0
-    sociability = (
-        output_score("weight_alignment")
-        + output_score("weight_cohesion")
-        + 1.0
-        - output_score("weight_separation")
-    ) / 3.0
+    sociability = output_score("herding")
     nurturing = output_score("want_nurse")
     fecundity = output_score("want_reproduce")
     vigilance = output_score("flee_panic_intensity")

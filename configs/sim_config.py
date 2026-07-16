@@ -257,6 +257,7 @@ class PopulationConfig:
 class SpeciationConfig:
     compatibility_threshold: float = 3.5
     phenotypic_weight: float = 2.0
+    flocking_trait_distance_coefficient: float = 1.0
     target_species_count: int = 5
     min_threshold: float = 2.0
     max_threshold: float = 7.0
@@ -300,6 +301,14 @@ class TraitConfig:
     max_movement_cost_multiplier: float = 1.35
     initial_movement_cost_jitter: float = 0.08
     movement_cost_mutation_stddev: float = 0.04
+
+    default_separation_gene: float = 0.5
+    default_alignment_gene: float = 0.5
+    default_cohesion_gene: float = 0.5
+    initial_flocking_gene_stdev: float = 0.08
+    flocking_gene_mutation_rate: float = 0.05
+    flocking_gene_mutation_power: float = 0.05
+    flocking_gene_replace_rate: float = 0.005
 
     body_metabolism_cost_factor: float = 0.006
 
@@ -347,6 +356,8 @@ class ActionConfig:
     max_turn_torque: float = 260.0
     max_sprint_multiplier: float = 0.5
     max_flock_turn_bias: float = 0.65
+    collision_avoidance_margin: float = 8.0
+    collision_avoidance_force_scale: float = 1.0
     action_smoothing_alpha: float = 0.8
     active_angular_velocity_retention: float = 0.80
     turn_control_gain: float = 0.65

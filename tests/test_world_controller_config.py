@@ -40,12 +40,16 @@ class FakeNeatBrainController:
         phenotypic_weight: float = 2.0,
         trait_config: object | None = None,
         vision_config: object | None = None,
+        flocking_trait_distance_coefficient: float = 1.0,
     ) -> None:
         self.config_path = config_path
         self.compatibility_threshold = compatibility_threshold
         self.phenotypic_weight = phenotypic_weight
         self.trait_config = trait_config
         self.vision_config = vision_config
+        self.flocking_trait_distance_coefficient = (
+            flocking_trait_distance_coefficient
+        )
         self.assigned_creatures: list[object] = []
 
     def assign_initial_brains(self, creatures: list[object]) -> None:
@@ -63,6 +67,10 @@ class WorldControllerConfigTest(unittest.TestCase):
 
         self.assertEqual(config.speciation.compatibility_threshold, 3.5)
         self.assertEqual(config.speciation.phenotypic_weight, 2.0)
+        self.assertEqual(
+            config.speciation.flocking_trait_distance_coefficient,
+            1.0,
+        )
         self.assertEqual(
             SpeciationConfig(compatibility_threshold=4.25).compatibility_threshold,
             4.25,
@@ -94,6 +102,10 @@ class WorldControllerConfigTest(unittest.TestCase):
         self.assertEqual(world.neat_controller.phenotypic_weight, 2.0)
         self.assertIs(world.neat_controller.trait_config, config.trait)
         self.assertIs(world.neat_controller.vision_config, config.vision)
+        self.assertEqual(
+            world.neat_controller.flocking_trait_distance_coefficient,
+            1.0,
+        )
 
 
 if __name__ == "__main__":

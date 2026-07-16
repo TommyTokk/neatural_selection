@@ -11,11 +11,17 @@ import numpy as np
 
 from configs.sim_config import SimConfig
 import src.utils as ut
-from src.action import Action, acceleration_force_vector, is_active_intent
+from src.action import (
+    Action,
+    acceleration_force_vector,
+    calculate_flocking_weights,
+    is_active_intent,
+)
 from src.biome import Biome, BiomeGenerationHandler
 from src.creature import (
     Color,
     Creature,
+    FlockingTraits,
     LineageInfo,
     PhysicalTraits,
     TraitMutationDelta,
@@ -73,6 +79,7 @@ class ChildCreatureTraits:
     physical_traits: PhysicalTraits
     color: Color
     lineage: LineageInfo
+    flocking_traits: FlockingTraits = field(default_factory=FlockingTraits)
 
 
 @dataclass(slots=True)
@@ -82,6 +89,7 @@ class ArchivedCreatureTraits:
     physical_traits: PhysicalTraits
     color: Color
     lineage: LineageInfo
+    flocking_traits: FlockingTraits = field(default_factory=FlockingTraits)
 
 
 @dataclass(slots=True)
@@ -234,6 +242,9 @@ class World:
             phenotypic_weight=config.speciation.phenotypic_weight,
             trait_config=config.trait,
             vision_config=config.vision,
+            flocking_trait_distance_coefficient=(
+                config.speciation.flocking_trait_distance_coefficient
+            ),
         )
         if bootstrap:
             self.neat_controller.assign_initial_brains(self.creatures)
@@ -429,6 +440,7 @@ class World:
             founder_traits=SpeciesTraitSnapshot.from_traits(
                 founder.physical_traits,
                 founder.vision,
+                getattr(founder, "flocking_traits", FlockingTraits()),
             ),
             trait_deltas=zero_traits,
             distances=SpeciesDistanceBreakdown(
@@ -446,6 +458,18 @@ class World:
                 vision_range_component=0.0,
                 vision_angle_component=0.0,
                 movement_cost_component=0.0,
+                flocking_trait_distance=0.0,
+                weighted_flocking_trait_distance=0.0,
+                flocking_trait_distance_coefficient=(
+                    getattr(
+                        self.neat_controller.species_manager,
+                        "flocking_trait_distance_coefficient",
+                        1.0,
+                    )
+                ),
+                separation_gene_component=0.0,
+                alignment_gene_component=0.0,
+                cohesion_gene_component=0.0,
             ),
             neat_changes=NeatChangeSummary.empty(),
             emergence_food_ratio=food_ratio,
@@ -473,8 +497,8 @@ class World:
                 last_reproduction_age=biological_age,
             )
             creature.lineage.species_id = root_species_id
-            creature.lineage.generation = 0
-            creature.lineage.mutation_delta = TraitMutationDelta()
+            # Neural compatibility starts a new species epoch, but generation,
+            # parentage, and inherited mutation history remain biological state.
             creature.last_action = None
             creature.smoothed_rotation = 0.0
             creature.smoothed_acceleration = 0.0
@@ -510,6 +534,7 @@ class World:
             founder_traits=SpeciesTraitSnapshot.from_traits(
                 founder.physical_traits,
                 founder.vision,
+                getattr(founder, "flocking_traits", FlockingTraits()),
             ),
             trait_deltas=zero_traits,
             distances=SpeciesDistanceBreakdown(
@@ -527,6 +552,18 @@ class World:
                 vision_range_component=0.0,
                 vision_angle_component=0.0,
                 movement_cost_component=0.0,
+                flocking_trait_distance=0.0,
+                weighted_flocking_trait_distance=0.0,
+                flocking_trait_distance_coefficient=(
+                    getattr(
+                        self.neat_controller.species_manager,
+                        "flocking_trait_distance_coefficient",
+                        1.0,
+                    )
+                ),
+                separation_gene_component=0.0,
+                alignment_gene_component=0.0,
+                cohesion_gene_component=0.0,
             ),
             neat_changes=NeatChangeSummary.empty(),
             emergence_food_ratio=food_ratio,
@@ -1094,6 +1131,7 @@ class World:
         color: Color | None = None,
         vision: VisionTraits | None = None,
         physical_traits: PhysicalTraits | None = None,
+        flocking_traits: FlockingTraits | None = None,
         lineage: LineageInfo | None = None,
     ) -> Creature:
         left, bottom, right, top = self.environment_world_bounds
@@ -1103,6 +1141,8 @@ class World:
 
         if lineage is None:
             lineage = LineageInfo()
+        if flocking_traits is None:
+            flocking_traits = self._initial_flocking_traits()
 
         radius = physical_traits.radius
         margin = radius + 10.0
@@ -1154,6 +1194,7 @@ class World:
                 else self._initial_creature_color(creature_id - 1)
             ),
             physical_traits=physical_traits,
+            flocking_traits=flocking_traits,
             lineage=lineage,
         )
         self._index_creature_shape(shape, creature)
@@ -1179,6 +1220,70 @@ class World:
         return PhysicalTraits(
             radius=radius,
             movement_cost_multiplier=movement_cost_multiplier,
+        )
+
+    def _initial_flocking_traits(self) -> FlockingTraits:
+        config = self.config.trait
+        return FlockingTraits(
+            separation_gene=self._clamp(
+                self.rng.gauss(
+                    config.default_separation_gene,
+                    config.initial_flocking_gene_stdev,
+                ),
+                0.0,
+                1.0,
+            ),
+            alignment_gene=self._clamp(
+                self.rng.gauss(
+                    config.default_alignment_gene,
+                    config.initial_flocking_gene_stdev,
+                ),
+                0.0,
+                1.0,
+            ),
+            cohesion_gene=self._clamp(
+                self.rng.gauss(
+                    config.default_cohesion_gene,
+                    config.initial_flocking_gene_stdev,
+                ),
+                0.0,
+                1.0,
+            ),
+        )
+
+    def _mutated_flocking_traits(
+        self,
+        parent_traits: FlockingTraits,
+    ) -> tuple[FlockingTraits, TraitMutationDelta]:
+        config = self.config.trait
+
+        def mutate(value: float) -> float:
+            roll = self.rng.random()
+            if roll < config.flocking_gene_replace_rate:
+                return self.rng.uniform(0.0, 1.0)
+            if roll < (
+                config.flocking_gene_replace_rate
+                + config.flocking_gene_mutation_rate
+            ):
+                value += self.rng.gauss(0.0, config.flocking_gene_mutation_power)
+            return self._clamp(value, 0.0, 1.0)
+
+        child = FlockingTraits(
+            separation_gene=mutate(parent_traits.separation_gene),
+            alignment_gene=mutate(parent_traits.alignment_gene),
+            cohesion_gene=mutate(parent_traits.cohesion_gene),
+        )
+        return (
+            child,
+            TraitMutationDelta(
+                separation_gene=(
+                    child.separation_gene - parent_traits.separation_gene
+                ),
+                alignment_gene=(
+                    child.alignment_gene - parent_traits.alignment_gene
+                ),
+                cohesion_gene=child.cohesion_gene - parent_traits.cohesion_gene,
+            ),
         )
 
     def _mutated_vision(self, parent_vision: VisionTraits) -> VisionTraits:
@@ -1255,6 +1360,11 @@ class World:
             parent_species_id=parent.lineage.species_id,
             parent_vision=parent.vision,
             parent_physical_traits=parent.physical_traits,
+            parent_flocking_traits=getattr(
+                parent,
+                "flocking_traits",
+                FlockingTraits(),
+            ),
             parent_color=parent.color,
         )
 
@@ -1265,21 +1375,29 @@ class World:
         parent_species_id: int,
         parent_vision: VisionTraits,
         parent_physical_traits: PhysicalTraits,
+        parent_flocking_traits: FlockingTraits,
         parent_color: Color,
     ) -> ChildCreatureTraits:
         child_vision, vision_delta = self._mutated_vision_with_delta(parent_vision)
         child_physical_traits, physical_delta = self._mutated_physical_traits(
             parent_physical_traits,
         )
+        child_flocking_traits, flocking_delta = self._mutated_flocking_traits(
+            parent_flocking_traits,
+        )
         mutation_delta = TraitMutationDelta(
             vision_range=vision_delta.vision_range,
             vision_angle=vision_delta.vision_angle,
             radius=physical_delta.radius,
             movement_cost_multiplier=physical_delta.movement_cost_multiplier,
+            separation_gene=flocking_delta.separation_gene,
+            alignment_gene=flocking_delta.alignment_gene,
+            cohesion_gene=flocking_delta.cohesion_gene,
         )
         return ChildCreatureTraits(
             vision=child_vision,
             physical_traits=child_physical_traits,
+            flocking_traits=child_flocking_traits,
             color=self._mutated_creature_color(parent_color),
             lineage=LineageInfo(
                 parent_id=parent_id,
@@ -1699,27 +1817,36 @@ class World:
             current_max_backward_force,
         )
 
-        # Calculate the flocking force to apply to the creature based on its sensor snapshot and the flocking behavior of nearby creatures. This force represents the influence of other creatures in the vicinity, encouraging alignment, cohesion, and separation as appropriate.
-        flock_force = self._flock_steering_force(
+        social_flock_force = self._flock_steering_force(
             creature,
             action,
             snapshot,
             current_max_speed,
             current_max_forward_force,
         )
+        mandatory_avoidance_force = self._collision_avoidance_force(
+            creature,
+            current_max_forward_force,
+        )
+        steering_force = (
+            social_flock_force[0] + mandatory_avoidance_force[0],
+            social_flock_force[1] + mandatory_avoidance_force[1],
+        )
 
-        # Combine the voluntary force and flocking force to determine the total force to apply to the creature's body. The total force is limited to ensure that it does not exceed the current maximum forward force, preventing unrealistic acceleration.
+        # Combine voluntary movement, same-species social steering, and universal
+        # collision avoidance, then retain the existing force limit.
         total_force = self._limit_vector(
             (
-                voluntary_force[0] + flock_force[0],
-                voluntary_force[1] + flock_force[1],
+                voluntary_force[0] + steering_force[0],
+                voluntary_force[1] + steering_force[1],
             ),
             current_max_forward_force,
         )
-        # Calculate the flock turn bias based on the flocking force and the creature's current heading. This bias influences the creature's turning behavior, encouraging it to align with the flock's movement while still allowing for individual decision-making.
+        # Both social steering and mandatory avoidance may turn the creature away
+        # from its direct neural heading.
         flock_turn_bias = self._flock_turn_bias(
             creature,
-            flock_force,
+            steering_force,
             current_max_forward_force,
         )
 
@@ -1819,13 +1946,78 @@ class World:
                 1.0 - flock.center_proximity,
             )
 
+        traits = getattr(creature, "flocking_traits", FlockingTraits())
+        separation_weight, alignment_weight, cohesion_weight = (
+            calculate_flocking_weights(
+                herding=getattr(action, "herding", 0.0),
+                panic=getattr(action, "flee_panic_intensity", 0.0),
+                separation_gene=traits.separation_gene,
+                alignment_gene=traits.alignment_gene,
+                cohesion_gene=traits.cohesion_gene,
+            )
+        )
         return (
-            separation[0] * getattr(action, "weight_separation", 0.0)
-            + alignment[0] * getattr(action, "weight_alignment", 0.0)
-            + cohesion[0] * getattr(action, "weight_cohesion", 0.0),
-            separation[1] * getattr(action, "weight_separation", 0.0)
-            + alignment[1] * getattr(action, "weight_alignment", 0.0)
-            + cohesion[1] * getattr(action, "weight_cohesion", 0.0),
+            separation[0] * separation_weight
+            + alignment[0] * alignment_weight
+            + cohesion[0] * cohesion_weight,
+            separation[1] * separation_weight
+            + alignment[1] * alignment_weight
+            + cohesion[1] * cohesion_weight,
+        )
+
+    def _collision_avoidance_force(
+        self,
+        creature: Creature,
+        max_force: float,
+    ) -> tuple[float, float]:
+        """Return mandatory short-range avoidance for every nearby creature."""
+        margin = max(0.0, self.config.action.collision_avoidance_margin)
+        scale = max(0.0, self.config.action.collision_avoidance_force_scale)
+        if max_force <= 0.0 or scale <= 0.0:
+            return 0.0, 0.0
+
+        neighbors = getattr(self, "creatures", ())
+        if not neighbors:
+            return 0.0, 0.0
+        position = creature.position
+        avoidance_x = 0.0
+        avoidance_y = 0.0
+        for neighbor in neighbors:
+            if neighbor is creature:
+                continue
+            away_x = position[0] - neighbor.position[0]
+            away_y = position[1] - neighbor.position[1]
+            distance = hypot(away_x, away_y)
+            safe_distance = max(
+                1e-9,
+                creature.radius + neighbor.radius + margin,
+            )
+            if distance >= safe_distance:
+                continue
+            if distance <= 1e-12:
+                direction = (
+                    1.0
+                    if creature.creature_id < neighbor.creature_id
+                    else -1.0
+                )
+                unit_x, unit_y = direction, 0.0
+            else:
+                unit_x, unit_y = away_x / distance, away_y / distance
+            strength = self._clamp(
+                (safe_distance - distance) / safe_distance,
+                0.0,
+                1.0,
+            )
+            avoidance_x += unit_x * strength
+            avoidance_y += unit_y * strength
+
+        magnitude = hypot(avoidance_x, avoidance_y)
+        if magnitude <= 1e-12:
+            return 0.0, 0.0
+        force_magnitude = min(max_force, max_force * scale * min(1.0, magnitude))
+        return (
+            avoidance_x / magnitude * force_magnitude,
+            avoidance_y / magnitude * force_magnitude,
         )
 
     def _steering_toward_relative_angle(
@@ -2725,6 +2917,23 @@ class World:
                     creature.physical_traits.movement_cost_multiplier
                 ),
             ),
+            flocking_traits=FlockingTraits(
+                separation_gene=getattr(
+                    getattr(creature, "flocking_traits", FlockingTraits()),
+                    "separation_gene",
+                    0.5,
+                ),
+                alignment_gene=getattr(
+                    getattr(creature, "flocking_traits", FlockingTraits()),
+                    "alignment_gene",
+                    0.5,
+                ),
+                cohesion_gene=getattr(
+                    getattr(creature, "flocking_traits", FlockingTraits()),
+                    "cohesion_gene",
+                    0.5,
+                ),
+            ),
             color=creature.color,
             lineage=LineageInfo(
                 parent_id=creature.lineage.parent_id,
@@ -2737,6 +2946,11 @@ class World:
                     movement_cost_multiplier=(
                         creature.lineage.mutation_delta.movement_cost_multiplier
                     ),
+                    separation_gene=(
+                        creature.lineage.mutation_delta.separation_gene
+                    ),
+                    alignment_gene=creature.lineage.mutation_delta.alignment_gene,
+                    cohesion_gene=creature.lineage.mutation_delta.cohesion_gene,
                 ),
             ),
         )
@@ -2834,6 +3048,9 @@ class World:
                 physical_traits=(
                     child_traits.physical_traits if child_traits is not None else None
                 ),
+                flocking_traits=(
+                    child_traits.flocking_traits if child_traits is not None else None
+                ),
                 lineage=child_traits.lineage if child_traits is not None else None,
             )
             child_brain, speciation_result = (
@@ -2843,6 +3060,7 @@ class World:
                     parent_species_id,
                     child.physical_traits,
                     child.vision,
+                    child.flocking_traits,
                 )
             )
             if child_brain is None:
@@ -2882,6 +3100,7 @@ class World:
             parent_species_id=archived_traits.lineage.species_id,
             parent_vision=archived_traits.vision,
             parent_physical_traits=archived_traits.physical_traits,
+            parent_flocking_traits=archived_traits.flocking_traits,
             parent_color=archived_traits.color,
         )
 
@@ -2983,6 +3202,7 @@ class World:
             color=child_traits.color,
             vision=child_traits.vision,
             physical_traits=child_traits.physical_traits,
+            flocking_traits=child_traits.flocking_traits,
             lineage=child_traits.lineage,
         )
 
@@ -2992,6 +3212,7 @@ class World:
             parent.lineage.species_id,
             child.physical_traits,
             child.vision,
+            child.flocking_traits,
         )
         if child_brain is None:
             self._unindex_creature_shape(child)

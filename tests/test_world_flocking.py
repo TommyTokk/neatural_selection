@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from math import hypot, pi
+from random import Random
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 from configs.sim_config import SimConfig
-from src.action import Action
+from src.action import Action, calculate_flocking_weights
+from src.creature import FlockingTraits
 from src.vision import FlockSensorSnapshot
 from src.world import World
 
@@ -48,10 +51,12 @@ class WorldFlockingMotionTest(unittest.TestCase):
         self.creature = SimpleNamespace(
             creature_id=1,
             heading=0.0,
-            vision=SimpleNamespace(angle=pi / 2),
+            vision=SimpleNamespace(range=1.0, angle=pi / 2),
+            lineage=SimpleNamespace(species_id=1),
             body=FakeBody(),
             smoothed_rotation=0.0,
             smoothed_acceleration=0.0,
+            flocking_traits=FlockingTraits(),
         )
 
     def test_action_smoothing_uses_default_alpha_on_first_tick(self) -> None:
@@ -170,23 +175,26 @@ class WorldFlockingMotionTest(unittest.TestCase):
         )
         snapshot = SimpleNamespace(flock=flock)
 
+        self.creature.flocking_traits = FlockingTraits(1.0, 0.0, 0.0)
         separation = self.world._flock_steering_force(
             self.creature,
-            action(weight_separation=1.0),
+            action(herding=1.0),
             snapshot,
             self.world.MAX_SPEED,
             self.world.config.action.max_forward_force,
         )
+        self.creature.flocking_traits = FlockingTraits(0.0, 1.0, 0.0)
         alignment = self.world._flock_steering_force(
             self.creature,
-            action(weight_alignment=1.0),
+            action(herding=1.0),
             snapshot,
             self.world.MAX_SPEED,
             self.world.config.action.max_forward_force,
         )
+        self.creature.flocking_traits = FlockingTraits(0.0, 0.0, 1.0)
         cohesion = self.world._flock_steering_force(
             self.creature,
-            action(weight_cohesion=1.0),
+            action(herding=1.0),
             snapshot,
             self.world.MAX_SPEED,
             self.world.config.action.max_forward_force,
@@ -199,6 +207,8 @@ class WorldFlockingMotionTest(unittest.TestCase):
         self.assertGreater(cohesion[1], 0.0)
 
     def test_alignment_force_is_attenuated_by_flockmate_proximity(self) -> None:
+        self.creature.flocking_traits = FlockingTraits(0.0, 1.0, 0.0)
+
         def alignment_force(proximity: float) -> tuple[float, float]:
             flock = FlockSensorSnapshot(
                 average_relative_heading=0.5,
@@ -207,7 +217,7 @@ class WorldFlockingMotionTest(unittest.TestCase):
             )
             return self.world._flock_steering_force(
                 self.creature,
-                action(weight_alignment=1.0),
+                action(herding=1.0),
                 SimpleNamespace(flock=flock),
                 self.world.MAX_SPEED,
                 self.world.config.action.max_forward_force,
@@ -234,13 +244,12 @@ class WorldFlockingMotionTest(unittest.TestCase):
             separation_strength=1.0,
             average_flockmate_proximity=1.0,
         )
+        self.creature.flocking_traits = FlockingTraits(1.0, 1.0, 1.0)
         self.world._apply_action(
             self.creature,
             action(
                 accelerate=1.0,
-                weight_separation=1.0,
-                weight_alignment=1.0,
-                weight_cohesion=1.0,
+                herding=1.0,
             ),
             snapshot=SimpleNamespace(flock=flock),
             apply_stabilizers=False,
@@ -254,6 +263,131 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.world._motion_commands[1].effective_rotate,
             0.0,
         )
+
+    def test_flocking_weights_follow_genes_herding_and_panic(self) -> None:
+        genes = dict(
+            separation_gene=0.9,
+            alignment_gene=0.4,
+            cohesion_gene=0.7,
+        )
+        self.assertEqual(
+            calculate_flocking_weights(herding=0.0, panic=0.0, **genes),
+            (0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            calculate_flocking_weights(herding=1.0, panic=0.0, **genes),
+            (0.9, 0.4, 0.7),
+        )
+        self.assertEqual(
+            calculate_flocking_weights(herding=1.0, panic=1.0, **genes),
+            (0.9, 0.0, 0.0),
+        )
+
+    def test_collision_avoidance_ignores_species_herding_and_field_of_view(
+        self,
+    ) -> None:
+        self.creature.position = (0.0, 0.0)
+        self.creature.radius = 10.0
+        for neighbor_species_id in (1, 99):
+            with self.subTest(neighbor_species_id=neighbor_species_id):
+                neighbor = SimpleNamespace(
+                    creature_id=2,
+                    position=(15.0, 0.0),
+                    radius=10.0,
+                    lineage=SimpleNamespace(species_id=neighbor_species_id),
+                )
+                self.world.creatures = [self.creature, neighbor]
+
+                force = self.world._collision_avoidance_force(
+                    self.creature,
+                    self.world.config.action.max_forward_force,
+                )
+
+                self.assertLess(force[0], 0.0)
+                self.assertAlmostEqual(force[1], 0.0)
+
+    def test_exact_overlap_avoidance_is_deterministic_and_opposite(self) -> None:
+        first = SimpleNamespace(creature_id=1, position=(0.0, 0.0), radius=10.0)
+        second = SimpleNamespace(creature_id=2, position=(0.0, 0.0), radius=10.0)
+        self.world.creatures = [first, second]
+
+        first_force = self.world._collision_avoidance_force(first, 100.0)
+        second_force = self.world._collision_avoidance_force(second, 100.0)
+
+        self.assertEqual(first_force, (100.0, 0.0))
+        self.assertEqual(second_force, (-100.0, 0.0))
+
+
+class FlockingTraitEvolutionTest(unittest.TestCase):
+    def world(self) -> World:
+        world = World.__new__(World)
+        world.config = SimConfig()
+        world.rng = Random(7)
+        return world
+
+    def test_traits_clamp_to_biological_bounds(self) -> None:
+        self.assertEqual(FlockingTraits(-1.0, 0.4, 2.0), FlockingTraits(0.0, 0.4, 1.0))
+
+    def test_initialization_is_seeded_and_bounded(self) -> None:
+        first = self.world()
+        second = self.world()
+
+        first_traits = first._initial_flocking_traits()
+        second_traits = second._initial_flocking_traits()
+
+        self.assertEqual(first_traits, second_traits)
+        for value in (
+            first_traits.separation_gene,
+            first_traits.alignment_gene,
+            first_traits.cohesion_gene,
+        ):
+            self.assertGreaterEqual(value, 0.0)
+            self.assertLessEqual(value, 1.0)
+
+    def test_no_mutation_inherits_each_gene_independently(self) -> None:
+        world = self.world()
+        world.config.trait.flocking_gene_mutation_rate = 0.0
+        world.config.trait.flocking_gene_replace_rate = 0.0
+        parent = FlockingTraits(0.9, 0.2, 0.6)
+
+        child, delta = world._mutated_flocking_traits(parent)
+
+        self.assertEqual(child, parent)
+        self.assertEqual(
+            (delta.separation_gene, delta.alignment_gene, delta.cohesion_gene),
+            (0.0, 0.0, 0.0),
+        )
+
+    def test_mutating_one_gene_does_not_modify_the_other_two(self) -> None:
+        world = self.world()
+        world.config.trait.flocking_gene_mutation_rate = 0.5
+        world.config.trait.flocking_gene_replace_rate = 0.0
+        world.rng = Mock()
+        world.rng.random.side_effect = [0.1, 0.9, 0.9]
+        world.rng.gauss.return_value = 0.1
+        parent = FlockingTraits(0.4, 0.5, 0.6)
+
+        child, _ = world._mutated_flocking_traits(parent)
+
+        self.assertAlmostEqual(child.separation_gene, 0.5)
+        self.assertEqual(child.alignment_gene, parent.alignment_gene)
+        self.assertEqual(child.cohesion_gene, parent.cohesion_gene)
+
+    def test_replacement_is_independent_and_records_the_clamped_delta(self) -> None:
+        world = self.world()
+        world.config.trait.flocking_gene_mutation_rate = 0.0
+        world.config.trait.flocking_gene_replace_rate = 0.005
+        world.rng = Mock()
+        world.rng.random.side_effect = [0.001, 0.9, 0.9]
+        world.rng.uniform.return_value = 0.8
+        parent = FlockingTraits(0.4, 0.5, 0.6)
+
+        child, delta = world._mutated_flocking_traits(parent)
+
+        self.assertEqual(child, FlockingTraits(0.8, 0.5, 0.6))
+        self.assertAlmostEqual(delta.separation_gene, 0.4)
+        self.assertEqual(delta.alignment_gene, 0.0)
+        self.assertEqual(delta.cohesion_gene, 0.0)
 
 
 if __name__ == "__main__":

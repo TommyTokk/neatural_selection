@@ -785,7 +785,7 @@ class VisionWallSensorTest(unittest.TestCase):
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
         self.assertEqual(inputs[1], 0.0)
 
-    def test_flock_inputs_use_same_species_but_separation_uses_all_creatures(
+    def test_all_flock_inputs_use_only_same_species_creatures(
         self,
     ) -> None:
         observer = creature_at((0.0, 0.0), vision_range=100.0)
@@ -811,6 +811,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.flock.flockmate_count, 1)
+        self.assertEqual(snapshot.visible_creature_count, 2)
         self.assertAlmostEqual(
             snapshot.flock.center_proximity,
             1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 100.0),
@@ -917,7 +918,7 @@ class VisionWallSensorTest(unittest.TestCase):
 
         self.assertEqual(snapshot.as_inputs()[23:26], [0.0, 0.0, 0.0])
         self.assertEqual(snapshot.flock.flockmate_count, 0)
-        self.assertGreater(snapshot.flock.separation_strength, 0.0)
+        self.assertEqual(snapshot.flock.separation_strength, 0.0)
         self.assertEqual(snapshot.flock.average_flockmate_proximity, 0.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:

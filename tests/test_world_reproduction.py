@@ -40,7 +40,7 @@ for optional_module in ("neat",):
 
 from configs.sim_config import build_sim_config
 from src.action import Action
-from src.creature import LineageInfo, PhysicalTraits, VisionTraits
+from src.creature import FlockingTraits, LineageInfo, PhysicalTraits, VisionTraits
 from src.fitness import CreatureFitness
 from src.neat_controller import NeatBrainController, SpeciationResult
 from src.rt_neat import RtNeatManager
@@ -70,6 +70,7 @@ class FakeCreature:
             movement_cost_multiplier=1.0,
         )
     )
+    flocking_traits: FlockingTraits = field(default_factory=FlockingTraits)
     lineage: LineageInfo = field(default_factory=LineageInfo)
 
     @property
@@ -140,7 +141,9 @@ class FakeBrainController:
         parent_species_id: int,
         child_physical_traits: PhysicalTraits,
         child_vision: VisionTraits,
+        child_flocking_traits: FlockingTraits,
     ) -> tuple[object, SpeciationResult]:
+        del child_flocking_traits
         self.created_children.append(
             (parent_creature_id, child_creature_id, parent_species_id)
         )
@@ -535,7 +538,7 @@ class WorldReproductionTest(unittest.TestCase):
         parent = world.creatures[0]
         parent.lineage.species_id = 7
         world.neat_controller = SimpleNamespace(
-            create_child_brain=lambda parent_id, child_id, parent_species_id, physical, vision: (
+            create_child_brain=lambda parent_id, child_id, parent_species_id, physical, vision, flocking: (
                 object(),
                 speciation_result(8, parent_species_id, True),
             ),
@@ -903,7 +906,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.neat_controller = SimpleNamespace(
             best_genomes=lambda count: [FakeGenome(), FakeGenome()],
             create_mutated_brain_from_genome=(
-                lambda parent_genome, child_id, parent_species_id, physical, vision: (
+                lambda parent_genome, child_id, parent_species_id, physical, vision, flocking: (
                     object(),
                     speciation_result(
                         parent_species_id,
@@ -948,8 +951,9 @@ class WorldReproductionTest(unittest.TestCase):
             parent_species_id: int,
             child_physical_traits: PhysicalTraits,
             child_vision: VisionTraits,
+            child_flocking_traits: FlockingTraits,
         ) -> tuple[object, SpeciationResult]:
-            del parent_genome, child_id
+            del parent_genome, child_id, child_flocking_traits
             forwarded_traits.append((child_physical_traits, child_vision))
             return object(), speciation_result(
                 parent_species_id,
@@ -1011,7 +1015,7 @@ class WorldReproductionTest(unittest.TestCase):
         parent_genome = SimpleNamespace(key=5)
         world.neat_controller = SimpleNamespace(
             best_genomes=lambda count: [parent_genome],
-            create_mutated_brain_from_genome=lambda parent, child_id, parent_species_id, physical, vision: (
+            create_mutated_brain_from_genome=lambda parent, child_id, parent_species_id, physical, vision, flocking: (
                 object(),
                 speciation_result(10, parent_species_id, True),
             ),
@@ -1085,8 +1089,9 @@ class WorldReproductionTest(unittest.TestCase):
                 parent_species_id: int,
                 child_physical_traits: PhysicalTraits,
                 child_vision: VisionTraits,
+                child_flocking_traits: FlockingTraits,
             ) -> tuple[object, SpeciationResult]:
-                del parent, child_physical_traits, child_vision
+                del parent, child_physical_traits, child_vision, child_flocking_traits
                 newborn_genomes[child_id] = FakeGenome(fitness=None)
                 return object(), speciation_result(
                     parent_species_id,
