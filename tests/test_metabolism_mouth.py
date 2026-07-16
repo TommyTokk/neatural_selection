@@ -37,12 +37,14 @@ class FakeFood:
     radius: float
     energy_value: float = 0.1
     original_energy_value: float = 0.1
+    consume_energy_calls: int = 0
 
     def consume_energy(
         self,
         requested_energy: float,
         min_remainder_ratio: float,
     ) -> FoodConsumptionResult:
+        self.consume_energy_calls += 1
         if requested_energy <= 0.0:
             return FoodConsumptionResult(energy_removed=0.0, depleted=False)
 
@@ -194,6 +196,7 @@ class MetabolismMouthEatingTest(unittest.TestCase):
         self.assertEqual(consumption.energy_swallowed, 0.0)
         self.assertFalse(consumption.depleted)
         self.assertEqual(food.energy_value, 0.5)
+        self.assertEqual(food.consume_energy_calls, 0)
 
     def test_bite_is_limited_by_remaining_stomach_capacity(self) -> None:
         metabolism = Metabolism(
@@ -287,6 +290,40 @@ class MetabolismMouthEatingTest(unittest.TestCase):
         self.assertEqual(report.touched_foods, [food])
         self.assertEqual(report.depleted_foods, [])
         self.assertEqual(len(report.food_consumptions), 1)
+
+    def test_update_skips_food_lookup_when_eating_is_gated(self) -> None:
+        metabolism = Metabolism(
+            MetabolismConfig(
+                max_energy=1.0,
+                basic_metabolism_rate=0.0,
+                movement_energy_cost_factor=0.0,
+            ),
+            vision=SimpleNamespace(energy_cost_per_second=lambda creature: 0.0),
+            trait_config=TraitConfig(body_metabolism_cost_factor=0.0),
+        )
+        creature = FakeCreature(
+            position=(0.0, 0.0),
+            radius=10.0,
+            heading=0.0,
+            stomach_energy=1.0,
+        )
+        food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
+        lookup_calls: list[int] = []
+
+        report = metabolism.update(
+            [creature],
+            [food],
+            delta_time=1.0,
+            max_speed=1.0,
+            nearby_foods_for=lambda candidate: (
+                lookup_calls.append(candidate.creature_id) or [food]
+            ),
+            can_eat=lambda candidate: False,
+        )
+
+        self.assertEqual(lookup_calls, [])
+        self.assertEqual(report.food_consumptions, [])
+        self.assertEqual(food.consume_energy_calls, 0)
 
     def test_digest_applies_thermic_loss(self) -> None:
         metabolism = Metabolism(

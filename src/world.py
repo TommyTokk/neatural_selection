@@ -99,6 +99,12 @@ class MotionCommand:
     max_angular_speed: float
 
 
+@dataclass(slots=True)
+class _FlockSteeringDebug:
+    force: tuple[float, float]
+    max_force: float
+
+
 class World:
     CREATURE_COLOR_PALETTE: tuple[Color, ...] = (
         (86, 156, 214),
@@ -144,6 +150,7 @@ class World:
         self._last_actions: dict[int, Action] = {}
         self._last_sensor_snapshots: dict[int, SensorSnapshot] = {}
         self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
+        self._last_flock_steering_debug: dict[int, _FlockSteeringDebug] = {}
         self._motion_commands: dict[int, MotionCommand] = {}
         self._communication_positions = np.empty((0, 2), dtype=np.float64)
         self._communication_trail_amounts = np.empty(0, dtype=np.float64)
@@ -514,6 +521,7 @@ class World:
         self._last_actions = {}
         self._last_sensor_snapshots = {}
         self._last_acoustic_debug = {}
+        self._last_flock_steering_debug = {}
         self._motion_commands = {}
         self.rt_neat.stats = type(self.rt_neat.stats)()
         self.rt_neat.eligible_parent_ids = []
@@ -1911,6 +1919,14 @@ class World:
             current_max_speed,
             current_max_forward_force,
         )
+        if not hasattr(self, "_last_flock_steering_debug"):
+            self._last_flock_steering_debug = {}
+        self._last_flock_steering_debug[creature.creature_id] = (
+            _FlockSteeringDebug(
+                social_flock_force,
+                current_max_forward_force,
+            )
+        )
         mandatory_avoidance_force = self._collision_avoidance_force(
             creature,
             current_max_forward_force,
@@ -2913,6 +2929,9 @@ class World:
             acoustic_debug = getattr(self, "_last_acoustic_debug", None)
             if acoustic_debug is not None:
                 acoustic_debug.pop(creature.creature_id, None)
+            flock_debug = getattr(self, "_last_flock_steering_debug", None)
+            if flock_debug is not None:
+                flock_debug.pop(creature.creature_id, None)
             motion_commands = getattr(self, "_motion_commands", None)
             if motion_commands is not None:
                 motion_commands.pop(creature.creature_id, None)
@@ -3365,7 +3384,16 @@ class World:
         action = self._last_actions.get(creature.creature_id)
         if action is None:
             return False
-        return is_active_intent(action.want_eat)
+        stomach_capacity = max(
+            0.0,
+            creature.radius
+            * self.config.metabolism.stomach_capacity_per_radius,
+        )
+        stomach_space = max(
+            0.0,
+            stomach_capacity - max(0.0, creature.stomach_energy),
+        )
+        return stomach_space > 0.0 and is_active_intent(action.want_eat)
 
     def _settle_food_motion(self) -> None:
         for food in self.foods:

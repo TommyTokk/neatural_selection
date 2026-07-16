@@ -273,6 +273,100 @@ class WorldFlockingMotionTest(unittest.TestCase):
             0.0,
         )
 
+    def test_action_caches_exact_net_flock_steering_force(self) -> None:
+        flock = FlockSensorSnapshot(
+            center_proximity=0.25,
+            center_angle=0.5,
+            average_relative_heading=0.5,
+            flockmate_count=1,
+            separation_relative_heading=-pi / 2.0,
+            separation_strength=0.4,
+            average_flockmate_proximity=0.75,
+        )
+        self.creature.flocking_traits = FlockingTraits(0.3, 0.6, 0.9)
+        active_action = action(herding=0.8)
+        snapshot = SimpleNamespace(flock=flock)
+        expected = self.world._flock_steering_force(
+            self.creature,
+            active_action,
+            snapshot,
+            self.world.MAX_SPEED,
+            self.world.config.action.max_forward_force,
+        )
+
+        self.world._apply_action(
+            self.creature,
+            active_action,
+            snapshot=snapshot,
+            apply_stabilizers=False,
+        )
+
+        debug = self.world._last_flock_steering_debug[1]
+        self.assertAlmostEqual(debug.force[0], expected[0])
+        self.assertAlmostEqual(debug.force[1], expected[1])
+        self.assertEqual(
+            debug.max_force,
+            self.world.config.action.max_forward_force,
+        )
+
+    def test_action_caches_zero_flock_force_without_sensor_data(self) -> None:
+        self.world._apply_action(
+            self.creature,
+            action(herding=1.0),
+            snapshot=None,
+            apply_stabilizers=False,
+        )
+
+        self.assertEqual(
+            self.world._last_flock_steering_debug[1].force,
+            (0.0, 0.0),
+        )
+
+    def test_action_caches_zero_flock_force_when_herding_is_inactive(self) -> None:
+        snapshot = SimpleNamespace(
+            flock=FlockSensorSnapshot(
+                center_proximity=0.0,
+                center_angle=0.5,
+                flockmate_count=1,
+            )
+        )
+
+        self.world._apply_action(
+            self.creature,
+            action(herding=0.0),
+            snapshot=snapshot,
+            apply_stabilizers=False,
+        )
+
+        self.assertEqual(
+            self.world._last_flock_steering_debug[1].force,
+            (0.0, 0.0),
+        )
+
+    def test_new_sensing_epoch_clears_flock_debug_cache(self) -> None:
+        world = World.__new__(World)
+        world.creatures = []
+        world.neat_controller = SimpleNamespace(
+            reset_for_new_sensing_epoch=lambda creatures, root_species_id: None
+        )
+        world.fitness_archive = {}
+        world._trait_archive_by_genome_id = {}
+        world._last_actions = {}
+        world._last_sensor_snapshots = {}
+        world._last_acoustic_debug = {}
+        world._last_flock_steering_debug = {1: object()}
+        world._motion_commands = {}
+        world.rt_neat = SimpleNamespace(
+            stats=SimpleNamespace(),
+            eligible_parent_ids=[],
+            _lifespan_at_death_total=1.0,
+            _lifespan_at_death_count=1,
+        )
+
+        world.start_new_sensing_epoch(root_species_id=1)
+
+        self.assertEqual(world._last_flock_steering_debug, {})
+
     def test_flocking_weights_follow_genes_herding_and_panic(self) -> None:
         genes = dict(
             separation_gene=0.9,

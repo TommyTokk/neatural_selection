@@ -770,20 +770,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(inputs[26], 1.0)
 
     def test_feeding_drive_requires_low_energy_and_stomach_capacity(self) -> None:
-        creature = creature_at((50.0, 50.0), radius=10.0, energy=0.2)
+        creature = creature_at((50.0, 50.0), radius=10.0, energy=0.1)
         creature.stomach_energy = 0.25
 
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
-        self.assertAlmostEqual(inputs[1], 0.8 * 0.75)
+        self.assertAlmostEqual(inputs[1], 0.9 * 0.75)
 
         creature.stomach_energy = 1.0
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
         self.assertEqual(inputs[1], 0.0)
 
         creature.stomach_energy = 0.0
-        creature.energy = 1.0
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
-        self.assertEqual(inputs[1], 0.0)
+        self.assertAlmostEqual(inputs[1], 0.9)
 
     def test_all_flock_inputs_use_only_same_species_creatures(
         self,

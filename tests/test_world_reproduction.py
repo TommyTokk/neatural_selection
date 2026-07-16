@@ -458,6 +458,7 @@ class WorldReproductionTest(unittest.TestCase):
 
     def test_eating_intent_uses_strict_centered_threshold(self) -> None:
         world = object.__new__(World)
+        world.config = build_sim_config()
         creature = FakeCreature(creature_id=1)
 
         for inactive_value in (0.0, 0.1):
@@ -470,6 +471,20 @@ class WorldReproductionTest(unittest.TestCase):
             1: Action(0.0, 0.0, 0.0, 0.100001, 0.0, 0.0, 0.0)
         }
         self.assertTrue(world._creature_want_to_eat(creature))
+
+    def test_eating_intent_is_gated_when_stomach_is_full(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        creature = FakeCreature(creature_id=1)
+        world._last_actions = {
+            1: Action(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+        }
+        creature.stomach_energy = (
+            creature.radius
+            * world.config.metabolism.stomach_capacity_per_radius
+        )
+
+        self.assertFalse(world._creature_want_to_eat(creature))
 
     def test_reproduction_cost_scales_with_brain_complexity_and_caps(self) -> None:
         world = object.__new__(World)
@@ -616,6 +631,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.neat_controller = FakeBrainController()
         world.rt_neat = RtNeatManager(brain_controller=None)
         world._last_actions = {1: Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)}
+        world._last_flock_steering_debug = {1: object()}
         world._chronometers = {1: 4.0}
         world.space = SimpleNamespace(remove=lambda *args: None)
         world._recover_extinct_population = lambda: None
@@ -628,6 +644,7 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertNotIn(1, world.fitness)
         self.assertIn(1, world.fitness_archive)
         self.assertNotIn(1, world._last_actions)
+        self.assertNotIn(1, world._last_flock_steering_debug)
         self.assertNotIn(1, world._chronometers)
         self.assertEqual(world.neat_controller.removed, [1])
         self.assertEqual(world.rt_neat.stats.deaths, 1)

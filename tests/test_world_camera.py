@@ -821,6 +821,87 @@ class WorldCameraTest(unittest.TestCase):
 
         self.assertEqual(calls, ["debug", "status"])
 
+    def test_flock_debug_arrow_uses_direction_and_scaled_strength(self) -> None:
+        world = self.make_world_shell()
+        world.environment_zoom = 2.0
+        creature = FakeCreature(
+            creature_id=1,
+            position=(0.0, 0.0),
+            radius=10.0,
+        )
+        world._last_flock_steering_debug = {
+            1: SimpleNamespace(force=(30.0, 40.0), max_force=100.0)
+        }
+        renderer = EnvironmentRenderer(world.config)
+        lines: list[tuple[object, ...]] = []
+        original_draw_line = arcade.draw_line
+        arcade.draw_line = lambda *args, **kwargs: lines.append(args)
+
+        try:
+            renderer._draw_flock_steering_debug(
+                creature,
+                world.layout.environment,
+                world,
+            )
+        finally:
+            arcade.draw_line = original_draw_line
+
+        self.assertEqual(len(lines), 3)
+        shaft = lines[0]
+        center_x, center_y = world.environment_to_screen(*creature.position)
+        self.assertAlmostEqual(shaft[0], center_x + 0.6 * 24.0)
+        self.assertAlmostEqual(shaft[1], center_y + 0.8 * 24.0)
+        self.assertAlmostEqual(shaft[2], shaft[0] + 0.6 * 38.0)
+        self.assertAlmostEqual(shaft[3], shaft[1] + 0.8 * 38.0)
+        self.assertEqual(shaft[4], (255, 170, 70, 177))
+        self.assertAlmostEqual(shaft[5], 2.25)
+
+    def test_flock_debug_arrow_skips_missing_or_zero_force(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        renderer = EnvironmentRenderer(world.config)
+        lines: list[tuple[object, ...]] = []
+        original_draw_line = arcade.draw_line
+        arcade.draw_line = lambda *args, **kwargs: lines.append(args)
+
+        try:
+            renderer._draw_flock_steering_debug(
+                creature,
+                world.layout.environment,
+                world,
+            )
+            world._last_flock_steering_debug = {
+                1: SimpleNamespace(force=(0.0, 0.0), max_force=100.0)
+            }
+            renderer._draw_flock_steering_debug(
+                creature,
+                world.layout.environment,
+                world,
+            )
+        finally:
+            arcade.draw_line = original_draw_line
+
+        self.assertEqual(lines, [])
+
+    def test_selected_overlay_gates_flock_arrow_on_debug_and_selection(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        world.creatures = [creature]
+        world.selected_creature_id = creature.creature_id
+        world.debug_vision_enabled = False
+        renderer = EnvironmentRenderer(world.config)
+        calls: list[str] = []
+        renderer._draw_flock_steering_debug = (
+            lambda active_creature, bounds, active_world: calls.append("flock")
+        )
+
+        renderer._draw_selected_overlay(world, world.layout.environment)
+        world.debug_vision_enabled = True
+        world.selected_creature_id = None
+        renderer._draw_selected_overlay(world, world.layout.environment)
+
+        self.assertEqual(calls, [])
+
     def test_creature_sprite_cache_prunes_dead_creatures(self) -> None:
         world = self.make_world_shell()
         live = FakeCreature(creature_id=1, position=(0.0, 0.0))

@@ -133,12 +133,15 @@ class SensorSnapshot:
 
     def as_inputs(self) -> list[float]:
         stomach_fullness = self._clamp01(self.stomach_fullness)
-        energy = self._clamp01(self.energy)
+        energy_percent = self._clamp01(self.energy)
+        energy_deficit = max(0.0, 1.0 - energy_percent)
+        stomach_emptiness = max(0.0, 1.0 - stomach_fullness)
+        feeding_drive = energy_deficit * stomach_emptiness
         return [
             1.0,  # constant
-            (1.0 - energy) * (1.0 - stomach_fullness),
+            feeding_drive,
             self.reproductive_readiness,
-            energy,
+            energy_percent,
             self.speed,
             min(self.visible_creature_count / 5.0, 1.0),
             min(self.visible_food_count / 10.0, 1.0),

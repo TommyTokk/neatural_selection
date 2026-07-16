@@ -125,7 +125,7 @@ _HIDDEN_ACTION = "Sensory Processing (Hidden)"
 
 _SENSORY_DESCRIPTIONS = {
     "constant": "Endogenous Baseline Drive",
-    "feeding_drive": "Feeding Drive (Energy Need and Stomach Capacity)",
+    "feeding_drive": "Feeding Drive (Satiety-Modulated)",
     "reproductive_readiness": "Reproductive Readiness",
     "energy_percent": "Metabolic Reserve (Energy)",
     "speed": "Self-Velocity",

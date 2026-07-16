@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from math import ceil, cos, degrees, floor, sin
+from math import ceil, cos, degrees, floor, hypot, sin
 
 import arcade
 import numpy as np
@@ -919,6 +919,7 @@ class EnvironmentRenderer:
             self._draw_biome_sensor_markers(selected, bounds, world)
             self._draw_acoustic_debug(selected, bounds, world)
             self._draw_pheromone_debug(selected, bounds, world)
+            self._draw_flock_steering_debug(selected, bounds, world)
             self._draw_visible_food_highlights(
                 world.visible_foods_for(selected),
                 bounds,
@@ -929,6 +930,61 @@ class EnvironmentRenderer:
                 bounds,
                 world,
             )
+
+    def _draw_flock_steering_debug(
+        self,
+        creature: Creature,
+        bounds: arcade.Rect,
+        world: World,
+    ) -> None:
+        del bounds
+        debug_by_creature = getattr(world, "_last_flock_steering_debug", {})
+        debug = debug_by_creature.get(creature.creature_id)
+        if debug is None:
+            return
+
+        force_x, force_y = debug.force
+        magnitude = hypot(force_x, force_y)
+        max_force = float(debug.max_force)
+        if magnitude <= 1e-9 or max_force <= 0.0:
+            return
+
+        unit_x = force_x / magnitude
+        unit_y = force_y / magnitude
+        strength = max(0.0, min(1.0, magnitude / max_force))
+        center_x, center_y = world.environment_to_screen(*creature.position)
+        start_offset = creature.radius * world.environment_zoom + 4.0
+        start_x = center_x + unit_x * start_offset
+        start_y = center_y + unit_y * start_offset
+        shaft_length = 12.0 + 52.0 * strength
+        end_x = start_x + unit_x * shaft_length
+        end_y = start_y + unit_y * shaft_length
+        color = (255, 170, 70, int(100 + 155 * strength))
+        line_width = 1.5 + 1.5 * strength
+
+        arcade.draw_line(start_x, start_y, end_x, end_y, color, line_width)
+        arrowhead_length = 8.0
+        arrowhead_half_width = 4.5
+        base_x = end_x - unit_x * arrowhead_length
+        base_y = end_y - unit_y * arrowhead_length
+        perpendicular_x = -unit_y * arrowhead_half_width
+        perpendicular_y = unit_x * arrowhead_half_width
+        arcade.draw_line(
+            end_x,
+            end_y,
+            base_x + perpendicular_x,
+            base_y + perpendicular_y,
+            color,
+            line_width,
+        )
+        arcade.draw_line(
+            end_x,
+            end_y,
+            base_x - perpendicular_x,
+            base_y - perpendicular_y,
+            color,
+            line_width,
+        )
 
     def _draw_acoustic_debug(
         self,

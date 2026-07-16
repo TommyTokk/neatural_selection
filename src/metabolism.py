@@ -121,15 +121,15 @@ class Metabolism:
                 ),
             )
 
-            # Calculate the eatble food
-            candidate_foods = (
-                food_items if nearby_foods_for is None else nearby_foods_for(creature)
-            )
-
             if can_eat is not None and not can_eat(creature):
                 if self.is_dead(creature):
                     dead_creatures.append(creature)
                 continue
+
+            # Calculate the eatable food only after passing the mechanical gate.
+            candidate_foods = (
+                food_items if nearby_foods_for is None else nearby_foods_for(creature)
+            )
             food = self.find_eatable_food(creature, candidate_foods, touched_foods)
 
             if food is not None:
@@ -314,6 +314,14 @@ class Metabolism:
         )
         stomach_energy = max(0.0, creature.stomach_energy)
         stomach_space = max(0.0, stomach_capacity - stomach_energy)
+        if stomach_space <= 0.0:
+            return FoodConsumption(
+                creature_id=creature.creature_id,
+                food=food,
+                energy_swallowed=0.0,
+                depleted=False,
+            )
+
         bite_limit = (
             max(0.0, self.config.max_bite_size_per_second)
             * max(0.0, delta_time)
