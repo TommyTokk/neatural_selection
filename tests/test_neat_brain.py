@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import astuple
 from itertools import count
+from math import tanh
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -40,11 +43,11 @@ from src.vision import BoundarySnapshot, SensorSnapshot, VisionTargetSnapshot
 
 
 class FakeNetwork:
-    def __init__(self, outputs: list[float]) -> None:
+    def __init__(self, outputs: object) -> None:
         self.outputs = outputs
         self.activate_count = 0
 
-    def activate(self, inputs: list[float]) -> list[float]:
+    def activate(self, inputs: list[float]) -> object:
         self.activate_count += 1
         return self.outputs
 
@@ -81,81 +84,196 @@ def sensor_snapshot() -> SensorSnapshot:
 
 
 class NeatBrainActionMappingTest(unittest.TestCase):
-    def decide_with_outputs(self, outputs: list[float]):
-        brain = NeatBrain(
+    def make_brain(
+        self,
+        outputs: object,
+        activations: list[str] | None = None,
+    ) -> NeatBrain:
+        return NeatBrain(
             genome_id=1,
             genome=SimpleNamespace(),
             network=FakeNetwork(outputs),
+            output_activations=(
+                ["clamped"] * 16 if activations is None else activations
+            ),
         )
+
+    def decide_with_outputs(
+        self,
+        outputs: object,
+        activations: list[str] | None = None,
+    ):
+        brain = self.make_brain(outputs, activations)
         return brain.decide(sensor_snapshot())
 
-    def test_neutral_movement_outputs_map_to_stillness(self) -> None:
-        action = self.decide_with_outputs([0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
+    def test_neutral_centered_outputs_produce_neutral_action(self) -> None:
+        brain = self.make_brain([0.0] * 16)
 
-        self.assertAlmostEqual(action.accelerate, 0.0)
-        self.assertAlmostEqual(action.rotate, 0.0)
+        action = brain.decide(sensor_snapshot())
 
-    def test_acceleration_output_is_signed(self) -> None:
-        action = self.decide_with_outputs([0.25, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(brain.last_outputs, [0.0] * 16)
+        self.assertTrue(all(value == 0.0 for value in astuple(action)))
 
-        self.assertAlmostEqual(action.accelerate, -0.5)
-        self.assertAlmostEqual(action.rotate, 0.0)
+    def test_signed_controls_use_centered_values_directly(self) -> None:
+        outputs = [0.0] * 16
+        outputs[0] = -1.0
+        outputs[1] = 0.4
+        outputs[13] = 1.0
 
-    def test_rotation_output_is_signed(self) -> None:
-        right_clockwise_action = self.decide_with_outputs(
-            [0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0]
-        )
-        left_counterclockwise_action = self.decide_with_outputs(
-            [0.5, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0]
-        )
+        action = self.decide_with_outputs(outputs)
 
-        self.assertAlmostEqual(right_clockwise_action.rotate, -0.5)
-        self.assertAlmostEqual(left_counterclockwise_action.rotate, 0.5)
+        self.assertEqual(action.accelerate, -1.0)
+        self.assertEqual(action.rotate, 0.4)
+        self.assertEqual(action.sound_tone, 1.0)
 
-    def test_intent_outputs_remain_normalized(self) -> None:
-        action = self.decide_with_outputs(
-            [0.5, 0.5, 1.2, -0.2, 0.75, 0.25, 1.2, 0.8]
-        )
+    def test_positive_outputs_discard_negative_evidence(self) -> None:
+        outputs = [0.0] * 16
+        outputs[2:6] = [-1.0, 0.0, 0.4, 1.0]
 
-        self.assertEqual(action.want_reproduce, 1.0)
+        action = self.decide_with_outputs(outputs)
+
+        self.assertEqual(action.want_reproduce, 0.0)
         self.assertEqual(action.want_eat, 0.0)
-        self.assertEqual(action.reset_chronometer, 0.75)
-        self.assertEqual(action.want_grab, 0.25)
-        self.assertEqual(action.want_release, 1.0)
-        self.assertEqual(action.want_nurse, 0.8)
+        self.assertEqual(action.reset_chronometer, 0.4)
+        self.assertEqual(action.want_grab, 1.0)
 
-    def test_missing_carry_outputs_default_to_neutral(self) -> None:
-        action = self.decide_with_outputs([0.5, 0.5, 0.0, 0.0, 0.0])
+    def test_all_action_fields_remain_within_their_documented_ranges(self) -> None:
+        outputs = [-2.0, 2.0] * 8
 
-        self.assertEqual(action.want_grab, 0.5)
-        self.assertEqual(action.want_release, 0.5)
-        self.assertEqual(action.want_nurse, 0.5)
-        self.assertEqual(action.flee_panic_intensity, 0.0)
-        self.assertEqual(action.weight_separation, 0.0)
-        self.assertEqual(action.weight_alignment, 0.0)
-        self.assertEqual(action.weight_cohesion, 0.0)
+        action = self.decide_with_outputs(outputs)
 
-    def test_flocking_outputs_are_appended_and_clamped(self) -> None:
-        action = self.decide_with_outputs(
-            [0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.2, 0.25, -0.2, 0.75]
+        self.assertGreaterEqual(action.accelerate, -1.0)
+        self.assertLessEqual(action.accelerate, 1.0)
+        self.assertGreaterEqual(action.rotate, -1.0)
+        self.assertLessEqual(action.rotate, 1.0)
+        self.assertGreaterEqual(action.sound_tone, -1.0)
+        self.assertLessEqual(action.sound_tone, 1.0)
+        positive_fields = (
+            "want_reproduce",
+            "want_eat",
+            "reset_chronometer",
+            "want_grab",
+            "want_release",
+            "want_nurse",
+            "flee_panic_intensity",
+            "weight_separation",
+            "weight_alignment",
+            "weight_cohesion",
+            "emit_sound",
+            "emit_trail_pheromone",
+            "emit_alarm_pheromone",
         )
+        for field_name in positive_fields:
+            value = getattr(action, field_name)
+            self.assertGreaterEqual(value, 0.0, field_name)
+            self.assertLessEqual(value, 1.0, field_name)
 
-        self.assertEqual(action.flee_panic_intensity, 1.0)
-        self.assertEqual(action.weight_separation, 0.25)
-        self.assertEqual(action.weight_alignment, 0.0)
-        self.assertEqual(action.weight_cohesion, 0.75)
+    def test_missing_outputs_are_filled_with_centered_neutral_values(self) -> None:
+        brain = self.make_brain([0.4, -0.4])
 
-    def test_communication_outputs_are_appended_and_neutral_at_half(self) -> None:
-        neutral = self.decide_with_outputs([0.5] * 16)
-        active = self.decide_with_outputs([0.5] * 12 + [0.75, 0.25, 1.0, 0.6])
+        action = brain.decide(sensor_snapshot())
+
+        self.assertEqual(brain.last_outputs, [0.4, -0.4] + [0.0] * 14)
+        self.assertEqual(action.accelerate, 0.4)
+        self.assertEqual(action.rotate, -0.4)
+        self.assertEqual(action.want_reproduce, 0.0)
+        self.assertEqual(action.emit_alarm_pheromone, 0.0)
+
+    def test_exactly_sixteen_outputs_are_preserved(self) -> None:
+        outputs = [index / 20.0 for index in range(16)]
+        brain = self.make_brain(outputs)
+
+        brain.decide(sensor_snapshot())
+
+        self.assertEqual(brain.last_outputs, outputs)
+
+    def test_excess_outputs_are_ignored(self) -> None:
+        brain = self.make_brain([0.0] * 16 + [1.0, -1.0])
+
+        brain.decide(sensor_snapshot())
+
+        self.assertEqual(brain.last_outputs, [0.0] * 16)
+
+    def test_non_iterable_network_result_produces_neutral_action(self) -> None:
+        brain = self.make_brain(1.0)
+
+        action = brain.decide(sensor_snapshot())
+
+        self.assertEqual(brain.last_outputs, [0.0] * 16)
+        self.assertTrue(all(value == 0.0 for value in astuple(action)))
+
+    def test_communication_outputs_use_centered_action_semantics(self) -> None:
+        neutral = self.decide_with_outputs([0.0] * 16)
+        active = self.decide_with_outputs(
+            [0.0] * 12 + [0.5, -0.5, 1.0, 0.2]
+        )
 
         self.assertEqual(neutral.emit_sound, 0.0)
         self.assertEqual(neutral.emit_trail_pheromone, 0.0)
         self.assertEqual(neutral.emit_alarm_pheromone, 0.0)
-        self.assertAlmostEqual(active.emit_sound, 0.5)
-        self.assertAlmostEqual(active.sound_tone, -0.5)
-        self.assertAlmostEqual(active.emit_trail_pheromone, 1.0)
-        self.assertAlmostEqual(active.emit_alarm_pheromone, 0.2)
+        self.assertEqual(active.emit_sound, 0.5)
+        self.assertEqual(active.sound_tone, -0.5)
+        self.assertEqual(active.emit_trail_pheromone, 1.0)
+        self.assertEqual(active.emit_alarm_pheromone, 0.2)
+
+    def test_relu_signed_outputs_are_intentionally_one_sided(self) -> None:
+        outputs = [0.0] * 16
+        outputs[1] = 0.4
+        outputs[13] = 1.2
+        brain = self.make_brain(outputs, ["relu"] * 16)
+
+        action = brain.decide(sensor_snapshot())
+
+        self.assertEqual(action.accelerate, 0.0)
+        self.assertEqual(action.rotate, 0.4)
+        self.assertEqual(action.sound_tone, 1.0)
+
+
+class NeatBrainOutputNormalizationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        brain = NeatBrain(
+            genome_id=1,
+            genome=SimpleNamespace(),
+            network=FakeNetwork([]),
+        )
+        self.brain = brain
+
+    def test_sigmoid_is_remapped_to_centered_range(self) -> None:
+        self.assertEqual(self.brain._center_output(0.0, "sigmoid"), -1.0)
+        self.assertEqual(self.brain._center_output(0.5, "sigmoid"), 0.0)
+        self.assertEqual(self.brain._center_output(1.0, "sigmoid"), 1.0)
+
+    def test_tanh_is_clamped_as_centered(self) -> None:
+        self.assertEqual(self.brain._center_output(-1.0, "tanh"), -1.0)
+        self.assertEqual(self.brain._center_output(0.0, "tanh"), 0.0)
+        self.assertEqual(self.brain._center_output(1.0, "tanh"), 1.0)
+
+    def test_clamped_zero_remains_centered_neutral(self) -> None:
+        self.assertEqual(self.brain._center_output(-1.0, "clamped"), -1.0)
+        self.assertEqual(self.brain._center_output(0.0, "clamped"), 0.0)
+        self.assertEqual(self.brain._center_output(1.0, "clamped"), 1.0)
+
+    def test_relu_is_bounded_without_a_half_range_shift(self) -> None:
+        self.assertEqual(self.brain._center_output(0.0, "relu"), 0.0)
+        self.assertEqual(self.brain._center_output(0.2, "relu"), 0.2)
+        self.assertEqual(self.brain._center_output(2.0, "relu"), 1.0)
+
+    def test_lelu_uses_a_symmetric_squash(self) -> None:
+        self.assertAlmostEqual(self.brain._center_output(-0.2, "lelu"), tanh(-0.2))
+        self.assertEqual(self.brain._center_output(0.0, "lelu"), 0.0)
+        self.assertAlmostEqual(self.brain._center_output(0.2, "lelu"), tanh(0.2))
+
+    def test_invalid_outputs_are_centered_neutral(self) -> None:
+        invalid_values = [float("nan"), float("inf"), float("-inf"), object()]
+        for value in invalid_values:
+            with self.subTest(value=value):
+                self.assertEqual(self.brain._center_output(value, "sigmoid"), 0.0)
+
+    def test_unsupported_activation_uses_finite_tanh_fallback(self) -> None:
+        self.assertAlmostEqual(
+            self.brain._center_output(0.4, "custom_activation"),
+            tanh(0.4),
+        )
 
 
 class NeatBrainNetworkCachingTest(unittest.TestCase):
@@ -193,6 +311,79 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         self.assertEqual(created_networks, [fake_network])
         self.assertIs(brain.network, first_network)
         self.assertEqual(fake_network.activate_count, 3)
+
+    def test_rebuild_reads_activations_in_configured_output_key_order(self) -> None:
+        class FakeFeedForwardNetwork:
+            @staticmethod
+            def create(genome: object, config: object) -> FakeNetwork:
+                del genome, config
+                return FakeNetwork([])
+
+        original_nn = getattr(neat, "nn", None)
+        neat.nn = SimpleNamespace(FeedForwardNetwork=FakeFeedForwardNetwork)
+
+        try:
+            config = SimpleNamespace(
+                genome_config=SimpleNamespace(output_keys=[12, 3, 99])
+            )
+            genome = SimpleNamespace(
+                nodes={
+                    3: SimpleNamespace(activation="TANH"),
+                    12: SimpleNamespace(activation="sigmoid"),
+                    99: SimpleNamespace(activation="clamped"),
+                }
+            )
+
+            first_brain = NeatBrain.from_genome(1, genome, config)
+            genome.nodes[3].activation = "lelu"
+            rebuilt_brain = NeatBrain.from_genome(2, genome, config)
+        finally:
+            if original_nn is None:
+                del neat.nn
+            else:
+                neat.nn = original_nn
+
+        self.assertEqual(
+            first_brain.output_activations,
+            ["sigmoid", "tanh", "clamped"],
+        )
+        self.assertEqual(
+            rebuilt_brain.output_activations,
+            ["sigmoid", "lelu", "clamped"],
+        )
+
+
+class NeatConfigurationTest(unittest.TestCase):
+    def test_herbivore_config_enables_supported_activation_and_aggregation_modes(
+        self,
+    ) -> None:
+        if not hasattr(neat, "Config"):
+            self.skipTest("neat-python is not installed")
+        config_path = (
+            Path(__file__).resolve().parents[1] / "configs" / "neat_herbivore.ini"
+        )
+
+        config = neat.Config(
+            neat.DefaultGenome,
+            neat.DefaultReproduction,
+            neat.DefaultSpeciesSet,
+            neat.DefaultStagnation,
+            str(config_path),
+        )
+
+        genome_config = config.genome_config
+        self.assertEqual(genome_config.activation_default, "sigmoid")
+        self.assertEqual(genome_config.activation_mutate_rate, 0.01)
+        self.assertEqual(
+            genome_config.activation_options,
+            ["sigmoid", "tanh", "clamped", "relu", "lelu"],
+        )
+        self.assertEqual(genome_config.aggregation_default, "sum")
+        self.assertEqual(genome_config.aggregation_mutate_rate, 0.005)
+        self.assertEqual(
+            genome_config.aggregation_options,
+            ["sum", "mean", "maxabs"],
+        )
 
 
 class LegacyBrainContractMigrationTest(unittest.TestCase):

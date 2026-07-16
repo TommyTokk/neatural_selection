@@ -129,6 +129,12 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertTrue(handled)
         self.assertAlmostEqual(self.renderer._brain_graph_zoom, 1.0)
 
+    def test_brain_output_readout_labels_centered_values(self) -> None:
+        readout = self.renderer._brain_output_readout([-0.25, 0.5])
+
+        self.assertIn("Centered outputs: -0.25/0.50", readout)
+        self.assertNotIn("Raw outputs", readout)
+
     def test_scroll_over_non_graph_brain_window_is_consumed(self) -> None:
         handled = self.renderer.handle_mouse_scroll(200, 380, 1)
 

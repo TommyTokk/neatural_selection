@@ -235,6 +235,24 @@ class WorldCarryTest(unittest.TestCase):
         self.assertEqual(world._held_food_by_creature_id, {})
         self.assertEqual(world._carrier_by_food_id, {})
 
+    def test_grab_and_release_use_strict_centered_intent_threshold(self) -> None:
+        creature = FakeCreature(1, FakeBody(FakePoint(0.0, 0.0)))
+        food = FakeFood(1, FakeBody(FakePoint(11.0, 0.0)))
+        world, _, _ = self.make_world(creatures=[creature], foods=[food])
+
+        world._apply_carry_intent(creature, action(want_grab=0.0))
+        world._apply_carry_intent(creature, action(want_grab=0.1))
+        self.assertEqual(world._held_food_by_creature_id, {})
+
+        world._apply_carry_intent(creature, action(want_grab=0.100001))
+        self.assertEqual(world._held_food_by_creature_id, {1: 1})
+
+        world._apply_carry_intent(creature, action(want_release=0.1))
+        self.assertEqual(world._held_food_by_creature_id, {1: 1})
+
+        world._apply_carry_intent(creature, action(want_release=0.100001))
+        self.assertEqual(world._held_food_by_creature_id, {})
+
     def test_carried_food_follows_carrier_front_offset(self) -> None:
         creature = FakeCreature(
             1,

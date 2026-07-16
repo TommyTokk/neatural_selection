@@ -5904,7 +5904,8 @@ class UiRenderer:
             return values[index] if index < len(values) else 0.0
 
         return (
-            f"Raw outputs: {value(0, outputs):.2f}/{value(1, outputs):.2f}  "
+            f"Centered outputs: {value(0, outputs):.2f}/"
+            f"{value(1, outputs):.2f}  "
             f"Intent: {value(2, outputs):.2f}/{value(3, outputs):.2f}/"
             f"{value(4, outputs):.2f}  "
             f"Carry: {value(5, outputs):.2f}/{value(6, outputs):.2f}  "

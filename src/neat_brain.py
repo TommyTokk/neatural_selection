@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import isfinite
+from math import isfinite, tanh
 from typing import Any
 
 import neat
@@ -10,16 +10,11 @@ from neat.graphs import required_for_output
 from src.action import (
     ACTION_OUTPUT_COUNT,
     ACTION_OUTPUT_NAMES,
-    NEUTRAL_NETWORK_OUTPUT,
     Action,
-    signed_output,
 )
 from src.vision import SENSOR_INPUT_NAMES, SensorSnapshot
 
-DEFAULT_ACTION_OUTPUTS = [
-    *([NEUTRAL_NETWORK_OUTPUT] * 8),
-    *([0.0] * (ACTION_OUTPUT_COUNT - 8)),
-]
+DEFAULT_CENTERED_OUTPUTS = [0.0] * ACTION_OUTPUT_COUNT
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,12 +31,13 @@ class NeatBrain:
     Represents a NEAT brain for a creature, encapsulating its genome, neural network,
     and decision-making capabilities based on sensor inputs.
     """
-    genome_id: int # Genome ID for the NEAT brain
-    genome: Any # Genome object representing the neural network structure
-    network: neat.nn.FeedForwardNetwork # Neural network created from the genome
-    output_activations: list[str] = field(default_factory=list)# List of activation functions for each output node
-    last_inputs: list[float] = field(default_factory=list)# Last sensor inputs received by the brain
-    last_outputs: list[float] = field(default_factory=list)# Last outputs produced by the neural network
+    genome_id: int  # Genome ID for the NEAT brain
+    genome: Any  # Genome object representing the neural network structure
+    network: neat.nn.FeedForwardNetwork  # Network created from the genome
+    output_activations: list[str] = field(default_factory=list)
+    last_inputs: list[float] = field(default_factory=list)
+    # Last activation-aware outputs, centered independently in [-1, 1].
+    last_outputs: list[float] = field(default_factory=list)
     last_action: Action | None = None
 
     @classmethod
@@ -68,39 +64,34 @@ class NeatBrain:
             Action: The action decided by the neural network based on the sensor inputs.
         """
 
-        # Store the last inputs from the sensor snapshot
-        
-        # Convert the sensor snapshot to a list of inputs for the neural network
         self.last_inputs = snapshot.as_inputs()
-
-        # Activate the neural network with the last inputs to get raw outputs
         raw_outputs = self.network.activate(self.last_inputs)
+        centered_outputs = self._normalize_outputs(raw_outputs)
+        self.last_outputs = centered_outputs
 
-        # Normalize the raw outputs to ensure they are within valid ranges for actions
-        outputs = self._normalize_outputs(raw_outputs)
-        
-        # Store the last outputs for reference
-        self.last_outputs = outputs
-
-        # Create an Action object based on the normalized outputs and clamp its values to ensure they are within valid ranges
-        # The Action object is then stored as the last action taken by the brain.
         self.last_action = Action(
-            accelerate=self._signed_action_output(outputs[0]),#  Normalize the first output for acceleration
-            rotate=self._signed_action_output(outputs[1]), # Normalize the second output for rotation
-            want_reproduce=outputs[2], # Use the third output directly for reproduction desire
-            want_eat=outputs[3], # Use the fourth output directly for eating desire
-            reset_chronometer=outputs[4], # Use the fifth output directly for chronometer reset desire
-            want_grab=outputs[5], # Use the sixth output directly for grab desire
-            want_release=outputs[6], # Use the seventh output directly for release desire
-            want_nurse=outputs[7],# Use the eighth output directly for nursing desire
-            flee_panic_intensity=outputs[8],# Use the ninth output directly for panic intensity in fleeing
-            weight_separation=outputs[9],# Use the tenth output directly for separation weight in flocking behavior
-            weight_alignment=outputs[10],# Use the eleventh output directly for alignment weight in flocking behavior
-            weight_cohesion=outputs[11],# Use the twelfth output directly for cohesion weight in flocking behavior
-            emit_sound=self._positive_action_output(outputs[12]),
-            sound_tone=self._signed_action_output(outputs[13]),
-            emit_trail_pheromone=self._positive_action_output(outputs[14]),
-            emit_alarm_pheromone=self._positive_action_output(outputs[15]),
+            accelerate=centered_outputs[0],
+            rotate=centered_outputs[1],
+            want_reproduce=self._positive_action_output(centered_outputs[2]),
+            want_eat=self._positive_action_output(centered_outputs[3]),
+            reset_chronometer=self._positive_action_output(centered_outputs[4]),
+            want_grab=self._positive_action_output(centered_outputs[5]),
+            want_release=self._positive_action_output(centered_outputs[6]),
+            want_nurse=self._positive_action_output(centered_outputs[7]),
+            flee_panic_intensity=self._positive_action_output(
+                centered_outputs[8]
+            ),
+            weight_separation=self._positive_action_output(centered_outputs[9]),
+            weight_alignment=self._positive_action_output(centered_outputs[10]),
+            weight_cohesion=self._positive_action_output(centered_outputs[11]),
+            emit_sound=self._positive_action_output(centered_outputs[12]),
+            sound_tone=centered_outputs[13],
+            emit_trail_pheromone=self._positive_action_output(
+                centered_outputs[14]
+            ),
+            emit_alarm_pheromone=self._positive_action_output(
+                centered_outputs[15]
+            ),
         ).clamped()
         return self.last_action
 
@@ -163,38 +154,50 @@ class NeatBrain:
         return tuple(result)
 
     def _normalize_outputs(self, raw_outputs: Any) -> list[float]:
+        """Return 16 independent, finite neural outputs centered in [-1, 1]."""
         try:
             output_values = list(raw_outputs)
         except TypeError:
-            return DEFAULT_ACTION_OUTPUTS.copy()
+            return DEFAULT_CENTERED_OUTPUTS.copy()
 
-        normalized = [
-            self._safe_output(value, self._output_activation(index))
+        centered = [
+            self._center_output(value, self._output_activation(index))
             for index, value in enumerate(output_values[:ACTION_OUTPUT_COUNT])
         ]
 
-        missing_outputs = ACTION_OUTPUT_COUNT - len(normalized)
+        missing_outputs = ACTION_OUTPUT_COUNT - len(centered)
         if missing_outputs > 0:
-            normalized.extend(DEFAULT_ACTION_OUTPUTS[len(normalized) :])
+            centered.extend(DEFAULT_CENTERED_OUTPUTS[len(centered) :])
 
-        return normalized
+        return centered
 
-    def _safe_output(self, value: Any, activation: str | None) -> float:
+    def _center_output(self, value: Any, activation: str | None) -> float:
+        """Convert one already-activated NEAT output to centered [-1, 1]."""
         try:
             output = float(value)
-        except (TypeError, ValueError):
-            return NEUTRAL_NETWORK_OUTPUT
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
 
         if not isfinite(output):
-            return NEUTRAL_NETWORK_OUTPUT
+            return 0.0
 
-        if activation in {"tanh", "sin"}:
-            return (self._clamp(output, -1.0, 1.0) + 1.0) * 0.5
+        activation_name = (
+            "" if activation is None else str(activation).strip().lower()
+        )
 
-        if activation in {"relu", "abs"}:
-            return NEUTRAL_NETWORK_OUTPUT + self._clamp(output, 0.0, 1.0) * 0.5
+        if activation_name == "sigmoid":
+            return 2.0 * self._clamp(output, 0.0, 1.0) - 1.0
 
-        return max(0.0, min(1.0, output))
+        if activation_name in {"tanh", "clamped"}:
+            return self._clamp(output, -1.0, 1.0)
+
+        if activation_name == "relu":
+            return self._clamp(output, 0.0, 1.0)
+
+        if activation_name == "lelu":
+            return tanh(output)
+
+        return tanh(output)
 
     def _output_activation(self, index: int) -> str | None:
         if index >= len(self.output_activations):
@@ -219,8 +222,5 @@ class NeatBrain:
     def _clamp(self, value: float, minimum: float, maximum: float) -> float:
         return max(minimum, min(maximum, value))
 
-    def _signed_action_output(self, value: float) -> float:
-        return self._clamp(signed_output(value), -1.0, 1.0)
-
     def _positive_action_output(self, value: float) -> float:
-        return self._clamp(signed_output(value), 0.0, 1.0)
+        return self._clamp(value, 0.0, 1.0)

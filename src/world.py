@@ -11,7 +11,7 @@ import numpy as np
 
 from configs.sim_config import SimConfig
 import src.utils as ut
-from src.action import Action, acceleration_force_vector
+from src.action import Action, acceleration_force_vector, is_active_intent
 from src.biome import Biome, BiomeGenerationHandler
 from src.creature import (
     Color,
@@ -1516,7 +1516,7 @@ class World:
                 except AttributeError:
                     pass
 
-                if action.reset_chronometer >= 0.5:
+                if is_active_intent(action.reset_chronometer):
                     self._chronometers[creature.creature_id] = 0.0
 
                 self._apply_carry_intent(creature, action)
@@ -2121,11 +2121,11 @@ class World:
         fitness.record_food_discoveries(visible_food_ids)
 
     def _apply_carry_intent(self, creature: Creature, action: Action) -> None:
-        if action.want_release > 0.5:
+        if is_active_intent(action.want_release):
             self._release_food_for(creature)
             return
 
-        if action.want_grab <= 0.5:
+        if not is_active_intent(action.want_grab):
             return
 
         if creature.creature_id in self._held_food_by_creature_id:
@@ -2419,7 +2419,7 @@ class World:
 
         for parent in list(self.creatures):
             action = self._last_actions.get(parent.creature_id)
-            if action is None or action.want_nurse < 0.5:
+            if action is None or not is_active_intent(action.want_nurse):
                 continue
 
             infant = self._nearest_nursable_infant_for(parent)
@@ -3042,7 +3042,9 @@ class World:
                 continue
 
             parent_action = self._last_actions.get(parent.creature_id)
-            if parent_action is not None and parent_action.want_reproduce >= 0.5:
+            if parent_action is not None and is_active_intent(
+                parent_action.want_reproduce
+            ):
                 return parent
 
         return None
@@ -3051,7 +3053,7 @@ class World:
         action = self._last_actions.get(creature.creature_id)
         if action is None:
             return False
-        return action.want_eat >= 0.5
+        return is_active_intent(action.want_eat)
 
     def _settle_food_motion(self) -> None:
         for food in self.foods:

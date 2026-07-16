@@ -435,6 +435,39 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertEqual(world.creatures[0].energy, 0.6)
         self.assertEqual(world.species_history, {})
 
+    def test_reproduction_intent_uses_strict_centered_threshold(self) -> None:
+        world = object.__new__(World)
+        parent = FakeCreature(creature_id=1)
+        world.creatures = [parent]
+        world.fitness = {1: CreatureFitness(age_seconds=30.0)}
+        world.rt_neat = SimpleNamespace(eligible_parent_ids=[1])
+
+        for inactive_value in (0.0, 0.1):
+            world._last_actions = {
+                1: Action(0.0, 0.0, inactive_value, 0.0, 0.0, 0.0, 0.0)
+            }
+            self.assertIsNone(world._reproduction_parent())
+
+        world._last_actions = {
+            1: Action(0.0, 0.0, 0.100001, 0.0, 0.0, 0.0, 0.0)
+        }
+        self.assertIs(world._reproduction_parent(), parent)
+
+    def test_eating_intent_uses_strict_centered_threshold(self) -> None:
+        world = object.__new__(World)
+        creature = FakeCreature(creature_id=1)
+
+        for inactive_value in (0.0, 0.1):
+            world._last_actions = {
+                1: Action(0.0, 0.0, 0.0, inactive_value, 0.0, 0.0, 0.0)
+            }
+            self.assertFalse(world._creature_want_to_eat(creature))
+
+        world._last_actions = {
+            1: Action(0.0, 0.0, 0.0, 0.100001, 0.0, 0.0, 0.0)
+        }
+        self.assertTrue(world._creature_want_to_eat(creature))
+
     def test_reproduction_cost_scales_with_brain_complexity_and_caps(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
@@ -656,6 +689,26 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertAlmostEqual(own_infant.energy, 0.3)
         self.assertAlmostEqual(farther_infant.energy, 0.2)
         self.assertAlmostEqual(unrelated_infant.energy, 0.2)
+
+    def test_nursing_intent_uses_strict_centered_threshold(self) -> None:
+        for inactive_value in (0.0, 0.1):
+            world = self._world_ready_for_parenting()
+            parent, own_infant = world.creatures[0], world.creatures[1]
+            world._last_actions[1].want_nurse = inactive_value
+
+            world._apply_nursing(2.0)
+
+            self.assertAlmostEqual(parent.energy, 1.0)
+            self.assertAlmostEqual(own_infant.energy, 0.2)
+
+        world = self._world_ready_for_parenting()
+        parent, own_infant = world.creatures[0], world.creatures[1]
+        world._last_actions[1].want_nurse = 0.100001
+
+        world._apply_nursing(2.0)
+
+        self.assertAlmostEqual(parent.energy, 0.9)
+        self.assertAlmostEqual(own_infant.energy, 0.3)
 
     def test_nursing_respects_parent_energy_and_infant_capacity(self) -> None:
         world = self._world_ready_for_parenting()

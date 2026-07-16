@@ -22,7 +22,12 @@ ACTION_OUTPUT_NAMES = (
     "emit_trail_pheromone",
     "emit_alarm_pheromone",
 )
-NEUTRAL_NETWORK_OUTPUT = 0.5
+INTENT_THRESHOLD = 0.1
+
+
+def is_active_intent(value: float) -> bool:
+    """Return whether a positive action intent is strong enough to activate."""
+    return value > INTENT_THRESHOLD
 
 
 @dataclass(slots=True)
@@ -72,10 +77,6 @@ class Action:
                 min(1.0, self.emit_alarm_pheromone),
             ),
         )
-
-
-def signed_output(value: float) -> float:
-    return (value - NEUTRAL_NETWORK_OUTPUT) * 2.0
 
 
 def acceleration_force_vector(

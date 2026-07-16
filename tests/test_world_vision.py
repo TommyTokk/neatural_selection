@@ -374,6 +374,36 @@ class WorldVisionMutationTest(unittest.TestCase):
         expected = 0.2 + (0.85 - 0.2) * (1.0 - exp(-0.5))
         self.assertAlmostEqual(creature.biome_fertility_ema, expected)
 
+    def test_chronometer_reset_uses_strict_centered_intent_threshold(self) -> None:
+        def chronometer_after_intent(value: float) -> float:
+            world = self.make_world_for_biome_sensors()
+            creature = self.biome_sensor_creature()
+            world.creatures = [creature]
+            world.use_neat_brains = True
+            world._chronometers = {creature.creature_id: 4.0}
+            world.neat_controller = SimpleNamespace(
+                decide=lambda creature_id, snapshot: Action(
+                    accelerate=0.0,
+                    rotate=0.0,
+                    want_reproduce=0.0,
+                    want_eat=0.0,
+                    reset_chronometer=value,
+                    want_grab=0.0,
+                    want_release=0.0,
+                )
+            )
+            world._last_actions = {}
+            world._apply_carry_intent = lambda creature, action: None
+            world._apply_action = lambda *args, **kwargs: None
+
+            world._apply_creature_intents()
+
+            return world._chronometers[creature.creature_id]
+
+        self.assertEqual(chronometer_after_intent(0.0), 4.0)
+        self.assertEqual(chronometer_after_intent(0.1), 4.0)
+        self.assertEqual(chronometer_after_intent(0.100001), 0.0)
+
     def test_biome_memory_is_rate_independent(self) -> None:
         def adapt_at_rate(step: float) -> float:
             world = self.make_world_for_biome_sensors(fertility=1.0)
