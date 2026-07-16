@@ -6,9 +6,18 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
+import pymunk
+
 from configs.sim_config import SimConfig
 from src.action import Action, calculate_flocking_weights
-from src.creature import FlockingTraits
+from src.collision import CREATURE_CATEGORY, FOOD_CATEGORY
+from src.creature import (
+    Creature,
+    FlockingTraits,
+    LineageInfo,
+    PhysicalTraits,
+    VisionTraits,
+)
 from src.vision import FlockSensorSnapshot
 from src.world import World
 
@@ -283,41 +292,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             (0.9, 0.0, 0.0),
         )
 
-    def test_collision_avoidance_ignores_species_herding_and_field_of_view(
-        self,
-    ) -> None:
-        self.creature.position = (0.0, 0.0)
-        self.creature.radius = 10.0
-        for neighbor_species_id in (1, 99):
-            with self.subTest(neighbor_species_id=neighbor_species_id):
-                neighbor = SimpleNamespace(
-                    creature_id=2,
-                    position=(15.0, 0.0),
-                    radius=10.0,
-                    lineage=SimpleNamespace(species_id=neighbor_species_id),
-                )
-                self.world.creatures = [self.creature, neighbor]
-
-                force = self.world._collision_avoidance_force(
-                    self.creature,
-                    self.world.config.action.max_forward_force,
-                )
-
-                self.assertLess(force[0], 0.0)
-                self.assertAlmostEqual(force[1], 0.0)
-
-    def test_exact_overlap_avoidance_is_deterministic_and_opposite(self) -> None:
-        first = SimpleNamespace(creature_id=1, position=(0.0, 0.0), radius=10.0)
-        second = SimpleNamespace(creature_id=2, position=(0.0, 0.0), radius=10.0)
-        self.world.creatures = [first, second]
-
-        first_force = self.world._collision_avoidance_force(first, 100.0)
-        second_force = self.world._collision_avoidance_force(second, 100.0)
-
-        self.assertEqual(first_force, (100.0, 0.0))
-        self.assertEqual(second_force, (-100.0, 0.0))
-
-
 class FlockingTraitEvolutionTest(unittest.TestCase):
     def world(self) -> World:
         world = World.__new__(World)
@@ -388,6 +362,217 @@ class FlockingTraitEvolutionTest(unittest.TestCase):
         self.assertAlmostEqual(delta.separation_gene, 0.4)
         self.assertEqual(delta.alignment_gene, 0.0)
         self.assertEqual(delta.cohesion_gene, 0.0)
+
+
+class SpatialCollisionQueryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.world = World.__new__(World)
+        self.world.config = SimConfig()
+        self.world.space = pymunk.Space()
+        self.world.space.use_spatial_hash(50.0, 1000)
+        self.world.creatures = []
+        self.world._creature_by_shape_id = {}
+        self.world._creature_query_filter = pymunk.ShapeFilter(
+            mask=CREATURE_CATEGORY
+        )
+        self.world._creature_spatial_state = None
+
+    def add_creature(
+        self,
+        creature_id: int,
+        position: tuple[float, float],
+        radius: float,
+        *,
+        species_id: int = 1,
+    ) -> Creature:
+        body = pymunk.Body(1.0, pymunk.moment_for_circle(1.0, 0.0, radius))
+        body.position = position
+        shape = pymunk.Circle(body, radius)
+        shape.filter = pymunk.ShapeFilter(
+            categories=CREATURE_CATEGORY,
+            mask=CREATURE_CATEGORY | FOOD_CATEGORY,
+        )
+        self.world.space.add(body, shape)
+        creature = Creature(
+            creature_id=creature_id,
+            name=f"Creature {creature_id}",
+            body=body,
+            shape=shape,
+            energy=1.0,
+            vision=VisionTraits(range=1.0, angle=pi / 4.0),
+            physical_traits=PhysicalTraits(radius=radius),
+            color=(1, 2, 3),
+            lineage=LineageInfo(species_id=species_id),
+        )
+        self.world.creatures.append(creature)
+        self.world._index_creature_shape(shape, creature)
+        return creature
+
+    def add_food_shape(
+        self,
+        position: tuple[float, float],
+        radius: float,
+    ) -> pymunk.Circle:
+        body = pymunk.Body(1.0, pymunk.moment_for_circle(1.0, 0.0, radius))
+        body.position = position
+        shape = pymunk.Circle(body, radius)
+        shape.filter = pymunk.ShapeFilter(categories=FOOD_CATEGORY)
+        self.world.space.add(body, shape)
+        return shape
+
+    def test_point_query_filters_self_food_outside_and_distant_shapes(self) -> None:
+        observer = self.add_creature(1, (0.0, 0.0), 10.0)
+        near = self.add_creature(2, (20.0, 0.0), 10.0)
+        self.add_creature(3, (-28.01, 0.0), 10.0)
+        self.add_creature(4, (100.0, 0.0), 10.0)
+        self.add_food_shape((5.0, 0.0), 10.0)
+
+        nearby = self.world._query_nearby_creatures(observer, 18.0)
+
+        self.assertEqual({creature.creature_id for creature in nearby}, {2})
+        self.assertNotIn(observer, nearby)
+        self.assertIn(near, nearby)
+        force = self.world._collision_avoidance_force(observer, 100.0)
+        self.assertLess(force[0], 0.0)
+        self.assertEqual(force[1], 0.0)
+
+    def test_exact_avoidance_boundary_produces_no_force(self) -> None:
+        observer = self.add_creature(1, (0.0, 0.0), 10.0)
+        self.add_creature(2, (28.0, 0.0), 10.0)
+
+        self.assertEqual(
+            self.world._collision_avoidance_force(observer, 100.0),
+            (0.0, 0.0),
+        )
+
+    def test_unequal_radius_query_uses_candidate_shape_geometry(self) -> None:
+        observer = self.add_creature(1, (0.0, 0.0), 5.0)
+        large = self.add_creature(2, (42.0, 0.0), 30.0)
+        self.add_creature(3, (-43.01, 0.0), 30.0)
+
+        nearby = self.world._query_nearby_creatures(observer, 13.0)
+
+        self.assertEqual(nearby, [large])
+
+    def test_avoidance_is_cross_species_out_of_fov_and_herding_independent(
+        self,
+    ) -> None:
+        observer = self.add_creature(1, (0.0, 0.0), 10.0, species_id=1)
+        self.add_creature(2, (-15.0, 0.0), 10.0, species_id=99)
+
+        force = self.world._collision_avoidance_force(observer, 100.0)
+
+        self.assertGreater(force[0], 0.0)
+        self.assertAlmostEqual(force[1], 0.0)
+
+    def test_exact_overlap_avoidance_is_deterministic_and_opposite(self) -> None:
+        first = self.add_creature(1, (0.0, 0.0), 10.0)
+        second = self.add_creature(2, (0.0, 0.0), 10.0)
+
+        first_force = self.world._collision_avoidance_force(first, 100.0)
+        second_force = self.world._collision_avoidance_force(second, 100.0)
+
+        self.assertEqual(first_force, (100.0, 0.0))
+        self.assertEqual(second_force, (-100.0, 0.0))
+
+    def test_spatial_force_matches_full_scan_reference(self) -> None:
+        observer = self.add_creature(1, (0.0, 0.0), 10.0)
+        self.add_creature(2, (12.0, 4.0), 8.0)
+        self.add_creature(3, (-18.0, 3.0), 14.0, species_id=2)
+        self.add_creature(4, (80.0, 0.0), 20.0)
+
+        expected = self.full_scan_reference(observer, 100.0)
+        actual = self.world._collision_avoidance_force(observer, 100.0)
+
+        self.assertAlmostEqual(actual[0], expected[0])
+        self.assertAlmostEqual(actual[1], expected[1])
+
+    def test_reindexed_manual_move_updates_query_location(self) -> None:
+        observer = self.add_creature(1, (0.0, 0.0), 10.0)
+        neighbor = self.add_creature(2, (100.0, 0.0), 10.0)
+        self.assertEqual(self.world._query_nearby_creatures(observer, 18.0), [])
+
+        neighbor.body.position = (15.0, 0.0)
+        self.world.space.reindex_shape(neighbor.shape)
+
+        self.assertEqual(
+            self.world._query_nearby_creatures(observer, 18.0),
+            [neighbor],
+        )
+
+    def test_world_bounds_clamp_reindexes_only_the_moved_creature(self) -> None:
+        observer = self.add_creature(1, (0.0, 0.0), 10.0)
+        neighbor = self.add_creature(2, (100.0, 0.0), 10.0)
+        self.world.config.environment.world_width = 50.0
+        self.world.config.environment.world_height = 200.0
+
+        self.world._keep_creatures_inside_bounds()
+
+        self.assertEqual(tuple(neighbor.body.position), (13.0, 0.0))
+        self.assertEqual(
+            self.world._query_nearby_creatures(observer, 18.0),
+            [neighbor],
+        )
+
+    def test_shape_lookup_registration_and_removal_are_synchronized(self) -> None:
+        creature = self.add_creature(1, (0.0, 0.0), 10.0)
+        self.assertIs(
+            self.world._creature_by_shape_id[id(creature.shape)],
+            creature,
+        )
+
+        self.world._unindex_creature_shape(creature)
+
+        self.assertNotIn(id(creature.shape), self.world._creature_by_shape_id)
+
+    def test_behavior_cache_is_invalidated_after_the_intent_pass(self) -> None:
+        creature = self.add_creature(1, (3.0, 4.0), 10.0)
+        observed: list[tuple[float, float, float]] = []
+        self.world._apply_creature_intents_with_spatial_cache = lambda: (
+            observed.append(
+                self.world._creature_spatial_state[creature.creature_id]
+            )
+        )
+
+        self.world._apply_creature_intents()
+
+        self.assertEqual(observed, [(3.0, 4.0, 10.0)])
+        self.assertIsNone(self.world._creature_spatial_state)
+
+    def full_scan_reference(
+        self,
+        creature: Creature,
+        max_force: float,
+    ) -> tuple[float, float]:
+        margin = self.world.config.action.collision_avoidance_margin
+        center_x, center_y = creature.body.position
+        avoidance_x = avoidance_y = 0.0
+        for neighbor in self.world.creatures:
+            if neighbor is creature:
+                continue
+            neighbor_x, neighbor_y = neighbor.body.position
+            away_x = center_x - neighbor_x
+            away_y = center_y - neighbor_y
+            distance = hypot(away_x, away_y)
+            safe_distance = creature.shape.radius + neighbor.shape.radius + margin
+            if distance >= safe_distance:
+                continue
+            if distance <= 1e-12:
+                unit_x = 1.0 if creature.creature_id < neighbor.creature_id else -1.0
+                unit_y = 0.0
+            else:
+                unit_x, unit_y = away_x / distance, away_y / distance
+            strength = (safe_distance - distance) / safe_distance
+            avoidance_x += unit_x * strength
+            avoidance_y += unit_y * strength
+        magnitude = hypot(avoidance_x, avoidance_y)
+        if magnitude <= 1e-12:
+            return 0.0, 0.0
+        force_magnitude = min(max_force, max_force * min(1.0, magnitude))
+        return (
+            avoidance_x / magnitude * force_magnitude,
+            avoidance_y / magnitude * force_magnitude,
+        )
 
 
 if __name__ == "__main__":

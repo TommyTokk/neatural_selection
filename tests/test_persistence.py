@@ -562,6 +562,11 @@ class PersistenceManagerTest(unittest.TestCase):
             restored_brain = restored.neat_controller.brain_for(
                 restored.creatures[0].creature_id
             )
+            restored_creature = restored.creatures[0]
+            self.assertIs(
+                restored._creature_by_shape_id[id(restored_creature.shape)],
+                restored_creature,
+            )
 
             self.assertEqual(luca.data_quality, "exact")
             self.assertEqual(luca.parent_species_id, None)

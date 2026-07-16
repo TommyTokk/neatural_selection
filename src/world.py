@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field
-from math import atan2, cos, exp, floor, hypot, pi, sin
+from math import atan2, cos, exp, floor, hypot, pi, sin, sqrt
 from random import Random, choice
 from typing import Literal
 
@@ -173,6 +173,11 @@ class World:
             except TypeError:
                 use_spatial_hash(50.0, 1000)
         self._creature_by_shape_id: dict[int, Creature] = {}
+        self._creature_query_filter = pymunk.ShapeFilter(mask=CREATURE_CATEGORY)
+        self._creature_spatial_state: dict[
+            int,
+            tuple[float, float, float],
+        ] | None = None
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
         self.creatures = self._spawn_creatures() if bootstrap else []
@@ -788,21 +793,93 @@ class World:
         creature: Creature,
         radius: float,
     ) -> list[Creature]:
-        center_x, center_y = creature.position
-        queried = self._creatures_in_world_bounds(
-            center_x - radius,
-            center_y - radius,
-            center_x + radius,
-            center_y + radius,
-        )
-        candidates = self.creatures if queried is None else queried
         max_distance = max(0.0, radius)
-        return [
-            other
-            for other in candidates
-            if hypot(other.position[0] - center_x, other.position[1] - center_y)
-            <= max_distance + other.radius
-        ]
+        center_x, center_y, _ = self._creature_spatial_values(creature)
+        candidates = self._query_nearby_creatures(creature, max_distance)
+        nearby: list[Creature] = []
+        for other in candidates:
+            other_x, other_y, other_radius = self._creature_spatial_values(other)
+            delta_x = other_x - center_x
+            delta_y = other_y - center_y
+            limit = max_distance + other_radius
+            if delta_x * delta_x + delta_y * delta_y <= limit * limit:
+                nearby.append(other)
+        return nearby
+
+    def _cache_creature_spatial_state(self) -> None:
+        """Cache circle centers and radii for the current behavior pass."""
+        state: dict[int, tuple[float, float, float]] = {}
+        for creature in self.creatures:
+            # Creature circles are created without an offset, so body.position
+            # is their world-space geometric center.
+            state[creature.creature_id] = self._creature_spatial_values(creature)
+        self._creature_spatial_state = state
+
+    def _creature_spatial_values(
+        self,
+        creature: Creature,
+    ) -> tuple[float, float, float]:
+        state = getattr(self, "_creature_spatial_state", None)
+        if state is not None:
+            cached = state.get(creature.creature_id)
+            if cached is not None:
+                return cached
+        body = getattr(creature, "body", None)
+        position = (
+            body.position
+            if body is not None
+            else getattr(creature, "position", (0.0, 0.0))
+        )
+        if hasattr(position, "x") and hasattr(position, "y"):
+            position_x, position_y = position.x, position.y
+        else:
+            position_x, position_y = position[0], position[1]
+        shape = getattr(creature, "shape", None)
+        radius = (
+            getattr(shape, "radius")
+            if shape is not None and hasattr(shape, "radius")
+            else getattr(creature, "radius", 0.0)
+        )
+        return (
+            float(position_x),
+            float(position_y),
+            float(radius),
+        )
+
+    def _query_nearby_creatures(
+        self,
+        creature: Creature,
+        query_distance: float,
+    ) -> list[Creature]:
+        """Return local creature candidates from Pymunk's spatial hash."""
+        space = getattr(self, "space", None)
+        point_query = getattr(space, "point_query", None)
+        index = getattr(self, "_creature_by_shape_id", None)
+        if point_query is None or index is None:
+            return []
+        center_x, center_y, _ = self._creature_spatial_values(creature)
+        shape_filter = getattr(self, "_creature_query_filter", None)
+        if shape_filter is None:
+            shape_filter = pymunk.ShapeFilter(mask=CREATURE_CATEGORY)
+            self._creature_query_filter = shape_filter
+        hits = point_query(
+            (center_x, center_y),
+            max(0.0, query_distance),
+            shape_filter,
+        )
+        nearby: list[Creature] = []
+        seen_ids: set[int] = set()
+        for hit in hits:
+            other = index.get(id(hit.shape))
+            if (
+                other is None
+                or other is creature
+                or other.creature_id in seen_ids
+            ):
+                continue
+            seen_ids.add(other.creature_id)
+            nearby.append(other)
+        return nearby
 
     def _creatures_in_world_bounds(
         self,
@@ -1162,6 +1239,8 @@ class World:
         )
         body.velocity = (0.0, 0.0)
 
+        # Creature shapes are one zero-offset circle each. Neighbor queries can
+        # therefore cache body.position as the circle's geometric center.
         shape = pymunk.Circle(body, radius)
         shape.filter = pymunk.ShapeFilter(
             categories=CREATURE_CATEGORY,
@@ -1571,6 +1650,14 @@ class World:
         self.space.add(*self._boundary_shapes)
 
     def _apply_creature_intents(self) -> None:
+        self._cache_creature_spatial_state()
+        try:
+            self._apply_creature_intents_with_spatial_cache()
+        finally:
+            # Space.step() moves bodies immediately after this behavior pass.
+            self._creature_spatial_state = None
+
+    def _apply_creature_intents_with_spatial_cache(self) -> None:
         """
         Apply the intents of all creatures in the simulation, based on their
         sensor snapshots and the decisions made by their respective controllers.
@@ -1976,32 +2063,35 @@ class World:
         if max_force <= 0.0 or scale <= 0.0:
             return 0.0, 0.0
 
-        neighbors = getattr(self, "creatures", ())
-        if not neighbors:
-            return 0.0, 0.0
-        position = creature.position
+        center_x, center_y, radius = self._creature_spatial_values(creature)
+        # point_query measures from A's center to B's surface, so B's radius
+        # is already included and must not be added to this query distance.
+        neighbors = self._query_nearby_creatures(creature, radius + margin)
         avoidance_x = 0.0
         avoidance_y = 0.0
         for neighbor in neighbors:
-            if neighbor is creature:
-                continue
-            away_x = position[0] - neighbor.position[0]
-            away_y = position[1] - neighbor.position[1]
-            distance = hypot(away_x, away_y)
+            neighbor_x, neighbor_y, neighbor_radius = (
+                self._creature_spatial_values(neighbor)
+            )
+            away_x = center_x - neighbor_x
+            away_y = center_y - neighbor_y
+            distance_squared = away_x * away_x + away_y * away_y
             safe_distance = max(
                 1e-9,
-                creature.radius + neighbor.radius + margin,
+                radius + neighbor_radius + margin,
             )
-            if distance >= safe_distance:
+            if distance_squared >= safe_distance * safe_distance:
                 continue
-            if distance <= 1e-12:
+            if distance_squared <= 1e-24:
                 direction = (
                     1.0
                     if creature.creature_id < neighbor.creature_id
                     else -1.0
                 )
                 unit_x, unit_y = direction, 0.0
+                distance = 0.0
             else:
+                distance = sqrt(distance_squared)
                 unit_x, unit_y = away_x / distance, away_y / distance
             strength = self._clamp(
                 (safe_distance - distance) / safe_distance,
@@ -2201,15 +2291,16 @@ class World:
 
     def _keep_creatures_inside_bounds(self) -> None:
         left, bottom, right, top = self.environment_world_bounds
+        reindex_shape = getattr(self.space, "reindex_shape", None)
         for creature in self.creatures:
             x, y = creature.position
             radius = creature.radius + 2.0
             clamped_x = max(left + radius, min(right - radius, x))
             clamped_y = max(bottom + radius, min(top - radius, y))
-            creature.body.position = (
-                clamped_x,
-                clamped_y,
-            )
+            if clamped_x != x or clamped_y != y:
+                creature.body.position = (clamped_x, clamped_y)
+                if reindex_shape is not None:
+                    reindex_shape(creature.shape)
             velocity = creature.body.velocity
             velocity_x = velocity.x
             velocity_y = velocity.y
