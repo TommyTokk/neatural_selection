@@ -2156,6 +2156,91 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertEqual((bounds.width, bounds.height), (1400, 860))
         self.assertEqual(set(self.renderer._species_tree_node_bounds), {1, 2})
 
+    def test_species_tree_header_uses_menu_icon_and_selected_context(self) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records)
+        icons: list[tuple[str, str]] = []
+        original_draw_icon = self.renderer._draw_icon
+        self.renderer._draw_icon = (
+            lambda bounds, icon_name, key: icons.append((icon_name, key))
+        )
+        try:
+            self.renderer.open_species_tree(world)
+            self.renderer._draw_species_tree_window(world)
+            node = self.renderer._species_tree_node_bounds[2]
+            self.renderer.handle_mouse_press(
+                world,
+                node.center_x,
+                node.center_y,
+            )
+            self.renderer.handle_mouse_release()
+            self.renderer._draw_species_tree_window(world)
+        finally:
+            self.renderer._draw_icon = original_draw_icon
+
+        self.assertIn(("species", "species_tree_title_icon"), icons)
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_panel_title"].text,
+            "Species Evolution Tree  /  Selected: Species 2",
+        )
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_selected_label"].text,
+            "Species 2",
+        )
+
+    def test_species_tree_wide_layout_places_legend_between_canvas_and_inspector(
+        self,
+    ) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records, width=1440, height=900)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        node = self.renderer._species_tree_node_bounds[2]
+        self.renderer.handle_mouse_press(world, node.center_x, node.center_y)
+        self.renderer.handle_mouse_release()
+
+        self.renderer._draw_species_tree_window(world)
+
+        timeline = self.renderer._control_hitboxes["species_tree_timeline"]
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+        legend = self.renderer._control_hitboxes["species_tree_legend"]
+        resize = self.renderer._control_hitboxes["species_tree_inspector_resize"]
+        inspector_left = resize.left + 5.0
+        self.assertLessEqual(timeline.right, canvas.left)
+        self.assertLessEqual(canvas.right, legend.left)
+        self.assertLessEqual(legend.right, inspector_left)
+        self.assertGreater(canvas.width, 0.0)
+
+    def test_species_tree_compact_layout_hides_legend_and_preserves_canvas(
+        self,
+    ) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records, width=1000, height=700)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        node = self.renderer._species_tree_node_bounds[2]
+        self.renderer.handle_mouse_press(world, node.center_x, node.center_y)
+        self.renderer.handle_mouse_release()
+
+        self.renderer._draw_species_tree_window(world)
+
+        self.assertNotIn("species_tree_legend", self.renderer._control_hitboxes)
+        timeline = self.renderer._control_hitboxes["species_tree_timeline"]
+        canvas = self.renderer._control_hitboxes["species_tree_canvas"]
+        resize = self.renderer._control_hitboxes["species_tree_inspector_resize"]
+        self.assertLessEqual(timeline.right, canvas.left)
+        self.assertLessEqual(canvas.right, resize.left + 5.0)
+        self.assertGreater(canvas.width, 180.0)
+
     def test_runtime_species_lifecycle_tracks_extinction_and_revival(self) -> None:
         world = self.make_world(
             {1: self.make_record(1, None, emerged_at=0.0)}
@@ -2225,6 +2310,546 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             )
         )
 
+    def test_species_tree_refines_founder_color_toward_card_background(self) -> None:
+        record = self.make_record(2, 1)
+
+        softened = self.renderer._species_tree_refined_color(record, 0.5)
+
+        self.assertEqual(
+            softened,
+            self.renderer._brain_blend_color(
+                self.renderer.theme.card_background,
+                record.founder_color,
+                0.5,
+            ),
+        )
+        self.assertNotEqual(softened, record.founder_color)
+
+    def test_species_tree_line_color_has_more_contrast_than_soft_tint(self) -> None:
+        record = replace(
+            self.make_record(2, 1),
+            founder_color=(245, 220, 80),
+        )
+        background = self.renderer.theme.card_background
+        softened = self.renderer._species_tree_refined_color(record, 0.43)
+
+        visible = self.renderer._species_tree_line_color(record)
+
+        softened_distance = sum(
+            abs(background[index] - softened[index]) for index in range(3)
+        )
+        visible_distance = sum(
+            abs(background[index] - visible[index]) for index in range(3)
+        )
+        self.assertGreater(visible_distance, softened_distance)
+        self.assertEqual(visible[3], 230)
+        self.assertGreaterEqual(
+            self.renderer._species_tree_contrast_ratio(
+                visible,
+                background,
+                visible[3],
+            ),
+            3.5,
+        )
+        extinct = self.renderer._species_tree_line_color(
+            record,
+            alpha=150,
+            muted=True,
+        )
+        self.assertGreaterEqual(
+            self.renderer._species_tree_contrast_ratio(
+                extinct,
+                background,
+                extinct[3],
+            ),
+            3.5,
+        )
+        for founder_color in (
+            (255, 255, 255),
+            (80, 220, 220),
+            (255, 180, 200),
+            (40, 50, 70),
+        ):
+            candidate = replace(record, founder_color=founder_color)
+            for alpha, muted in ((230, False), (150, True)):
+                line_color = self.renderer._species_tree_line_color(
+                    candidate,
+                    alpha=alpha,
+                    muted=muted,
+                )
+                self.assertGreaterEqual(
+                    self.renderer._species_tree_contrast_ratio(
+                        line_color,
+                        background,
+                        line_color[3],
+                    ),
+                    3.5,
+                )
+
+    def test_species_tree_lifeline_uses_visible_core_and_understroke(self) -> None:
+        record = self.make_record(1, None, emerged_at=0.0)
+        world = self.make_world({1: record})
+        world.elapsed_time = 20.0
+        world.creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=1))
+        ]
+        layout = self.renderer._sync_species_tree_layout(world)
+        canvas = arcade.LBWH(0.0, 0.0, 400.0, 300.0)
+
+        with patch.object(
+            self.renderer,
+            "_draw_species_tree_path",
+        ) as draw_path:
+            self.renderer._draw_species_tree_lifelines(
+                {1: record},
+                layout,
+                (1,),
+                canvas,
+                set(),
+            )
+
+        colors = [call.args[1] for call in draw_path.call_args_list]
+        self.assertIn(
+            self.renderer._brain_color_alpha(
+                self.renderer.theme.text_primary,
+                30,
+            ),
+            colors,
+        )
+        self.assertIn(
+            self.renderer._species_tree_line_color(record, alpha=235),
+            colors,
+        )
+
+    def test_species_tree_legend_describes_curved_high_contrast_lineage(self) -> None:
+        self.renderer._draw_species_tree_legend(
+            arcade.LBWH(0.0, 0.0, 220.0, 700.0)
+        )
+
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_legend_line_0"].text,
+            "Curved lineage",
+        )
+
+    def test_species_tree_dashed_paths_and_selected_edges_have_hierarchy(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+        }
+        world = self.make_world(records)
+        layout = self.renderer._sync_species_tree_layout(world)
+        layout = replace(layout, end_times={1: float("inf"), 2: 20.0})
+        route = {(1, 2): ((10.0, 20.0), (110.0, 20.0))}
+
+        with (
+            patch("src.ui.arcade.draw_line") as line,
+            patch("src.ui.arcade.draw_circle_filled"),
+        ):
+            self.renderer._draw_species_tree_edges(
+                records,
+                layout,
+                ((1, 2),),
+                route,
+                {(1, 2)},
+            )
+
+        widths = [call.args[-1] for call in line.call_args_list]
+        colors = [call.args[-2] for call in line.call_args_list]
+        self.assertGreater(len(line.call_args_list), 3)
+        self.assertGreater(max(widths), min(widths))
+        self.assertIn(
+            self.renderer._brain_color_alpha(self.renderer.theme.accent, 82),
+            colors,
+        )
+
+    def test_selected_species_path_brightens_ancestry_and_dims_other_edges(
+        self,
+    ) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+            3: self.make_record(3, 1, emerged_at=20.0),
+        }
+        world = self.make_world(records)
+        world.creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=species_id))
+            for species_id in records
+        ]
+        layout = self.renderer._sync_species_tree_layout(world)
+        routes = {
+            (1, 2): ((20.0, 80.0), (120.0, 80.0)),
+            (1, 3): ((20.0, 40.0), (120.0, 40.0)),
+        }
+        self.renderer._species_tree_selected_id = 2
+
+        with (
+            patch.object(self.renderer, "_draw_species_tree_path") as path,
+            patch("src.ui.arcade.draw_circle_filled"),
+        ):
+            self.renderer._draw_species_tree_edges(
+                records,
+                layout,
+                ((1, 2), (1, 3)),
+                routes,
+                {(1, 2)},
+            )
+
+        colors = [call.args[1] for call in path.call_args_list]
+        widths = [call.args[2] for call in path.call_args_list]
+        self.assertIn(
+            self.renderer._species_tree_line_color(records[2], alpha=245),
+            colors,
+        )
+        self.assertIn(
+            self.renderer._species_tree_line_color(
+                records[3],
+                alpha=175,
+                muted=True,
+            ),
+            colors,
+        )
+        self.assertIn(
+            self.renderer._brain_color_alpha(self.renderer.theme.accent, 82),
+            colors,
+        )
+        self.assertGreater(max(widths), min(widths))
+
+    def test_selected_species_path_dims_unrelated_node_core(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+            3: self.make_record(3, 1, emerged_at=20.0),
+        }
+        layout = self.renderer._sync_species_tree_layout(self.make_world(records))
+        positions = {1: (80.0, 180.0), 2: (150.0, 110.0), 3: (220.0, 70.0)}
+        self.renderer._species_tree_selected_id = 2
+
+        with patch("src.ui.arcade.draw_circle_filled") as filled:
+            self.renderer._draw_species_tree_nodes(
+                records,
+                layout,
+                (1, 2, 3),
+                ((1, 2), (1, 3)),
+                positions,
+                {1, 2},
+                arcade.LBWH(0.0, 0.0, 300.0, 240.0),
+            )
+
+        filled.assert_any_call(
+            positions[3][0],
+            positions[3][1],
+            self.renderer._species_tree_node_visual_radius(layout, 3),
+            self.renderer._brain_color_alpha(records[3].founder_color, 145),
+        )
+
+    def test_selected_species_path_brightens_lifelines(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+            3: self.make_record(3, 1, emerged_at=20.0),
+        }
+        world = self.make_world(records)
+        world.elapsed_time = 60.0
+        world.creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=species_id))
+            for species_id in records
+        ]
+        layout = self.renderer._sync_species_tree_layout(world)
+        self.renderer._species_tree_selected_id = 2
+
+        with (
+            patch.object(self.renderer, "_draw_species_tree_path") as path,
+            patch.object(self.renderer, "_draw_species_tree_extant_marker"),
+        ):
+            self.renderer._draw_species_tree_lifelines(
+                records,
+                layout,
+                (1, 2, 3),
+                arcade.LBWH(0.0, 0.0, 500.0, 400.0),
+                {1, 2},
+            )
+
+        colors = [call.args[1] for call in path.call_args_list]
+        self.assertIn(
+            self.renderer._species_tree_line_color(records[2], alpha=245),
+            colors,
+        )
+        self.assertIn(
+            self.renderer._species_tree_line_color(
+                records[3],
+                alpha=175,
+                muted=True,
+            ),
+            colors,
+        )
+
+    def test_species_tree_mutation_intensity_uses_exact_available_changes(self) -> None:
+        root = self.make_record(1, None)
+        child = self.make_record(2, 1)
+        zero_traits = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+        empty_changes = NeatChangeSummary.empty()
+
+        self.assertEqual(self.renderer._species_tree_mutation_intensity(root), 0.0)
+        self.assertEqual(
+            self.renderer._species_tree_mutation_intensity(
+                replace(child, data_quality="reconstructed")
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            self.renderer._species_tree_mutation_intensity(
+                replace(child, trait_deltas=None, neat_changes=None)
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            self.renderer._species_tree_mutation_intensity(
+                replace(child, trait_deltas=None, neat_changes=empty_changes)
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            self.renderer._species_tree_mutation_intensity(
+                replace(child, neat_changes=None)
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            self.renderer._species_tree_mutation_intensity(
+                replace(child, trait_deltas=zero_traits, neat_changes=empty_changes)
+            ),
+            0.0,
+        )
+        trait_only = self.renderer._species_tree_mutation_intensity(
+            replace(
+                child,
+                trait_deltas=SpeciesTraitSnapshot(1.0, 0.0, 0.0, 0.0),
+                neat_changes=empty_changes,
+            )
+        )
+        structural = self.renderer._species_tree_mutation_intensity(
+            replace(
+                child,
+                trait_deltas=zero_traits,
+                neat_changes=replace(empty_changes, nodes_added=2),
+            )
+        )
+        high = self.renderer._species_tree_mutation_intensity(
+            replace(
+                child,
+                neat_changes=replace(
+                    empty_changes,
+                    nodes_added=100,
+                    weights_changed=100,
+                ),
+            )
+        )
+        self.assertGreater(trait_only, 0.0)
+        self.assertGreater(structural, 0.0)
+        self.assertEqual(high, 1.0)
+        self.assertEqual(
+            [
+                self.renderer._species_tree_mutation_tick_count(value)
+                for value in (trait_only, structural, high)
+            ],
+            [1, 2, 3],
+        )
+
+    def test_species_tree_route_corners_are_rounded(self) -> None:
+        route = ((20.0, 100.0), (100.0, 100.0), (100.0, 20.0))
+
+        rounded = self.renderer._species_tree_rounded_route_points(route)
+
+        self.assertEqual(rounded[0], route[0])
+        self.assertEqual(rounded[-1], route[-1])
+        self.assertGreater(len(rounded), len(route))
+        self.assertNotIn(route[1], rounded)
+
+    def test_species_tree_horizontal_connector_gets_a_soft_elbow(self) -> None:
+        junction = (20.0, 100.0)
+        endpoint = (120.0, 100.0)
+
+        softened = self.renderer._species_tree_soft_route_points(
+            (junction, endpoint)
+        )
+
+        self.assertEqual(softened[0], junction)
+        self.assertEqual(softened[-1], endpoint)
+        self.assertGreater(len(softened), 3)
+        self.assertGreater(max(point[1] for point in softened), junction[1])
+        self.assertTrue(
+            all(
+                first[0] <= second[0]
+                for first, second in zip(softened, softened[1:])
+            )
+        )
+
+    def test_species_tree_nodes_use_compact_visuals_and_large_hit_targets(self) -> None:
+        records = {1: self.make_record(1, None, emerged_at=0.0)}
+        world = self.make_world(records)
+        world.creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=1))
+        ]
+        self.renderer.open_species_tree(world)
+
+        self.renderer._draw_species_tree_window(world)
+
+        layout = self.renderer._species_tree_last_layout
+        visual_radius = self.renderer._species_tree_node_visual_radius(layout, 1)
+        hitbox = self.renderer._species_tree_node_bounds[1]
+        self.assertAlmostEqual(visual_radius, 6.25)
+        self.assertLessEqual(visual_radius, 11.0)
+        self.assertGreaterEqual(hitbox.width, 24.0)
+        self.assertGreater(hitbox.width, visual_radius * 2.0)
+
+    def test_species_tree_signed_content_origin_maps_into_canvas_padding(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+            3: self.make_record(3, 1, emerged_at=20.0),
+        }
+        layout = self.renderer._sync_species_tree_layout(self.make_world(records))
+        canvas = arcade.LBWH(100.0, 80.0, layout.content_width, 400.0)
+        self.renderer._species_tree_fit_mode = False
+        self.renderer._species_tree_zoom = 1.0
+        self.renderer._species_tree_horizontal_offset = 0.0
+
+        positions = self.renderer._species_tree_screen_positions(layout, canvas)
+        visible = self.renderer._species_tree_visible_content_bounds(
+            layout,
+            canvas,
+        )
+
+        leftmost_id = min(layout.positions, key=lambda key: layout.positions[key][0])
+        self.assertAlmostEqual(
+            positions[leftmost_id][0],
+            canvas.left + self.renderer.SPECIES_TREE_CONTENT_PADDING,
+        )
+        self.assertAlmostEqual(visible[0], layout.content_left)
+        self.assertAlmostEqual(
+            visible[1],
+            layout.content_left + layout.content_width,
+        )
+
+    def test_species_tree_left_growth_keeps_existing_node_fixed_when_not_fitted(
+        self,
+    ) -> None:
+        records = {1: self.make_record(1, None, emerged_at=0.0)}
+        world = self.make_world(records)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._species_tree_fit_mode = False
+        self.renderer._species_tree_zoom = 1.0
+        self.renderer._draw_species_tree_window(world)
+        original_x = self.renderer._species_tree_node_bounds[1].center_x
+
+        records[2] = self.make_record(2, 1, emerged_at=10.0)
+        world.elapsed_time = 10.0
+        world.creatures = [
+            SimpleNamespace(lineage=SimpleNamespace(species_id=species_id))
+            for species_id in (1, 2)
+        ]
+        self.renderer._draw_species_tree_window(world)
+
+        self.assertAlmostEqual(
+            self.renderer._species_tree_node_bounds[1].center_x,
+            original_x,
+        )
+        self.assertLess(
+            self.renderer._species_tree_last_layout.content_left,
+            -self.renderer.SPECIES_TREE_CONTENT_PADDING,
+        )
+
+    def test_species_tree_context_labels_respect_zoom_priority_and_bounds(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+            3: self.make_record(3, 2, emerged_at=20.0),
+            4: self.make_record(4, 3, emerged_at=30.0),
+        }
+        layout = self.renderer._sync_species_tree_layout(self.make_world(records))
+        canvas = arcade.LBWH(0.0, 0.0, 420.0, 300.0)
+        positions = {
+            1: (80.0, 230.0),
+            2: (150.0, 175.0),
+            3: (220.0, 120.0),
+            4: (290.0, 65.0),
+        }
+        radii = {species_id: 5.0 for species_id in records}
+        self.renderer._species_tree_selected_id = 3
+
+        self.renderer._species_tree_zoom = 0.79
+        compact = self.renderer._species_tree_context_labels(
+            layout,
+            layout.edges,
+            positions,
+            radii,
+            {1, 2, 3},
+            canvas,
+        )
+        self.assertEqual([(label.species_id, label.text) for label in compact], [(3, "Species 3")])
+
+        self.renderer._species_tree_zoom = 1.15
+        expanded = self.renderer._species_tree_context_labels(
+            layout,
+            layout.edges,
+            positions,
+            radii,
+            {1, 2, 3},
+            canvas,
+        )
+        labels_by_id = {label.species_id: label for label in expanded}
+        self.assertEqual(labels_by_id[3].text, "Species 3")
+        self.assertEqual(labels_by_id[2].text, "S2")
+        self.assertEqual(labels_by_id[4].text, "S4")
+        for label in expanded:
+            self.assertGreaterEqual(label.bounds.left, canvas.left)
+            self.assertLessEqual(label.bounds.right, canvas.right)
+            self.assertGreaterEqual(label.bounds.bottom, canvas.bottom)
+            self.assertLessEqual(label.bounds.top, canvas.top)
+        for index, first in enumerate(expanded):
+            for second in expanded[index + 1 :]:
+                self.assertFalse(
+                    self.renderer._species_tree_rects_overlap(
+                        first.bounds,
+                        second.bounds,
+                    )
+                )
+
+    def test_species_tree_focus_band_aligns_with_selected_node_time(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+        }
+        layout = self.renderer._sync_species_tree_layout(self.make_world(records))
+        canvas = arcade.LBWH(100.0, 80.0, 500.0, 400.0)
+        self.renderer._species_tree_selected_id = 2
+        expected_y = self.renderer._species_tree_screen_point(
+            layout.positions[2],
+            layout,
+            canvas,
+        )[1]
+
+        with (
+            patch("src.ui.arcade.draw_line") as line,
+            patch("src.ui.arcade.draw_lrbt_rectangle_filled") as focus,
+        ):
+            self.renderer._draw_species_tree_canvas_grid(layout, canvas)
+
+        focus.assert_called_once_with(
+            canvas.left,
+            canvas.right,
+            expected_y - 8.0,
+            expected_y + 8.0,
+            self.renderer._brain_color_alpha(self.renderer.theme.accent, 16),
+        )
+        self.assertTrue(
+            any(
+                call.args[1] == expected_y and call.args[3] == expected_y
+                for call in line.call_args_list
+            )
+        )
+
     def test_hover_finds_node_and_legacy_tooltip_marks_unavailable_data(self) -> None:
         record = self.make_record(1, None, exact=False)
         world = self.make_world({1: record})
@@ -2263,6 +2888,70 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertEqual(self.renderer._species_tree_selected_id, 3)
         self.assertEqual(nodes, {1, 2, 3})
         self.assertEqual(edges, {(1, 2), (2, 3)})
+
+    def test_parent_button_selects_and_focuses_the_direct_parent(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+            3: self.make_record(3, 2, emerged_at=20.0),
+        }
+        world = self.make_world(records)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        self.renderer._select_species_tree_species(3)
+        self.renderer._draw_species_tree_window(world)
+        parent_button = self.renderer._control_hitboxes[
+            "species_tree_parent_button"
+        ]
+
+        handled = self.renderer.handle_mouse_press(
+            world,
+            parent_button.center_x,
+            parent_button.center_y,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(self.renderer._species_tree_selected_id, 2)
+        self.assertEqual(self.renderer._species_tree_zoom, 1.0)
+        self.assertFalse(self.renderer._species_tree_fit_mode)
+        self.assertIsNone(self.renderer._species_tree_report_species_id)
+        self.assertEqual(
+            self.renderer._scroll_offsets["species_tree_inspector"],
+            0.0,
+        )
+        nodes, edges = self.renderer._species_tree_highlighted_path(
+            self.renderer._species_tree_last_layout
+        )
+        self.assertEqual(nodes, {1, 2})
+        self.assertEqual(edges, {(1, 2)})
+
+    def test_parent_button_label_updates_and_founder_state_is_disabled(self) -> None:
+        records = {
+            1: self.make_record(1, None, emerged_at=0.0),
+            2: self.make_record(2, 1, emerged_at=10.0),
+        }
+        world = self.make_world(records)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+
+        self.renderer._select_species_tree_species(2)
+        self.renderer._draw_species_tree_window(world)
+        self.assertIn("species_tree_parent_button", self.renderer._control_hitboxes)
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_parent_navigation"].text,
+            "Go to Parent · Species 1",
+        )
+
+        self.renderer._select_species_tree_species(1)
+        self.renderer._draw_species_tree_window(world)
+        self.assertNotIn(
+            "species_tree_parent_button",
+            self.renderer._control_hitboxes,
+        )
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_parent_navigation"].text,
+            "Founder species · No parent",
+        )
 
     def test_dragging_from_node_pans_without_changing_selection(self) -> None:
         records = {
@@ -2506,16 +3195,19 @@ class SpeciesTreeWindowTest(unittest.TestCase):
                 record,
             )
 
-        filled.assert_any_call(
-            bounds.left + 27.0,
-            bounds.top - 23.0,
-            11.0,
-            record.founder_color,
+        summary = arcade.LBWH(
+            bounds.left + 14.0,
+            bounds.top - 44.0 - 68.0,
+            bounds.width - 28.0,
+            58.0,
         )
+        marker_x = summary.left + 10.0
+        marker_y = summary.center_y
+        filled.assert_any_call(marker_x, marker_y, 10.0, record.founder_color)
         outlined.assert_any_call(
-            bounds.left + 27.0,
-            bounds.top - 23.0,
-            11.0,
+            marker_x,
+            marker_y,
+            10.0,
             self.renderer.theme.selected_outline,
             3.0,
         )
@@ -2523,26 +3215,62 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             self.renderer._text_cache[
                 "species_tree_inspector_title"
             ].text,
-            "SPECIES 2 INSPECTOR",
+            "Species 2 Inspector",
         )
-        inspector_lines = self.renderer._species_inspector_lines(report)
-        self.assertIn("Anatomy & Morphology", inspector_lines)
-        self.assertIn("Radius: 18.00 px", inspector_lines)
-        self.assertIn("Vision: 100.00 px / 0.900 rad", inspector_lines)
-        self.assertIn("Metabolic Profile", inspector_lines)
-        self.assertIn("Neuro-Integration Hubs", inspector_lines)
-        self.assertIn("Behavioral Ethogram", inspector_lines)
-        self.assertTrue(
-            any(
-                line.startswith("Basal metabolic BMR:")
-                for line in inspector_lines
-            )
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_inspector_quality"].text,
+            "Exact",
         )
-        self.assertTrue(
-            any(
-                line.startswith("Parent BMR/active:")
-                for line in inspector_lines
-            )
+        sections = self.renderer._species_inspector_sections(report, record)
+        section_titles = {section.title for section in sections}
+        self.assertIn("ANATOMY & MORPHOLOGY", section_titles)
+        self.assertIn("METABOLIC PROFILE", section_titles)
+        self.assertIn("NEURO-INTEGRATION HUBS", section_titles)
+        self.assertIn("BEHAVIORAL ETHOGRAM", section_titles)
+        rows = {
+            row.label: row.value
+            for section in sections
+            for row in section.rows
+            if row.label is not None
+        }
+        self.assertEqual(rows["Radius"], "18.00 px")
+        self.assertEqual(rows["Vision range"], "100.00 px")
+        self.assertEqual(rows["Vision angle"], "0.900 rad")
+        self.assertIn("energy/s", rows["Basal metabolic BMR"])
+        self.assertIn(" / ", rows["Parent BMR / active"])
+
+    def test_species_inspector_uses_neutral_frame_and_structured_scroll(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(2, 1)
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            range(12),
+        )
+        bounds = arcade.LBWH(100.0, 100.0, 340.0, 280.0)
+
+        with patch.object(self.renderer, "_draw_rounded_rect") as rounded:
+            self.renderer._draw_species_inspector(bounds, report, record)
+
+        rounded.assert_any_call(
+            bounds,
+            self.renderer.theme.card_background,
+            self.renderer.theme.panel_border,
+            self.renderer.config.layout.card_radius,
+            1.0,
+        )
+        self.assertIn("species_tree_inspector", self.renderer._scroll_regions)
+        scroll_limit = self.renderer._scroll_limits["species_tree_inspector"]
+        self.assertGreater(scroll_limit, 0.0)
+
+        self.renderer._scroll_offsets["species_tree_inspector"] = scroll_limit
+        self.renderer._draw_species_inspector(bounds, report, record)
+
+        self.assertEqual(
+            self.renderer._scroll_offsets["species_tree_inspector"],
+            scroll_limit,
         )
 
     def test_species_inspector_marker_uses_legacy_color_fallback(self) -> None:
@@ -2555,9 +3283,29 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         with patch("src.ui.arcade.draw_circle_filled") as filled:
             self.renderer._draw_species_inspector(bounds, None, record)
 
+        self.assertIn(
+            (
+                bounds.left + 24.0,
+                bounds.top - 83.0,
+                10.0,
+                self.renderer.theme.herbivore_fill,
+            ),
+            [call.args for call in filled.call_args_list],
+        )
+
+    def test_species_inspector_marks_reconstructed_data_quality(self) -> None:
+        record = self.make_record(7, None, exact=False)
+        bounds = arcade.LBWH(100.0, 100.0, 340.0, 600.0)
+
+        self.renderer._draw_species_inspector(bounds, None, record)
+
         self.assertEqual(
-            filled.call_args.args[3],
-            self.renderer.theme.herbivore_fill,
+            self.renderer._text_cache["species_tree_inspector_quality"].text,
+            "Reconstructed",
+        )
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_inspector_title"].text,
+            "Species 7 Inspector",
         )
 
     def test_species_inspector_marker_stays_fixed_while_scrolling(self) -> None:
@@ -2568,10 +3316,21 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         with patch("src.ui.arcade.draw_circle_filled") as filled:
             self.renderer._scroll_offsets["species_tree_inspector"] = 0.0
             self.renderer._draw_species_inspector(bounds, None, record)
-            marker_positions.append(filled.call_args.args[:2])
+            marker = next(
+                call.args
+                for call in filled.call_args_list
+                if call.args[2:] == (10.0, record.founder_color)
+            )
+            marker_positions.append(marker[:2])
+            filled.reset_mock()
             self.renderer._scroll_offsets["species_tree_inspector"] = 100.0
             self.renderer._draw_species_inspector(bounds, None, record)
-            marker_positions.append(filled.call_args.args[:2])
+            marker = next(
+                call.args
+                for call in filled.call_args_list
+                if call.args[2:] == (10.0, record.founder_color)
+            )
+            marker_positions.append(marker[:2])
 
         self.assertEqual(marker_positions[0], marker_positions[1])
 

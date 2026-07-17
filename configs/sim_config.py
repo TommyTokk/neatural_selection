@@ -230,7 +230,7 @@ class MetabolismConfig:
 @dataclass(slots=True)
 class PopulationConfig:
     initial_creatures: int = 40
-    max_creatures: int = 100
+    max_creatures: int = 55
     elite_archive_size: int = 256
     fitness_archive_size: int = 256
     extinction_recovery_creatures: int = 35

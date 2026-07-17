@@ -42,6 +42,47 @@ class SpeciesTreeLayoutTest(unittest.TestCase):
             20.0 * 2.0,
         )
 
+    def test_living_siblings_balance_around_their_parent(self) -> None:
+        layout = build_species_tree_layout(
+            {
+                1: _Record(1, None, 0.0),
+                2: _Record(2, 1, 10.0),
+                3: _Record(3, 1, 20.0),
+                4: _Record(4, 1, 30.0),
+                5: _Record(5, 1, 40.0),
+            }
+        )
+
+        self.assertEqual(layout.lanes[1], 0)
+        self.assertEqual(
+            [layout.lanes[species_id] for species_id in (2, 3, 4, 5)],
+            [-1, 1, -2, 2],
+        )
+        self.assertEqual(layout.content_left, -2 * 92.0 - 48.0)
+        self.assertEqual(layout.leaf_count, 5)
+
+    def test_independent_living_roots_are_centered_around_origin(self) -> None:
+        layout = build_species_tree_layout(
+            {
+                1: _Record(1, None, 0.0),
+                2: _Record(2, None, 10.0),
+                3: _Record(3, None, 20.0),
+            }
+        )
+
+        self.assertEqual(layout.lanes, {1: 0, 2: -1, 3: 1})
+
+    def test_child_reuses_parent_lane_after_parent_has_ended(self) -> None:
+        layout = build_species_tree_layout(
+            {
+                1: _Record(1, None, 0.0),
+                2: _Record(2, 1, 15.0),
+            },
+            species_end_times={1: 10.0, 2: float("inf")},
+        )
+
+        self.assertEqual(layout.lanes[1], layout.lanes[2])
+
     def test_lane_reuses_only_after_species_has_ended(self) -> None:
         records = {
             1: _Record(1, None, 0.0),
@@ -317,8 +358,8 @@ class SpeciesTreeLayoutTest(unittest.TestCase):
         hour_nine_y = 9.0 * 3600.0 * manager.time_scale + manager.padding
 
         visible = manager.viewport_slice(
-            left=0.0,
-            right=layout.content_width,
+            left=layout.content_left,
+            right=layout.content_left + layout.content_width,
             top=hour_nine_y,
             bottom=hour_nine_y + 900.0,
         )

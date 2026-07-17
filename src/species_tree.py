@@ -26,6 +26,7 @@ class SpeciesTreeLayout:
     lanes: dict[int, int] = field(default_factory=dict)
     end_times: dict[int, float] = field(default_factory=dict)
     descendant_counts: dict[int, int] = field(default_factory=dict)
+    content_left: float = 0.0
 
 
 SpeciesTreeRoute = tuple[tuple[float, float], ...]
@@ -87,7 +88,6 @@ class TreeLayoutManager:
         self._edge_buckets: dict[int, list[tuple[int, int]]] = {}
         self._lifeline_buckets: dict[int, list[int]] = {}
         self._lifeline_bucket_ends: dict[int, int] = {}
-        self._next_lane = 0
         self._timeline_end = 0.0
         self._display_end = 0.0
         self._latest_species_id: int | None = None
@@ -321,6 +321,7 @@ class TreeLayoutManager:
             effective_time = 0.0 if recorded_time is None else recorded_time
             self._roots.append(species_id)
             self._roots_tuple = tuple(self._roots)
+            child_ordinal = 0
         else:
             parent_time = self._effective_times[parent_id]
             fallback_gap = self.minimum_generation_gap / self.time_scale
@@ -331,13 +332,21 @@ class TreeLayoutManager:
             )
             child_count = self._child_counts.get(parent_id, 0)
             self._child_counts[parent_id] = child_count + 1
+            child_ordinal = child_count
             depth = self._depths[parent_id] + 1
 
         normalized_end = max(effective_time, end_time)
-        lane = self._allocate_lane(effective_time, normalized_end)
+        lane = self._allocate_lane(
+            effective_time,
+            normalized_end,
+            parent_lane=(
+                None if parent_id is None else self._lanes[parent_id]
+            ),
+            child_ordinal=child_ordinal,
+        )
 
         position = (
-            self.padding + lane * self.horizontal_gap,
+            lane * self.horizontal_gap,
             self.padding + effective_time * self.time_scale,
         )
         self._positions[species_id] = position
@@ -374,17 +383,52 @@ class TreeLayoutManager:
         ):
             self._latest_species_id = species_id
 
-    def _allocate_lane(self, emergence_time: float, end_time: float) -> int:
-        lane = next(
-            (
-                lane_index
-                for lane_index in range(self._next_lane)
-                if self._lane_end_times[lane_index] < emergence_time
-            ),
-            self._next_lane,
-        )
-        if lane == self._next_lane:
-            self._next_lane += 1
+    def _allocate_lane(
+        self,
+        emergence_time: float,
+        end_time: float,
+        *,
+        parent_lane: int | None,
+        child_ordinal: int,
+    ) -> int:
+        def available(candidate: int) -> bool:
+            return self._lane_end_times.get(candidate, float("-inf")) < emergence_time
+
+        if parent_lane is None:
+            candidate_index = 0
+            while True:
+                if candidate_index == 0:
+                    lane = 0
+                else:
+                    distance = (candidate_index + 1) // 2
+                    lane = -distance if candidate_index % 2 else distance
+                if available(lane):
+                    break
+                candidate_index += 1
+        else:
+            if available(parent_lane):
+                self._lane_end_times[parent_lane] = end_time
+                return parent_lane
+            prefer_left = child_ordinal % 2 == 0
+            span = (
+                max(self._lane_end_times) - min(self._lane_end_times) + 2
+                if self._lane_end_times
+                else 2
+            )
+            lane = parent_lane - 1 if prefer_left else parent_lane + 1
+            for distance in range(1, span + 2):
+                candidates = (
+                    (parent_lane - distance, parent_lane + distance)
+                    if prefer_left
+                    else (parent_lane + distance, parent_lane - distance)
+                )
+                available_lane = next(
+                    (candidate for candidate in candidates if available(candidate)),
+                    None,
+                )
+                if available_lane is not None:
+                    lane = available_lane
+                    break
         self._lane_end_times[lane] = end_time
         return lane
 
@@ -417,6 +461,13 @@ class TreeLayoutManager:
 
     def _layout(self) -> SpeciesTreeLayout:
         latest_time = max(self._timeline_end, self._display_end, 0.0)
+        minimum_lane = min(self._lane_end_times, default=0)
+        maximum_lane = max(self._lane_end_times, default=-1)
+        content_left = (
+            0.0
+            if not self._positions
+            else minimum_lane * self.horizontal_gap - self.padding
+        )
         return SpeciesTreeLayout(
             positions=self._positions,
             edges=self._edges_tuple,
@@ -427,19 +478,24 @@ class TreeLayoutManager:
                 0.0
                 if not self._positions
                 else self.padding * 2.0
-                + max(0, self._next_lane - 1) * self.horizontal_gap
+                + max(0, maximum_lane - minimum_lane) * self.horizontal_gap
             ),
             content_height=(
                 0.0
                 if not self._positions
                 else self.padding * 2.0 + latest_time * self.time_scale
             ),
-            leaf_count=max(0, self._next_lane),
+            leaf_count=(
+                0
+                if not self._positions
+                else maximum_lane - minimum_lane + 1
+            ),
             timeline_start=0.0,
             timeline_end=self._timeline_end,
             lanes=self._lanes,
             end_times=self._end_times,
             descendant_counts=self._descendant_counts,
+            content_left=content_left,
         )
 
     def _sorted_bucket_ids(self) -> tuple[int, ...]:

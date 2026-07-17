@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
-from math import ceil, floor, isfinite, log10
+from dataclasses import dataclass
+from math import ceil, cos, floor, hypot, isfinite, log1p, log10, pi, sin
 from pathlib import Path
 import re
 
@@ -39,6 +40,28 @@ from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
 
 _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class _SpeciesInspectorRow:
+    label: str | None
+    value: str
+    tone: str = "default"
+    marker_color: tuple[int, int, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SpeciesInspectorSection:
+    title: str
+    rows: tuple[_SpeciesInspectorRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SpeciesTreeLabel:
+    species_id: int
+    text: str
+    bounds: arcade.Rect
+    emphasized: bool
 
 
 class UiRenderer:
@@ -2545,6 +2568,7 @@ class UiRenderer:
         self._species_tree_highlight_cache_id = None
         self._species_tree_highlight_nodes.clear()
         self._species_tree_highlight_edges.clear()
+        self._control_hitboxes.pop("species_tree_parent_button", None)
 
     def close_species_tree(self, world: World) -> None:
         if not self._species_tree_open:
@@ -2565,6 +2589,7 @@ class UiRenderer:
         self._species_tree_inspector_width = None
         self._species_tree_inspector_resize_drag = False
         self._control_hitboxes.pop("species_tree_inspector_resize", None)
+        self._control_hitboxes.pop("species_tree_parent_button", None)
         self._species_tree_timeline_bucket_bounds.clear()
         self._species_tree_visible_slice = TreeViewportSlice((), (), {})
         self._species_tree_highlight_cache_id = None
@@ -2614,19 +2639,25 @@ class UiRenderer:
             max(0.0, window.width - margin * 2.0),
             max(0.0, window.height - margin * 2.0),
         )
-        content = self._draw_floating_panel(
-            bounds,
-            "Species Evolution Tree",
-            "species_tree",
-            icon_name="speciation",
-            body_top_padding=10.0,
-        )
-        self._control_hitboxes.pop("species_tree_drag", None)
-        self._control_hitboxes["species_tree_window"] = bounds
         records = getattr(world, "species_history", {})
         selected_id = self._species_tree_selected_id
         show_inspector = selected_id is not None and selected_id in records
+        title = "Species Evolution Tree"
+        if show_inspector:
+            title += f"  /  Selected: Species {selected_id}"
+        content = self._draw_floating_panel(
+            bounds,
+            title,
+            "species_tree",
+            icon_name="species",
+            body_top_padding=10.0,
+            panel_fill=self.theme.panel_background,
+            title_icon_size=28.0,
+        )
+        self._control_hitboxes.pop("species_tree_drag", None)
+        self._control_hitboxes["species_tree_window"] = bounds
         inspector = None
+        legend = None
         content_right = content.right - 20.0
         if show_inspector:
             inspector_width = self._species_tree_inspector_clamped_width(
@@ -2640,13 +2671,34 @@ class UiRenderer:
             )
             content_right = inspector.left - self.SPECIES_TREE_TIMELINE_GAP
 
+        timeline_width = min(
+            self.SPECIES_TREE_TIMELINE_WIDTH,
+            max(0.0, content.width * 0.24),
+        )
+        legend_width = min(190.0, max(168.0, content.width * 0.14))
+        legend_canvas_width = (
+            content_right
+            - content.left
+            - timeline_width
+            - legend_width
+            - self.SPECIES_TREE_TIMELINE_GAP * 2.0
+        )
+        if content.width >= 1200.0 and legend_canvas_width >= 300.0:
+            legend = arcade.LBWH(
+                content_right - legend_width,
+                content.bottom + 20.0,
+                legend_width,
+                max(0.0, content.height - 20.0),
+            )
+            content_right = legend.left - self.SPECIES_TREE_TIMELINE_GAP
+            self._control_hitboxes["species_tree_legend"] = legend
+        else:
+            self._control_hitboxes.pop("species_tree_legend", None)
+
         timeline = arcade.LBWH(
             content.left,
             content.bottom + 20.0,
-            min(
-                self.SPECIES_TREE_TIMELINE_WIDTH,
-                max(0.0, content.width * 0.24),
-            ),
+            timeline_width,
             max(0.0, content.height - 20.0),
         )
         canvas = arcade.LBWH(
@@ -2667,15 +2719,17 @@ class UiRenderer:
             self.theme.card_background,
             self.theme.panel_border,
             self.config.layout.card_radius,
-            1.5,
+            1.0,
         )
         self._draw_rounded_rect(
             canvas,
             self.theme.card_background,
             self.theme.panel_border,
             self.config.layout.card_radius,
-            1.5,
+            1.0,
         )
+        if legend is not None:
+            self._draw_species_tree_legend(legend)
 
         if not records:
             self._species_tree_zoom = 1.0
@@ -2715,6 +2769,7 @@ class UiRenderer:
             )
             return
 
+        previous_layout = self._species_tree_last_layout
         previous_canvas = self._species_tree_last_canvas
         canvas_changed = (
             previous_canvas is not None
@@ -2728,6 +2783,23 @@ class UiRenderer:
                 self._species_tree_horizontal_offset = 0.0
             if layout.content_height * self._species_tree_zoom <= canvas.height:
                 self._species_tree_vertical_offset = 0.0
+        if previous_layout is not None and not self._species_tree_fit_mode:
+            old_horizontal_inset = self._species_tree_content_insets(
+                previous_layout,
+                canvas,
+                self._species_tree_zoom,
+            )[0]
+            new_horizontal_inset = self._species_tree_content_insets(
+                layout,
+                canvas,
+                self._species_tree_zoom,
+            )[0]
+            self._species_tree_horizontal_offset += (
+                new_horizontal_inset
+                - old_horizontal_inset
+                + (previous_layout.content_left - layout.content_left)
+                * self._species_tree_zoom
+            )
         self._species_tree_last_layout = layout
         self._species_tree_last_canvas = canvas
         self._update_species_tree_zoom_and_limits(layout, canvas)
@@ -2763,6 +2835,7 @@ class UiRenderer:
         )
 
         with self._ui_clip(canvas):
+            self._draw_species_tree_canvas_grid(layout, canvas)
             self._draw_species_tree_lifelines(
                 records,
                 layout,
@@ -2771,15 +2844,20 @@ class UiRenderer:
                 highlighted_nodes,
             )
             self._draw_species_tree_edges(
+                records,
+                layout,
                 visible.edges,
                 screen_routes,
                 highlighted_edges,
             )
             self._draw_species_tree_nodes(
                 records,
+                layout,
                 visible.node_ids,
+                visible.edges,
                 positions,
                 highlighted_nodes,
+                canvas,
             )
 
         self._draw_species_tree_timeline(layout, timeline, canvas)
@@ -2801,6 +2879,7 @@ class UiRenderer:
             )
         else:
             self._control_hitboxes.pop("species_tree_inspector_resize", None)
+            self._control_hitboxes.pop("species_tree_parent_button", None)
         hovered = self._species_tree_hovered_id
         if hovered is not None and hovered in records:
             parent_id = records[hovered].parent_species_id
@@ -2815,7 +2894,7 @@ class UiRenderer:
         content: arcade.Rect,
     ) -> tuple[float, float]:
         max_width = max(0.0, content.width * 2.0 / 3.0)
-        min_width = min(320.0, max_width)
+        min_width = min(300.0, max_width)
         return min_width, max_width
 
     def _species_tree_inspector_default_width(
@@ -2825,7 +2904,7 @@ class UiRenderer:
         min_width, max_width = self._species_tree_inspector_width_limits(
             content
         )
-        preferred = max(520.0, content.width * 0.38)
+        preferred = max(340.0, content.width * 0.38)
         return max(min_width, min(max_width, preferred))
 
     def _species_tree_inspector_clamped_width(
@@ -2844,17 +2923,268 @@ class UiRenderer:
         self._species_tree_inspector_width = width
         return width
 
+    def _draw_species_tree_legend(self, bounds: arcade.Rect) -> None:
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        left = bounds.left + 16.0
+        right = bounds.right - 16.0
+        y = bounds.top - 24.0
+        self._draw_text(
+            "species_tree_legend_title",
+            "LEGEND & CONTROLS",
+            left,
+            y,
+            self.theme.text_primary,
+            10,
+            bold=True,
+            anchor_y="center",
+        )
+        arcade.draw_line(
+            left,
+            y - 19.0,
+            right,
+            y - 19.0,
+            self.theme.panel_border,
+            1.0,
+        )
+
+        y -= 48.0
+        self._draw_text(
+            "species_tree_legend_nodes_title",
+            "NODE STATES",
+            left,
+            y,
+            self.theme.text_primary,
+            9,
+            bold=True,
+        )
+        node_rows = (
+            ("Species node", "node"),
+            ("Extant endpoint", "extant"),
+            ("Extinct endpoint", "extinct"),
+            ("Selected lineage", "selected"),
+            ("Mutation activity", "mutation"),
+        )
+        for index, (label, kind) in enumerate(node_rows):
+            row_y = y - 31.0 - index * 29.0
+            marker_x = left + 7.0
+            if kind == "extinct":
+                arcade.draw_circle_outline(
+                    marker_x,
+                    row_y,
+                    6.0,
+                    self._brain_color_alpha(self.theme.text_muted, 110),
+                    1.0,
+                )
+                arcade.draw_line(
+                    marker_x - 5.0,
+                    row_y,
+                    marker_x + 5.0,
+                    row_y,
+                    self.theme.text_muted,
+                    1.5,
+                )
+                arcade.draw_line(
+                    marker_x,
+                    row_y - 5.0,
+                    marker_x,
+                    row_y + 5.0,
+                    self.theme.text_muted,
+                    1.5,
+                )
+            elif kind == "mutation":
+                arcade.draw_circle_filled(
+                    marker_x,
+                    row_y,
+                    4.0,
+                    self.theme.herbivore_fill,
+                )
+                for tick_index in range(3):
+                    angle = pi * (0.18 + tick_index * 0.32)
+                    arcade.draw_line(
+                        marker_x + cos(angle) * 6.0,
+                        row_y + sin(angle) * 6.0,
+                        marker_x + cos(angle) * 10.0,
+                        row_y + sin(angle) * 10.0,
+                        self.theme.accent,
+                        1.25,
+                    )
+            else:
+                fill = (
+                    self.theme.accent
+                    if kind == "selected"
+                    else self.theme.herbivore_fill
+                )
+                if kind == "extant":
+                    arcade.draw_circle_filled(
+                        marker_x,
+                        row_y,
+                        8.0,
+                        self._brain_color_alpha(fill, 50),
+                    )
+                arcade.draw_circle_filled(marker_x, row_y, 4.5, fill)
+                arcade.draw_circle_outline(
+                    marker_x,
+                    row_y,
+                    6.5,
+                    (
+                        self.theme.accent
+                        if kind == "selected"
+                        else self.theme.herbivore_outline
+                    ),
+                    1.5,
+                )
+            self._draw_text(
+                f"species_tree_legend_node_{index}",
+                label,
+                left + 25.0,
+                row_y,
+                self.theme.text_muted,
+                9.5,
+                anchor_y="center",
+            )
+
+        divider_y = y - 180.0
+        arcade.draw_line(
+            left,
+            divider_y,
+            right,
+            divider_y,
+            self.theme.panel_border,
+            1.0,
+        )
+        y = divider_y - 27.0
+        self._draw_text(
+            "species_tree_legend_lines_title",
+            "LINE STYLES",
+            left,
+            y,
+            self.theme.text_primary,
+            9,
+            bold=True,
+        )
+        for index, (label, color, width, dashed) in enumerate(
+            (
+                (
+                    "Curved lineage",
+                    self._brain_color_alpha(self.theme.accent, 230),
+                    2.0,
+                    False,
+                ),
+                (
+                    "Extinct lineage",
+                    self._brain_color_alpha(self.theme.text_muted, 150),
+                    1.5,
+                    True,
+                ),
+                (
+                    "Selected ancestry",
+                    self._brain_color_alpha(self.theme.accent, 245),
+                    4.0,
+                    False,
+                ),
+                (
+                    "Descendant weight",
+                    self.theme.herbivore_outline,
+                    3.5,
+                    False,
+                ),
+            )
+        ):
+            row_y = y - 30.0 - index * 29.0
+            if dashed:
+                for dash_start in (0.0, 10.0, 20.0):
+                    arcade.draw_line(
+                        left + dash_start,
+                        row_y,
+                        left + min(25.0, dash_start + 6.0),
+                        row_y,
+                        color,
+                        width,
+                    )
+            else:
+                self._draw_curve(
+                    self._quadratic_bezier_points(
+                        (left, row_y - 2.0),
+                        (left + 10.0, row_y + 4.0),
+                        (left + 25.0, row_y),
+                        steps=5,
+                    ),
+                    color,
+                    width,
+                )
+            self._draw_text(
+                f"species_tree_legend_line_{index}",
+                label,
+                left + 35.0,
+                row_y,
+                self.theme.text_muted,
+                9.5,
+                anchor_y="center",
+            )
+
+        divider_y = y - 144.0
+        arcade.draw_line(
+            left,
+            divider_y,
+            right,
+            divider_y,
+            self.theme.panel_border,
+            1.0,
+        )
+        y = divider_y - 27.0
+        self._draw_text(
+            "species_tree_legend_controls_title",
+            "CONTROLS",
+            left,
+            y,
+            self.theme.text_primary,
+            9,
+            bold=True,
+        )
+        for index, line in enumerate(
+            (
+                "Click a species to inspect",
+                "Drag the canvas to pan",
+                "Scroll or use header zoom",
+                "Click the timeline to jump",
+            )
+        ):
+            self._draw_text(
+                f"species_tree_legend_control_{index}",
+                line,
+                left,
+                y - 29.0 - index * 25.0,
+                self.theme.text_muted,
+                9,
+                width=max(20.0, right - left),
+                multiline=True,
+            )
+
     def _draw_species_tree_empty_timeline(self, timeline: arcade.Rect) -> None:
         self._draw_text(
             "species_tree_timeline_title",
             "TIME",
             timeline.center_x,
             timeline.top - 18.0,
-            self.theme.text_muted,
+            self.theme.text_primary,
             10,
             bold=True,
             anchor_x="center",
             anchor_y="center",
+        )
+        arcade.draw_line(
+            timeline.left + 12.0,
+            timeline.top - 38.0,
+            timeline.right - 12.0,
+            timeline.top - 38.0,
+            self.theme.panel_border,
+            1.0,
         )
         self._draw_text(
             "species_tree_timeline_empty",
@@ -2879,11 +3209,19 @@ class UiRenderer:
             "TIME",
             timeline.center_x,
             timeline.top - 18.0,
-            self.theme.text_muted,
+            self.theme.text_primary,
             10,
             bold=True,
             anchor_x="center",
             anchor_y="center",
+        )
+        arcade.draw_line(
+            timeline.left + 12.0,
+            timeline.top - 38.0,
+            timeline.right - 12.0,
+            timeline.top - 38.0,
+            self.theme.panel_border,
+            1.0,
         )
         ruler = arcade.LBWH(
             timeline.left + 8.0,
@@ -2997,6 +3335,13 @@ class UiRenderer:
             20.0,
             indicator_height,
         )
+        arcade.draw_lrbt_rectangle_filled(
+            indicator.left,
+            indicator.right,
+            indicator.bottom,
+            indicator.top,
+            self._brain_color_alpha(self.theme.accent_soft, 80),
+        )
         for line_start, line_end in (
             ((indicator.left, indicator.bottom), (indicator.right, indicator.bottom)),
             ((indicator.right, indicator.bottom), (indicator.right, indicator.top)),
@@ -3106,13 +3451,13 @@ class UiRenderer:
             - canvas.left
             - horizontal_inset
             + self._species_tree_horizontal_offset
-        ) / zoom
+        ) / zoom + layout.content_left
         right = (
             canvas.right
             - canvas.left
             - horizontal_inset
             + self._species_tree_horizontal_offset
-        ) / zoom
+        ) / zoom + layout.content_left
         top = (
             canvas.top
             - vertical_inset
@@ -3145,7 +3490,7 @@ class UiRenderer:
         self._species_tree_horizontal_offset = (
             canvas.left
             + horizontal_inset
-            + latest_x * self._species_tree_zoom
+            + (latest_x - layout.content_left) * self._species_tree_zoom
             - canvas.center_x
         )
         self._species_tree_vertical_offset = (
@@ -3186,6 +3531,7 @@ class UiRenderer:
                 canvas.left
                 + horizontal_inset
                 + position_x
+                - layout.content_left
                 - canvas.center_x
             )
         else:
@@ -3201,6 +3547,32 @@ class UiRenderer:
             + position_y
         )
         self._clamp_species_tree_offsets()
+
+    def _select_species_tree_species(
+        self,
+        species_id: int,
+        *,
+        focus: bool = False,
+    ) -> None:
+        layout = self._species_tree_last_layout
+        if layout is None or species_id not in layout.positions:
+            return
+        changed = self._species_tree_selected_id != species_id
+        self._species_tree_selected_id = species_id
+        self._species_tree_pending_selection_id = None
+        self._species_tree_highlight_cache_id = None
+        self._species_tree_highlight_nodes.clear()
+        self._species_tree_highlight_edges.clear()
+        if changed:
+            self._species_tree_report = None
+            self._species_tree_report_species_id = None
+            self._clear_species_radar_state()
+            self._scroll_offsets["species_tree_inspector"] = 0.0
+        if focus:
+            self._jump_species_tree_to_time(
+                layout.effective_times.get(species_id, layout.timeline_start),
+                species_id=species_id,
+            )
 
     def _jump_species_tree_from_timeline(
         self,
@@ -3480,7 +3852,8 @@ class UiRenderer:
             species_id: (
                 canvas.left
                 + horizontal_inset
-                + position[0] * self._species_tree_zoom
+                + (position[0] - layout.content_left)
+                * self._species_tree_zoom
                 - self._species_tree_horizontal_offset,
                 canvas.top
                 - vertical_inset
@@ -3505,7 +3878,7 @@ class UiRenderer:
         return (
             canvas.left
             + horizontal_inset
-            + point[0] * self._species_tree_zoom
+            + (point[0] - layout.content_left) * self._species_tree_zoom
             - self._species_tree_horizontal_offset,
             canvas.top
             - vertical_inset
@@ -3541,36 +3914,341 @@ class UiRenderer:
         self._species_tree_highlight_edges = edges
         return nodes, edges
 
+    def _species_tree_founder_color(
+        self,
+        record: SpeciesRecord,
+    ) -> tuple[int, int, int]:
+        color = record.founder_color or self.theme.herbivore_fill
+        return int(color[0]), int(color[1]), int(color[2])
+
+    def _species_tree_refined_color(
+        self,
+        record: SpeciesRecord,
+        strength: float,
+        *,
+        alpha: int | None = None,
+    ) -> tuple[int, ...]:
+        color = self._brain_blend_color(
+            self.theme.card_background,
+            self._species_tree_founder_color(record),
+            strength,
+        )
+        return color if alpha is None else self._brain_color_alpha(color, alpha)
+
+    def _species_tree_line_color(
+        self,
+        record: SpeciesRecord,
+        *,
+        alpha: int = 230,
+        muted: bool = False,
+    ) -> tuple[int, int, int, int]:
+        founder = self._species_tree_founder_color(record)
+        luminance = (
+            founder[0] * 0.2126
+            + founder[1] * 0.7152
+            + founder[2] * 0.0722
+        )
+        darken = (
+            0.18
+            if luminance < 145.0
+            else 0.32
+            if luminance < 200.0
+            else 0.45
+        )
+        color = self._brain_blend_color(
+            founder,
+            self.theme.text_primary,
+            darken,
+        )
+        if muted:
+            color = self._brain_blend_color(color, self.theme.text_muted, 0.45)
+        for _ in range(12):
+            if self._species_tree_contrast_ratio(
+                color,
+                self.theme.card_background,
+                alpha,
+            ) >= 3.5:
+                break
+            color = self._brain_blend_color(
+                color,
+                self.theme.text_primary,
+                0.14,
+            )
+        return self._brain_color_alpha(color, alpha)
+
+    @staticmethod
+    def _species_tree_contrast_ratio(
+        foreground: tuple[int, ...],
+        background: tuple[int, ...],
+        alpha: int = 255,
+    ) -> float:
+        opacity = max(0.0, min(1.0, alpha / 255.0))
+
+        def linear(component: float) -> float:
+            value = component / 255.0
+            return (
+                value / 12.92
+                if value <= 0.04045
+                else ((value + 0.055) / 1.055) ** 2.4
+            )
+
+        composited = tuple(
+            foreground[index] * opacity
+            + background[index] * (1.0 - opacity)
+            for index in range(3)
+        )
+        foreground_luminance = sum(
+            weight * linear(component)
+            for weight, component in zip(
+                (0.2126, 0.7152, 0.0722),
+                composited,
+            )
+        )
+        background_luminance = sum(
+            weight * linear(float(background[index]))
+            for index, weight in enumerate((0.2126, 0.7152, 0.0722))
+        )
+        lighter = max(foreground_luminance, background_luminance)
+        darker = min(foreground_luminance, background_luminance)
+        return (lighter + 0.05) / (darker + 0.05)
+
+    def _draw_species_tree_canvas_grid(
+        self,
+        layout: SpeciesTreeLayout,
+        canvas: arcade.Rect,
+    ) -> None:
+        duration = max(0.0, layout.timeline_end - layout.timeline_start)
+        interval = self._species_tree_timeline_tick_interval(duration)
+        tick = (
+            layout.timeline_start
+            if interval <= 0.0
+            else ceil(layout.timeline_start / interval) * interval
+        )
+        final_tick = max(layout.timeline_start, layout.timeline_end)
+        grid_color = self._brain_color_alpha(self.theme.panel_border, 48)
+        while tick <= final_tick + 1e-9:
+            point = (
+                self._species_tree_layout_manager.padding,
+                self._species_tree_layout_manager.padding
+                + tick * self._species_tree_layout_manager.time_scale,
+            )
+            y = self._species_tree_screen_point(point, layout, canvas)[1]
+            if canvas.bottom <= y <= canvas.top:
+                arcade.draw_line(
+                    canvas.left,
+                    y,
+                    canvas.right,
+                    y,
+                    grid_color,
+                    0.75,
+                )
+            if interval <= 0.0:
+                break
+            tick += interval
+
+        selected_id = self._species_tree_selected_id
+        selected_position = (
+            None if selected_id is None else layout.positions.get(selected_id)
+        )
+        if selected_position is None:
+            return
+        focus_y = self._species_tree_screen_point(
+            selected_position,
+            layout,
+            canvas,
+        )[1]
+        if canvas.bottom <= focus_y <= canvas.top:
+            arcade.draw_lrbt_rectangle_filled(
+                canvas.left,
+                canvas.right,
+                focus_y - 8.0,
+                focus_y + 8.0,
+                self._brain_color_alpha(self.theme.accent, 16),
+            )
+            arcade.draw_line(
+                canvas.left,
+                focus_y,
+                canvas.right,
+                focus_y,
+                self._brain_color_alpha(self.theme.accent, 52),
+                1.0,
+            )
+
+    def _species_tree_rounded_route_points(
+        self,
+        route: SpeciesTreeRoute,
+        *,
+        radius: float = 7.0,
+    ) -> tuple[tuple[float, float], ...]:
+        if len(route) < 3:
+            return tuple(route)
+        result: list[tuple[float, float]] = [route[0]]
+        for previous, corner, following in zip(route, route[1:], route[2:]):
+            incoming = (corner[0] - previous[0], corner[1] - previous[1])
+            outgoing = (following[0] - corner[0], following[1] - corner[1])
+            incoming_length = hypot(*incoming)
+            outgoing_length = hypot(*outgoing)
+            if incoming_length <= 0.0 or outgoing_length <= 0.0:
+                result.append(corner)
+                continue
+            trim = min(radius, incoming_length * 0.35, outgoing_length * 0.35)
+            start = (
+                corner[0] - incoming[0] / incoming_length * trim,
+                corner[1] - incoming[1] / incoming_length * trim,
+            )
+            end = (
+                corner[0] + outgoing[0] / outgoing_length * trim,
+                corner[1] + outgoing[1] / outgoing_length * trim,
+            )
+            result.append(start)
+            result.extend(
+                self._quadratic_bezier_points(
+                    start,
+                    corner,
+                    end,
+                    steps=5,
+                )[1:]
+            )
+        result.append(route[-1])
+        return tuple(result)
+
+    def _species_tree_soft_route_points(
+        self,
+        route: SpeciesTreeRoute,
+    ) -> SpeciesTreeRoute:
+        if len(route) != 2:
+            return self._species_tree_rounded_route_points(route, radius=8.0)
+        junction, end = route
+        horizontal_length = abs(end[0] - junction[0])
+        if horizontal_length <= 0.0:
+            return tuple(route)
+        lead = min(10.0, max(4.0, horizontal_length * 0.18))
+        direction = 1.0 if end[0] >= junction[0] else -1.0
+        first_control = (
+            junction[0],
+            junction[1] + lead,
+        )
+        handle = min(horizontal_length * 0.46, max(18.0, horizontal_length * 0.30))
+        second_control = (
+            junction[0] + direction * handle,
+            junction[1],
+        )
+        steps = max(8, min(16, ceil(horizontal_length / 18.0)))
+        return tuple(
+            self._cubic_bezier_points(
+                junction,
+                first_control,
+                second_control,
+                end,
+                steps=steps,
+            )
+        )
+
+    def _draw_species_tree_path(
+        self,
+        points: SpeciesTreeRoute,
+        color: arcade.Color | tuple[int, ...],
+        width: float,
+        *,
+        dashed: bool = False,
+    ) -> None:
+        if not dashed:
+            self._draw_curve(list(points), color, width)
+            return
+        dash_length = 6.0
+        gap_length = 4.0
+        for start, end in zip(points, points[1:]):
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            length = hypot(dx, dy)
+            if length <= 0.0:
+                continue
+            offset = 0.0
+            while offset < length:
+                dash_end = min(length, offset + dash_length)
+                arcade.draw_line(
+                    start[0] + dx * offset / length,
+                    start[1] + dy * offset / length,
+                    start[0] + dx * dash_end / length,
+                    start[1] + dy * dash_end / length,
+                    color,
+                    width,
+                )
+                offset += dash_length + gap_length
+
     def _draw_species_tree_edges(
         self,
+        records: dict[int, SpeciesRecord],
+        layout: SpeciesTreeLayout,
         edges: tuple[tuple[int, int], ...],
         routes: dict[tuple[int, int], SpeciesTreeRoute],
         highlighted_edges: set[tuple[int, int]],
     ) -> None:
+        use_dashes = len(edges) <= 900 and self._species_tree_zoom >= 0.35
+        base_width = max(1.15, min(2.6, 1.45 * self._species_tree_zoom))
+        path_active = self._species_tree_selected_id is not None
         for highlighted in (False, True):
             for edge in edges:
                 if (edge in highlighted_edges) != highlighted:
                     continue
                 route = routes.get(edge)
-                if route is None:
+                child = records.get(edge[1])
+                if route is None or child is None:
                     continue
-                color = (
-                    self.theme.selected_outline
-                    if highlighted
-                    else self.theme.panel_border
-                )
-                width = (
-                    3.5 if highlighted else 2.0
-                ) * self._species_tree_zoom
-                for line_start, line_end in zip(route, route[1:]):
-                    arcade.draw_line(
-                        line_start[0],
-                        line_start[1],
-                        line_end[0],
-                        line_end[1],
-                        color,
-                        max(0.75, width),
+                dimmed = path_active and not highlighted
+                extinct = isfinite(layout.end_times.get(edge[1], float("inf")))
+                points = self._species_tree_soft_route_points(route)
+                core_width = base_width * (0.76 if dimmed else 1.0)
+                if highlighted:
+                    self._draw_species_tree_path(
+                        points,
+                        self._brain_color_alpha(self.theme.accent, 82),
+                        base_width + 4.0,
                     )
+                self._draw_species_tree_path(
+                    points,
+                    self._brain_color_alpha(
+                        self.theme.text_primary,
+                        14 if dimmed else 20 if extinct else 32,
+                    ),
+                    core_width + 1.8,
+                    dashed=extinct and not highlighted and use_dashes,
+                )
+                color = self._species_tree_line_color(
+                    child,
+                    alpha=(
+                        175
+                        if dimmed
+                        else 245
+                        if highlighted
+                        else 150
+                        if extinct
+                        else 230
+                    ),
+                    muted=extinct or dimmed,
+                )
+                self._draw_species_tree_path(
+                    points,
+                    color,
+                    core_width + (0.7 if highlighted else 0.0),
+                    dashed=extinct and not highlighted and use_dashes,
+                )
+                junction = route[0]
+                arcade.draw_circle_filled(
+                    junction[0],
+                    junction[1],
+                    max(2.25, min(3.75, 2.7 * self._species_tree_zoom)),
+                    self._brain_color_alpha(self.theme.card_background, 245),
+                )
+                arcade.draw_circle_filled(
+                    junction[0],
+                    junction[1],
+                    max(
+                        1.25 if dimmed else 1.5,
+                        min(2.75, 1.9 * self._species_tree_zoom),
+                    ),
+                    color,
+                )
 
     def _draw_species_tree_lifelines(
         self,
@@ -3580,6 +4258,7 @@ class UiRenderer:
         canvas: arcade.Rect,
         highlighted_nodes: set[int],
     ) -> None:
+        path_active = self._species_tree_selected_id is not None
         for species_id in sorted(
             species_ids,
             key=lambda candidate: (
@@ -3610,35 +4289,77 @@ class UiRenderer:
                 layout,
                 canvas,
             )
-            color = record.founder_color or self.theme.herbivore_fill
-            width = species_tree_line_width(
+            founder_color = self._species_tree_founder_color(record)
+            weight = species_tree_line_width(
                 layout.descendant_counts.get(species_id, 0)
             )
-            scaled_width = max(0.75, width * self._species_tree_zoom)
+            scaled_width = max(
+                1.15,
+                min(4.25, (1.15 + weight * 0.28) * self._species_tree_zoom),
+            )
+            in_path = species_id in highlighted_nodes
+            dimmed = path_active and not in_path
+            if dimmed:
+                scaled_width *= 0.76
+            extinct = isfinite(layout.end_times.get(species_id, float("inf")))
+            line_color = self._species_tree_line_color(
+                record,
+                alpha=(
+                    175
+                    if dimmed
+                    else 245
+                    if in_path
+                    else 150
+                    if extinct
+                    else 235
+                ),
+                muted=extinct or dimmed,
+            )
+            clipped_start = (screen_start[0], min(canvas.top, screen_start[1]))
+            clipped_end = (screen_end[0], max(canvas.bottom, screen_end[1]))
+            line = (clipped_start, clipped_end)
             if (
-                species_id in highlighted_nodes
+                in_path
                 or species_id == self._species_tree_selected_id
             ):
-                arcade.draw_line(
-                    screen_start[0],
-                    screen_start[1],
-                    screen_end[0],
-                    screen_end[1],
-                    self.theme.selected_outline,
-                    scaled_width + max(1.0, 2.0 * self._species_tree_zoom),
+                self._draw_species_tree_path(
+                    line,
+                    self._brain_color_alpha(self.theme.accent, 82),
+                    scaled_width + max(3.0, 4.0 * self._species_tree_zoom),
                 )
-            arcade.draw_line(
-                screen_start[0],
-                screen_start[1],
-                screen_end[0],
-                screen_end[1],
-                color,
-                scaled_width,
+            self._draw_species_tree_path(
+                line,
+                self._brain_color_alpha(
+                    self.theme.text_primary,
+                    14 if dimmed else 18 if extinct else 30,
+                ),
+                scaled_width + 1.6,
+                dashed=(
+                    extinct
+                    and not in_path
+                    and len(species_ids) <= 900
+                    and self._species_tree_zoom >= 0.35
+                ),
             )
-            if isfinite(layout.end_times.get(species_id, float("inf"))):
+            self._draw_species_tree_path(
+                line,
+                line_color,
+                scaled_width,
+                dashed=(
+                    extinct
+                    and not in_path
+                    and len(species_ids) <= 900
+                    and self._species_tree_zoom >= 0.35
+                ),
+            )
+            if extinct:
                 self._draw_species_tree_extinct_marker(screen_end)
             else:
-                self._draw_species_tree_extant_marker(screen_end, color)
+                self._draw_species_tree_extant_marker(
+                    screen_end,
+                    founder_color,
+                    dimmed=dimmed,
+                )
 
     def _draw_species_tree_extinct_marker(
         self,
@@ -3647,6 +4368,13 @@ class UiRenderer:
         half_size = max(3.0, 5.0 * self._species_tree_zoom)
         width = max(1.0, 1.5 * self._species_tree_zoom)
         color = self.theme.text_muted
+        arcade.draw_circle_outline(
+            position[0],
+            position[1],
+            half_size + 1.5,
+            self._brain_color_alpha(color, 105),
+            max(0.75, width * 0.7),
+        )
         arcade.draw_line(
             position[0] - half_size,
             position[1],
@@ -3668,6 +4396,8 @@ class UiRenderer:
         self,
         position: tuple[float, float],
         color: tuple[int, ...],
+        *,
+        dimmed: bool = False,
     ) -> None:
         red, green, blue = color[:3]
         zoom = self._species_tree_zoom
@@ -3675,27 +4405,30 @@ class UiRenderer:
             position[0],
             position[1],
             max(6.0, 12.0 * zoom),
-            (red, green, blue, 35),
+            (red, green, blue, 18 if dimmed else 35),
         )
         arcade.draw_circle_filled(
             position[0],
             position[1],
             max(4.5, 8.0 * zoom),
-            (red, green, blue, 75),
+            (red, green, blue, 38 if dimmed else 75),
         )
         arcade.draw_circle_filled(
             position[0],
             position[1],
             max(3.0, 4.5 * zoom),
-            (red, green, blue, 255),
+            (red, green, blue, 120 if dimmed else 255),
         )
 
     def _draw_species_tree_nodes(
         self,
         records: dict[int, SpeciesRecord],
+        layout: SpeciesTreeLayout,
         species_ids: tuple[int, ...],
+        visible_edges: tuple[tuple[int, int], ...],
         positions: dict[int, tuple[float, float]],
         highlighted_nodes: set[int],
+        canvas: arcade.Rect,
     ) -> None:
         self._species_tree_node_bounds.clear()
         ordered_ids = sorted(
@@ -3706,31 +4439,84 @@ class UiRenderer:
                 species_id,
             ),
         )
+        visual_radii: dict[int, float] = {}
+        path_active = self._species_tree_selected_id is not None
         for species_id in ordered_ids:
             record = records[species_id]
             position = positions[species_id]
-            radius = (
-                self._species_tree_node_radius(record) * self._species_tree_zoom
-            )
+            radius = self._species_tree_node_visual_radius(layout, species_id)
+            visual_radii[species_id] = radius
+            hit_radius = max(12.0, radius + 5.0)
             self._species_tree_node_bounds[species_id] = arcade.LBWH(
-                position[0] - radius,
-                position[1] - radius,
-                radius * 2.0,
-                radius * 2.0,
+                position[0] - hit_radius,
+                position[1] - hit_radius,
+                hit_radius * 2.0,
+                hit_radius * 2.0,
             )
-            fill = record.founder_color or self.theme.herbivore_fill
+            in_path = species_id in highlighted_nodes
+            dimmed = (
+                path_active
+                and not in_path
+                and species_id != self._species_tree_hovered_id
+            )
+            founder_fill = self._species_tree_founder_color(record)
+            fill = (
+                self._brain_color_alpha(founder_fill, 145)
+                if dimmed
+                else founder_fill
+            )
             if species_id == self._species_tree_selected_id:
-                outline = self.theme.selected_outline
-                outline_width = 4.0
-            elif species_id in highlighted_nodes:
                 outline = self.theme.accent
-                outline_width = 3.0
-            elif species_id == self._species_tree_hovered_id:
-                outline = self.theme.accent_soft
-                outline_width = 3.0
-            else:
-                outline = self.theme.herbivore_outline
                 outline_width = 2.5
+            elif in_path:
+                outline = self.theme.accent
+                outline_width = 1.8
+            elif species_id == self._species_tree_hovered_id:
+                outline = self.theme.accent
+                outline_width = 2.0
+            elif dimmed:
+                outline = self._species_tree_line_color(
+                    record,
+                    alpha=175,
+                    muted=True,
+                )
+                outline_width = 1.1
+            else:
+                outline = self._species_tree_line_color(record, alpha=235)
+                outline_width = 1.5
+            mutation_intensity = (
+                0.0
+                if dimmed
+                else self._species_tree_mutation_intensity(record)
+            )
+            if mutation_intensity > 0.0:
+                arcade.draw_circle_filled(
+                    position[0],
+                    position[1],
+                    radius + 4.0 + mutation_intensity * 3.0,
+                    self._brain_color_alpha(self.theme.accent, int(10 + mutation_intensity * 18)),
+                )
+            if species_id == self._species_tree_selected_id:
+                arcade.draw_circle_filled(
+                    position[0],
+                    position[1],
+                    radius + 9.0,
+                    self._brain_color_alpha(self.theme.accent, 24),
+                )
+                arcade.draw_circle_outline(
+                    position[0],
+                    position[1],
+                    radius + 5.0,
+                    self._brain_color_alpha(self.theme.accent, 105),
+                    2.0,
+                )
+            elif species_id == self._species_tree_hovered_id:
+                arcade.draw_circle_filled(
+                    position[0],
+                    position[1],
+                    radius + 7.0,
+                    self._brain_color_alpha(self.theme.accent, 28),
+                )
             arcade.draw_circle_filled(position[0], position[1], radius, fill)
             arcade.draw_circle_outline(
                 position[0],
@@ -3739,11 +4525,204 @@ class UiRenderer:
                 outline,
                 max(0.75, outline_width * self._species_tree_zoom),
             )
+            if mutation_intensity > 0.0:
+                self._draw_species_tree_mutation_ticks(
+                    position,
+                    radius,
+                    mutation_intensity,
+                )
 
-    def _species_tree_node_radius(self, record: SpeciesRecord) -> float:
-        traits = record.founder_traits
-        radius = 16.0 if traits is None else float(traits.radius)
-        return max(10.0, min(24.0, radius))
+        labels = self._species_tree_context_labels(
+            layout,
+            visible_edges,
+            positions,
+            visual_radii,
+            highlighted_nodes,
+            canvas,
+        )
+        self._draw_species_tree_context_labels(labels)
+
+    def _species_tree_node_visual_radius(
+        self,
+        layout: SpeciesTreeLayout,
+        species_id: int,
+    ) -> float:
+        descendants = max(0, layout.descendant_counts.get(species_id, 0))
+        base = 6.25 + min(2.25, log1p(descendants) * 0.5)
+        return max(4.25, min(11.0, base * self._species_tree_zoom))
+
+    def _species_tree_mutation_intensity(self, record: SpeciesRecord) -> float:
+        if (
+            record.parent_species_id is None
+            or record.data_quality.lower() != "exact"
+        ):
+            return 0.0
+        changes = record.neat_changes
+        traits = record.trait_deltas
+        if changes is None or traits is None:
+            return 0.0
+        structural = (
+            changes.nodes_added
+            + changes.nodes_removed
+            + changes.connections_added
+            + changes.connections_removed
+            + changes.connections_enabled
+            + changes.connections_disabled
+        )
+        parameters = changes.weights_changed + changes.node_parameters_changed
+        trait_changes = sum(
+            abs(value) > 1e-12
+            for value in (
+                traits.radius,
+                traits.vision_range,
+                traits.vision_angle,
+                traits.movement_cost_multiplier,
+                traits.separation_gene,
+                traits.alignment_gene,
+                traits.cohesion_gene,
+            )
+        )
+        score = 2 * structural + parameters + trait_changes
+        if score <= 0:
+            return 0.0
+        return min(1.0, log1p(score) / log1p(24.0))
+
+    @staticmethod
+    def _species_tree_mutation_tick_count(intensity: float) -> int:
+        if intensity <= 0.0:
+            return 0
+        return max(1, min(3, ceil(intensity * 3.0)))
+
+    def _draw_species_tree_mutation_ticks(
+        self,
+        position: tuple[float, float],
+        radius: float,
+        intensity: float,
+    ) -> None:
+        count = self._species_tree_mutation_tick_count(intensity)
+        color = self._brain_color_alpha(self.theme.accent, 145)
+        for index in range(count):
+            angle = pi * (0.18 + index * 0.32)
+            inner = radius + 2.5
+            outer = inner + 2.5 + intensity * 2.0
+            arcade.draw_line(
+                position[0] + cos(angle) * inner,
+                position[1] + sin(angle) * inner,
+                position[0] + cos(angle) * outer,
+                position[1] + sin(angle) * outer,
+                color,
+                1.25,
+            )
+
+    @staticmethod
+    def _species_tree_rects_overlap(first: arcade.Rect, second: arcade.Rect) -> bool:
+        return not (
+            first.right + 3.0 <= second.left
+            or second.right + 3.0 <= first.left
+            or first.top + 3.0 <= second.bottom
+            or second.top + 3.0 <= first.bottom
+        )
+
+    def _species_tree_context_labels(
+        self,
+        layout: SpeciesTreeLayout,
+        visible_edges: tuple[tuple[int, int], ...],
+        positions: dict[int, tuple[float, float]],
+        radii: dict[int, float],
+        highlighted_nodes: set[int],
+        canvas: arcade.Rect,
+    ) -> tuple[_SpeciesTreeLabel, ...]:
+        selected_id = self._species_tree_selected_id
+        hovered_id = self._species_tree_hovered_id
+        candidates: list[tuple[int, str, bool]] = []
+
+        def add(species_id: int | None, full: bool = False) -> None:
+            if species_id is None or species_id not in positions:
+                return
+            if any(candidate[0] == species_id for candidate in candidates):
+                return
+            text = f"Species {species_id}" if full else f"S{species_id}"
+            candidates.append((species_id, text, full))
+
+        add(selected_id, True)
+        add(hovered_id, True)
+        if selected_id is not None and self._species_tree_zoom >= 0.8:
+            add(self._species_tree_layout_manager.parents.get(selected_id))
+            for parent, child in visible_edges:
+                if parent == selected_id:
+                    add(child)
+        if self._species_tree_zoom >= 1.15:
+            for species_id in sorted(highlighted_nodes, reverse=True):
+                if len(candidates) >= 12:
+                    break
+                add(species_id)
+
+        placed: list[_SpeciesTreeLabel] = []
+        for species_id, text, emphasized in candidates[:24]:
+            x, y = positions[species_id]
+            radius = radii.get(species_id, 5.0)
+            width = max(40.0, min(126.0, 20.0 + len(text) * 6.2))
+            height = 22.0
+            placements = (
+                (x - width / 2.0, y - radius - height - 7.0),
+                (x + radius + 7.0, y - height / 2.0),
+                (x - radius - width - 7.0, y - height / 2.0),
+                (x - width / 2.0, y + radius + 7.0),
+            )
+            chosen: arcade.Rect | None = None
+            for left, bottom in placements:
+                bounds = arcade.LBWH(left, bottom, width, height)
+                contained = (
+                    bounds.left >= canvas.left + 3.0
+                    and bounds.right <= canvas.right - 3.0
+                    and bounds.bottom >= canvas.bottom + 3.0
+                    and bounds.top <= canvas.top - 3.0
+                )
+                if contained and not any(
+                    self._species_tree_rects_overlap(bounds, label.bounds)
+                    for label in placed
+                ):
+                    chosen = bounds
+                    break
+            if chosen is None and emphasized:
+                chosen = arcade.LBWH(
+                    max(canvas.left + 3.0, min(canvas.right - width - 3.0, x - width / 2.0)),
+                    max(canvas.bottom + 3.0, min(canvas.top - height - 3.0, y - radius - height - 7.0)),
+                    width,
+                    height,
+                )
+            if chosen is not None:
+                placed.append(_SpeciesTreeLabel(species_id, text, chosen, emphasized))
+        return tuple(placed)
+
+    def _draw_species_tree_context_labels(
+        self,
+        labels: tuple[_SpeciesTreeLabel, ...],
+    ) -> None:
+        for label in labels:
+            self._draw_rounded_rect(
+                label.bounds,
+                self.theme.card_background,
+                self.theme.accent if label.emphasized else self.theme.panel_border,
+                6.0,
+                1.0,
+            )
+            key = (
+                "species_tree_selected_label"
+                if label.species_id == self._species_tree_selected_id
+                else f"species_tree_context_label_{label.species_id}"
+            )
+            self._draw_text(
+                key,
+                label.text,
+                label.bounds.center_x,
+                label.bounds.center_y,
+                self.theme.text_primary if label.emphasized else self.theme.text_muted,
+                9,
+                bold=label.emphasized,
+                anchor_x="center",
+                anchor_y="center",
+            )
 
     def _species_tree_node_at(self, x: float, y: float) -> int | None:
         canvas = self._control_hitboxes.get("species_tree_canvas")
@@ -3986,9 +4965,9 @@ class UiRenderer:
         self._draw_rounded_rect(
             bounds,
             self.theme.card_background,
-            self.theme.accent,
+            self.theme.panel_border,
             self.config.layout.card_radius,
-            1.5,
+            1.0,
         )
         resize_hitbox = arcade.LBWH(
             bounds.left - 5.0,
@@ -3997,18 +4976,37 @@ class UiRenderer:
             bounds.height,
         )
         self._control_hitboxes["species_tree_inspector_resize"] = resize_hitbox
-        arcade.draw_lrbt_rectangle_filled(
-            bounds.left - 1.5,
-            bounds.left + 1.5,
-            bounds.bottom + 12.0,
-            bounds.top - 12.0,
-            self.theme.accent,
+
+        header = arcade.LBWH(bounds.left, bounds.top - 44.0, bounds.width, 44.0)
+        self._draw_text(
+            "species_tree_inspector_heading",
+            "SPECIES INSPECTOR",
+            bounds.left + 16.0,
+            bounds.top - 24.0,
+            self.theme.text_primary,
+            10,
+            bold=True,
+            anchor_y="center",
         )
-        title_left = bounds.left + 16.0
+        arcade.draw_line(
+            bounds.left + 12.0,
+            header.bottom,
+            bounds.right - 12.0,
+            header.bottom,
+            self.theme.panel_border,
+            1.0,
+        )
+
+        summary = arcade.LBWH(
+            bounds.left + 14.0,
+            header.bottom - 68.0,
+            bounds.width - 28.0,
+            58.0,
+        )
+        marker_radius = 10.0
+        marker_x = summary.left + marker_radius
+        marker_y = summary.center_y
         if record is not None:
-            marker_radius = 11.0
-            marker_x = bounds.left + 27.0
-            marker_y = bounds.top - 23.0
             arcade.draw_circle_filled(
                 marker_x,
                 marker_y,
@@ -4022,51 +5020,368 @@ class UiRenderer:
                 self.theme.selected_outline,
                 3.0,
             )
-            title_left = marker_x + marker_radius + 10.0
+        else:
+            arcade.draw_circle_filled(
+                marker_x,
+                marker_y,
+                marker_radius,
+                self.theme.herbivore_fill,
+            )
+            arcade.draw_circle_outline(
+                marker_x,
+                marker_y,
+                marker_radius,
+                self.theme.panel_border,
+                2.0,
+            )
+
+        species_id = (
+            report.species_id
+            if report is not None
+            else (None if record is None else record.species_id)
+        )
+        quality_label = None
+        badge = None
+        if record is not None:
+            quality_label = (
+                "Exact"
+                if record.data_quality.lower() == "exact"
+                else "Reconstructed"
+            )
+            badge_width = 58.0 if quality_label == "Exact" else 96.0
+            badge = arcade.LBWH(
+                summary.right - badge_width,
+                summary.center_y - 12.0,
+                badge_width,
+                24.0,
+            )
+            self._draw_rounded_rect(
+                badge,
+                self._brain_blend_color(
+                    self.theme.card_background,
+                    self.theme.accent,
+                    0.10,
+                ),
+                self._brain_blend_color(
+                    self.theme.card_background,
+                    self.theme.accent,
+                    0.42,
+                ),
+                6.0,
+                1.0,
+            )
+            self._draw_text(
+                "species_tree_inspector_quality",
+                quality_label,
+                badge.center_x,
+                badge.center_y,
+                self.theme.accent,
+                8.5,
+                bold=True,
+                anchor_x="center",
+                anchor_y="center",
+            )
+
+        title_left = marker_x + marker_radius + 10.0
+        title_right = summary.right if badge is None else badge.left - 10.0
         self._draw_text(
             "species_tree_inspector_title",
             (
-                "SPECIES INSPECTOR"
-                if report is None
-                else f"SPECIES {report.species_id} INSPECTOR"
+                "Select a species"
+                if species_id is None
+                else f"Species {species_id} Inspector"
             ),
             title_left,
-            bounds.top - 22.0,
+            summary.center_y,
             self.theme.text_primary,
-            13,
+            14,
             bold=True,
+            width=max(20.0, title_right - title_left),
+            multiline=True,
+            anchor_y="center",
         )
+        navigation = arcade.LBWH(
+            bounds.left + 16.0,
+            summary.bottom - 38.0,
+            max(0.0, bounds.width - 32.0),
+            30.0,
+        )
+        self._draw_species_parent_navigation(navigation, record)
         viewport = arcade.LBWH(
             bounds.left + 16.0,
             bounds.bottom + 14.0,
             max(0.0, bounds.width - 32.0),
-            max(0.0, bounds.height - 52.0),
+            max(0.0, navigation.bottom - bounds.bottom - 22.0),
         )
-        lines = (
-            ["Select a species node to generate its report."]
-            if report is None
-            else self._species_inspector_lines(report)
+        self._consume_species_radar_result()
+        self._draw_species_inspector_content(viewport, report, record)
+
+    def _draw_species_parent_navigation(
+        self,
+        bounds: arcade.Rect,
+        record: SpeciesRecord | None,
+    ) -> None:
+        parent_id = None if record is None else record.parent_species_id
+        layout = self._species_tree_last_layout
+        parent_available = (
+            parent_id is not None
+            and layout is not None
+            and parent_id in layout.positions
         )
-        with self._ui_clip(viewport):
-            self._consume_species_radar_result()
-            text_viewport = self._draw_species_radar_chart(viewport)
-            self._draw_scrollable_lines_in_bounds(
-                "species_tree_inspector",
-                text_viewport,
-                lines,
-                line_spacing=19.0,
-                first_line_color=self.theme.text_primary,
-                body_color=self.theme.text_muted,
-                first_line_bold=True,
-                wrap_lines=True,
-                draw_ethogram_markers=True,
+        if parent_available:
+            self._control_hitboxes["species_tree_parent_button"] = bounds
+            fill = self._brain_blend_color(
+                self.theme.card_background,
+                self.theme.accent_soft,
+                0.18,
             )
+            border = self._brain_blend_color(
+                self.theme.card_background,
+                self.theme.accent,
+                0.62,
+            )
+            label = f"Go to Parent · Species {parent_id}"
+            text_color = self.theme.accent
+        else:
+            self._control_hitboxes.pop("species_tree_parent_button", None)
+            fill = self.theme.card_background
+            border = self.theme.panel_border
+            label = (
+                "Select a species"
+                if record is None
+                else "Founder species · No parent"
+                if parent_id is None
+                else "Parent species unavailable"
+            )
+            text_color = self.theme.text_muted
+        self._draw_rounded_rect(bounds, fill, border, 7.0, 1.25)
+        self._draw_text(
+            "species_tree_parent_navigation",
+            self._fit_line(label, max(20.0, bounds.width - 16.0)),
+            bounds.center_x,
+            bounds.center_y,
+            text_color,
+            10.5,
+            bold=parent_available,
+            anchor_x="center",
+            anchor_y="center",
+        )
+
+    def _draw_species_inspector_content(
+        self,
+        viewport: arcade.Rect,
+        report: InspectorReport | None,
+        record: SpeciesRecord | None,
+    ) -> None:
+        sections = self._species_inspector_sections(report, record)
+        radar_size = (
+            min(220.0, max(0.0, viewport.width - 24.0))
+            if self._species_tree_radar_species_id is not None
+            else 0.0
+        )
+        content_width = max(24.0, viewport.width - 12.0)
+        total_height = 12.0
+        for section_index, section in enumerate(sections):
+            total_height += 34.0
+            total_height += sum(
+                self._species_inspector_row_height(row, content_width)
+                for row in section.rows
+            )
+            total_height += 8.0
+            if section_index == 0 and radar_size > 0.0:
+                total_height += 34.0 + radar_size + 12.0
+
+        scroll_limit = max(0.0, total_height - viewport.height)
+        scroll_offset = max(
+            0.0,
+            min(
+                scroll_limit,
+                self._scroll_offsets.get("species_tree_inspector", 0.0),
+            ),
+        )
+        self._scroll_offsets["species_tree_inspector"] = scroll_offset
+        self._scroll_limits["species_tree_inspector"] = scroll_limit
+        self._scroll_regions["species_tree_inspector"] = viewport
+
+        cursor = viewport.top - 8.0 + scroll_offset
+        with self._ui_clip(viewport):
+            for section_index, section in enumerate(sections):
+                self._draw_species_inspector_section_header(
+                    viewport,
+                    section_index,
+                    section.title,
+                    cursor,
+                )
+                cursor -= 34.0
+                for row_index, row in enumerate(section.rows):
+                    row_height = self._species_inspector_row_height(
+                        row,
+                        content_width,
+                    )
+                    self._draw_species_inspector_row(
+                        viewport,
+                        section_index,
+                        row_index,
+                        row,
+                        cursor,
+                        content_width,
+                    )
+                    cursor -= row_height
+                cursor -= 8.0
+
+                if section_index == 0 and radar_size > 0.0:
+                    self._draw_species_inspector_section_header(
+                        viewport,
+                        -1,
+                        "BEHAVIORAL PROFILE",
+                        cursor,
+                    )
+                    cursor -= 34.0
+                    chart_bounds = arcade.LBWH(
+                        viewport.center_x - radar_size / 2.0,
+                        cursor - radar_size,
+                        radar_size,
+                        radar_size,
+                    )
+                    if self._rect_intersects(chart_bounds, viewport):
+                        self._draw_species_radar_chart_in_bounds(chart_bounds)
+                    cursor -= radar_size + 12.0
+
+        if scroll_limit > 0.0:
+            self._draw_scrollbar(viewport, scroll_offset, scroll_limit)
+
+    def _draw_species_inspector_section_header(
+        self,
+        viewport: arcade.Rect,
+        section_index: int,
+        title: str,
+        top: float,
+    ) -> None:
+        baseline = top - 14.0
+        divider_y = top - 27.0
+        if viewport.bottom <= baseline <= viewport.top:
+            key_suffix = "radar" if section_index < 0 else str(section_index)
+            self._draw_text(
+                f"species_tree_inspector_section_{key_suffix}",
+                title,
+                viewport.left,
+                baseline,
+                self.theme.text_primary,
+                9.5,
+                bold=True,
+            )
+        if viewport.bottom <= divider_y <= viewport.top:
+            arcade.draw_line(
+                viewport.left,
+                divider_y,
+                viewport.right - 8.0,
+                divider_y,
+                self.theme.panel_border,
+                1.0,
+            )
+
+    def _species_inspector_row_height(
+        self,
+        row: _SpeciesInspectorRow,
+        width: float,
+    ) -> float:
+        if row.label is None:
+            indent = 18.0 if row.marker_color is not None else 0.0
+            line_count = len(
+                self._wrap_line(row.value, max(24.0, width - indent))
+            )
+            return max(1, line_count) * 15.0 + 10.0
+        gap = 12.0
+        label_width = max(72.0, width * 0.38)
+        value_width = max(24.0, width - label_width - gap)
+        line_count = max(
+            len(self._wrap_line(row.label, label_width)),
+            len(self._wrap_line(row.value, value_width)),
+        )
+        return max(1, line_count) * 15.0 + 10.0
+
+    def _draw_species_inspector_row(
+        self,
+        viewport: arcade.Rect,
+        section_index: int,
+        row_index: int,
+        row: _SpeciesInspectorRow,
+        top: float,
+        width: float,
+    ) -> None:
+        color = self._species_inspector_tone_color(row.tone)
+        if row.label is None:
+            indent = 18.0 if row.marker_color is not None else 0.0
+            lines = self._wrap_line(row.value, max(24.0, width - indent))
+            first_y = top - 13.0
+            if row.marker_color is not None and viewport.bottom <= first_y <= viewport.top:
+                arcade.draw_circle_filled(
+                    viewport.left + 6.0,
+                    first_y + 4.0,
+                    4.5,
+                    row.marker_color,
+                )
+            for line_index, line in enumerate(lines):
+                y = first_y - line_index * 15.0
+                if viewport.bottom <= y <= viewport.top:
+                    self._draw_text(
+                        f"species_tree_inspector_row_{section_index}_{row_index}_{line_index}",
+                        line,
+                        viewport.left + indent,
+                        y,
+                        color,
+                        10.5,
+                        bold=row.tone == "primary",
+                    )
+            return
+
+        gap = 12.0
+        label_width = max(72.0, width * 0.38)
+        value_width = max(24.0, width - label_width - gap)
+        label_lines = self._wrap_line(row.label, label_width)
+        value_lines = self._wrap_line(row.value, value_width)
+        first_y = top - 13.0
+        for line_index, line in enumerate(label_lines):
+            y = first_y - line_index * 15.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"species_tree_inspector_row_{section_index}_{row_index}_label_{line_index}",
+                    line,
+                    viewport.left,
+                    y,
+                    self.theme.text_muted,
+                    10,
+                )
+        value_left = viewport.left + label_width + gap
+        for line_index, line in enumerate(value_lines):
+            y = first_y - line_index * 15.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"species_tree_inspector_row_{section_index}_{row_index}_value_{line_index}",
+                    line,
+                    value_left,
+                    y,
+                    color,
+                    10.5,
+                    bold=row.tone in {"positive", "negative", "primary"},
+                )
+
+    def _species_inspector_tone_color(
+        self,
+        tone: str,
+    ) -> arcade.Color | tuple[int, ...]:
+        if tone == "positive":
+            return (20, 139, 70)
+        if tone == "negative":
+            return self.theme.selected_outline
+        if tone == "muted":
+            return self.theme.text_muted
+        return self.theme.text_primary
 
     def _draw_species_radar_chart(
         self,
         viewport: arcade.Rect,
     ) -> arcade.Rect:
-        texture = self._species_tree_radar_texture
         if self._species_tree_radar_species_id is None:
             return viewport
         chart_size = min(
@@ -4082,6 +5397,20 @@ class UiRenderer:
             chart_size,
             chart_size,
         )
+        self._draw_species_radar_chart_in_bounds(chart_bounds)
+        gap = 8.0
+        return arcade.LBWH(
+            viewport.left,
+            viewport.bottom,
+            viewport.width,
+            max(0.0, chart_bounds.bottom - gap - viewport.bottom),
+        )
+
+    def _draw_species_radar_chart_in_bounds(
+        self,
+        chart_bounds: arcade.Rect,
+    ) -> None:
+        texture = self._species_tree_radar_texture
         if texture is not None:
             arcade.draw_texture_rect(texture, chart_bounds)
         else:
@@ -4100,134 +5429,307 @@ class UiRenderer:
                 anchor_x="center",
                 anchor_y="center",
             )
-        gap = 8.0
-        return arcade.LBWH(
-            viewport.left,
-            viewport.bottom,
-            viewport.width,
-            max(0.0, chart_bounds.bottom - gap - viewport.bottom),
+
+    def _species_inspector_sections(
+        self,
+        report: InspectorReport | None,
+        record: SpeciesRecord | None,
+    ) -> tuple[_SpeciesInspectorSection, ...]:
+        if record is None:
+            overview_rows = (
+                _SpeciesInspectorRow(
+                    None,
+                    "Select a species node to generate its report.",
+                    "muted",
+                ),
+            )
+        else:
+            emerged_at = self._valid_species_tree_time(record.emerged_at)
+            overview_rows = (
+                _SpeciesInspectorRow(
+                    "Parent species",
+                    (
+                        "None"
+                        if record.parent_species_id is None
+                        else f"Species {record.parent_species_id}"
+                    ),
+                ),
+                _SpeciesInspectorRow(
+                    "Emergence",
+                    (
+                        "Unavailable"
+                        if emerged_at is None
+                        else self._format_species_tree_time(emerged_at)
+                    ),
+                ),
+                _SpeciesInspectorRow(
+                    "Founder creature",
+                    (
+                        "Unavailable"
+                        if record.founder_creature_id is None
+                        else str(record.founder_creature_id)
+                    ),
+                ),
+                _SpeciesInspectorRow(
+                    "Founder genome",
+                    (
+                        "Unavailable"
+                        if record.founder_genome_id is None
+                        else str(record.founder_genome_id)
+                    ),
+                ),
+            )
+        sections: list[_SpeciesInspectorSection] = [
+            _SpeciesInspectorSection("OVERVIEW", overview_rows)
+        ]
+        if report is None:
+            return tuple(sections)
+
+        sections.append(
+            _SpeciesInspectorSection(
+                "ECOLOGICAL CONTEXT",
+                (
+                    _SpeciesInspectorRow(
+                        "Food scarcity",
+                        (
+                            "Unavailable"
+                            if report.food_scarcity is None
+                            else (
+                                f"{report.food_scarcity:.0%} "
+                                f"({self._pressure_label(report.food_scarcity)})"
+                            )
+                        ),
+                    ),
+                    _SpeciesInspectorRow(
+                        "Population density",
+                        (
+                            "Unavailable"
+                            if report.population_density is None
+                            else (
+                                f"{report.population_density:.0%} "
+                                f"({self._pressure_label(report.population_density)})"
+                            )
+                        ),
+                    ),
+                ),
+            )
         )
 
-    def _species_inspector_lines(
-        self,
-        report: InspectorReport,
-    ) -> list[str]:
-        lines = [
-            "Ecological Context",
-            (
-                "Food scarcity: unavailable"
-                if report.food_scarcity is None
-                else (
-                    f"Food scarcity: {report.food_scarcity:.0%} "
-                    f"({self._pressure_label(report.food_scarcity)})"
-                )
-            ),
-            (
-                "Population density: unavailable"
-                if report.population_density is None
-                else (
-                    f"Population density: {report.population_density:.0%} "
-                    f"({self._pressure_label(report.population_density)})"
-                )
-            ),
-            "",
-            "Anatomy & Morphology",
-        ]
         traits = report.species_traits
         if traits is None:
-            lines.append("Species traits unavailable")
-        else:
-            lines.extend(
-                (
-                    f"Radius: {traits.radius:.2f} px",
-                    (
-                        f"Vision: {traits.vision_range:.2f} px"
-                        f" / {traits.vision_angle:.3f} rad"
-                    ),
-                    (
-                        "Movement cost: "
-                        f"{traits.movement_cost_multiplier:.3f}x"
-                    ),
-                    "",
-                    "Inherited Flocking Style",
-                    f"Separation gene: {traits.separation_gene:.3f}",
-                    f"Alignment gene: {traits.alignment_gene:.3f}",
-                    f"Cohesion gene: {traits.cohesion_gene:.3f}",
-                )
+            anatomy_rows = (
+                _SpeciesInspectorRow(None, "Species traits unavailable", "muted"),
             )
+        else:
+            anatomy_rows = (
+                _SpeciesInspectorRow("Radius", f"{traits.radius:.2f} px"),
+                _SpeciesInspectorRow(
+                    "Vision range",
+                    f"{traits.vision_range:.2f} px",
+                ),
+                _SpeciesInspectorRow(
+                    "Vision angle",
+                    f"{traits.vision_angle:.3f} rad",
+                ),
+                _SpeciesInspectorRow(
+                    "Movement cost",
+                    f"{traits.movement_cost_multiplier:.3f}x",
+                ),
+                _SpeciesInspectorRow(
+                    "Separation gene",
+                    f"{traits.separation_gene:.3f}",
+                ),
+                _SpeciesInspectorRow(
+                    "Alignment gene",
+                    f"{traits.alignment_gene:.3f}",
+                ),
+                _SpeciesInspectorRow(
+                    "Cohesion gene",
+                    f"{traits.cohesion_gene:.3f}",
+                ),
+            )
+        sections.append(
+            _SpeciesInspectorSection("ANATOMY & MORPHOLOGY", anatomy_rows)
+        )
 
-        parent_label = "Parent comparison"
-        lines.extend(("", parent_label))
         if report.morphology:
-            lines.extend(
-                (
-                    f"{insight.description}: "
-                    f"{insight.percent_change:+.1f}%"
+            parent_rows = tuple(
+                _SpeciesInspectorRow(
+                    insight.description,
+                    f"{insight.percent_change:+.1f}%",
+                    (
+                        "positive"
+                        if insight.percent_change > 0.0
+                        else "negative"
+                    ),
                 )
                 for insight in report.morphology
             )
         else:
-            lines.append(
-                "No parent comparison"
-                if report.parent_species_id is None
-                else "No measurable morphology change"
+            parent_rows = (
+                _SpeciesInspectorRow(
+                    None,
+                    (
+                        "No parent comparison"
+                        if report.parent_species_id is None
+                        else "No measurable morphology change"
+                    ),
+                    "muted",
+                ),
             )
+        sections.append(
+            _SpeciesInspectorSection("PARENT COMPARISON", parent_rows)
+        )
 
         metabolism = report.metabolism
-        lines.extend(("", "Metabolic Profile"))
         if metabolism.child_idle_cost is None:
-            lines.append("Species metabolism unavailable")
+            metabolism_rows = (
+                _SpeciesInspectorRow(
+                    None,
+                    "Species metabolism unavailable",
+                    "muted",
+                ),
+            )
         else:
-            lines.extend(
-                (
+            metabolism_rows_list = [
+                _SpeciesInspectorRow(
+                    "Basal metabolic BMR",
                     (
-                        f"Basal metabolic BMR: {metabolism.child_idle_cost:.5f} energy/s "
+                        f"{metabolism.child_idle_cost:.5f} energy/s "
                         f"({self._format_percent_change(metabolism.idle_percent_change)})"
                     ),
+                    self._species_inspector_change_tone(
+                        metabolism.idle_percent_change
+                    ),
+                ),
+                _SpeciesInspectorRow(
+                    "Active foraging cost",
                     (
-                        f"Active foraging cost: {metabolism.child_active_cost:.5f} energy/s "
+                        f"{metabolism.child_active_cost:.5f} energy/s "
                         f"({self._format_percent_change(metabolism.active_percent_change)})"
                     ),
-                )
-            )
+                    self._species_inspector_change_tone(
+                        metabolism.active_percent_change
+                    ),
+                ),
+            ]
             if (
                 metabolism.parent_idle_cost is not None
                 and metabolism.parent_active_cost is not None
             ):
-                lines.append(
-                    f"Parent BMR/active: "
-                    f"{metabolism.parent_idle_cost:.5f}"
-                    f" / {metabolism.parent_active_cost:.5f}"
+                metabolism_rows_list.append(
+                    _SpeciesInspectorRow(
+                        "Parent BMR / active",
+                        (
+                            f"{metabolism.parent_idle_cost:.5f} / "
+                            f"{metabolism.parent_active_cost:.5f}"
+                        ),
+                    )
                 )
+            metabolism_rows = tuple(metabolism_rows_list)
+        sections.append(
+            _SpeciesInspectorSection("METABOLIC PROFILE", metabolism_rows)
+        )
 
-        lines.extend(("", "Neuro-Integration Hubs"))
+        hub_rows: list[_SpeciesInspectorRow] = []
         if not report.neuro_integration_hubs:
-            lines.append("No evolving interneuron hubs detected")
-        for hub in report.neuro_integration_hubs:
-            lines.append(f"Integration Hub {hub.hub_id}")
-            for description in hub.sensory_integrations:
-                lines.append(f"  {description}")
-            for description in hub.behavioral_modulations:
-                lines.append(f"  {description}")
-
-        lines.extend(("", "Behavioral Ethogram"))
-        if not report.behavioral_ethogram:
-            lines.append("No direct stimulus-response reflex shifts")
-        for reflex in report.behavioral_ethogram:
-            lines.append(reflex.description)
-
-        lines.extend(("", "Species Legacy"))
-        if report.legacy.descendant_count is None:
-            lines.append("Descendants: unavailable")
-        else:
-            lines.append(f"Descendants: {report.legacy.descendant_count}")
-        if report.legacy.average_lifespan is None:
-            lines.append("Average lifespan: unavailable")
-        else:
-            lines.append(
-                f"Average lifespan: {report.legacy.average_lifespan:.2f} s"
+            hub_rows.append(
+                _SpeciesInspectorRow(
+                    None,
+                    "No evolving interneuron hubs detected",
+                    "muted",
+                )
             )
-        return lines
+        for hub in report.neuro_integration_hubs:
+            hub_rows.append(
+                _SpeciesInspectorRow(
+                    None,
+                    f"Integration Hub {hub.hub_id}",
+                    "primary",
+                )
+            )
+            for description in hub.sensory_integrations:
+                hub_rows.append(_SpeciesInspectorRow(None, description))
+            for description in hub.behavioral_modulations:
+                hub_rows.append(_SpeciesInspectorRow(None, description))
+        sections.append(
+            _SpeciesInspectorSection(
+                "NEURO-INTEGRATION HUBS",
+                tuple(hub_rows),
+            )
+        )
+
+        ethogram_rows: list[_SpeciesInspectorRow] = []
+        if not report.behavioral_ethogram:
+            ethogram_rows.append(
+                _SpeciesInspectorRow(
+                    None,
+                    "No direct stimulus-response reflex shifts",
+                    "muted",
+                )
+            )
+        for reflex in report.behavioral_ethogram:
+            description = reflex.description
+            marker_color = (
+                self._ethogram_marker_color(description[0])
+                if description
+                else None
+            )
+            if marker_color is not None:
+                description = description[1:].lstrip()
+            ethogram_rows.append(
+                _SpeciesInspectorRow(
+                    None,
+                    description,
+                    (
+                        "positive"
+                        if reflex.weight_delta > 0.0
+                        else (
+                            "negative"
+                            if reflex.weight_delta < 0.0
+                            else "muted"
+                        )
+                    ),
+                    marker_color,
+                )
+            )
+        sections.append(
+            _SpeciesInspectorSection(
+                "BEHAVIORAL ETHOGRAM",
+                tuple(ethogram_rows),
+            )
+        )
+
+        sections.append(
+            _SpeciesInspectorSection(
+                "SPECIES LEGACY",
+                (
+                    _SpeciesInspectorRow(
+                        "Descendants",
+                        (
+                            "Unavailable"
+                            if report.legacy.descendant_count is None
+                            else str(report.legacy.descendant_count)
+                        ),
+                    ),
+                    _SpeciesInspectorRow(
+                        "Average lifespan",
+                        (
+                            "Unavailable"
+                            if report.legacy.average_lifespan is None
+                            else f"{report.legacy.average_lifespan:.2f} s"
+                        ),
+                    ),
+                ),
+            )
+        )
+        return tuple(sections)
+
+    @staticmethod
+    def _species_inspector_change_tone(value: float | None) -> str:
+        if value is None or value == 0.0:
+            return "default"
+        return "positive" if value > 0.0 else "negative"
 
     @staticmethod
     def _pressure_label(value: float) -> str:
@@ -4263,9 +5765,9 @@ class UiRenderer:
         self._draw_rounded_rect(
             bounds,
             self.theme.panel_background,
-            self.theme.accent,
+            self.theme.panel_border,
             self.config.layout.card_radius,
-            1.5,
+            1.0,
         )
         self._draw_text(
             "species_tree_tooltip_title",
@@ -4644,6 +6146,17 @@ class UiRenderer:
             if self._contains_hitbox("species_tree_zoom_fit", x, y):
                 self._activate_species_tree_fit()
                 return True
+            if self._contains_hitbox("species_tree_parent_button", x, y):
+                records = getattr(world, "species_history", {})
+                selected = records.get(self._species_tree_selected_id)
+                parent_id = (
+                    None
+                    if selected is None
+                    else selected.parent_species_id
+                )
+                if parent_id is not None and parent_id in records:
+                    self._select_species_tree_species(parent_id, focus=True)
+                return True
             if self._contains_hitbox("species_tree_inspector_resize", x, y):
                 self._species_tree_inspector_resize_drag = True
                 return True
@@ -4862,8 +6375,8 @@ class UiRenderer:
             and not self._species_tree_canvas_drag_started
             and self._species_tree_pending_selection_id is not None
         ):
-            self._species_tree_selected_id = (
-                self._species_tree_pending_selection_id
+            self._select_species_tree_species(
+                self._species_tree_pending_selection_id,
             )
         self._species_tree_pending_selection_id = None
         self._species_tree_canvas_drag = False
@@ -5078,10 +6591,12 @@ class UiRenderer:
         icon_name: str | None = None,
         show_close: bool = True,
         body_top_padding: float = 24.0,
+        panel_fill: arcade.Color | tuple[int, ...] | None = None,
+        title_icon_size: float = 20.0,
     ) -> arcade.Rect:
         self._draw_rounded_rect(
             bounds,
-            self.theme.panel_background_alt,
+            panel_fill or self.theme.panel_background_alt,
             self.theme.panel_border,
             14,
             1.5,
@@ -5103,7 +6618,12 @@ class UiRenderer:
             )
             title_x = bounds.left + 28.0
             if icon_name is not None:
-                icon_bounds = arcade.LBWH(bounds.left + 26, bounds.top - 38, 20, 20)
+                icon_bounds = arcade.LBWH(
+                    bounds.left + 26.0,
+                    bounds.top - 28.0 - title_icon_size / 2.0,
+                    title_icon_size,
+                    title_icon_size,
+                )
                 self._draw_icon(icon_bounds, icon_name, f"{key}_title_icon")
                 title_x = icon_bounds.right + 12.0
             self._draw_text(
