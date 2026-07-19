@@ -1592,37 +1592,72 @@ class UiRenderer:
 
         disabled_edges = [edge for edge in layout.edges if not edge.enabled]
         enabled_edges = [edge for edge in layout.edges if edge.enabled]
-        edge_groups: list[tuple[list[BrainGraphEdge], bool, bool, bool]] = [
-            (disabled_edges, True, False, False)
-        ]
         if highlight is None:
-            edge_groups.append((enabled_edges, False, False, False))
+            edge_groups = [
+                (disabled_edges, True, False, False, False),
+                (enabled_edges, False, False, False, False),
+            ]
         else:
-            edge_groups.extend(
+            direct_edges = highlight.direct_edges
+            edge_groups = [
                 (
-                    (
-                        [
-                            edge
-                            for edge in enabled_edges
-                            if (edge.source, edge.target) not in highlight.edges
-                        ],
-                        False,
-                        False,
-                        True,
-                    ),
-                    (
-                        [
-                            edge
-                            for edge in enabled_edges
-                            if (edge.source, edge.target) in highlight.edges
-                        ],
-                        False,
-                        True,
-                        False,
-                    ),
-                )
-            )
-        for edges, disabled, highlighted, dimmed in edge_groups:
+                    [
+                        edge
+                        for edge in disabled_edges
+                        if (edge.source, edge.target) not in direct_edges
+                    ],
+                    True,
+                    False,
+                    False,
+                    False,
+                ),
+                (
+                    [
+                        edge
+                        for edge in enabled_edges
+                        if (edge.source, edge.target) not in highlight.edges
+                    ],
+                    False,
+                    False,
+                    True,
+                    False,
+                ),
+                (
+                    [
+                        edge
+                        for edge in enabled_edges
+                        if (edge.source, edge.target) in highlight.edges
+                        and (edge.source, edge.target) not in direct_edges
+                    ],
+                    False,
+                    True,
+                    False,
+                    False,
+                ),
+                (
+                    [
+                        edge
+                        for edge in disabled_edges
+                        if (edge.source, edge.target) in direct_edges
+                    ],
+                    True,
+                    False,
+                    False,
+                    True,
+                ),
+                (
+                    [
+                        edge
+                        for edge in enabled_edges
+                        if (edge.source, edge.target) in direct_edges
+                    ],
+                    False,
+                    True,
+                    False,
+                    True,
+                ),
+            ]
+        for edges, disabled, highlighted, dimmed, direct in edge_groups:
             for edge in edges:
                 self._draw_brain_graph_edge(
                     edge,
@@ -1631,8 +1666,18 @@ class UiRenderer:
                     disabled=disabled,
                     highlighted=highlighted,
                     dimmed=dimmed,
+                    direct=direct,
                 )
 
+        direct_nodes = (
+            {
+                endpoint
+                for edge in highlight.direct_edges
+                for endpoint in edge
+            }
+            if highlight is not None
+            else set()
+        )
         for key, node in layout.nodes.items():
             position = positions.get(key)
             if position is None:
@@ -1645,9 +1690,23 @@ class UiRenderer:
                 base_radius + (1.5 if node.kind == BrainNodeKind.HIDDEN else 0.0),
             )
 
-            in_path = highlight is None or key in highlight.nodes
-            if not in_path:
+            in_selection = (
+                highlight is None
+                or key in highlight.nodes
+                or key in direct_nodes
+            )
+            if not in_selection:
                 outline_color = self._brain_color_alpha(outline_color, 70)
+            elif highlight is not None and key not in direct_nodes:
+                outline_color = self._brain_color_alpha(outline_color, 160)
+            elif key != selected_key and highlight is not None:
+                arcade.draw_circle_outline(
+                    position[0],
+                    position[1],
+                    radius + 4.0,
+                    self._brain_color_alpha(outline_color, 120),
+                    1.5,
+                )
             if key == selected_key:
                 arcade.draw_circle_outline(
                     position[0],
@@ -1681,9 +1740,11 @@ class UiRenderer:
                     radius=radius,
                     font_size=label_size,
                     color=(
-                        self.theme.text_muted
-                        if in_path
-                        else self._brain_color_alpha(self.theme.text_muted, 70)
+                        self._brain_color_alpha(self.theme.text_muted, 70)
+                        if not in_selection
+                        else self._brain_color_alpha(self.theme.text_muted, 160)
+                        if highlight is not None and key not in direct_nodes
+                        else self.theme.text_muted
                     ),
                 )
                 if label_bounds is not None:
@@ -1709,6 +1770,7 @@ class UiRenderer:
         disabled: bool = False,
         highlighted: bool = False,
         dimmed: bool = False,
+        direct: bool = False,
     ) -> None:
         start = positions.get(edge.source)
         end = positions.get(edge.target)
@@ -1718,20 +1780,33 @@ class UiRenderer:
         color = self._brain_edge_color(edge.weight)
         width = max(1.0, min(4.5, 0.9 + abs(edge.weight) * 0.65))
         draw_arrow = not disabled
+        dashed = False
         if disabled:
-            color = self._brain_color_alpha(self.theme.panel_border, 34)
-            width = 0.75
-            draw_arrow = False
+            if direct:
+                color = self._brain_color_alpha(color, 165)
+                width = max(1.25, width * 0.85)
+                draw_arrow = True
+                dashed = True
+            else:
+                color = self._brain_color_alpha(self.theme.panel_border, 34)
+                width = 0.75
+                draw_arrow = False
         elif dimmed:
             color = self._brain_color_alpha(color, 38)
             width = max(0.75, width * 0.62)
         elif highlighted:
-            color = self._brain_color_alpha(color, 245)
-            width += 1.75
+            color = self._brain_color_alpha(color, 255 if direct else 175)
+            width += 2.25 if direct else 0.85
         else:
             color = self._brain_color_alpha(color, 105)
         if edge.kind == BrainEdgeKind.SELF_LOOP:
-            self._draw_self_loop(start, color, width)
+            self._draw_self_loop(
+                start,
+                color,
+                width,
+                dashed=dashed,
+                draw_arrow=draw_arrow,
+            )
             return
         if edge.kind == BrainEdgeKind.RECURRENT:
             control_y = (
@@ -1739,7 +1814,10 @@ class UiRenderer:
             )
             control = ((start[0] + end[0]) * 0.5, control_y)
             points = self._quadratic_bezier_points(start, control, end)
-            self._draw_curve(points, color, width)
+            if dashed:
+                self._draw_dashed_curve(points, color, width)
+            else:
+                self._draw_curve(points, color, width)
             if draw_arrow:
                 self._draw_brain_arrowhead(points, color, width)
             return
@@ -1754,7 +1832,10 @@ class UiRenderer:
             second_control,
             end,
         )
-        self._draw_curve(points, color, width)
+        if dashed:
+            self._draw_dashed_curve(points, color, width)
+        else:
+            self._draw_curve(points, color, width)
         if draw_arrow:
             self._draw_brain_arrowhead(points, color, width)
 
@@ -2054,7 +2135,7 @@ class UiRenderer:
         y -= 6
         self._draw_text(
             "brain_legend_strength_title",
-            "STRENGTH",
+            "SELECTION DETAIL",
             x,
             y,
             self.theme.text_primary,
@@ -2062,15 +2143,45 @@ class UiRenderer:
             bold=True,
         )
         y -= 28
-        for index, width in enumerate((1.0, 2.5, 4.0)):
-            arcade.draw_line(x, y + 4, x + 28, y + 4, self.theme.text_muted, width)
+        selection_items = (
+            (
+                "Direct gene",
+                self._brain_color_alpha(self._brain_edge_color(0.8), 255),
+                4.0,
+                False,
+            ),
+            (
+                "Enabled signal route",
+                self._brain_color_alpha(self._brain_edge_color(0.8), 175),
+                2.5,
+                False,
+            ),
+            (
+                "Unrelated while selected",
+                self._brain_color_alpha(self._brain_edge_color(0.8), 38),
+                1.0,
+                False,
+            ),
+            (
+                "Disabled direct gene",
+                self._brain_color_alpha(self._brain_edge_color(0.8), 165),
+                1.5,
+                True,
+            ),
+        )
+        for index, (label, color, width, dashed) in enumerate(selection_items):
+            points = [(x, y + 4), (x + 28, y + 4)]
+            if dashed:
+                self._draw_dashed_curve(points, color, width)
+            else:
+                self._draw_curve(points, color, width)
             self._draw_text(
                 f"brain_legend_strength_{index}",
-                ("Weak", "Medium", "Strong")[index],
+                label,
                 x + 40,
                 y,
                 self.theme.text_muted,
-                10,
+                9.5,
             )
             y -= 29
 
@@ -2296,6 +2407,10 @@ class UiRenderer:
             for connection in getattr(brain.genome, "connections", {}).values()
             if connection.key[0] in layout.nodes and connection.key[1] in layout.nodes
         ]
+        connections_by_key = {
+            connection.key: connection for connection in connections
+        }
+        highlight = highlighted_path_through_node(layout, node.key)
         incoming = sorted(
             (connection for connection in connections if connection.key[1] == node.key),
             key=lambda connection: order.get(connection.key[0], len(order)),
@@ -2313,6 +2428,7 @@ class UiRenderer:
                 lines.append(
                     self._brain_connection_inspector_line(
                         self._brain_node_display_name(source),
+                        source.key,
                         connection,
                     )
                 )
@@ -2325,6 +2441,44 @@ class UiRenderer:
                 lines.append(
                     self._brain_connection_inspector_line(
                         self._brain_node_display_name(target),
+                        target.key,
+                        connection,
+                    )
+                )
+        additional_route_keys = sorted(
+            highlight.edges - highlight.direct_edges,
+            key=lambda key: (
+                order.get(key[0], len(order)),
+                order.get(key[1], len(order)),
+            ),
+        )
+        lines.extend(
+            (
+                "",
+                f"ADDITIONAL ENABLED SIGNAL ROUTE ({len(additional_route_keys)})",
+            )
+        )
+        if not additional_route_keys:
+            lines.append("No additional route connections")
+        else:
+            for connection_key in additional_route_keys:
+                connection = connections_by_key[connection_key]
+                in_upstream = connection_key in highlight.upstream_edges
+                in_downstream = connection_key in highlight.downstream_edges
+                relation = (
+                    "Upstream + downstream"
+                    if in_upstream and in_downstream
+                    else "Upstream"
+                    if in_upstream
+                    else "Downstream"
+                )
+                source = layout.nodes[connection_key[0]]
+                target = layout.nodes[connection_key[1]]
+                lines.append(
+                    self._brain_route_connection_inspector_line(
+                        relation,
+                        source,
+                        target,
                         connection,
                     )
                 )
@@ -2333,14 +2487,35 @@ class UiRenderer:
     def _brain_connection_inspector_line(
         self,
         endpoint_label: str,
+        endpoint_key: int,
         connection: object,
     ) -> str:
+        return (
+            f"{endpoint_label} [ID {endpoint_key}] | "
+            f"{self._brain_connection_inspector_details(connection)}"
+        )
+
+    def _brain_route_connection_inspector_line(
+        self,
+        relation: str,
+        source: BrainGraphNode,
+        target: BrainGraphNode,
+        connection: object,
+    ) -> str:
+        return (
+            f"{relation}: {self._brain_node_display_name(source)} "
+            f"[ID {source.key}] -> {self._brain_node_display_name(target)} "
+            f"[ID {target.key}] | "
+            f"{self._brain_connection_inspector_details(connection)}"
+        )
+
+    def _brain_connection_inspector_details(self, connection: object) -> str:
         try:
             weight = float(getattr(connection, "weight", 0.0))
         except (TypeError, ValueError):
             weight = 0.0
         state = "Enabled" if bool(getattr(connection, "enabled", False)) else "Disabled"
-        return f"{endpoint_label} | {weight:+.3f} | {state}"
+        return f"{weight:+.3f} | {state}"
 
     def _draw_brain_footer(
         self,
@@ -5922,6 +6097,9 @@ class UiRenderer:
         position: tuple[float, float],
         color: arcade.Color | tuple[int, ...],
         width: float,
+        *,
+        dashed: bool = False,
+        draw_arrow: bool = True,
     ) -> None:
         x, y = position
         points = [
@@ -5930,15 +6108,19 @@ class UiRenderer:
             (x + 22.0, y - 24.0),
             (x + 8.0, y - 2.0),
         ]
+        final_curve: list[tuple[float, float]] = []
         for start, control, end in (
             (points[0], points[1], points[2]),
             (points[2], points[3], points[0]),
         ):
-            self._draw_curve(
-                self._quadratic_bezier_points(start, control, end, steps=10),
-                color,
-                width,
-            )
+            curve = self._quadratic_bezier_points(start, control, end, steps=10)
+            if dashed:
+                self._draw_dashed_curve(curve, color, width)
+            else:
+                self._draw_curve(curve, color, width)
+            final_curve = curve
+        if draw_arrow:
+            self._draw_brain_arrowhead(final_curve, color, width)
 
     def _draw_curve(
         self,
@@ -5948,6 +6130,43 @@ class UiRenderer:
     ) -> None:
         for start, end in zip(points, points[1:]):
             arcade.draw_line(start[0], start[1], end[0], end[1], color, width)
+
+    def _draw_dashed_curve(
+        self,
+        points: list[tuple[float, float]],
+        color: arcade.Color | tuple[int, ...],
+        width: float,
+        *,
+        dash_length: float = 6.0,
+        gap_length: float = 4.0,
+    ) -> None:
+        drawing = True
+        remaining = dash_length
+        for start, end in zip(points, points[1:]):
+            delta_x = end[0] - start[0]
+            delta_y = end[1] - start[1]
+            segment_length = (delta_x * delta_x + delta_y * delta_y) ** 0.5
+            if segment_length <= 0.0001:
+                continue
+            consumed = 0.0
+            while consumed < segment_length:
+                step = min(remaining, segment_length - consumed)
+                if drawing:
+                    start_ratio = consumed / segment_length
+                    end_ratio = (consumed + step) / segment_length
+                    arcade.draw_line(
+                        start[0] + delta_x * start_ratio,
+                        start[1] + delta_y * start_ratio,
+                        start[0] + delta_x * end_ratio,
+                        start[1] + delta_y * end_ratio,
+                        color,
+                        width,
+                    )
+                consumed += step
+                remaining -= step
+                if remaining <= 0.0001:
+                    drawing = not drawing
+                    remaining = dash_length if drawing else gap_length
 
     def _quadratic_bezier_points(
         self,

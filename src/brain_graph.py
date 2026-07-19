@@ -54,6 +54,9 @@ class BrainGraphLayout:
 class BrainGraphHighlight:
     nodes: frozenset[int]
     edges: frozenset[tuple[int, int]]
+    direct_edges: frozenset[tuple[int, int]] = frozenset()
+    upstream_edges: frozenset[tuple[int, int]] = frozenset()
+    downstream_edges: frozenset[tuple[int, int]] = frozenset()
 
 
 def build_brain_graph_layout(
@@ -113,12 +116,17 @@ def highlighted_path_through_node(
     layout: BrainGraphLayout,
     node_key: int,
 ) -> BrainGraphHighlight:
-    """Return the complete enabled signal route through ``node_key``."""
+    """Return direct genes and the complete enabled signal route for a node."""
     if node_key not in layout.nodes:
         return BrainGraphHighlight(frozenset(), frozenset())
 
     incoming: dict[int, list[BrainGraphEdge]] = {}
     outgoing: dict[int, list[BrainGraphEdge]] = {}
+    direct_edges = {
+        (edge.source, edge.target)
+        for edge in layout.edges
+        if edge.source == node_key or edge.target == node_key
+    }
     for edge in layout.edges:
         if not edge.enabled:
             continue
@@ -126,11 +134,13 @@ def highlighted_path_through_node(
         outgoing.setdefault(edge.source, []).append(edge)
 
     highlighted_nodes = {node_key}
-    highlighted_edges: set[tuple[int, int]] = set()
+    upstream_edges: set[tuple[int, int]] = set()
+    downstream_edges: set[tuple[int, int]] = set()
 
     def traverse(
         start: int,
         adjacency: dict[int, list[BrainGraphEdge]],
+        traversed_edges: set[tuple[int, int]],
         *,
         upstream: bool,
     ) -> None:
@@ -142,17 +152,21 @@ def highlighted_path_through_node(
                 continue
             visited.add(current)
             for edge in adjacency.get(current, ()):
-                highlighted_edges.add((edge.source, edge.target))
+                traversed_edges.add((edge.source, edge.target))
                 highlighted_nodes.update((edge.source, edge.target))
                 neighbor = edge.source if upstream else edge.target
                 if neighbor not in visited:
                     pending.append(neighbor)
 
-    traverse(node_key, incoming, upstream=True)
-    traverse(node_key, outgoing, upstream=False)
+    traverse(node_key, incoming, upstream_edges, upstream=True)
+    traverse(node_key, outgoing, downstream_edges, upstream=False)
+    highlighted_edges = upstream_edges | downstream_edges
     return BrainGraphHighlight(
         nodes=frozenset(highlighted_nodes),
         edges=frozenset(highlighted_edges),
+        direct_edges=frozenset(direct_edges),
+        upstream_edges=frozenset(upstream_edges),
+        downstream_edges=frozenset(downstream_edges),
     )
 
 

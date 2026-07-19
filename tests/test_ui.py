@@ -342,10 +342,54 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
 
         self.assertIn("Layer: Hidden 1", text)
         self.assertIn("Activation: tanh", text)
-        self.assertIn("sensor | +0.800 | Disabled", text)
-        self.assertIn("accelerate | -0.600 | Enabled", text)
+        self.assertIn("sensor [ID -1] | +0.800 | Disabled", text)
+        self.assertIn("accelerate [ID 0] | -0.600 | Enabled", text)
+        self.assertIn("ADDITIONAL ENABLED SIGNAL ROUTE (0)", text)
         self.assertNotIn("Current value", text)
         self.assertNotIn("Contrib", text)
+
+    def test_inspector_separates_direct_genes_from_additional_signal_route(
+        self,
+    ) -> None:
+        fixture = self.make_brain_world()
+        fixture.brain.genome.nodes[2] = SimpleNamespace(
+            activation="tanh",
+            aggregation="sum",
+            bias=0.25,
+            response=1.0,
+        )
+        fixture.brain.genome.connections = {
+            key: SimpleNamespace(key=key, weight=weight, enabled=True)
+            for key, weight in (
+                ((-1, 1), 0.8),
+                ((1, 2), -0.6),
+                ((2, 0), 0.3),
+            )
+        }
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+
+        lines = self.renderer._brain_node_inspector_lines(
+            fixture.brain,
+            layout,
+            layout.nodes[1],
+        )
+        text = "\n".join(lines)
+
+        self.assertIn("sensor [ID -1] | +0.800 | Enabled", text)
+        self.assertIn("Hidden 2 [ID 2] | -0.600 | Enabled", text)
+        self.assertIn("ADDITIONAL ENABLED SIGNAL ROUTE (1)", text)
+        self.assertIn(
+            "Downstream: Hidden 2 [ID 2] -> accelerate [ID 0] "
+            "| +0.300 | Enabled",
+            text,
+        )
 
     def test_workspace_registers_nodes_and_expands_when_inspector_collapses(self) -> None:
         fixture = self.make_brain_world()
@@ -382,20 +426,45 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
 
         self.assertEqual(self.renderer._brain_node_at(112, 110), 2)
 
-    def test_selected_node_draws_highlighted_and_dimmed_edge_groups(self) -> None:
-        fixture = self.make_brain_world(branched=True)
+    def test_selected_node_draws_all_five_connection_detail_tiers(self) -> None:
+        fixture = self.make_brain_world()
+        node_gene = fixture.brain.genome.nodes[1]
+        fixture.brain.genome.nodes.update(
+            {
+                key: SimpleNamespace(
+                    activation=node_gene.activation,
+                    aggregation=node_gene.aggregation,
+                    bias=node_gene.bias,
+                    response=node_gene.response,
+                )
+                for key in range(2, 6)
+            }
+        )
+        connection_specs = (
+            (-1, 1, 0.8, True),
+            (1, 2, 0.7, True),
+            (2, 0, 0.6, True),
+            (-1, 3, 0.5, True),
+            (3, 0, 0.4, True),
+            (1, 4, 0.3, False),
+            (-1, 5, 0.2, False),
+        )
+        fixture.brain.genome.connections = {
+            (source, target): SimpleNamespace(
+                key=(source, target),
+                weight=weight,
+                enabled=enabled,
+            )
+            for source, target, weight, enabled in connection_specs
+        }
         self.renderer._brain_selected_node_key = 1
         self.renderer._brain_selection_identity = (5, 10)
-        calls: list[tuple[bool, bool]] = []
+        calls: dict[tuple[int, int], dict[str, object]] = {}
         original = self.renderer._draw_brain_graph_edge
 
         def capture_edge(*args: object, **kwargs: object) -> None:
-            calls.append(
-                (
-                    bool(kwargs.get("highlighted")),
-                    bool(kwargs.get("dimmed")),
-                )
-            )
+            edge = args[0]
+            calls[(edge.source, edge.target)] = kwargs
 
         self.renderer._draw_brain_graph_edge = capture_edge
         try:
@@ -406,8 +475,15 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         finally:
             self.renderer._draw_brain_graph_edge = original
 
-        self.assertIn((True, False), calls)
-        self.assertIn((False, True), calls)
+        self.assertTrue(calls[(-1, 5)]["disabled"])
+        self.assertFalse(calls[(-1, 5)]["direct"])
+        self.assertTrue(calls[(-1, 3)]["dimmed"])
+        self.assertTrue(calls[(2, 0)]["highlighted"])
+        self.assertFalse(calls[(2, 0)]["direct"])
+        self.assertTrue(calls[(1, 4)]["disabled"])
+        self.assertTrue(calls[(1, 4)]["direct"])
+        self.assertTrue(calls[(-1, 1)]["highlighted"])
+        self.assertTrue(calls[(-1, 1)]["direct"])
 
     def test_changing_genome_clears_node_selection(self) -> None:
         fixture = self.make_brain_world()
@@ -622,6 +698,39 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertEqual(len(curves), 1)
         self.assertEqual(arrows, [])
 
+    def test_selected_disabled_direct_edge_is_dashed_and_directional(self) -> None:
+        edge = BrainGraphEdge(
+            source=-1,
+            target=0,
+            weight=-0.8,
+            enabled=False,
+            kind=BrainEdgeKind.FORWARD,
+        )
+        dashed_curves: list[object] = []
+        arrows: list[object] = []
+        original_dashed = self.renderer._draw_dashed_curve
+        original_arrow = self.renderer._draw_brain_arrowhead
+        self.renderer._draw_dashed_curve = (
+            lambda *args, **kwargs: dashed_curves.append(args)
+        )
+        self.renderer._draw_brain_arrowhead = (
+            lambda *args, **kwargs: arrows.append(args)
+        )
+        try:
+            self.renderer._draw_brain_graph_edge(
+                edge,
+                {-1: (100, 100), 0: (500, 240)},
+                arcade.LBWH(0, 0, 600, 300),
+                disabled=True,
+                direct=True,
+            )
+        finally:
+            self.renderer._draw_dashed_curve = original_dashed
+            self.renderer._draw_brain_arrowhead = original_arrow
+
+        self.assertEqual(len(dashed_curves), 1)
+        self.assertEqual(len(arrows), 1)
+
     def test_graph_sends_disabled_connections_to_background_group(self) -> None:
         fixture = self.make_brain_world()
         fixture.brain.genome.connections[(-1, 1)].enabled = False
@@ -640,6 +749,24 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
 
         self.assertTrue(any(call.get("disabled") for call in calls))
         self.assertTrue(any(not call.get("disabled") for call in calls))
+
+    def test_brain_legend_explains_layered_selection_detail(self) -> None:
+        self.renderer._draw_brain_legend(arcade.LBWH(0, 0, 220, 620))
+
+        labels = [
+            self.renderer._text_cache[f"brain_legend_strength_{index}"].text
+            for index in range(4)
+        ]
+
+        self.assertEqual(
+            labels,
+            [
+                "Direct gene",
+                "Enabled signal route",
+                "Unrelated while selected",
+                "Disabled direct gene",
+            ],
+        )
 
     def test_node_badge_stays_inside_summary_without_overlapping_name(self) -> None:
         labels = ("Input Node", "Hidden Node", "Output Node")

@@ -175,6 +175,9 @@ class BrainGraphLayoutTest(unittest.TestCase):
 
         self.assertEqual(highlight.nodes, {-1, 1, 2, 0})
         self.assertEqual(highlight.edges, {(-1, 1), (1, 2), (2, 0)})
+        self.assertEqual(highlight.direct_edges, {(-1, 1), (1, 2)})
+        self.assertEqual(highlight.upstream_edges, {(-1, 1)})
+        self.assertEqual(highlight.downstream_edges, {(1, 2), (2, 0)})
 
     def test_highlighted_path_excludes_disabled_connections(self) -> None:
         genome = genome_with_connections([1, 2], [(-1, 1), (1, 0), (1, 2), (2, 0)])
@@ -184,6 +187,12 @@ class BrainGraphLayoutTest(unittest.TestCase):
 
         self.assertEqual(highlight.nodes, {-1, 1, 0})
         self.assertEqual(highlight.edges, {(-1, 1), (1, 0)})
+        self.assertEqual(
+            highlight.direct_edges,
+            {(-1, 1), (1, 0), (1, 2)},
+        )
+        self.assertEqual(highlight.upstream_edges, {(-1, 1)})
+        self.assertEqual(highlight.downstream_edges, {(1, 0)})
 
     def test_highlighted_path_handles_input_output_recurrence_and_self_loop(self) -> None:
         genome = genome_with_connections(
@@ -194,10 +203,23 @@ class BrainGraphLayoutTest(unittest.TestCase):
 
         input_highlight = highlighted_path_through_node(layout, -1)
         output_highlight = highlighted_path_through_node(layout, 0)
+        hidden_highlight = highlighted_path_through_node(layout, 1)
 
         expected_edges = {(-1, 1), (1, 2), (2, 1), (1, 1), (2, 0)}
         self.assertEqual(input_highlight.edges, expected_edges)
         self.assertEqual(output_highlight.edges, expected_edges)
+        self.assertEqual(
+            hidden_highlight.direct_edges,
+            {(-1, 1), (1, 2), (2, 1), (1, 1)},
+        )
+        self.assertEqual(
+            hidden_highlight.upstream_edges,
+            {(-1, 1), (1, 2), (2, 1), (1, 1)},
+        )
+        self.assertEqual(
+            hidden_highlight.downstream_edges,
+            {(1, 2), (2, 1), (1, 1), (2, 0)},
+        )
 
     def test_highlighted_path_for_isolated_or_unknown_node(self) -> None:
         layout = layout_for(genome_with_connections([1], [(-1, 0)]))
@@ -210,6 +232,10 @@ class BrainGraphLayoutTest(unittest.TestCase):
             highlighted_path_through_node(layout, 999).nodes,
             set(),
         )
+        unknown = highlighted_path_through_node(layout, 999)
+        self.assertEqual(unknown.direct_edges, set())
+        self.assertEqual(unknown.upstream_edges, set())
+        self.assertEqual(unknown.downstream_edges, set())
 
 
 if __name__ == "__main__":
