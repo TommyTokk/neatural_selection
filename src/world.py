@@ -2024,7 +2024,9 @@ class World:
         flock = snapshot.flock
         separation = self._steering_toward_relative_angle(
             creature,
-            flock.separation_relative_heading,
+            self._signed_angle(
+                flock.separation_absolute_angle - creature.heading
+            ),
             max_speed,
             max_force,
             flock.separation_strength,
@@ -2036,14 +2038,18 @@ class World:
         else:
             alignment = self._steering_toward_relative_angle(
                 creature,
-                flock.average_relative_heading * pi,
+                self._signed_angle(
+                    flock.alignment_absolute_angle - creature.heading
+                ),
                 max_speed,
                 max_force,
                 flock.average_flockmate_proximity,
             )
             cohesion = self._steering_toward_relative_angle(
                 creature,
-                flock.center_angle * (creature.vision.angle / 2.0),
+                self._signed_angle(
+                    flock.cohesion_absolute_angle - creature.heading
+                ),
                 max_speed,
                 max_force,
                 1.0 - flock.center_proximity,
@@ -2194,16 +2200,8 @@ class World:
         return angle
 
     def _apply_top_down_motion(self) -> None:
-        motion_commands = getattr(self, "_motion_commands", {})
         for creature in self.creatures:
             self._apply_planar_drag(creature)
-            command = motion_commands.get(creature.creature_id)
-            if command is not None:
-                self._apply_turn_control(
-                    creature,
-                    command.effective_rotate,
-                    max_angular_speed=command.max_angular_speed,
-                )
 
     def _apply_planar_drag(self, creature: Creature) -> None:
         velocity = creature.body.velocity

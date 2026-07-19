@@ -43,10 +43,20 @@ class FakeCreature:
     heading: float
     energy: float
     vision: VisionTraits
+    velocity: tuple[float, float] = (0.0, 0.0)
     speed: float = 0.0
     creature_id: int = 1
     species_id: int = 1
     stomach_energy: float = 0.0
+
+    @property
+    def body(self) -> types.SimpleNamespace:
+        return types.SimpleNamespace(
+            velocity=types.SimpleNamespace(
+                x=self.velocity[0],
+                y=self.velocity[1],
+            )
+        )
 
 
 @dataclass(slots=True)
@@ -64,6 +74,7 @@ def creature_at(
     energy: float = 0.75,
     vision_range: float = 100.0,
     vision_angle: float = pi / 2,
+    velocity: tuple[float, float] = (0.0, 0.0),
     creature_id: int = 1,
     species_id: int = 1,
 ) -> FakeCreature:
@@ -73,6 +84,7 @@ def creature_at(
         heading=heading,
         energy=energy,
         vision=VisionTraits(range=vision_range, angle=vision_angle),
+        velocity=velocity,
         creature_id=creature_id,
         species_id=species_id,
     )
@@ -784,13 +796,14 @@ class VisionWallSensorTest(unittest.TestCase):
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
         self.assertAlmostEqual(inputs[1], 0.9)
 
-    def test_all_flock_inputs_use_only_same_species_creatures(
+    def test_cohesion_and_alignment_use_only_same_species_creatures(
         self,
     ) -> None:
-        observer = creature_at((0.0, 0.0), vision_range=100.0)
+        observer = creature_at((0.0, 0.0), radius=10.0, vision_range=100.0)
         flockmate = creature_at(
             (40.0, 10.0),
             heading=pi / 2,
+            velocity=(0.0, 10.0),
             creature_id=2,
             species_id=1,
         )
@@ -822,11 +835,13 @@ class VisionWallSensorTest(unittest.TestCase):
             1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 100.0),
         )
         self.assertGreater(snapshot.flock.separation_strength, 0.0)
-        self.assertLess(snapshot.flock.separation_relative_heading, 0.0)
+        self.assertGreater(snapshot.flock.separation_absolute_angle, 0.0)
+        self.assertAlmostEqual(snapshot.flock.alignment_absolute_angle, pi / 2)
 
     def test_symmetric_neighbors_cancel_separation_field(self) -> None:
         observer = creature_at(
             (0.0, 0.0),
+            radius=5.0,
             vision_range=100.0,
             vision_angle=2.0 * pi,
         )
@@ -842,11 +857,12 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(snapshot.flock.separation_strength, 0.0)
-        self.assertAlmostEqual(snapshot.flock.separation_relative_heading, 0.0)
+        self.assertAlmostEqual(snapshot.flock.separation_absolute_angle, 0.0)
 
     def test_crowded_left_side_produces_rightward_separation(self) -> None:
         observer = creature_at(
             (0.0, 0.0),
+            radius=5.0,
             vision_range=100.0,
             vision_angle=2.0 * pi,
         )
@@ -867,10 +883,120 @@ class VisionWallSensorTest(unittest.TestCase):
 
         self.assertGreater(snapshot.flock.separation_strength, 0.0)
         self.assertAlmostEqual(
-            snapshot.flock.separation_relative_heading,
+            snapshot.flock.separation_absolute_angle,
             0.0,
             places=10,
         )
+
+    def test_separation_ignores_visible_neighbors_outside_personal_space(
+        self,
+    ) -> None:
+        observer = creature_at(
+            (0.0, 0.0),
+            radius=10.0,
+            vision_range=200.0,
+            vision_angle=2.0 * pi,
+        )
+        close_neighbor = creature_at((2.0, 0.0), creature_id=2)
+        distant_neighbors = [
+            creature_at(
+                (
+                    cos((index + 1) * 0.5) * 150.0,
+                    sin((index + 1) * 0.5) * 150.0,
+                ),
+                creature_id=index + 3,
+            )
+            for index in range(10)
+        ]
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, close_neighbor, *distant_neighbors],
+            world_bounds=(-250.0, -250.0, 250.0, 250.0),
+            max_speed=100.0,
+        )
+
+        self.assertAlmostEqual(snapshot.flock.separation_strength, 0.99)
+        self.assertAlmostEqual(
+            snapshot.flock.separation_absolute_angle,
+            pi,
+        )
+
+    def test_personal_space_boundary_is_strictly_excluded(self) -> None:
+        observer = creature_at(
+            (0.0, 0.0),
+            radius=10.0,
+            vision_range=100.0,
+        )
+        boundary_neighbor = creature_at((40.0, 0.0), creature_id=2)
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, boundary_neighbor],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertEqual(snapshot.flock.separation_strength, 0.0)
+
+    def test_close_other_species_creature_contributes_only_to_separation(
+        self,
+    ) -> None:
+        observer = creature_at(
+            (0.0, 0.0),
+            radius=10.0,
+            vision_range=100.0,
+        )
+        other_species = creature_at(
+            (20.0, 0.0),
+            creature_id=2,
+            species_id=2,
+            velocity=(0.0, 10.0),
+        )
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, other_species],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertEqual(snapshot.flock.flockmate_count, 0)
+        self.assertAlmostEqual(snapshot.flock.separation_strength, 0.80)
+        self.assertAlmostEqual(snapshot.flock.separation_absolute_angle, pi)
+        self.assertEqual(snapshot.flock.center_proximity, 0.0)
+        self.assertEqual(snapshot.flock.alignment_absolute_angle, 0.0)
+
+    def test_alignment_uses_flockmate_velocity_instead_of_heading(self) -> None:
+        observer = creature_at((0.0, 0.0), vision_range=100.0)
+        flockmates = [
+            creature_at(
+                (20.0, -5.0),
+                heading=pi / 2,
+                velocity=(10.0, 0.0),
+                creature_id=2,
+            ),
+            creature_at(
+                (20.0, 5.0),
+                heading=pi / 2,
+                velocity=(20.0, 0.0),
+                creature_id=3,
+            ),
+        ]
+
+        snapshot = self.vision.sense(
+            observer,
+            foods=[],
+            creatures=[observer, *flockmates],
+            world_bounds=(-100.0, -100.0, 100.0, 100.0),
+            max_speed=100.0,
+        )
+
+        self.assertAlmostEqual(snapshot.flock.alignment_absolute_angle, 0.0)
+        self.assertAlmostEqual(snapshot.flock.average_relative_heading, 0.0)
 
     def test_average_flockmate_proximity_uses_distance_falloff(self) -> None:
         observer = creature_at((0.0, 0.0), vision_range=100.0)

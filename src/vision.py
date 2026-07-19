@@ -83,7 +83,9 @@ class FlockSensorSnapshot:
     center_angle: float = 0.0
     average_relative_heading: float = 0.0
     flockmate_count: int = 0
-    separation_relative_heading: float = 0.0
+    separation_absolute_angle: float = 0.0
+    cohesion_absolute_angle: float = 0.0
+    alignment_absolute_angle: float = 0.0
     separation_strength: float = 0.0
     average_flockmate_proximity: float = 0.0
 
@@ -354,13 +356,15 @@ class VisionSystem:
 
         separation_x = 0.0
         separation_y = 0.0
+        separation_neighbor_count = 0
         vision_range = creature.vision.range
-        for target in flockmate_targets:
+        personal_space = max(0.0, creature.radius * 4.0)
+        for target in visible_creatures:
             neighbor = target.source
             away_x = creature.position[0] - neighbor.position[0]
             away_y = creature.position[1] - neighbor.position[1]
             distance = hypot(away_x, away_y)
-            if distance <= 1e-12:
+            if distance <= 1e-12 or distance >= personal_space:
                 continue
             proximity = (
                 0.0
@@ -369,22 +373,21 @@ class VisionSystem:
             )
             separation_x += (away_x / distance) * proximity
             separation_y += (away_y / distance) * proximity
+            separation_neighbor_count += 1
 
-        if flockmate_targets:
-            separation_x /= len(flockmate_targets)
-            separation_y /= len(flockmate_targets)
+        if separation_neighbor_count:
+            separation_x /= separation_neighbor_count
+            separation_y /= separation_neighbor_count
         separation_strength = self._clamp01(hypot(separation_x, separation_y))
-        separation_relative_heading = (
+        separation_absolute_angle = (
             0.0
             if separation_strength <= 1e-12
-            else self._signed_angle(
-                atan2(separation_y, separation_x) - creature.heading
-            )
+            else atan2(separation_y, separation_x)
         )
 
         if not flockmates:
             return FlockSensorSnapshot(
-                separation_relative_heading=separation_relative_heading,
+                separation_absolute_angle=separation_absolute_angle,
                 separation_strength=separation_strength,
             )
 
@@ -419,16 +422,30 @@ class VisionSystem:
             if creature.vision.range <= 0.0
             else self._clamp01(1.0 - center_distance / creature.vision.range)
         )
-        center_relative_angle = self._signed_angle(atan2(dy, dx) - creature.heading)
-
-        heading_x = sum(cos(flockmate.heading) for flockmate in flockmates)
-        heading_y = sum(sin(flockmate.heading) for flockmate in flockmates)
-        average_heading = (
-            creature.heading
-            if abs(heading_x) <= 1e-12 and abs(heading_y) <= 1e-12
-            else atan2(heading_y, heading_x)
+        cohesion_absolute_angle = atan2(dy, dx)
+        center_relative_angle = self._signed_angle(
+            cohesion_absolute_angle - creature.heading
         )
-        relative_heading = self._signed_angle(average_heading - creature.heading)
+
+        average_velocity_x = (
+            sum(flockmate.body.velocity.x for flockmate in flockmates)
+            / len(flockmates)
+        )
+        average_velocity_y = (
+            sum(flockmate.body.velocity.y for flockmate in flockmates)
+            / len(flockmates)
+        )
+        alignment_absolute_angle = (
+            creature.heading
+            if (
+                abs(average_velocity_x) <= 1e-12
+                and abs(average_velocity_y) <= 1e-12
+            )
+            else atan2(average_velocity_y, average_velocity_x)
+        )
+        relative_heading = self._signed_angle(
+            alignment_absolute_angle - creature.heading
+        )
 
         return FlockSensorSnapshot(
             center_proximity=center_proximity,
@@ -438,7 +455,9 @@ class VisionSystem:
             ),
             average_relative_heading=self._clamp(relative_heading / pi, -1.0, 1.0),
             flockmate_count=len(flockmates),
-            separation_relative_heading=separation_relative_heading,
+            separation_absolute_angle=separation_absolute_angle,
+            cohesion_absolute_angle=cohesion_absolute_angle,
+            alignment_absolute_angle=alignment_absolute_angle,
             separation_strength=separation_strength,
             average_flockmate_proximity=average_flockmate_proximity,
         )

@@ -178,7 +178,9 @@ class WorldFlockingMotionTest(unittest.TestCase):
             center_angle=0.5,
             average_relative_heading=0.5,
             flockmate_count=1,
-            separation_relative_heading=pi,
+            separation_absolute_angle=pi,
+            cohesion_absolute_angle=pi / 4.0,
+            alignment_absolute_angle=pi / 2.0,
             separation_strength=1.0,
             average_flockmate_proximity=0.75,
         )
@@ -222,6 +224,7 @@ class WorldFlockingMotionTest(unittest.TestCase):
             flock = FlockSensorSnapshot(
                 average_relative_heading=0.5,
                 flockmate_count=1,
+                alignment_absolute_angle=pi / 2.0,
                 average_flockmate_proximity=proximity,
             )
             return self.world._flock_steering_force(
@@ -249,7 +252,9 @@ class WorldFlockingMotionTest(unittest.TestCase):
             center_angle=1.0,
             average_relative_heading=0.5,
             flockmate_count=1,
-            separation_relative_heading=-pi / 2.0,
+            separation_absolute_angle=-pi / 2.0,
+            cohesion_absolute_angle=pi / 4.0,
+            alignment_absolute_angle=pi / 2.0,
             separation_strength=1.0,
             average_flockmate_proximity=1.0,
         )
@@ -279,7 +284,9 @@ class WorldFlockingMotionTest(unittest.TestCase):
             center_angle=0.5,
             average_relative_heading=0.5,
             flockmate_count=1,
-            separation_relative_heading=-pi / 2.0,
+            separation_absolute_angle=-pi / 2.0,
+            cohesion_absolute_angle=pi / 4.0,
+            alignment_absolute_angle=pi / 2.0,
             separation_strength=0.4,
             average_flockmate_proximity=0.75,
         )
@@ -307,6 +314,77 @@ class WorldFlockingMotionTest(unittest.TestCase):
         self.assertEqual(
             debug.max_force,
             self.world.config.action.max_forward_force,
+        )
+
+    def test_cached_absolute_flock_targets_do_not_rotate_with_observer(
+        self,
+    ) -> None:
+        self.creature.heading = 0.0
+        cases = (
+            (
+                FlockingTraits(1.0, 0.0, 0.0),
+                FlockSensorSnapshot(
+                    separation_absolute_angle=0.0,
+                    separation_strength=1.0,
+                ),
+            ),
+            (
+                FlockingTraits(0.0, 1.0, 0.0),
+                FlockSensorSnapshot(
+                    average_relative_heading=-0.5,
+                    alignment_absolute_angle=0.0,
+                    flockmate_count=1,
+                    average_flockmate_proximity=1.0,
+                ),
+            ),
+            (
+                FlockingTraits(0.0, 0.0, 1.0),
+                FlockSensorSnapshot(
+                    center_angle=-1.0,
+                    cohesion_absolute_angle=0.0,
+                    flockmate_count=1,
+                    center_proximity=0.0,
+                ),
+            ),
+        )
+
+        for traits, flock in cases:
+            with self.subTest(traits=traits):
+                self.creature.flocking_traits = traits
+                force = self.world._flock_steering_force(
+                    self.creature,
+                    action(herding=1.0),
+                    SimpleNamespace(flock=flock),
+                    self.world.MAX_SPEED,
+                    self.world.config.action.max_forward_force,
+                )
+
+                self.assertGreater(force[0], 0.0)
+                self.assertAlmostEqual(force[1], 0.0)
+
+    def test_turn_control_is_applied_once_across_complete_physics_tick(
+        self,
+    ) -> None:
+        self.world.config.action.turn_response = 0.5
+        self.world.creatures = [self.creature]
+
+        self.world._apply_action(
+            self.creature,
+            action(rotate=1.0),
+            snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
+            apply_stabilizers=False,
+        )
+        angular_velocity_after_action = self.creature.body.angular_velocity
+
+        self.world._apply_top_down_motion()
+
+        self.assertAlmostEqual(
+            angular_velocity_after_action,
+            self.world.MAX_ANGULAR_SPEED * 0.5,
+        )
+        self.assertAlmostEqual(
+            self.creature.body.angular_velocity,
+            angular_velocity_after_action,
         )
 
     def test_action_caches_zero_flock_force_without_sensor_data(self) -> None:
