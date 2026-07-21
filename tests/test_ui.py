@@ -580,7 +580,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         )
 
     def test_dense_input_layout_reduces_node_and_label_size_without_hiding(self) -> None:
-        dense_input_keys = list(range(-1, -38, -1))
+        dense_input_keys = list(range(-1, -39, -1))
         genome = SimpleNamespace(
             nodes={0: SimpleNamespace()},
             connections={},
@@ -612,7 +612,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             bounds,
         )
 
-        self.assertEqual(len(dense_layout.nodes), 38)
+        self.assertEqual(len(dense_layout.nodes), 39)
         self.assertLess(dense_radius, sparse_radius)
         self.assertLess(dense_font, sparse_font)
         self.assertGreaterEqual(dense_radius, 5.0)
@@ -899,6 +899,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
                 food=SimpleNamespace(visible=2.0, density=0.25),
                 creatures=SimpleNamespace(visible=1.0, density=0.1),
                 stomach_fullness=0.6,
+                flock=SimpleNamespace(flockmate_count=1.5),
             ),
             fitness_for=lambda selected_creature: None,
             neat_controller=SimpleNamespace(
@@ -1396,9 +1397,21 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertGreater(self.renderer._scroll_limits["inspector"], 0)
         self.renderer._scroll_offsets["inspector"] = self.renderer._scroll_limits["inspector"]
         self.renderer._draw_inspector_panel(world)
-
         self.assertIn("open_brain_window", self.renderer._control_hitboxes)
         self.assertIn("kill_selected_creature", self.renderer._control_hitboxes)
+
+    def test_inspector_shows_live_effective_and_normalized_flockmate_count(
+        self,
+    ) -> None:
+        world = self.make_inspector_world()
+        self.renderer._panel_bounds["inspector"] = arcade.LBWH(100, 100, 368, 700)
+
+        self.renderer._draw_inspector_panel(world)
+
+        self.assertEqual(
+            self.renderer._text_cache["inspector_flockmate_count_value"].text,
+            "1.50 / 0.33",
+        )
 
     def test_inspector_scroll_region_uses_inner_card_viewport(self) -> None:
         world = self.make_inspector_world()
@@ -2218,7 +2231,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
-                        input_keys=tuple(range(-1, -28, -1)),
+                        input_keys=tuple(range(-1, -39, -1)),
                         output_keys=tuple(range(12)),
                     )
                 ),
@@ -3629,7 +3642,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
-                        input_keys=list(range(-1, -38, -1)),
+                        input_keys=list(range(-1, -39, -1)),
                         output_keys=list(range(14)),
                     )
                 )
@@ -3639,13 +3652,15 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         labels = self.renderer._species_tree_neat_node_labels(world)
 
         self.assertEqual(
-            [labels[key] for key in range(-1, -38, -1)],
+            [labels[key] for key in range(-1, -39, -1)],
             list(SENSOR_INPUT_NAMES),
         )
         self.assertEqual(labels[-11], "food_proximity")
-        self.assertEqual(labels[-27], "stomach_fullness")
-        self.assertEqual(labels[-28], "sound_strength")
-        self.assertEqual(labels[-37], "alarm_pheromone_forward_right")
+        self.assertEqual(labels[-27], "flockmate_count")
+        self.assertEqual(labels[-28], "stomach_fullness")
+        self.assertEqual(labels[-29], "sound_strength")
+        self.assertEqual(labels[-38], "alarm_pheromone_forward_right")
+        self.assertEqual(self.renderer._short_brain_label(labels[-27]), "flock_n")
         self.assertEqual(labels[0], "accelerate")
         self.assertEqual(labels[3], "want_eat")
         self.assertEqual(labels[10], "emit_sound")

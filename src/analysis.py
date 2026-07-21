@@ -152,6 +152,7 @@ _SENSORY_DESCRIPTIONS = {
     "flock_average_relative_heading": (
         "Cohort Alignment Delta (Average Heading)"
     ),
+    "flockmate_count": "Effective Compatible Flockmate Count",
     "stomach_fullness": "Stomach Fullness (Satiety)",
     "sound_strength": "Acoustic Signal Strength",
     "sound_dir_sin": "Acoustic Relative Direction (Sine)",

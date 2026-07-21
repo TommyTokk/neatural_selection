@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from math import atan2, cos, hypot, pi, sin
 
@@ -8,8 +9,8 @@ from src.creature import Creature
 from src.communication import AcousticObservation, PheromoneSnapshot
 from src.food import Food
 
-SENSOR_INPUT_COUNT = 37
-SENSING_SCHEMA_VERSION = 2
+SENSOR_INPUT_COUNT = 38
+SENSING_SCHEMA_VERSION = 3
 SENSOR_INPUT_NAMES = (
     "constant",
     "feeding_drive",
@@ -37,6 +38,7 @@ SENSOR_INPUT_NAMES = (
     "flock_center_proximity",
     "flock_center_angle",
     "flock_average_relative_heading",
+    "flockmate_count",
     "stomach_fullness",
     "sound_strength",
     "sound_dir_sin",
@@ -82,12 +84,12 @@ class FlockSensorSnapshot:
     center_proximity: float = 0.0
     center_angle: float = 0.0
     average_relative_heading: float = 0.0
-    flockmate_count: int = 0
-    separation_absolute_angle: float = 0.0
+    flockmate_count: float = 0.0
+    crowd_separation_absolute_angle: float = 0.0
     cohesion_absolute_angle: float = 0.0
-    alignment_absolute_angle: float = 0.0
-    separation_strength: float = 0.0
+    crowd_separation_strength: float = 0.0
     average_flockmate_proximity: float = 0.0
+    average_flockmate_velocity: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass(slots=True)
@@ -166,6 +168,7 @@ class SensorSnapshot:
             self.flock.center_proximity,
             self.flock.center_angle,
             self.flock.average_relative_heading,
+            self._normalized_flockmate_count(self.flock.flockmate_count),
             stomach_fullness,
             self.acoustic.strength,
             self.acoustic.direction_sin,
@@ -183,6 +186,11 @@ class SensorSnapshot:
     def _clamp01(value: float) -> float:
         return max(0.0, min(1.0, value))
 
+    @staticmethod
+    def _normalized_flockmate_count(value: float) -> float:
+        effective_count = max(0.0, float(value))
+        return effective_count / (effective_count + 3.0)
+
 
 @dataclass(slots=True)
 class VisionSenseResult:
@@ -198,10 +206,13 @@ class VisionSystem:
         stomach_capacity_per_radius: float = (
             MetabolismConfig().stomach_capacity_per_radius
         ),
+        flock_compatibility_resolver: Callable[[Creature, Creature], float]
+        | None = None,
     ) -> None:
         self.config = config
         self.eating_distance = eating_distance
         self.stomach_capacity_per_radius = stomach_capacity_per_radius
+        self.flock_compatibility_resolver = flock_compatibility_resolver
 
     def sense(
         self,
@@ -346,17 +357,10 @@ class VisionSystem:
             for target in visible_targets
             if target.kind == "creature" and target.source is not None
         ]
-        species_id = self._species_id(creature)
-        flockmate_targets = [
-            target
-            for target in visible_creatures
-            if self._species_id(target.source) == species_id
-        ]
-        flockmates = [target.source for target in flockmate_targets]
-
+        # Crowd separation is deliberately species-independent. It is a local
+        # personal-space response, not a same-species flocking response.
         separation_x = 0.0
         separation_y = 0.0
-        separation_neighbor_count = 0
         vision_range = creature.vision.range
         personal_space = max(0.0, creature.radius * 4.0)
         for target in visible_creatures:
@@ -366,53 +370,70 @@ class VisionSystem:
             distance = hypot(away_x, away_y)
             if distance <= 1e-12 or distance >= personal_space:
                 continue
-            proximity = (
-                0.0
-                if vision_range <= 0.0
-                else self._clamp01(1.0 - distance / vision_range)
-            )
+            proximity = self._clamp01(1.0 - distance / personal_space)
             separation_x += (away_x / distance) * proximity
             separation_y += (away_y / distance) * proximity
-            separation_neighbor_count += 1
 
-        if separation_neighbor_count:
-            separation_x /= separation_neighbor_count
-            separation_y /= separation_neighbor_count
-        separation_strength = self._clamp01(hypot(separation_x, separation_y))
-        separation_absolute_angle = (
+        crowd_separation_strength = self._clamp01(
+            hypot(separation_x, separation_y)
+        )
+        crowd_separation_absolute_angle = (
             0.0
-            if separation_strength <= 1e-12
+            if crowd_separation_strength <= 1e-12
             else atan2(separation_y, separation_x)
         )
 
-        if not flockmates:
+        compatible_flockmates: list[tuple[Creature, float]] = []
+        for target in visible_creatures:
+            neighbor = target.source
+            compatibility = self._flock_compatibility(creature, neighbor)
+            if compatibility > 1e-12:
+                compatible_flockmates.append((neighbor, compatibility))
+
+        effective_flockmate_count = sum(
+            compatibility for _, compatibility in compatible_flockmates
+        )
+        if effective_flockmate_count <= 1e-12:
             return FlockSensorSnapshot(
-                separation_absolute_angle=separation_absolute_angle,
-                separation_strength=separation_strength,
+                crowd_separation_absolute_angle=(
+                    crowd_separation_absolute_angle
+                ),
+                crowd_separation_strength=crowd_separation_strength,
             )
 
         average_flockmate_proximity = (
             0.0
             if vision_range <= 0.0
             else sum(
-                self._clamp01(
+                compatibility
+                * self._clamp01(
                     1.0
-                    - hypot(
-                        flockmate.position[0] - creature.position[0],
-                        flockmate.position[1] - creature.position[1],
+                    - (
+                        hypot(
+                            flockmate.position[0] - creature.position[0],
+                            flockmate.position[1] - creature.position[1],
+                        )
+                        / vision_range
                     )
-                    / vision_range
                 )
-                for flockmate in flockmates
+                for flockmate, compatibility in compatible_flockmates
             )
-            / len(flockmates)
+            / effective_flockmate_count
         )
 
-        center_x = sum(flockmate.position[0] for flockmate in flockmates) / len(
-            flockmates
+        center_x = (
+            sum(
+                flockmate.position[0] * compatibility
+                for flockmate, compatibility in compatible_flockmates
+            )
+            / effective_flockmate_count
         )
-        center_y = sum(flockmate.position[1] for flockmate in flockmates) / len(
-            flockmates
+        center_y = (
+            sum(
+                flockmate.position[1] * compatibility
+                for flockmate, compatibility in compatible_flockmates
+            )
+            / effective_flockmate_count
         )
         dx = center_x - creature.position[0]
         dy = center_y - creature.position[1]
@@ -428,21 +449,35 @@ class VisionSystem:
         )
 
         average_velocity_x = (
-            sum(flockmate.body.velocity.x for flockmate in flockmates)
-            / len(flockmates)
+            sum(
+                flockmate.body.velocity.x * compatibility
+                for flockmate, compatibility in compatible_flockmates
+            )
+            / effective_flockmate_count
         )
         average_velocity_y = (
-            sum(flockmate.body.velocity.y for flockmate in flockmates)
-            / len(flockmates)
-        )
-        alignment_absolute_angle = (
-            creature.heading
-            if (
-                abs(average_velocity_x) <= 1e-12
-                and abs(average_velocity_y) <= 1e-12
+            sum(
+                flockmate.body.velocity.y * compatibility
+                for flockmate, compatibility in compatible_flockmates
             )
-            else atan2(average_velocity_y, average_velocity_x)
+            / effective_flockmate_count
         )
+        if (
+            abs(average_velocity_x) <= 1e-12
+            and abs(average_velocity_y) <= 1e-12
+        ):
+            average_velocity_x = creature.body.velocity.x
+            average_velocity_y = creature.body.velocity.y
+
+        alignment_absolute_angle = creature.heading
+        if (
+            abs(average_velocity_x) > 1e-12
+            or abs(average_velocity_y) > 1e-12
+        ):
+            alignment_absolute_angle = atan2(
+                average_velocity_y,
+                average_velocity_x,
+            )
         relative_heading = self._signed_angle(
             alignment_absolute_angle - creature.heading
         )
@@ -454,13 +489,32 @@ class VisionSystem:
                 creature.vision.angle,
             ),
             average_relative_heading=self._clamp(relative_heading / pi, -1.0, 1.0),
-            flockmate_count=len(flockmates),
-            separation_absolute_angle=separation_absolute_angle,
+            flockmate_count=effective_flockmate_count,
+            crowd_separation_absolute_angle=(
+                crowd_separation_absolute_angle
+            ),
             cohesion_absolute_angle=cohesion_absolute_angle,
-            alignment_absolute_angle=alignment_absolute_angle,
-            separation_strength=separation_strength,
+            crowd_separation_strength=crowd_separation_strength,
             average_flockmate_proximity=average_flockmate_proximity,
+            average_flockmate_velocity=(
+                average_velocity_x,
+                average_velocity_y,
+            ),
         )
+
+    def _flock_compatibility(
+        self,
+        creature: Creature,
+        neighbor: Creature,
+    ) -> float:
+        resolver = self.flock_compatibility_resolver
+        if resolver is None:
+            return (
+                1.0
+                if self._species_id(creature) == self._species_id(neighbor)
+                else 0.0
+            )
+        return self._clamp01(float(resolver(creature, neighbor)))
 
     def _normalized_view_angle(self, angle: float, field_of_view: float) -> float:
         if field_of_view <= 0.0:

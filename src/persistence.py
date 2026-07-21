@@ -16,7 +16,7 @@ from uuid import uuid4
 from configs.sim_config import PersistenceConfig, SimConfig
 from src.action import ACTION_OUTPUT_COUNT, ACTION_SCHEMA_VERSION
 from src.creature import FlockingTraits
-from src.vision import SENSING_SCHEMA_VERSION
+from src.vision import SENSOR_INPUT_COUNT, SENSING_SCHEMA_VERSION
 
 if TYPE_CHECKING:
     from src.neat_controller import NeatBrainController
@@ -455,7 +455,11 @@ class PersistenceManager:
             "genome_config",
             None,
         )
-        input_count = 37 if genome_config is None else len(genome_config.input_keys)
+        input_count = (
+            SENSOR_INPUT_COUNT
+            if genome_config is None
+            else len(genome_config.input_keys)
+        )
         output_count = (
             ACTION_OUTPUT_COUNT
             if genome_config is None
@@ -1507,21 +1511,28 @@ class PersistenceManager:
             contract = state.get("brain_contract", {"inputs": 23, "outputs": 8})
             saved_sensor_schema = int(contract.get("sensor_schema", 1))
             saved_action_schema = int(contract.get("action_schema", 0))
+            saved_input_count = int(contract.get("inputs", 23))
             saved_output_count = int(contract.get("outputs", 8))
             reset_brain_epoch = (
-                saved_sensor_schema < SENSING_SCHEMA_VERSION
+                saved_sensor_schema != SENSING_SCHEMA_VERSION
                 or saved_action_schema != ACTION_SCHEMA_VERSION
+                or saved_input_count != SENSOR_INPUT_COUNT
                 or saved_output_count != ACTION_OUTPUT_COUNT
             )
             if reset_brain_epoch:
                 LOGGER.warning(
-                    "Checkpoint brain contract (action schema %s, %s outputs) "
-                    "is incompatible with the current action schema %s (%s "
-                    "outputs); preserving biological world state and starting "
-                    "a fresh neural/species epoch.",
+                    "Checkpoint brain contract (sensor schema %s, action schema "
+                    "%s, %s inputs, %s outputs) is incompatible with the current contract "
+                    "(sensor schema %s, action schema %s, %s inputs, %s outputs); "
+                    "preserving biological world state and starting a fresh "
+                    "neural/species epoch.",
+                    saved_sensor_schema,
                     saved_action_schema,
+                    saved_input_count,
                     saved_output_count,
+                    SENSING_SCHEMA_VERSION,
                     ACTION_SCHEMA_VERSION,
+                    SENSOR_INPUT_COUNT,
                     ACTION_OUTPUT_COUNT,
                 )
             controller.population.population = population_state["genomes"]

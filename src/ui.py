@@ -621,11 +621,19 @@ class UiRenderer:
             0.0,
             min(1.0, float(getattr(snapshot, "stomach_fullness", 0.0))),
         )
+        flock_snapshot = getattr(snapshot, "flock", None)
+        effective_flockmate_count = max(
+            0.0,
+            float(getattr(flock_snapshot, "flockmate_count", 0.0)),
+        )
+        normalized_flockmate_count = effective_flockmate_count / (
+            effective_flockmate_count + 3.0
+        )
         padding = 18.0
         section_gap = 18.0
         species_row_height = 28.0 if species_id is not None else 0.0
         total_height = (
-            (799.0 if fitness_score is not None else 767.0)
+            (824.0 if fitness_score is not None else 792.0)
             + species_row_height
         )
         scroll_limit = max(0.0, total_height - viewport.height)
@@ -802,6 +810,16 @@ class UiRenderer:
             "inspector_vision_range",
             "Vision",
             f"{selected.vision.range:.0f}px / {selected.vision.angle:.2f} rad",
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_flockmate_count",
+            "Flockmates (eff/net)",
+            f"{effective_flockmate_count:.2f} / {normalized_flockmate_count:.2f}",
             left,
             y,
             width,
@@ -1147,6 +1165,10 @@ class UiRenderer:
                 f"Vision: {selected.vision.range:.0f}px / {selected.vision.angle:.2f} rad",
                 f"Food: {snapshot.food.visible:.0f} seen / {snapshot.food.density:.2f} density",
                 f"Creatures: {snapshot.creatures.visible:.0f} seen / {snapshot.creatures.density:.2f} density",
+                (
+                    "Compatible flockmates: "
+                    f"{float(getattr(getattr(snapshot, 'flock', None), 'flockmate_count', 0.0)):.2f}"
+                ),
                 f"Vision cost: {world.vision.energy_cost_per_second(selected):.3f}/s",
             ]
             if fitness is not None:
@@ -7622,6 +7644,7 @@ class UiRenderer:
             "flock_center_proximity": "flock_p",
             "flock_center_angle": "flock_a",
             "flock_average_relative_heading": "flock_h",
+            "flockmate_count": "flock_n",
             "stomach_fullness": "stomach",
             "sound_strength": "sound",
             "sound_dir_sin": "sound_sin",
@@ -7682,7 +7705,7 @@ class UiRenderer:
             f"B {value(17, inputs):.2f}/{value(18, inputs):.2f}/"
             f"{value(19, inputs):.2f}/{value(20, inputs):.2f}  "
             f"FL {value(23, inputs):.2f}/{value(24, inputs):.2f}/"
-            f"{value(25, inputs):.2f}  "
+            f"{value(25, inputs):.2f}/{value(26, inputs):.2f}  "
             f"E {value(3, inputs):.2f}"
         )
 

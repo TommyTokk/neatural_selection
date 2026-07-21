@@ -135,6 +135,20 @@ class SpeciationResult:
     neural_shifts: tuple[NeuralShift, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class CompositeCompatibilityDistance:
+    neat_distance: float
+    phenotype_components: SpeciesTraitSnapshot
+    phenotypic_distance: float
+    weighted_phenotypic_distance: float
+    flocking_trait_distance: float
+    weighted_flocking_trait_distance: float
+    separation_gene_component: float
+    alignment_gene_component: float
+    cohesion_gene_component: float
+    composite_distance: float
+
+
 class ContinuousSpeciesManager:
     def __init__(
         self,
@@ -189,44 +203,16 @@ class ContinuousSpeciesManager:
             representative_flocking_traits,
         ) = self.representatives[parent_species_id]
         child_flocking_traits = child_flocking_traits or FlockingTraits()
-        neat_distance = child_genome.distance(
-            representative_genome,
-            genome_config,
-        )
-        phenotype_components = calculate_phenotypic_distance_components(
+        compatibility = self.composite_distance(
+            child_genome,
             child_physical_traits,
             child_vision,
+            child_flocking_traits,
+            representative_genome,
             representative_physical_traits,
             representative_vision,
-            self.trait_config,
-            self.vision_config,
-        )
-        phenotypic_distance = (
-            phenotype_components.radius
-            + phenotype_components.vision_range
-            + phenotype_components.vision_angle
-            + phenotype_components.movement_cost_multiplier
-        )
-        weighted_phenotypic_distance = (
-            self.phenotypic_weight * phenotypic_distance
-        )
-        (
-            flocking_trait_distance,
-            separation_gene_component,
-            alignment_gene_component,
-            cohesion_gene_component,
-        ) = calculate_flocking_trait_distance(
-            child_flocking_traits,
             representative_flocking_traits,
-        )
-        weighted_flocking_trait_distance = (
-            self.flocking_trait_distance_coefficient
-            * flocking_trait_distance
-        )
-        composite_distance = (
-            neat_distance
-            + weighted_phenotypic_distance
-            + weighted_flocking_trait_distance
+            genome_config,
         )
         trait_deltas = SpeciesTraitSnapshot(
             radius=(
@@ -253,28 +239,36 @@ class ContinuousSpeciesManager:
             ),
         )
         distances = SpeciesDistanceBreakdown(
-            neat_distance=neat_distance,
-            phenotypic_distance=phenotypic_distance,
-            weighted_phenotypic_distance=weighted_phenotypic_distance,
-            composite_distance=composite_distance,
+            neat_distance=compatibility.neat_distance,
+            phenotypic_distance=compatibility.phenotypic_distance,
+            weighted_phenotypic_distance=(
+                compatibility.weighted_phenotypic_distance
+            ),
+            composite_distance=compatibility.composite_distance,
             compatibility_threshold=self.compatibility_threshold,
             phenotypic_weight=self.phenotypic_weight,
-            radius_component=phenotype_components.radius,
-            vision_range_component=phenotype_components.vision_range,
-            vision_angle_component=phenotype_components.vision_angle,
-            movement_cost_component=(
-                phenotype_components.movement_cost_multiplier
+            radius_component=compatibility.phenotype_components.radius,
+            vision_range_component=(
+                compatibility.phenotype_components.vision_range
             ),
-            flocking_trait_distance=flocking_trait_distance,
-            weighted_flocking_trait_distance=weighted_flocking_trait_distance,
+            vision_angle_component=(
+                compatibility.phenotype_components.vision_angle
+            ),
+            movement_cost_component=(
+                compatibility.phenotype_components.movement_cost_multiplier
+            ),
+            flocking_trait_distance=compatibility.flocking_trait_distance,
+            weighted_flocking_trait_distance=(
+                compatibility.weighted_flocking_trait_distance
+            ),
             flocking_trait_distance_coefficient=(
                 self.flocking_trait_distance_coefficient
             ),
-            separation_gene_component=separation_gene_component,
-            alignment_gene_component=alignment_gene_component,
-            cohesion_gene_component=cohesion_gene_component,
+            separation_gene_component=compatibility.separation_gene_component,
+            alignment_gene_component=compatibility.alignment_gene_component,
+            cohesion_gene_component=compatibility.cohesion_gene_component,
         )
-        if composite_distance > self.compatibility_threshold:
+        if compatibility.composite_distance > self.compatibility_threshold:
             neural_shifts = extract_neural_shifts(
                 representative_genome,
                 child_genome,
@@ -314,6 +308,68 @@ class ContinuousSpeciesManager:
             distances=distances,
         )
 
+    def composite_distance(
+        self,
+        first_genome: Any,
+        first_physical_traits: PhysicalTraits,
+        first_vision: VisionTraits,
+        first_flocking_traits: FlockingTraits,
+        second_genome: Any,
+        second_physical_traits: PhysicalTraits,
+        second_vision: VisionTraits,
+        second_flocking_traits: FlockingTraits,
+        genome_config: Any,
+    ) -> CompositeCompatibilityDistance:
+        """Return the same composite distance used by live and birth speciation."""
+        neat_distance = first_genome.distance(second_genome, genome_config)
+        phenotype_components = calculate_phenotypic_distance_components(
+            first_physical_traits,
+            first_vision,
+            second_physical_traits,
+            second_vision,
+            self.trait_config,
+            self.vision_config,
+        )
+        phenotypic_distance = (
+            phenotype_components.radius
+            + phenotype_components.vision_range
+            + phenotype_components.vision_angle
+            + phenotype_components.movement_cost_multiplier
+        )
+        weighted_phenotypic_distance = (
+            self.phenotypic_weight * phenotypic_distance
+        )
+        (
+            flocking_trait_distance,
+            separation_gene_component,
+            alignment_gene_component,
+            cohesion_gene_component,
+        ) = calculate_flocking_trait_distance(
+            first_flocking_traits,
+            second_flocking_traits,
+        )
+        weighted_flocking_trait_distance = (
+            self.flocking_trait_distance_coefficient
+            * flocking_trait_distance
+        )
+        composite_distance = (
+            neat_distance
+            + weighted_phenotypic_distance
+            + weighted_flocking_trait_distance
+        )
+        return CompositeCompatibilityDistance(
+            neat_distance=neat_distance,
+            phenotype_components=phenotype_components,
+            phenotypic_distance=phenotypic_distance,
+            weighted_phenotypic_distance=weighted_phenotypic_distance,
+            flocking_trait_distance=flocking_trait_distance,
+            weighted_flocking_trait_distance=weighted_flocking_trait_distance,
+            separation_gene_component=separation_gene_component,
+            alignment_gene_component=alignment_gene_component,
+            cohesion_gene_component=cohesion_gene_component,
+            composite_distance=composite_distance,
+        )
+
 
 class NeatBrainController:
     """
@@ -350,6 +406,9 @@ class NeatBrainController:
             vision_config,
             flocking_trait_distance_coefficient,
         )
+        self._pairwise_compatibility_distance_cache: dict[
+            tuple[int, int], float
+        ] = {}
 
     def assign_initial_brains(self, creatures: list[Creature]) -> None:
         creature_ids = [creature.creature_id for creature in creatures]
@@ -397,6 +456,7 @@ class NeatBrainController:
         self._validate_network_contract()
         self.population = neat.Population(self.config)
         self.brains = {}
+        self._pairwise_compatibility_distance_cache.clear()
         self.species_manager.representatives = {}
         self.species_manager.next_species_id = root_species_id + 1
         self._next_genome_id_value = (
@@ -453,7 +513,9 @@ class NeatBrainController:
         )
 
     def remove_brain(self, creature_id: int) -> None:
-        self.brains.pop(creature_id, None)
+        brain = self.brains.pop(creature_id, None)
+        if brain is not None:
+            self._discard_cached_genome(brain.genome_id)
 
     def prune_population_archive(self, archive_size: int) -> set[int]:
         live_genome_ids = {
@@ -481,6 +543,12 @@ class NeatBrainController:
             genome_id: genome
             for genome_id, genome in self.population.population.items()
             if genome_id in retained_genome_ids
+        }
+        pairwise_cache = getattr(self, "_pairwise_compatibility_distance_cache", {})
+        self._pairwise_compatibility_distance_cache = {
+            pair: distance
+            for pair, distance in pairwise_cache.items()
+            if pair[0] in retained_genome_ids and pair[1] in retained_genome_ids
         }
         return retained_genome_ids
 
@@ -514,6 +582,65 @@ class NeatBrainController:
 
     def brain_for(self, creature_id: int) -> NeatBrain | None:
         return self.brains.get(creature_id)
+
+    def flocking_compatibility(
+        self,
+        first: Creature,
+        second: Creature,
+    ) -> float:
+        """Return continuous live compatibility using speciation's distance."""
+        first_brain = self.brains.get(first.creature_id)
+        second_brain = self.brains.get(second.creature_id)
+        if first_brain is None or second_brain is None:
+            return self._binary_species_compatibility(first, second)
+
+        pair = tuple(sorted((first_brain.genome_id, second_brain.genome_id)))
+        distance = self._pairwise_compatibility_distance_cache.get(pair)
+        if distance is None:
+            distance = self.species_manager.composite_distance(
+                first_brain.genome,
+                first.physical_traits,
+                first.vision,
+                getattr(first, "flocking_traits", FlockingTraits()),
+                second_brain.genome,
+                second.physical_traits,
+                second.vision,
+                getattr(second, "flocking_traits", FlockingTraits()),
+                self.config.genome_config,
+            ).composite_distance
+            self._pairwise_compatibility_distance_cache[pair] = distance
+
+        threshold = float(self.species_manager.compatibility_threshold)
+        if threshold <= 0.0:
+            return 1.0 if distance <= 1e-12 else 0.0
+        return max(0.0, min(1.0, 1.0 - distance / threshold))
+
+    def _discard_cached_genome(self, genome_id: int) -> None:
+        pairwise_cache = getattr(self, "_pairwise_compatibility_distance_cache", {})
+        self._pairwise_compatibility_distance_cache = {
+            pair: distance
+            for pair, distance in pairwise_cache.items()
+            if genome_id not in pair
+        }
+
+    @staticmethod
+    def _binary_species_compatibility(
+        first: Creature,
+        second: Creature,
+    ) -> float:
+        first_species = getattr(
+            getattr(first, "lineage", None),
+            "species_id",
+            getattr(first, "species_id", None),
+        )
+        second_species = getattr(
+            getattr(second, "lineage", None),
+            "species_id",
+            getattr(second, "species_id", None),
+        )
+        if first_species is None or second_species is None:
+            return 0.0
+        return 1.0 if first_species == second_species else 0.0
 
     def restore_brain(self, creature_id: int, genome_id: int) -> NeatBrain:
         genome = self.population.population.get(genome_id)

@@ -419,7 +419,8 @@ class PersistenceManagerTest(unittest.TestCase):
             state["creatures"][0]["biome_fertility_ema_updated_at"],
             8.5,
         )
-        self.assertEqual(state["brain_contract"]["sensor_schema"], 2)
+        self.assertEqual(state["brain_contract"]["sensor_schema"], 3)
+        self.assertEqual(state["brain_contract"]["inputs"], 38)
         self.assertNotIn("previous_biome", state["world"])
         self.assertEqual(state["world"]["time_since_last_quick_save"], 20.0)
         self.assertEqual(state["world"]["time_since_last_archive_save"], 50.0)
@@ -678,7 +679,7 @@ class PersistenceManagerTest(unittest.TestCase):
             if restored is not None:
                 restored.close()
 
-    def test_version_10_starts_one_fresh_sensing_epoch(self) -> None:
+    def test_schema_2_checkpoint_starts_one_fresh_sensing_epoch(self) -> None:
         from src.world import World
 
         self.config.persistence.enable_telemetry = False
@@ -709,7 +710,8 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             old_genomes = state["population"]["genomes"]
             state["version"] = 10
-            state["brain_contract"]["sensor_schema"] = 1
+            state["brain_contract"]["sensor_schema"] = 2
+            state["brain_contract"]["inputs"] = 37
             state["fitness_archive"] = {
                 99: copy.deepcopy(state["creatures"][0]["fitness"])
             }
@@ -759,7 +761,8 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.neat_controller,
             )
             self.assertEqual(current_state["version"], 12)
-            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 2)
+            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 3)
+            self.assertEqual(current_state["brain_contract"]["inputs"], 38)
             self.assertEqual(current_state["brain_contract"]["outputs"], 14)
             self.assertEqual(current_state["brain_contract"]["action_schema"], 1)
             saved_ema = current_state["creatures"][0]["biome_fertility_ema"]

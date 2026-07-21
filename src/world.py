@@ -258,6 +258,11 @@ class World:
                 config.speciation.flocking_trait_distance_coefficient
             ),
         )
+        self.vision.flock_compatibility_resolver = getattr(
+            self.neat_controller,
+            "flocking_compatibility",
+            None,
+        )
         if bootstrap:
             self.neat_controller.assign_initial_brains(self.creatures)
         self.metabolism = Metabolism(
@@ -1904,21 +1909,58 @@ class World:
         if apply_stabilizers and stabilize_velocity and thrust > 0.0:
             self._stabilize_food_tracking_velocity(creature)
 
-        # Calculate the voluntary force to apply to the creature based on its desired acceleration and heading, as well as the current maximum forward and backward forces. This force represents the creature's intentional movement in the direction it is facing.
-        voluntary_force = acceleration_force_vector(
-            thrust,
-            creature.heading,
+        # Allocate the finite force budget by priority. Lower-priority forces
+        # cannot spend budget already consumed by collision avoidance, and
+        # their components opposing avoidance are removed entirely.
+        remaining_force_budget = max(0.0, current_max_forward_force)
+        requested_avoidance_force = self._collision_avoidance_force(
+            creature,
             current_max_forward_force,
-            current_max_backward_force,
+        )
+        mandatory_avoidance_force, remaining_force_budget = (
+            self._allocate_force_budget(
+                requested_avoidance_force,
+                remaining_force_budget,
+            )
         )
 
-        social_flock_force = self._flock_steering_force(
-            creature,
-            action,
-            snapshot,
-            current_max_speed,
-            current_max_forward_force,
-        )
+        social_flock_force = (0.0, 0.0)
+        if remaining_force_budget > 0.0:
+            requested_social_force = self._flock_steering_force(
+                creature,
+                action,
+                snapshot,
+                current_max_speed,
+                current_max_forward_force,
+            )
+            requested_social_force = self._remove_opposing_component(
+                requested_social_force,
+                mandatory_avoidance_force,
+            )
+            social_flock_force, remaining_force_budget = (
+                self._allocate_force_budget(
+                    requested_social_force,
+                    remaining_force_budget,
+                )
+            )
+
+        voluntary_force = (0.0, 0.0)
+        if remaining_force_budget > 0.0:
+            requested_voluntary_force = acceleration_force_vector(
+                thrust,
+                creature.heading,
+                current_max_forward_force,
+                current_max_backward_force,
+            )
+            requested_voluntary_force = self._remove_opposing_component(
+                requested_voluntary_force,
+                mandatory_avoidance_force,
+            )
+            voluntary_force, remaining_force_budget = self._allocate_force_budget(
+                requested_voluntary_force,
+                remaining_force_budget,
+            )
+
         if not hasattr(self, "_last_flock_steering_debug"):
             self._last_flock_steering_debug = {}
         self._last_flock_steering_debug[creature.creature_id] = (
@@ -1927,23 +1969,16 @@ class World:
                 current_max_forward_force,
             )
         )
-        mandatory_avoidance_force = self._collision_avoidance_force(
-            creature,
-            current_max_forward_force,
-        )
         steering_force = (
             social_flock_force[0] + mandatory_avoidance_force[0],
             social_flock_force[1] + mandatory_avoidance_force[1],
         )
 
-        # Combine voluntary movement, same-species social steering, and universal
-        # collision avoidance, then retain the existing force limit.
-        total_force = self._limit_vector(
-            (
-                voluntary_force[0] + steering_force[0],
-                voluntary_force[1] + steering_force[1],
-            ),
-            current_max_forward_force,
+        # The sum is bounded by construction because each accepted vector's
+        # magnitude is deducted from the same scalar budget.
+        total_force = (
+            voluntary_force[0] + steering_force[0],
+            voluntary_force[1] + steering_force[1],
         )
         # Both social steering and mandatory avoidance may turn the creature away
         # from its direct neural heading.
@@ -2025,23 +2060,20 @@ class World:
         separation = self._steering_toward_relative_angle(
             creature,
             self._signed_angle(
-                flock.separation_absolute_angle - creature.heading
+                flock.crowd_separation_absolute_angle - creature.heading
             ),
             max_speed,
             max_force,
-            flock.separation_strength,
+            flock.crowd_separation_strength,
         )
 
         if flock.flockmate_count <= 0:
             alignment = (0.0, 0.0)
             cohesion = (0.0, 0.0)
         else:
-            alignment = self._steering_toward_relative_angle(
+            alignment = self._steering_toward_velocity(
                 creature,
-                self._signed_angle(
-                    flock.alignment_absolute_angle - creature.heading
-                ),
-                max_speed,
+                flock.average_flockmate_velocity,
                 max_force,
                 flock.average_flockmate_proximity,
             )
@@ -2073,6 +2105,24 @@ class World:
             + alignment[1] * alignment_weight
             + cohesion[1] * cohesion_weight,
         )
+
+    def _steering_toward_velocity(
+        self,
+        creature: Creature,
+        desired_velocity: tuple[float, float],
+        max_force: float,
+        strength: float,
+    ) -> tuple[float, float]:
+        """Match flock velocity without inventing a maximum-speed target."""
+        strength = self._clamp(strength, 0.0, 1.0)
+        if strength <= 0.0:
+            return 0.0, 0.0
+        steering = (
+            desired_velocity[0] - creature.body.velocity.x,
+            desired_velocity[1] - creature.body.velocity.y,
+        )
+        limited = self._limit_vector(steering, max_force)
+        return limited[0] * strength, limited[1] * strength
 
     def _collision_avoidance_force(
         self,
@@ -2176,6 +2226,34 @@ class World:
             * self.config.action.max_flock_turn_bias,
             -self.config.action.max_flock_turn_bias,
             self.config.action.max_flock_turn_bias,
+        )
+
+    def _allocate_force_budget(
+        self,
+        candidate: tuple[float, float],
+        remaining_budget: float,
+    ) -> tuple[tuple[float, float], float]:
+        budget = max(0.0, remaining_budget)
+        allocated = self._limit_vector(candidate, budget)
+        return allocated, max(0.0, budget - hypot(*allocated))
+
+    @staticmethod
+    def _remove_opposing_component(
+        candidate: tuple[float, float],
+        protected_force: tuple[float, float],
+    ) -> tuple[float, float]:
+        """Prevent a lower-priority force from reversing collision avoidance."""
+        protected_magnitude = hypot(*protected_force)
+        if protected_magnitude <= 1e-12:
+            return candidate
+        unit_x = protected_force[0] / protected_magnitude
+        unit_y = protected_force[1] / protected_magnitude
+        projection = candidate[0] * unit_x + candidate[1] * unit_y
+        if projection >= 0.0:
+            return candidate
+        return (
+            candidate[0] - unit_x * projection,
+            candidate[1] - unit_y * projection,
         )
 
     @staticmethod

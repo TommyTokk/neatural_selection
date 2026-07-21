@@ -142,7 +142,7 @@ class InspectorAnalysisTest(unittest.TestCase):
             2,
             1,
             SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
-            neural_shifts=((3, -27, "added", 0.8),),
+            neural_shifts=((3, -28, "added", 0.8),),
         )
 
         report = generate_inspector_report(
@@ -158,6 +158,27 @@ class InspectorAnalysisTest(unittest.TestCase):
             report.behavioral_ethogram[0].description,
         )
 
+    def test_effective_flockmate_count_has_analysis_lexicon_entry(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=((3, -27, "added", 0.8),),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+        )
+
+        self.assertIn(
+            "Effective Compatible Flockmate Count",
+            report.behavioral_ethogram[0].description,
+        )
+
     def test_species_reflex_summary_uses_canonical_input_order(self) -> None:
         child = record(
             2,
@@ -165,7 +186,7 @@ class InspectorAnalysisTest(unittest.TestCase):
             SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
             neural_shifts=tuple(
                 (3, input_key, "added", 0.8)
-                for input_key in range(-27, 0)
+                for input_key in range(-28, 0)
             ),
         )
 
@@ -175,12 +196,12 @@ class InspectorAnalysisTest(unittest.TestCase):
             None,
             self.config,
             range(12),
-            range(-1, -28, -1),
+            range(-1, -29, -1),
         )
 
         self.assertEqual(
             [reflex.source_node_id for reflex in report.behavioral_ethogram],
-            list(range(-1, -28, -1)),
+            list(range(-1, -29, -1)),
         )
         self.assertIn(
             "Stomach Fullness (Satiety)",
@@ -193,7 +214,7 @@ class InspectorAnalysisTest(unittest.TestCase):
             1,
             SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
             neural_shifts=(
-                (99, -27, "added", 0.8),
+                (99, -28, "added", 0.8),
                 (99, -11, "added", 0.8),
                 (99, -1, "added", 0.8),
             ),
@@ -205,7 +226,7 @@ class InspectorAnalysisTest(unittest.TestCase):
             None,
             self.config,
             range(12),
-            range(-1, -28, -1),
+            range(-1, -29, -1),
         )
 
         integrations = report.neuro_integration_hubs[0].sensory_integrations

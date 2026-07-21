@@ -389,6 +389,94 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(result.distances.composite_distance, 0.5)
 
 
+class LiveFlockingCompatibilityTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.controller = object.__new__(NeatBrainController)
+        self.controller.config = SimpleNamespace(genome_config=object())
+        self.controller.species_manager = ContinuousSpeciesManager(
+            compatibility_threshold=4.0,
+            phenotypic_weight=2.0,
+            trait_config=TraitConfig(),
+            vision_config=VisionConfig(),
+            flocking_trait_distance_coefficient=1.0,
+        )
+        self.controller._pairwise_compatibility_distance_cache = {}
+        self.first = SimpleNamespace(
+            creature_id=10,
+            physical_traits=physical(),
+            vision=vision(),
+            flocking_traits=FlockingTraits(),
+            lineage=SimpleNamespace(species_id=1),
+        )
+        self.second = SimpleNamespace(
+            creature_id=20,
+            physical_traits=physical(),
+            vision=vision(),
+            flocking_traits=FlockingTraits(),
+            lineage=SimpleNamespace(species_id=1),
+        )
+        self.controller.brains = {
+            10: SimpleNamespace(genome_id=101, genome=FakeGenome(distance=1.0)),
+            20: SimpleNamespace(genome_id=202, genome=FakeGenome(distance=1.0)),
+        }
+
+    def test_live_weight_uses_composite_distance(self) -> None:
+        self.second.flocking_traits = FlockingTraits(1.0, 1.0, 1.0)
+
+        distance = self.controller.species_manager.composite_distance(
+            self.controller.brains[10].genome,
+            self.first.physical_traits,
+            self.first.vision,
+            self.first.flocking_traits,
+            self.controller.brains[20].genome,
+            self.second.physical_traits,
+            self.second.vision,
+            self.second.flocking_traits,
+            self.controller.config.genome_config,
+        ).composite_distance
+
+        self.assertEqual(distance, 1.5)
+        self.assertAlmostEqual(
+            self.controller.flocking_compatibility(self.first, self.second),
+            1.0 - distance / 4.0,
+        )
+
+    def test_cached_raw_distance_uses_current_threshold_immediately(self) -> None:
+        self.assertAlmostEqual(
+            self.controller.flocking_compatibility(self.first, self.second),
+            0.75,
+        )
+        self.controller.species_manager.compatibility_threshold = 2.0
+
+        self.assertAlmostEqual(
+            self.controller.flocking_compatibility(self.first, self.second),
+            0.5,
+        )
+        self.assertEqual(
+            self.controller._pairwise_compatibility_distance_cache,
+            {(101, 202): 1.0},
+        )
+
+    def test_missing_brain_falls_back_to_binary_species_compatibility(self) -> None:
+        self.controller.brains.pop(20)
+        self.assertEqual(
+            self.controller.flocking_compatibility(self.first, self.second),
+            1.0,
+        )
+        self.second.lineage.species_id = 2
+        self.assertEqual(
+            self.controller.flocking_compatibility(self.first, self.second),
+            0.0,
+        )
+
+    def test_removing_a_brain_discards_its_pairwise_cache_entries(self) -> None:
+        self.controller.flocking_compatibility(self.first, self.second)
+
+        self.controller.remove_brain(10)
+
+        self.assertEqual(self.controller._pairwise_compatibility_distance_cache, {})
+
+
 class NeatChangeSummaryTest(unittest.TestCase):
     def test_neural_shifts_filter_jitter_and_keep_structural_changes(self) -> None:
         parent = FakeGenome()

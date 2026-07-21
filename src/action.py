@@ -104,7 +104,7 @@ def calculate_flocking_weights(
     alignment_gene: float,
     cohesion_gene: float,
 ) -> tuple[float, float, float]:
-    """Return bounded same-species social flocking weights."""
+    """Return bounded crowd-separation and compatible-flocking weights."""
     herding = max(0.0, min(1.0, herding))
     panic = max(0.0, min(1.0, panic))
     separation_gene = max(0.0, min(1.0, separation_gene))
