@@ -94,6 +94,20 @@ class VisionVisibilityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.vision = VisionSystem(VisionConfig())
 
+    def test_signed_angle_wraps_large_accumulated_headings(self) -> None:
+        full_turns = 10_000 * 2.0 * pi
+
+        self.assertAlmostEqual(
+            self.vision._signed_angle(full_turns + pi / 3.0),
+            pi / 3.0,
+            places=10,
+        )
+        self.assertAlmostEqual(
+            self.vision._signed_angle(-full_turns - pi / 3.0),
+            -pi / 3.0,
+            places=10,
+        )
+
     def sense_snapshot(
         self,
         creature: FakeCreature,

@@ -156,9 +156,14 @@ class UiRenderer:
             tuple[int, ...],
         ] | None = None
         self._species_tree_neat_labels = _EMPTY_NEAT_NODE_LABELS
+        self._species_tree_sync_signature: tuple[
+            int,
+            int,
+            float,
+            frozenset[int],
+        ] | None = None
 
     def draw(self, world: World) -> None:
-        self._sync_species_tree_layout(world)
         self._control_hitboxes.clear()
         self._brain_node_bounds.clear()
         self._scroll_regions.clear()
@@ -179,6 +184,17 @@ class UiRenderer:
             for creature in getattr(world, "creatures", ())
             if getattr(creature, "lineage", None) is not None
         }
+        sync_signature = (
+            id(records),
+            len(records),
+            elapsed_time,
+            frozenset(living_species_ids),
+        )
+        if (
+            sync_signature == self._species_tree_sync_signature
+            and self._species_tree_cached_layout is not None
+        ):
+            return self._species_tree_cached_layout
         record_ids = {int(species_id) for species_id in records}
         telemetry_end_times: dict[int, float] = {}
         load_species_end_times = getattr(
@@ -231,6 +247,7 @@ class UiRenderer:
                 species_end_times=species_end_times,
             )
         )
+        self._species_tree_sync_signature = sync_signature
         return self._species_tree_cached_layout
 
     def _draw_icon_rail(self, world: World) -> None:

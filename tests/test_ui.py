@@ -2269,6 +2269,37 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
         self.assertTrue(world.is_paused)
 
+    def test_regular_draw_skips_species_history_query_when_tree_is_closed(
+        self,
+    ) -> None:
+        world = self.make_world({1: self.make_record(1, None)})
+        load_end_times = Mock(return_value={})
+        world.telemetry = SimpleNamespace(
+            load_species_end_times=load_end_times,
+        )
+
+        with (
+            patch.object(self.renderer, "_draw_icon_rail"),
+            patch.object(self.renderer, "_draw_floating_panels"),
+            patch.object(self.renderer, "_draw_brain_window"),
+        ):
+            self.renderer.draw(world)
+
+        load_end_times.assert_not_called()
+
+    def test_species_layout_reuses_unchanged_telemetry_snapshot(self) -> None:
+        world = self.make_world({1: self.make_record(1, None)})
+        load_end_times = Mock(return_value={1: float("inf")})
+        world.telemetry = SimpleNamespace(
+            load_species_end_times=load_end_times,
+        )
+
+        first = self.renderer._sync_species_tree_layout(world)
+        second = self.renderer._sync_species_tree_layout(world)
+
+        self.assertIs(second, first)
+        load_end_times.assert_called_once_with(up_to_time=world.elapsed_time)
+
     def test_modal_captures_keyboard_and_underlying_controls(self) -> None:
         calls = []
         world = self.make_world()

@@ -68,6 +68,16 @@ class WorldFlockingMotionTest(unittest.TestCase):
             flocking_traits=FlockingTraits(),
         )
 
+    def test_motion_limit_bounds_accumulated_body_angle(self) -> None:
+        body = pymunk.Body(1.0, 1.0)
+        body.angle = 10_000 * 2.0 * pi + pi / 4.0
+        creature = SimpleNamespace(creature_id=99, body=body)
+        self.world.creatures = [creature]
+
+        self.world._limit_creature_motion()
+
+        self.assertAlmostEqual(body.angle, pi / 4.0, places=10)
+
     def test_action_smoothing_uses_default_alpha_on_first_tick(self) -> None:
         self.world.config.action.action_smoothing_alpha = (
             SimConfig().action.action_smoothing_alpha

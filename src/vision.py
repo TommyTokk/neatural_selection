@@ -1060,11 +1060,11 @@ class VisionSystem:
         return self._clamp01(self.energy_cost_per_second(creature) / max_cost)
 
     def _signed_angle(self, angle: float) -> float:
-        while angle > pi:
-            angle -= 2 * pi
-        while angle < -pi:
-            angle += 2 * pi
-        return angle
+        wrapped = (angle + pi) % (2.0 * pi) - pi
+        # Preserve the previous helper's inclusive positive endpoint.  The two
+        # endpoints describe the same direction, but keeping +pi for positive
+        # inputs avoids changing existing sensor semantics.
+        return pi if wrapped == -pi and angle > 0.0 else wrapped
 
     def _nearest_proximity_and_angle(
         self,

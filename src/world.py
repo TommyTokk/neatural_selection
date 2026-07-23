@@ -2271,11 +2271,8 @@ class World:
 
     @staticmethod
     def _signed_angle(angle: float) -> float:
-        while angle > pi:
-            angle -= 2.0 * pi
-        while angle < -pi:
-            angle += 2.0 * pi
-        return angle
+        wrapped = (angle + pi) % (2.0 * pi) - pi
+        return pi if wrapped == -pi and angle > 0.0 else wrapped
 
     def _apply_top_down_motion(self) -> None:
         for creature in self.creatures:
@@ -2380,6 +2377,10 @@ class World:
                 -max_angular_speed,
                 min(max_angular_speed, creature.body.angular_velocity),
             )
+            # Pymunk deliberately leaves angles unbounded.  Long simulations
+            # otherwise accumulate thousands of full turns, making downstream
+            # angle reduction needlessly expensive and bloating checkpoints.
+            creature.body.angle = self._signed_angle(creature.body.angle)
 
     def _keep_creatures_inside_bounds(self) -> None:
         left, bottom, right, top = self.environment_world_bounds
