@@ -353,7 +353,6 @@ class WorldVisionMutationTest(unittest.TestCase):
         creature.biome_fertility_ema = 0.2
         creature.biome_fertility_ema_updated_at = 0.0
         world.elapsed_time = 1.5
-        world.use_neat_brains = True
         world.neat_controller = SimpleNamespace(
             decide=lambda creature_id, snapshot: Action(
                 accelerate=0.0,
@@ -379,7 +378,6 @@ class WorldVisionMutationTest(unittest.TestCase):
             world = self.make_world_for_biome_sensors()
             creature = self.biome_sensor_creature()
             world.creatures = [creature]
-            world.use_neat_brains = True
             world._chronometers = {creature.creature_id: 4.0}
             world.neat_controller = SimpleNamespace(
                 decide=lambda creature_id, snapshot: Action(
@@ -467,7 +465,6 @@ class WorldVisionMutationTest(unittest.TestCase):
         world = self.make_world_for_biome_sensors()
         creature = self.biome_sensor_creature()
         world.creatures = [creature]
-        world.use_neat_brains = True
         world.physics_step_count = 0
         action = Action(
             accelerate=0.0,
@@ -509,7 +506,6 @@ class WorldVisionMutationTest(unittest.TestCase):
         for index, creature in enumerate(creatures, start=1):
             creature.creature_id = index
         world.creatures = creatures
-        world.use_neat_brains = True
         world.physics_step_count = 0
         cached_action = Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         cached_snapshot = world.vision._snapshot()

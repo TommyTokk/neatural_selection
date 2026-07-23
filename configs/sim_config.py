@@ -69,11 +69,6 @@ class DebugConfig:
 
 
 @dataclass(slots=True)
-class ControllerConfig:
-    use_neat_brains: bool = True
-
-
-@dataclass(slots=True)
 class PersistenceConfig:
     simulation_root_directory: str = "saves"
     quick_save_interval_seconds: float = 120.0
@@ -368,28 +363,6 @@ class ActionConfig:
     forward_velocity_retention: float = 0.992
     lateral_velocity_retention: float = 0.72
     linear_stop_threshold: float = 0.05
-    search_turn: float = 0.018
-    search_acceleration: float = 0.82
-    search_turn_interval_min: int = 35
-    search_turn_interval_max: int = 95
-    search_straight_probability: float = 0.3
-    search_turn_jitter: float = 0.0
-    search_angular_velocity_retention: float = 0.4  # Higher values make creatures more likely to continue turning in the same direction during search, while lower values make them more likely to change direction.
-    boundary_avoidance_turn: float = 0.72
-    boundary_avoidance_min_turn: float = 0.18
-    boundary_avoidance_acceleration: float = 0.75
-    boundary_escape_pressure: float = 0.72
-    boundary_escape_turn_threshold: float = 0.65
-    boundary_escape_acceleration: float = -0.35
-    boundary_angular_velocity_retention: float = 0.72
-    food_turn_factor: float = 0.25
-    min_food_acceleration: float = 0.7
-    centered_food_angular_damping: float = 0.65
-    centered_food_angular_velocity_retention: float = 0.15
-    food_tracking_lateral_velocity_retention: float = 0.35
-    food_tracking_backward_velocity_retention: float = 0.65
-    low_energy_threshold: float = 0.25
-    low_energy_acceleration_factor: float = 0.5
 
 
 @dataclass(slots=True)
@@ -398,7 +371,6 @@ class SimConfig:
     layout: LayoutConfig = field(default_factory=LayoutConfig)
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
-    controller: ControllerConfig = field(default_factory=ControllerConfig)
     persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     biome: BiomeConfig = field(default_factory=BiomeConfig)

@@ -87,7 +87,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             action(accelerate=1.0, rotate=1.0),
             snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
-            apply_stabilizers=False,
         )
 
         self.assertAlmostEqual(self.creature.smoothed_acceleration, 0.8)
@@ -106,7 +105,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
                 self.creature,
                 cached_action,
                 snapshot=snapshot,
-                apply_stabilizers=False,
             )
 
         self.assertAlmostEqual(self.creature.smoothed_acceleration, 0.657)
@@ -123,7 +121,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             action(rotate=1.0),
             snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
-            apply_stabilizers=False,
         )
 
         self.assertAlmostEqual(
@@ -138,7 +135,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             action(rotate=1.0),
             snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
-            apply_stabilizers=False,
         )
 
         self.assertAlmostEqual(
@@ -151,7 +147,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             action(accelerate=0.5, rotate=0.25),
             snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
-            apply_stabilizers=False,
         )
 
         self.assertAlmostEqual(self.creature.body.applied_force[0], 62.5)
@@ -171,7 +166,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             action(accelerate=1.0, flee_panic_intensity=1.0),
             snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
-            apply_stabilizers=False,
         )
 
         self.assertAlmostEqual(self.creature.body.applied_force[0], 187.5)
@@ -314,7 +308,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
                 self.creature,
                 action(accelerate=1.0, herding=1.0),
                 snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
-                apply_stabilizers=False,
             )
 
         self.assertAlmostEqual(self.creature.body.applied_force[0], 40.0)
@@ -353,7 +346,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
                 herding=1.0,
             ),
             snapshot=SimpleNamespace(flock=flock),
-            apply_stabilizers=False,
         )
 
         self.assertLessEqual(
@@ -392,7 +384,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             active_action,
             snapshot=snapshot,
-            apply_stabilizers=False,
         )
 
         debug = self.world._last_flock_steering_debug[1]
@@ -459,7 +450,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             action(rotate=1.0),
             snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
-            apply_stabilizers=False,
         )
         angular_velocity_after_action = self.creature.body.angular_velocity
 
@@ -479,7 +469,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             action(herding=1.0),
             snapshot=None,
-            apply_stabilizers=False,
         )
 
         self.assertEqual(
@@ -500,7 +489,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.creature,
             action(herding=0.0),
             snapshot=snapshot,
-            apply_stabilizers=False,
         )
 
         self.assertEqual(

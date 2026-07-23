@@ -29,8 +29,7 @@ sys.modules.setdefault(
     ),
 )
 
-from configs.sim_config import ActionConfig, MetabolismConfig, VisionConfig
-from src.controller import BaselineFoodController
+from configs.sim_config import MetabolismConfig, VisionConfig
 from src.creature import VisionTraits
 from src.metabolism import Metabolism
 from src.vision import SENSOR_INPUT_COUNT, SENSOR_INPUT_NAMES, VisionSystem
@@ -454,30 +453,6 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertEqual(self.vision.visible_foods(creature, [mouth_food]), [mouth_food])
         self.assertAlmostEqual(snapshot.food.proximity, 1.0)
         self.assertAlmostEqual(snapshot.food.angle, 0.0)
-
-    def test_baseline_controller_drives_straight_for_mouth_contact_food(self) -> None:
-        creature = creature_at(
-            (0.0, 0.0),
-            radius=16.0,
-            heading=0.0,
-            vision_angle=VisionConfig().default_angle,
-        )
-        mouth_food = FakeFood(id=1, position=(16.0, 6.4), radius=3.0)
-
-        snapshot = self.vision.sense(
-            creature,
-            foods=[mouth_food],
-            creatures=[],
-            world_bounds=(-1000.0, -1000.0, 1000.0, 1000.0),
-            max_speed=100.0,
-        )
-        action = BaselineFoodController(ActionConfig()).decide(
-            snapshot,
-            creature.creature_id,
-        )
-
-        self.assertAlmostEqual(action.rotate, 0.0)
-        self.assertAlmostEqual(action.accelerate, 1.0)
 
     def test_mouth_contact_food_does_not_hide_farther_food(self) -> None:
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)

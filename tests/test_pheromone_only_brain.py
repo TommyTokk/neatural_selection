@@ -170,7 +170,6 @@ class PheromoneOnlyBrainTest(unittest.TestCase):
                 creature,
                 action,
                 snapshot,
-                apply_stabilizers=False,
             )
             space.step(1.0 / 60.0)
             self.world._apply_top_down_motion()

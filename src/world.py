@@ -32,7 +32,6 @@ from src.food import Food
 from src.food_spawner import FoodSpawner
 from src.metabolism import Metabolism
 from src.vision import BiomeSensorSnapshot, SensorSnapshot, VisionSystem
-from src.controller import BaselineFoodController
 from src.neat_controller import NeatBrainController, SpeciationResult
 from src.persistence import PersistenceManager, SavePriority, SimulationPaths
 from src.rt_neat import RtNeatManager
@@ -247,7 +246,6 @@ class World:
             biome_food_counts=self._biome_food_counts(),
         )
 
-        self.baseline_controller = BaselineFoodController(self.config.action)
         self.neat_controller = NeatBrainController(
             "configs/neat_herbivore.ini",
             compatibility_threshold=config.speciation.compatibility_threshold,
@@ -277,7 +275,6 @@ class World:
         self.species_history: dict[int, SpeciesRecord] = {}
         if bootstrap:
             self._initialize_luca_record()
-        self.use_neat_brains = config.controller.use_neat_brains
         self.show_brain_view = False
         self.time_since_last_quick_save = 0.0
         self.time_since_last_archive_save = 0.0
@@ -1722,10 +1719,7 @@ class World:
                         else self._pheromone_sensor_values[thinking_row]
                     ),
                 )
-                if self.use_neat_brains:
-                    action = self.neat_controller.decide(creature_id, snapshot)
-                else:
-                    action = self.baseline_controller.decide(snapshot, creature_id)
+                action = self.neat_controller.decide(creature_id, snapshot)
 
                 self._last_actions[creature.creature_id] = action
                 self._last_sensor_snapshots[creature.creature_id] = snapshot
@@ -1743,18 +1737,7 @@ class World:
             if action is None:
                 continue
 
-            stabilize_velocity = (
-                False
-                if self.use_neat_brains or snapshot is None
-                else snapshot.food.visible > 0.0
-            )
-            self._apply_action(
-                creature,
-                action,
-                snapshot,
-                stabilize_velocity=stabilize_velocity,
-                apply_stabilizers=not self.use_neat_brains,
-            )
+            self._apply_action(creature, action, snapshot)
 
     def _commit_communication_intents(self, delta_time: float) -> None:
         acoustics = getattr(self, "acoustics", None)
@@ -1834,22 +1817,18 @@ class World:
         creature: Creature,
         action: Action,
         snapshot: SensorSnapshot | None = None,
-        stabilize_velocity: bool = False,
-        apply_stabilizers: bool = True,
     ) -> None:
         """
         Apply the specified action to the given creature, considering its current state,
         sensor snapshot, and the simulation's configuration. This method calculates the
         necessary forces and torques to apply to the creature's body based on the action's
         parameters, including acceleration, rotation, and panic intensity. It also handles
-        flocking behavior and stabilizing the creature's movement when appropriate.
+        flocking behavior when appropriate.
 
         Args:
             creature (Creature): The creature to which the action will be applied.
             action (Action): The action to apply, containing acceleration, rotation, and other parameters.
             snapshot (SensorSnapshot | None): The sensor snapshot of the creature, used for flocking calculations. If None, flocking forces will not be applied.
-            stabilize_velocity (bool): Whether to stabilize the creature's velocity when moving forward. This is typically used when the creature is actively pursuing food.
-            apply_stabilizers (bool): Whether to apply stabilizing forces and torques to the creature's body to reduce unwanted angular velocity and maintain smoother movement.
         """
 
         # Calculate the target thrust and panic intensity based on the action's parameters.
@@ -1905,9 +1884,6 @@ class World:
         except AttributeError:
             pass
         thrust = smoothed_acceleration
-
-        if apply_stabilizers and stabilize_velocity and thrust > 0.0:
-            self._stabilize_food_tracking_velocity(creature)
 
         # Allocate the finite force budget by priority. Lower-priority forces
         # cannot spend budget already consumed by collision avoidance, and
@@ -2011,39 +1987,12 @@ class World:
             creature.body.position,
         )
 
-        # Apply stabilizing forces and torques to the creature's body if appropriate, reducing unwanted angular velocity and maintaining smoother movement. This is particularly important when the creature is actively pursuing food or moving in a state of panic, as it helps to prevent erratic behavior and maintain control over its movement.
-        if (
-            apply_stabilizers
-            and turn == 0.0
-            and thrust > 0.0
-            and abs(creature.body.angular_velocity) > 0.0
-        ):
-            creature.body.angular_velocity *= (
-                self.config.action.centered_food_angular_velocity_retention
-            )
-            damping_torque = (
-                -creature.body.angular_velocity
-                * self.config.action.max_turn_torque
-                * self.config.action.centered_food_angular_damping
-            )
-            creature.body.torque += damping_torque
-
         self._apply_turn_control(
             creature,
             turn,
             max_angular_speed=current_max_angular_speed,
         )
         creature.body.angular_velocity *= active_angular_velocity_retention
-
-        if apply_stabilizers and thrust < 0.0:
-            creature.body.angular_velocity *= (
-                self.config.action.boundary_angular_velocity_retention
-            )
-
-        if apply_stabilizers and not stabilize_velocity and thrust > 0.0:
-            creature.body.angular_velocity *= (
-                self.config.action.search_angular_velocity_retention
-            )
 
     def _flock_steering_force(
         self,
@@ -2339,28 +2288,6 @@ class World:
 
         creature.body.angular_velocity = updated_angular_velocity
         creature.body.torque = 0.0
-
-    def _stabilize_food_tracking_velocity(self, creature: Creature) -> None:
-        velocity = creature.body.velocity
-        heading = creature.heading
-        forward_x = cos(heading)
-        forward_y = sin(heading)
-        lateral_x = -sin(heading)
-        lateral_y = cos(heading)
-
-        forward_speed = velocity.x * forward_x + velocity.y * forward_y
-        lateral_speed = velocity.x * lateral_x + velocity.y * lateral_y
-
-        lateral_speed *= self.config.action.food_tracking_lateral_velocity_retention
-        if forward_speed < 0.0:
-            forward_speed *= (
-                self.config.action.food_tracking_backward_velocity_retention
-            )
-
-        creature.body.velocity = (
-            forward_x * forward_speed + lateral_x * lateral_speed,
-            forward_y * forward_speed + lateral_y * lateral_speed,
-        )
 
     def _limit_creature_motion(self) -> None:
         motion_commands = getattr(self, "_motion_commands", {})

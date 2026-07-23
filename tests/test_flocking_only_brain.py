@@ -227,7 +227,6 @@ class FlockingOnlyBrainTest(unittest.TestCase):
                     member,
                     action,
                     snapshots[member.creature_id],
-                    apply_stabilizers=False,
                 )
             space.step(1.0 / 60.0)
             world._apply_top_down_motion()
@@ -292,7 +291,6 @@ class FlockingOnlyBrainTest(unittest.TestCase):
                     member,
                     action,
                     snapshots[member.creature_id],
-                    apply_stabilizers=False,
                 )
             space.step(1.0 / 60.0)
             world._apply_top_down_motion()
