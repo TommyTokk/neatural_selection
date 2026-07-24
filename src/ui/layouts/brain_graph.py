@@ -6,18 +6,21 @@ from typing import Any, Protocol
 
 
 class BrainNodeKind(Enum):
+    """Provide BrainNodeKind UI behavior."""
     INPUT = "input"
     HIDDEN = "hidden"
     OUTPUT = "output"
 
 
 class BrainEdgeKind(Enum):
+    """Provide BrainEdgeKind UI behavior."""
     FORWARD = "forward"
     RECURRENT = "recurrent"
     SELF_LOOP = "self_loop"
 
 
 class LayoutBounds(Protocol):
+    """Provide LayoutBounds UI behavior."""
     left: float
     right: float
     bottom: float
@@ -27,6 +30,7 @@ class LayoutBounds(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class BrainGraphNode:
+    """Provide BrainGraphNode UI behavior."""
     key: int
     kind: BrainNodeKind
     label: str
@@ -35,6 +39,7 @@ class BrainGraphNode:
 
 @dataclass(frozen=True, slots=True)
 class BrainGraphEdge:
+    """Provide BrainGraphEdge UI behavior."""
     source: int
     target: int
     weight: float
@@ -44,6 +49,7 @@ class BrainGraphEdge:
 
 @dataclass(frozen=True, slots=True)
 class BrainGraphLayout:
+    """Provide BrainGraphLayout UI behavior."""
     nodes: dict[int, BrainGraphNode]
     edges: list[BrainGraphEdge]
     positions: dict[int, tuple[float, float]]
@@ -52,6 +58,7 @@ class BrainGraphLayout:
 
 @dataclass(frozen=True, slots=True)
 class BrainGraphHighlight:
+    """Provide BrainGraphHighlight UI behavior."""
     nodes: frozenset[int]
     edges: frozenset[tuple[int, int]]
     direct_edges: frozenset[tuple[int, int]] = frozenset()
@@ -67,6 +74,28 @@ def build_brain_graph_layout(
     input_labels: list[str],
     output_labels: list[str],
 ) -> BrainGraphLayout:
+    """Build brain graph layout.
+
+    Parameters
+    ----------
+    genome
+        Value used by the operation.
+    input_keys
+        Value used by the operation.
+    output_keys
+        Value used by the operation.
+    bounds
+        Rectangle defining the relevant UI area.
+    input_labels
+        Value used by the operation.
+    output_labels
+        Value used by the operation.
+
+    Returns
+    -------
+    BrainGraphLayout
+        Computed result.
+    """
     hidden_keys = sorted(key for key in genome.nodes if key not in output_keys)
     depths = _compute_depths(genome, input_keys, output_keys, hidden_keys)
     hidden_depths = [depths.get(key, 1) for key in hidden_keys]
@@ -144,6 +173,19 @@ def highlighted_path_through_node(
         *,
         upstream: bool,
     ) -> None:
+        """Return traverse.
+
+        Parameters
+        ----------
+        start
+            Value used by the operation.
+        adjacency
+            Value used by the operation.
+        traversed_edges
+            Value used by the operation.
+        upstream
+            Value used by the operation.
+        """
         pending = [start]
         visited: set[int] = set()
         while pending:
@@ -176,6 +218,24 @@ def _compute_depths(
     output_keys: list[int],
     hidden_keys: list[int],
 ) -> dict[int, int]:
+    """Compute depths.
+
+    Parameters
+    ----------
+    genome
+        Value used by the operation.
+    input_keys
+        Value used by the operation.
+    output_keys
+        Value used by the operation.
+    hidden_keys
+        Value used by the operation.
+
+    Returns
+    -------
+    dict[int, int]
+        Computed collection.
+    """
     input_set = set(input_keys)
     output_set = set(output_keys)
     hidden_set = set(hidden_keys)
@@ -219,6 +279,20 @@ def _build_edge(
     connection: Any,
     nodes: dict[int, BrainGraphNode],
 ) -> BrainGraphEdge:
+    """Build edge.
+
+    Parameters
+    ----------
+    connection
+        Value used by the operation.
+    nodes
+        Value used by the operation.
+
+    Returns
+    -------
+    BrainGraphEdge
+        Computed result.
+    """
     source, target = connection.key
     if source == target:
         kind = BrainEdgeKind.SELF_LOOP
@@ -241,6 +315,22 @@ def _layout_positions(
     bounds: LayoutBounds,
     max_depth: int,
 ) -> dict[int, tuple[float, float]]:
+    """Return layout positions.
+
+    Parameters
+    ----------
+    nodes
+        Value used by the operation.
+    bounds
+        Rectangle defining the relevant UI area.
+    max_depth
+        Value used by the operation.
+
+    Returns
+    -------
+    dict[int, tuple[float, float]]
+        Computed collection.
+    """
     grouped: dict[int, list[BrainGraphNode]] = {}
     for node in nodes.values():
         grouped.setdefault(node.depth, []).append(node)
@@ -271,6 +361,18 @@ def _layout_positions(
 
 
 def _cycle_edges(edges: list[tuple[int, int]]) -> set[tuple[int, int]]:
+    """Return cycle edges.
+
+    Parameters
+    ----------
+    edges
+        Value used by the operation.
+
+    Returns
+    -------
+    set[tuple[int, int]]
+        Computed collection.
+    """
     adjacency: dict[int, list[int]] = {}
     for source, target in edges:
         adjacency.setdefault(source, []).append(target)
@@ -283,6 +385,22 @@ def _cycle_edges(edges: list[tuple[int, int]]) -> set[tuple[int, int]]:
 
 
 def _has_path(adjacency: dict[int, list[int]], start: int, goal: int) -> bool:
+    """Return whether has path.
+
+    Parameters
+    ----------
+    adjacency
+        Value used by the operation.
+    start
+        Value used by the operation.
+    goal
+        Value used by the operation.
+
+    Returns
+    -------
+    bool
+        Whether the operation succeeded or consumed the input.
+    """
     pending = [start]
     visited: set[int] = set()
     while pending:

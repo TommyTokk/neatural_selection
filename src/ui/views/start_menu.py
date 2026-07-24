@@ -8,15 +8,41 @@ from typing import Callable
 import arcade
 
 from configs.sim_config import SimConfig
+from src.ui.common.drawing import ArcadePainter, mix_color
+from src.ui.common.interaction import rect_contains
 
 
 def select_checkpoint_file(initial_directory: Path) -> Path | None:
+    """Select checkpoint file.
+
+    Parameters
+    ----------
+    initial_directory
+        Value used by the operation.
+
+    Returns
+    -------
+    Path | None
+        Computed result.
+    """
     if sys.platform == "darwin":
         return _select_checkpoint_file_macos(initial_directory)
     return _select_checkpoint_file_tk(initial_directory)
 
 
 def _select_checkpoint_file_macos(initial_directory: Path) -> Path | None:
+    """Select checkpoint file macos.
+
+    Parameters
+    ----------
+    initial_directory
+        Value used by the operation.
+
+    Returns
+    -------
+    Path | None
+        Computed result.
+    """
     ObjCClass, get_NSString, cfstring_to_string = _cocoa_api()
     panel = ObjCClass("NSOpenPanel").openPanel()
     panel.setCanChooseFiles_(True)
@@ -55,6 +81,13 @@ def _select_checkpoint_file_macos(initial_directory: Path) -> Path | None:
 
 
 def _cocoa_api() -> tuple[object, object, object]:
+    """Return cocoa api.
+
+    Returns
+    -------
+    tuple[object, object, object]
+        Computed collection.
+    """
     from pyglet.libs.darwin.cocoapy import (
         ObjCClass,
         cfstring_to_string,
@@ -65,6 +98,18 @@ def _cocoa_api() -> tuple[object, object, object]:
 
 
 def _select_checkpoint_file_tk(initial_directory: Path) -> Path | None:
+    """Select checkpoint file tk.
+
+    Parameters
+    ----------
+    initial_directory
+        Value used by the operation.
+
+    Returns
+    -------
+    Path | None
+        Computed result.
+    """
     from tkinter import Tk, filedialog
 
     root = Tk()
@@ -86,12 +131,25 @@ def _select_checkpoint_file_tk(initial_directory: Path) -> Path | None:
 
 
 def _is_checkpoint_file(path: Path) -> bool:
+    """Return whether is checkpoint file.
+
+    Parameters
+    ----------
+    path
+        Value used by the operation.
+
+    Returns
+    -------
+    bool
+        Whether the operation succeeded or consumed the input.
+    """
     name = path.name.lower()
     return name.endswith(".pkl") or name.endswith(".pkl.bak")
 
 
 @dataclass(slots=True)
 class StartMenuLayout:
+    """Provide StartMenuLayout UI behavior."""
     window: arcade.Rect
     title_y: float
     subtitle_y: float
@@ -102,6 +160,7 @@ class StartMenuLayout:
 
 @dataclass(slots=True)
 class CardContentLayout:
+    """Provide CardContentLayout UI behavior."""
     badge: arcade.Rect
     icon: arcade.Rect
     title_block: arcade.Rect
@@ -109,6 +168,7 @@ class CardContentLayout:
 
 
 class StartMenuView(arcade.View):
+    """Provide StartMenuView UI behavior."""
     BACKGROUND = (2, 30, 48)
     CARD_FILL = (43, 48, 70)
     CARD_FILL_DISABLED = (21, 39, 58)
@@ -148,24 +208,42 @@ class StartMenuView(arcade.View):
         *,
         file_picker: Callable[[Path], Path | None] = select_checkpoint_file,
     ) -> None:
+        """Initialize the component.
+
+        Parameters
+        ----------
+        config
+            Simulation configuration.
+        start_view_factory
+            Value used by the operation.
+        load_view_factory
+            Value used by the operation.
+        file_picker
+            Value used by the operation.
+        """
         super().__init__()
         self.config = config
         self.start_view_factory = start_view_factory
         self.load_view_factory = load_view_factory
         self.file_picker = file_picker
-        self._text_cache: dict[str, arcade.Text] = {}
-        self._texture_cache: dict[str, object | None] = {}
-        self._sprite_cache: dict[str, object | None] = {}
+        self._painter = ArcadePainter()
+        self._text_cache = self._painter.text_cache
+        self._texture_cache = self._painter.texture_cache
+        self._sprite_cache = self._painter.sprite_cache
         self._hovered_button: str | None = None
         self._pressed_button: str | None = None
         self._button_animation: dict[str, float] = {"start": 0.0, "load": 0.0}
         self._load_error: str | None = None
 
     def on_show_view(self) -> None:
+        """Return on show view.
+        """
         if self.window is not None:
             self.window.background_color = self.BACKGROUND
 
     def on_draw(self) -> None:
+        """Return on draw.
+        """
         self.clear()
         layout = self.layout()
         self._draw_background(layout.window)
@@ -200,6 +278,24 @@ class StartMenuView(arcade.View):
         button: int,
         modifiers: int,
     ) -> bool | None:
+        """Return on mouse press.
+
+        Parameters
+        ----------
+        x
+            Logical screen coordinate.
+        y
+            Logical screen coordinate.
+        button
+            Arcade input value.
+        modifiers
+            Arcade input value.
+
+        Returns
+        -------
+        bool | None
+            Computed result.
+        """
         if button == arcade.MOUSE_BUTTON_LEFT:
             pressed_button = self._button_key_at(x, y, self.layout())
             if pressed_button is not None:
@@ -215,6 +311,24 @@ class StartMenuView(arcade.View):
         button: int,
         modifiers: int,
     ) -> bool | None:
+        """Return on mouse release.
+
+        Parameters
+        ----------
+        x
+            Logical screen coordinate.
+        y
+            Logical screen coordinate.
+        button
+            Arcade input value.
+        modifiers
+            Arcade input value.
+
+        Returns
+        -------
+        bool | None
+            Computed result.
+        """
         if button == arcade.MOUSE_BUTTON_LEFT and self._pressed_button is not None:
             pressed_button = self._pressed_button
             released_button = self._button_key_at(x, y, self.layout())
@@ -234,10 +348,35 @@ class StartMenuView(arcade.View):
         dx: int,
         dy: int,
     ) -> bool | None:
+        """Return on mouse motion.
+
+        Parameters
+        ----------
+        x
+            Logical screen coordinate.
+        y
+            Logical screen coordinate.
+        dx
+            Logical screen coordinate.
+        dy
+            Logical screen coordinate.
+
+        Returns
+        -------
+        bool | None
+            Computed result.
+        """
         self._hovered_button = self._button_key_at(x, y, self.layout())
         return super().on_mouse_motion(x, y, dx, dy)
 
     def on_update(self, delta_time: float) -> None:
+        """Return on update.
+
+        Parameters
+        ----------
+        delta_time
+            Value used by the operation.
+        """
         step = min(1.0, max(0.0, delta_time * 12.0))
         for key, current in self._button_animation.items():
             target = (
@@ -248,6 +387,20 @@ class StartMenuView(arcade.View):
             self._button_animation[key] = current + (target - current) * step
 
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:
+        """Return on key press.
+
+        Parameters
+        ----------
+        symbol
+            Arcade input value.
+        modifiers
+            Arcade input value.
+
+        Returns
+        -------
+        bool | None
+            Computed result.
+        """
         start_keys = {
             getattr(arcade.key, "ENTER", -1),
             getattr(arcade.key, "RETURN", -4),
@@ -260,6 +413,13 @@ class StartMenuView(arcade.View):
         return super().on_key_press(symbol, modifiers)
 
     def layout(self) -> StartMenuLayout:
+        """Return layout.
+
+        Returns
+        -------
+        StartMenuLayout
+            Computed result.
+        """
         width, height = self._window_size()
         window = arcade.LBWH(0, 0, width, height)
         title_size = self._title_size(width)
@@ -318,9 +478,28 @@ class StartMenuView(arcade.View):
         )
 
     def _title_size(self, width: float) -> float:
+        """Return title size.
+
+        Parameters
+        ----------
+        width
+            Requested logical size.
+
+        Returns
+        -------
+        float
+            Computed result.
+        """
         return min(62.0, max(42.0, width / 20.5))
 
     def _window_size(self) -> tuple[int, int]:
+        """Return window size.
+
+        Returns
+        -------
+        tuple[int, int]
+            Computed collection.
+        """
         if self.window is None:
             return self.config.display.width, self.config.display.height
 
@@ -334,12 +513,16 @@ class StartMenuView(arcade.View):
         return int(width), int(height)
 
     def _start_simulation(self) -> None:
+        """Return start simulation.
+        """
         if self.window is None:
             return
         view = self.start_view_factory()
         self._show_view(view)
 
     def _load_simulation(self) -> None:
+        """Load simulation.
+        """
         if self.window is None:
             return
         try:
@@ -360,6 +543,13 @@ class StartMenuView(arcade.View):
         self._show_view(view)
 
     def _show_view(self, view: arcade.View) -> None:
+        """Return show view.
+
+        Parameters
+        ----------
+        view
+            Value used by the operation.
+        """
         if self.window is None:
             return
         self.window.show_view(view)
@@ -369,6 +559,13 @@ class StartMenuView(arcade.View):
             on_resize(width, height)
 
     def _draw_background(self, bounds: arcade.Rect) -> None:
+        """Draw background.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        """
         arcade.draw_lrbt_rectangle_filled(
             bounds.left,
             bounds.right,
@@ -378,6 +575,13 @@ class StartMenuView(arcade.View):
         )
 
     def _draw_heading(self, layout: StartMenuLayout) -> None:
+        """Draw heading.
+
+        Parameters
+        ----------
+        layout
+            Value used by the operation.
+        """
         title_size = self._title_size(layout.window.width)
         self._draw_text(
             "menu_title",
@@ -419,6 +623,25 @@ class StartMenuView(arcade.View):
         disabled: bool,
         description_color: arcade.Color | tuple[int, ...] | None = None,
     ) -> None:
+        """Draw card.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        key
+            Stable identifier used by the UI.
+        icon_name
+            Stable identifier used by the UI.
+        title
+            Text displayed by the UI.
+        description
+            Value used by the operation.
+        disabled
+            Whether the corresponding behavior is enabled.
+        description_color
+            Value used by the operation.
+        """
         fill = self.CARD_FILL_DISABLED if disabled else self.CARD_FILL
         border = self.CARD_BORDER_DISABLED if disabled else self.CARD_BORDER
         title_color = self.TEXT_DISABLED if disabled else self.TEXT_PRIMARY
@@ -469,6 +692,18 @@ class StartMenuView(arcade.View):
         )
 
     def _card_content_layout(self, bounds: arcade.Rect) -> CardContentLayout:
+        """Return card content layout.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+
+        Returns
+        -------
+        CardContentLayout
+            Computed result.
+        """
         badge_size = min(
             self.ICON_BADGE_SIZE,
             max(64.0, bounds.height * 0.30),
@@ -540,6 +775,22 @@ class StartMenuView(arcade.View):
         y: float,
         layout: StartMenuLayout,
     ) -> str | None:
+        """Return button key at.
+
+        Parameters
+        ----------
+        x
+            Logical screen coordinate.
+        y
+            Logical screen coordinate.
+        layout
+            Value used by the operation.
+
+        Returns
+        -------
+        str | None
+            Computed result.
+        """
         if self._contains(self._card_content_layout(layout.left_card).badge, x, y):
             return "start"
         if self._contains(self._card_content_layout(layout.right_card).badge, x, y):
@@ -547,6 +798,20 @@ class StartMenuView(arcade.View):
         return None
 
     def _button_visual_bounds(self, bounds: arcade.Rect, key: str) -> arcade.Rect:
+        """Return button visual bounds.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        key
+            Stable identifier used by the UI.
+
+        Returns
+        -------
+        arcade.Rect
+            Computed UI rectangle.
+        """
         progress = self._button_animation.get(key, 0.0)
         is_pressed = self._pressed_button == key
         scale = 1.0 + (self.BUTTON_HOVER_SCALE - 1.0) * progress
@@ -562,6 +827,22 @@ class StartMenuView(arcade.View):
         visual_badge: arcade.Rect,
         key: str,
     ) -> arcade.Rect:
+        """Return button icon bounds.
+
+        Parameters
+        ----------
+        icon
+            Value used by the operation.
+        visual_badge
+            Value used by the operation.
+        key
+            Stable identifier used by the UI.
+
+        Returns
+        -------
+        arcade.Rect
+            Computed UI rectangle.
+        """
         progress = self._button_animation.get(key, 0.0)
         is_pressed = self._pressed_button == key
         scale = 1.0 + 0.05 * progress
@@ -584,6 +865,20 @@ class StartMenuView(arcade.View):
         disabled: bool,
         key: str,
     ) -> tuple[arcade.Color | tuple[int, ...], arcade.Color | tuple[int, ...]]:
+        """Return button colors.
+
+        Parameters
+        ----------
+        disabled
+            Whether the corresponding behavior is enabled.
+        key
+            Stable identifier used by the UI.
+
+        Returns
+        -------
+        tuple[arcade.Color | tuple[int, ...], arcade.Color | tuple[int, ...]]
+            Computed collection.
+        """
         progress = self._button_animation.get(key, 0.0)
         is_pressed = self._pressed_button == key
         fill = self.DISABLED_BADGE if disabled else self.SECONDARY_SOFT
@@ -604,6 +899,22 @@ class StartMenuView(arcade.View):
         *,
         offset_y: float = 0.0,
     ) -> arcade.Rect:
+        """Return scaled bounds.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        scale
+            Value used by the operation.
+        offset_y
+            Value used by the operation.
+
+        Returns
+        -------
+        arcade.Rect
+            Computed UI rectangle.
+        """
         width = bounds.width * scale
         height = bounds.height * scale
         return arcade.LBWH(
@@ -619,15 +930,21 @@ class StartMenuView(arcade.View):
         end: arcade.Color | tuple[int, ...],
         amount: float,
     ) -> tuple[int, ...]:
-        amount = max(0.0, min(1.0, amount))
-        channels = min(len(start), len(end))
-        return tuple(
-            round(
-                float(start[index])
-                + (float(end[index]) - float(start[index])) * amount
-            )
-            for index in range(channels)
-        )
+        """Blend two colors for hover and pressed states.
+
+        Parameters
+        ----------
+        start, end
+            Colors to interpolate.
+        amount
+            Blend amount clamped to ``[0, 1]``.
+
+        Returns
+        -------
+        tuple[int, ...]
+            Blended channels.
+        """
+        return mix_color(start, end, amount)
 
     def _draw_icon(
         self,
@@ -637,6 +954,19 @@ class StartMenuView(arcade.View):
         *,
         disabled: bool,
     ) -> None:
+        """Draw icon.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        icon_name
+            Stable identifier used by the UI.
+        key
+            Stable identifier used by the UI.
+        disabled
+            Whether the corresponding behavior is enabled.
+        """
         texture = self._icon_texture(icon_name)
         if texture is not None and self._draw_icon_texture(bounds, texture):
             return
@@ -656,28 +986,21 @@ class StartMenuView(arcade.View):
         )
 
     def _draw_icon_texture(self, bounds: arcade.Rect, texture: object) -> bool:
-        draw_texture_rectangle = getattr(arcade, "draw_texture_rectangle", None)
-        if draw_texture_rectangle is not None:
-            try:
-                draw_texture_rectangle(
-                    bounds.center_x,
-                    bounds.center_y,
-                    bounds.width,
-                    bounds.height,
-                    texture,
-                )
-                return True
-            except TypeError:
-                pass
+        """Draw an icon through supported Arcade texture APIs.
 
-        draw_texture_rect = getattr(arcade, "draw_texture_rect", None)
-        if draw_texture_rect is not None:
-            try:
-                draw_texture_rect(texture, bounds)
-                return True
-            except TypeError:
-                pass
-        return False
+        Parameters
+        ----------
+        bounds
+            Destination rectangle.
+        texture
+            Arcade texture-like object.
+
+        Returns
+        -------
+        bool
+            Whether a compatible draw call succeeded.
+        """
+        return self._painter.draw_icon_texture(bounds, texture)
 
     def _draw_icon_sprite(
         self,
@@ -685,58 +1008,70 @@ class StartMenuView(arcade.View):
         icon_name: str,
         texture: object | None,
     ) -> bool:
-        sprite = self._icon_sprite(icon_name, texture)
-        if sprite is None:
-            return False
-        try:
-            sprite.center_x = bounds.center_x
-            sprite.center_y = bounds.center_y
-            sprite.width = bounds.width
-            sprite.height = bounds.height
-            sprite.draw()
-        except (AttributeError, TypeError):
-            return False
-        return True
+        """Draw an icon through the sprite compatibility path.
+
+        Parameters
+        ----------
+        bounds
+            Destination rectangle.
+        icon_name
+            Icon asset name.
+        texture
+            Previously loaded texture, if available.
+
+        Returns
+        -------
+        bool
+            Whether the sprite rendered successfully.
+        """
+        return self._painter.draw_icon_sprite(bounds, icon_name, texture)
 
     def _icon_sprite(self, icon_name: str, texture: object | None) -> object | None:
-        if icon_name in self._sprite_cache:
-            return self._sprite_cache[icon_name]
-        sprite_cls = getattr(arcade, "Sprite", None)
-        if sprite_cls is None:
-            self._sprite_cache[icon_name] = None
-            return None
+        """Return a cached sprite for an icon.
 
-        sprite = None
-        if texture is not None:
-            try:
-                sprite = sprite_cls(texture=texture)
-            except TypeError:
-                sprite = None
-        if sprite is None:
-            try:
-                sprite = sprite_cls(str(self._icon_path(icon_name)))
-            except (TypeError, FileNotFoundError):
-                sprite = None
+        Parameters
+        ----------
+        icon_name
+            Icon asset name.
+        texture
+            Previously loaded texture, if available.
 
-        self._sprite_cache[icon_name] = sprite
-        return sprite
+        Returns
+        -------
+        object or None
+            Cached sprite or ``None`` when unavailable.
+        """
+        return self._painter.icon_sprite(icon_name, texture)
 
     def _icon_texture(self, icon_name: str) -> object | None:
-        if icon_name in self._texture_cache:
-            return self._texture_cache[icon_name]
-        load_texture = getattr(arcade, "load_texture", None)
-        if load_texture is None:
-            self._texture_cache[icon_name] = None
-            return None
-        try:
-            texture = load_texture(str(self._icon_path(icon_name)))
-        except Exception:
-            texture = None
-        self._texture_cache[icon_name] = texture
-        return texture
+        """Return a cached texture for an icon.
+
+        Parameters
+        ----------
+        icon_name
+            Icon asset name.
+
+        Returns
+        -------
+        object or None
+            Cached texture or ``None`` when unavailable.
+        """
+        return self._painter.icon_texture(icon_name)
 
     def _icon_path(self, icon_name: str) -> Path:
-        return Path(__file__).resolve().parents[1] / "assets" / f"{icon_name}.png"
+        """Return the absolute asset path for an icon.
+
+        Parameters
+        ----------
+        icon_name
+            Icon asset name.
+
+        Returns
+        -------
+        pathlib.Path
+            Absolute PNG path.
+        """
+        return self._painter.icon_path(icon_name)
 
     def _draw_text(
         self,
@@ -755,41 +1090,38 @@ class StartMenuView(arcade.View):
         anchor_y: str = "baseline",
         rotation: float = 0.0,
     ) -> None:
-        rx = round(x)
-        ry = round(y)
-        cached = self._text_cache.get(key)
-        if cached is None:
-            text_kwargs = {
-                "font_name": ("Hanken Grotesk", "Manrope", "JetBrains Mono", "Arial"),
-                "bold": bold,
-                "width": width,
-                "align": align,
-                "anchor_x": anchor_x,
-                "anchor_y": anchor_y,
-                "multiline": multiline,
-                "rotation": rotation,
-            }
-            try:
-                cached = arcade.Text(text, rx, ry, color, size, **text_kwargs)
-            except TypeError:
-                text_kwargs.pop("rotation")
-                cached = arcade.Text(text, rx, ry, color, size, **text_kwargs)
-            self._text_cache[key] = cached
-        else:
-            cached.text = text
-            cached.x = rx
-            cached.y = ry
-            cached.color = color
-            cached.font_size = size
-            cached.bold = bold
-            cached.width = width
-            cached.multiline = multiline
-            cached.align = align
-            cached.anchor_x = anchor_x
-            cached.anchor_y = anchor_y
-            if hasattr(cached, "rotation"):
-                cached.rotation = rotation
-        cached.draw()
+        """Draw cached menu text.
+
+        Parameters
+        ----------
+        key
+            Stable text cache key.
+        text
+            Text to display.
+        x, y
+            Text anchor coordinates.
+        color
+            Arcade-compatible text color.
+        size
+            Font size.
+        bold, width, multiline, align, anchor_x, anchor_y, rotation
+            Arcade text presentation options.
+        """
+        self._painter.draw_text(
+            key,
+            text,
+            x,
+            y,
+            color,
+            size,
+            bold=bold,
+            width=width,
+            multiline=multiline,
+            align=align,
+            anchor_x=anchor_x,
+            anchor_y=anchor_y,
+            rotation=rotation,
+        )
 
     def _draw_rounded_rect(
         self,
@@ -799,14 +1131,26 @@ class StartMenuView(arcade.View):
         radius: float,
         border_width: float,
     ) -> None:
-        self._draw_rounded_rect_fill(bounds, border_color, radius)
-        inner = arcade.LBWH(
-            bounds.left + border_width,
-            bounds.bottom + border_width,
-            max(0.0, bounds.width - border_width * 2.0),
-            max(0.0, bounds.height - border_width * 2.0),
+        """Draw a rounded card with a border.
+
+        Parameters
+        ----------
+        bounds
+            Outer rectangle.
+        fill_color, border_color
+            Arcade-compatible colors.
+        radius
+            Outer corner radius.
+        border_width
+            Border thickness.
+        """
+        self._painter.draw_rounded_rect(
+            bounds,
+            fill_color,
+            border_color,
+            radius,
+            border_width,
         )
-        self._draw_rounded_rect_fill(inner, fill_color, max(0.0, radius - border_width))
 
     def _draw_rounded_rect_fill(
         self,
@@ -814,55 +1158,32 @@ class StartMenuView(arcade.View):
         color: arcade.Color | tuple[int, ...],
         radius: float,
     ) -> None:
-        if bounds.width <= 0 or bounds.height <= 0:
-            return
-        radius = min(radius, bounds.width / 2.0, bounds.height / 2.0)
-        horizontal_left = bounds.left + radius
-        horizontal_right = bounds.right - radius
-        vertical_bottom = bounds.bottom + radius
-        vertical_top = bounds.top - radius
-        if horizontal_left <= horizontal_right:
-            arcade.draw_lrbt_rectangle_filled(
-                horizontal_left,
-                horizontal_right,
-                bounds.bottom,
-                bounds.top,
-                color,
-            )
-        if vertical_bottom <= vertical_top:
-            arcade.draw_lrbt_rectangle_filled(
-                bounds.left,
-                bounds.right,
-                vertical_bottom,
-                vertical_top,
-                color,
-            )
-        if radius <= 0:
-            return
-        arcade.draw_circle_filled(
-            bounds.left + radius,
-            bounds.bottom + radius,
-            radius,
-            color,
-        )
-        arcade.draw_circle_filled(
-            bounds.right - radius,
-            bounds.bottom + radius,
-            radius,
-            color,
-        )
-        arcade.draw_circle_filled(
-            bounds.left + radius,
-            bounds.top - radius,
-            radius,
-            color,
-        )
-        arcade.draw_circle_filled(
-            bounds.right - radius,
-            bounds.top - radius,
-            radius,
-            color,
-        )
+        """Draw a filled rounded card.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle to fill.
+        color
+            Arcade-compatible fill color.
+        radius
+            Corner radius.
+        """
+        self._painter.draw_rounded_rect_fill(bounds, color, radius)
 
     def _contains(self, bounds: arcade.Rect, x: float, y: float) -> bool:
-        return bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top
+        """Return whether a menu rectangle contains a point.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle to inspect.
+        x, y
+            Pointer coordinates.
+
+        Returns
+        -------
+        bool
+            Whether the point lies inside the rectangle.
+        """
+        return rect_contains(bounds, x, y)

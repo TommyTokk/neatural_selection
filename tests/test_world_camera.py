@@ -98,8 +98,8 @@ if not hasattr(pymunk, "Shape"):
     pymunk.Shape = object
 
 from configs.sim_config import build_sim_config
-from src.layout import build_screen_layout
-from src.rendering import EnvironmentRenderer
+from src.ui.layouts.screen import build_screen_layout
+from src.ui.renderers.environment import EnvironmentRenderer
 import src.world as world_module
 from src.world import World
 

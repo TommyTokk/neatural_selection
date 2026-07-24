@@ -9,6 +9,7 @@ import arcade
 
 @dataclass(slots=True)
 class ScreenLayout:
+    """Provide ScreenLayout UI behavior."""
     window: arcade.Rect
     top_bar: arcade.Rect
     environment: arcade.Rect
@@ -18,6 +19,22 @@ class ScreenLayout:
 def build_screen_layout(
     window_width: int, window_height: int, config: LayoutConfig
 ) -> ScreenLayout:
+    """Build screen layout.
+
+    Parameters
+    ----------
+    window_width
+        Value used by the operation.
+    window_height
+        Value used by the operation.
+    config
+        Simulation configuration.
+
+    Returns
+    -------
+    ScreenLayout
+        Computed result.
+    """
     pad = float(config.outer_padding)
     icon_button_size = 58.0
     icon_button_gap = 20.0

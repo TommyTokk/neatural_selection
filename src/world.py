@@ -51,7 +51,7 @@ from src.communication import (
     PheromoneSystem,
 )
 
-from src.layout import build_screen_layout
+from src.ui.layouts.screen import build_screen_layout
 
 
 EnvironmentMapMode = Literal["none", "biome", "pheromones"]

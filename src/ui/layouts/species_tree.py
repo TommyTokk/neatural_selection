@@ -6,6 +6,7 @@ from typing import Mapping, Protocol
 
 
 class SpeciesRecordLike(Protocol):
+    """Provide SpeciesRecordLike UI behavior."""
     species_id: int
     parent_species_id: int | None
     emerged_at: float | None
@@ -13,6 +14,7 @@ class SpeciesRecordLike(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class SpeciesTreeLayout:
+    """Provide SpeciesTreeLayout UI behavior."""
     positions: dict[int, tuple[float, float]]
     edges: tuple[tuple[int, int], ...]
     depths: dict[int, int]
@@ -34,6 +36,7 @@ SpeciesTreeRoute = tuple[tuple[float, float], ...]
 
 @dataclass(frozen=True, slots=True)
 class TreeViewportSlice:
+    """Provide TreeViewportSlice UI behavior."""
     node_ids: tuple[int, ...]
     edges: tuple[tuple[int, int], ...]
     routes: dict[tuple[int, int], SpeciesTreeRoute]
@@ -42,6 +45,7 @@ class TreeViewportSlice:
 
 @dataclass(frozen=True, slots=True)
 class TimeBucketSummary:
+    """Provide TimeBucketSummary UI behavior."""
     bucket_id: int
     node_count: int
     start_time: float
@@ -60,6 +64,21 @@ class TreeLayoutManager:
         padding: float = 48.0,
         bucket_seconds: float = 1800.0,
     ) -> None:
+        """Initialize the component.
+
+        Parameters
+        ----------
+        horizontal_gap
+            Value used by the operation.
+        time_scale
+            Value used by the operation.
+        minimum_generation_gap
+            Value used by the operation.
+        padding
+            Value used by the operation.
+        bucket_seconds
+            Value used by the operation.
+        """
         self.horizontal_gap = max(1.0, float(horizontal_gap))
         self.time_scale = max(0.0001, float(time_scale))
         self.minimum_generation_gap = max(
@@ -98,14 +117,35 @@ class TreeLayoutManager:
 
     @property
     def latest_species_id(self) -> int | None:
+        """Return latest species id.
+
+        Returns
+        -------
+        int | None
+            Computed result.
+        """
         return self._latest_species_id
 
     @property
     def parents(self) -> Mapping[int, int | None]:
+        """Return parents.
+
+        Returns
+        -------
+        Mapping[int, int | None]
+            Computed result.
+        """
         return self._parents
 
     @property
     def routes(self) -> Mapping[tuple[int, int], SpeciesTreeRoute]:
+        """Return routes.
+
+        Returns
+        -------
+        Mapping[tuple[int, int], SpeciesTreeRoute]
+            Computed result.
+        """
         return self._routes
 
     def sync(
@@ -115,6 +155,22 @@ class TreeLayoutManager:
         timeline_end: float | None = None,
         species_end_times: Mapping[int, float] | None = None,
     ) -> SpeciesTreeLayout:
+        """Return sync.
+
+        Parameters
+        ----------
+        records
+            Species history data to inspect.
+        timeline_end
+            Value used by the operation.
+        species_end_times
+            Value used by the operation.
+
+        Returns
+        -------
+        SpeciesTreeLayout
+            Computed result.
+        """
         requested_ends = {
             int(species_id): _normalize_end_time(end_time)
             for species_id, end_time in (species_end_times or {}).items()
@@ -216,6 +272,26 @@ class TreeLayoutManager:
         bottom: float,
         node_padding: float = 24.0,
     ) -> TreeViewportSlice:
+        """Return viewport slice.
+
+        Parameters
+        ----------
+        left
+            Logical screen coordinate.
+        right
+            Logical screen coordinate.
+        top
+            Logical screen coordinate.
+        bottom
+            Logical screen coordinate.
+        node_padding
+            Value used by the operation.
+
+        Returns
+        -------
+        TreeViewportSlice
+            Computed result.
+        """
         if not self._positions:
             return TreeViewportSlice((), (), {})
         low_x, high_x = sorted((float(left), float(right)))
@@ -286,9 +362,28 @@ class TreeLayoutManager:
         )
 
     def bucket_for_time(self, time_value: float) -> int:
+        """Return bucket for time.
+
+        Parameters
+        ----------
+        time_value
+            Value used by the operation.
+
+        Returns
+        -------
+        int
+            Computed result.
+        """
         return int(max(0.0, float(time_value)) // self.bucket_seconds)
 
     def bucket_summaries(self) -> tuple[TimeBucketSummary, ...]:
+        """Return bucket summaries.
+
+        Returns
+        -------
+        tuple[TimeBucketSummary, ...]
+            Computed collection.
+        """
         return tuple(
             TimeBucketSummary(
                 bucket_id=bucket_id,
@@ -305,6 +400,17 @@ class TreeLayoutManager:
         record: SpeciesRecordLike,
         end_time: float,
     ) -> None:
+        """Return place.
+
+        Parameters
+        ----------
+        species_id
+            Value used by the operation.
+        record
+            Species history data to inspect.
+        end_time
+            Value used by the operation.
+        """
         candidate = getattr(record, "parent_species_id", None)
         parent_id = (
             int(candidate)
@@ -391,7 +497,37 @@ class TreeLayoutManager:
         parent_lane: int | None,
         child_ordinal: int,
     ) -> int:
+        """Return allocate lane.
+
+        Parameters
+        ----------
+        emergence_time
+            Value used by the operation.
+        end_time
+            Value used by the operation.
+        parent_lane
+            Value used by the operation.
+        child_ordinal
+            Value used by the operation.
+
+        Returns
+        -------
+        int
+            Computed result.
+        """
         def available(candidate: int) -> bool:
+            """Return available.
+
+            Parameters
+            ----------
+            candidate
+                Value used by the operation.
+
+            Returns
+            -------
+            bool
+                Whether the operation succeeded or consumed the input.
+            """
             return self._lane_end_times.get(candidate, float("-inf")) < emergence_time
 
         if parent_lane is None:
@@ -433,6 +569,8 @@ class TreeLayoutManager:
         return lane
 
     def _recompute_descendant_counts(self) -> None:
+        """Return recompute descendant counts.
+        """
         counts = {species_id: 0 for species_id in self._positions}
         for species_id in reversed(tuple(self._positions)):
             parent_id = self._parents.get(species_id)
@@ -441,6 +579,13 @@ class TreeLayoutManager:
         self._descendant_counts = counts
 
     def _index_lifelines_through(self, timeline_end: float) -> None:
+        """Return index lifelines through.
+
+        Parameters
+        ----------
+        timeline_end
+            Value used by the operation.
+        """
         for species_id, emergence_time in self._effective_times.items():
             end_time = min(self._end_times[species_id], timeline_end)
             end_bucket = self.bucket_for_time(max(emergence_time, end_time))
@@ -460,6 +605,13 @@ class TreeLayoutManager:
             )
 
     def _layout(self) -> SpeciesTreeLayout:
+        """Return layout.
+
+        Returns
+        -------
+        SpeciesTreeLayout
+            Computed result.
+        """
         latest_time = max(self._timeline_end, self._display_end, 0.0)
         minimum_lane = min(self._lane_end_times, default=0)
         maximum_lane = max(self._lane_end_times, default=-1)
@@ -499,6 +651,13 @@ class TreeLayoutManager:
         )
 
     def _sorted_bucket_ids(self) -> tuple[int, ...]:
+        """Return sorted bucket ids.
+
+        Returns
+        -------
+        tuple[int, ...]
+            Computed collection.
+        """
         if self._buckets_dirty:
             self._bucket_ids = tuple(
                 sorted(
@@ -511,6 +670,8 @@ class TreeLayoutManager:
         return self._bucket_ids
 
     def _reset(self) -> None:
+        """Return reset.
+        """
         configuration = (
             self.horizontal_gap,
             self.time_scale,
@@ -539,6 +700,30 @@ def build_species_tree_layout(
     timeline_end: float | None = None,
     species_end_times: Mapping[int, float] | None = None,
 ) -> SpeciesTreeLayout:
+    """Build species tree layout.
+
+    Parameters
+    ----------
+    records
+        Species history data to inspect.
+    horizontal_gap
+        Value used by the operation.
+    time_scale
+        Value used by the operation.
+    minimum_generation_gap
+        Value used by the operation.
+    padding
+        Value used by the operation.
+    timeline_end
+        Value used by the operation.
+    species_end_times
+        Value used by the operation.
+
+    Returns
+    -------
+    SpeciesTreeLayout
+        Computed result.
+    """
     manager = TreeLayoutManager(
         horizontal_gap=horizontal_gap,
         time_scale=time_scale,
@@ -623,6 +808,7 @@ def route_species_tree_edges(
 
 @dataclass(frozen=True, slots=True)
 class _Obstacle:
+    """Provide Obstacle UI behavior."""
     left: float
     right: float
     top: float
@@ -634,6 +820,20 @@ class _Obstacle:
         position: tuple[float, float],
         radius: float,
     ) -> _Obstacle:
+        """Return around.
+
+        Parameters
+        ----------
+        position
+            Value used by the operation.
+        radius
+            Requested logical size.
+
+        Returns
+        -------
+        _Obstacle
+            Computed result.
+        """
         return cls(
             position[0] - radius,
             position[0] + radius,
@@ -654,6 +854,36 @@ def _route_candidates(
     outer_top: float,
     outer_bottom: float,
 ) -> list[SpeciesTreeRoute]:
+    """Route candidates.
+
+    Parameters
+    ----------
+    start
+        Value used by the operation.
+    end
+        Value used by the operation.
+    start_radius
+        Value used by the operation.
+    end_radius
+        Value used by the operation.
+    clearance
+        Value used by the operation.
+    obstacles
+        Value used by the operation.
+    outer_left
+        Value used by the operation.
+    outer_right
+        Value used by the operation.
+    outer_top
+        Value used by the operation.
+    outer_bottom
+        Value used by the operation.
+
+    Returns
+    -------
+    list[SpeciesTreeRoute]
+        Computed collection.
+    """
     start_x, start_y = start
     end_x, end_y = end
     candidates: list[SpeciesTreeRoute] = []
@@ -741,6 +971,18 @@ def _route_candidates(
 
 
 def _compact_route(points: tuple[tuple[float, float], ...]) -> SpeciesTreeRoute:
+    """Return compact route.
+
+    Parameters
+    ----------
+    points
+        Value used by the operation.
+
+    Returns
+    -------
+    SpeciesTreeRoute
+        Computed result.
+    """
     compact: list[tuple[float, float]] = []
     for point in points:
         if compact and point == compact[-1]:
@@ -762,6 +1004,20 @@ def _incremental_edge_route(
     start: tuple[float, float],
     end: tuple[float, float],
 ) -> SpeciesTreeRoute:
+    """Return incremental edge route.
+
+    Parameters
+    ----------
+    start
+        Value used by the operation.
+    end
+        Value used by the operation.
+
+    Returns
+    -------
+    SpeciesTreeRoute
+        Computed result.
+    """
     if start[0] == end[0] or start[1] == end[1]:
         return (start, end)
     midpoint_y = (start[1] + end[1]) * 0.5
@@ -782,6 +1038,26 @@ def _route_intersects_bounds(
     top: float,
     bottom: float,
 ) -> bool:
+    """Route intersects bounds.
+
+    Parameters
+    ----------
+    route
+        Value used by the operation.
+    left
+        Logical screen coordinate.
+    right
+        Logical screen coordinate.
+    top
+        Logical screen coordinate.
+    bottom
+        Logical screen coordinate.
+
+    Returns
+    -------
+    bool
+        Whether the operation succeeded or consumed the input.
+    """
     low_y, high_y = sorted((top, bottom))
     return any(
         max(min(start[0], end[0]), left)
@@ -796,6 +1072,20 @@ def _route_hits_obstacle(
     route: SpeciesTreeRoute,
     obstacles: tuple[_Obstacle, ...],
 ) -> bool:
+    """Route hits obstacle.
+
+    Parameters
+    ----------
+    route
+        Value used by the operation.
+    obstacles
+        Value used by the operation.
+
+    Returns
+    -------
+    bool
+        Whether the operation succeeded or consumed the input.
+    """
     return any(
         _segment_hits_obstacle(start, end, obstacle)
         for start, end in zip(route, route[1:])
@@ -808,6 +1098,22 @@ def _segment_hits_obstacle(
     end: tuple[float, float],
     obstacle: _Obstacle,
 ) -> bool:
+    """Return segment hits obstacle.
+
+    Parameters
+    ----------
+    start
+        Value used by the operation.
+    end
+        Value used by the operation.
+    obstacle
+        Value used by the operation.
+
+    Returns
+    -------
+    bool
+        Whether the operation succeeded or consumed the input.
+    """
     if start[0] == end[0]:
         x = start[0]
         low, high = sorted((start[1], end[1]))
@@ -828,6 +1134,18 @@ def _segment_hits_obstacle(
 
 
 def _route_length(route: SpeciesTreeRoute) -> float:
+    """Route length.
+
+    Parameters
+    ----------
+    route
+        Value used by the operation.
+
+    Returns
+    -------
+    float
+        Computed result.
+    """
     return sum(
         abs(end[0] - start[0]) + abs(end[1] - start[1])
         for start, end in zip(route, route[1:])
@@ -835,6 +1153,18 @@ def _route_length(route: SpeciesTreeRoute) -> float:
 
 
 def _valid_time(value: object) -> float | None:
+    """Return whether valid time.
+
+    Parameters
+    ----------
+    value
+        Value used by the operation.
+
+    Returns
+    -------
+    float | None
+        Computed result.
+    """
     if value is None:
         return None
     try:
@@ -847,6 +1177,18 @@ def _valid_time(value: object) -> float | None:
 
 
 def _normalize_end_time(value: object) -> float:
+    """Return normalize end time.
+
+    Parameters
+    ----------
+    value
+        Value used by the operation.
+
+    Returns
+    -------
+    float
+        Computed result.
+    """
     if value is None:
         return float("inf")
     try:
@@ -859,6 +1201,13 @@ def _normalize_end_time(value: object) -> float:
 
 
 def _break_parent_cycles(parents: dict[int, int | None]) -> None:
+    """Return break parent cycles.
+
+    Parameters
+    ----------
+    parents
+        Value used by the operation.
+    """
     visited: set[int] = set()
     for start_id in sorted(parents):
         if start_id in visited:

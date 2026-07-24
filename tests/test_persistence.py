@@ -28,7 +28,7 @@ from src.speciation import (
     SpeciesRecord,
     SpeciesTraitSnapshot,
 )
-from src.species_tree import build_species_tree_layout
+from src.ui.layouts.species_tree import build_species_tree_layout
 from src.telemetry import TelemetryDatabase
 
 

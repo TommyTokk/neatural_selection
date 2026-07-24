@@ -93,7 +93,7 @@ for optional_module in ("neat", "pymunk"):
 
 from configs.sim_config import build_sim_config
 from src.analysis import generate_inspector_report
-from src.brain_graph import (
+from src.ui.layouts.brain_graph import (
     BrainEdgeKind,
     BrainGraphEdge,
     BrainNodeKind,
@@ -105,14 +105,14 @@ from src.creature import (
     PhysicalTraits,
     TraitMutationDelta,
 )
-from src.layout import build_screen_layout
+from src.ui.layouts.screen import build_screen_layout
 from src.speciation import (
     NeatChangeSummary,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
 )
-from src.ui import UiRenderer
+from src.ui.renderer import UiRenderer
 from src.vision import SENSOR_INPUT_NAMES
 
 
@@ -1548,8 +1548,8 @@ class FloatingSimulationUiTest(unittest.TestCase):
         }
 
         with (
-            patch("src.ui.arcade.draw_circle_filled") as filled,
-            patch("src.ui.arcade.draw_circle_outline") as outlined,
+            patch("src.ui.renderer.arcade.draw_circle_filled") as filled,
+            patch("src.ui.renderer.arcade.draw_circle_outline") as outlined,
         ):
             self.renderer._draw_inspector_panel(world)
 
@@ -1586,7 +1586,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
             7: SimpleNamespace(founder_color=None)
         }
 
-        with patch("src.ui.arcade.draw_circle_filled") as filled:
+        with patch("src.ui.renderer.arcade.draw_circle_filled") as filled:
             self.renderer._draw_inspector_panel(world)
 
         filled.assert_any_call(
@@ -1611,7 +1611,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
             7: SimpleNamespace(founder_color=(210, 40, 90))
         }
 
-        with patch("src.ui.arcade.draw_circle_filled") as filled:
+        with patch("src.ui.renderer.arcade.draw_circle_filled") as filled:
             self.renderer._draw_inspector_panel(world)
 
         filled.assert_any_call(
@@ -2461,7 +2461,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertEqual(layout.lanes[1], layout.lanes[2])
 
     def test_species_endpoint_markers_distinguish_extant_and_extinct(self) -> None:
-        with patch("src.ui.arcade.draw_circle_filled") as filled:
+        with patch("src.ui.renderer.arcade.draw_circle_filled") as filled:
             self.renderer._draw_species_tree_extant_marker(
                 (10.0, 20.0),
                 (100, 120, 140),
@@ -2470,7 +2470,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertEqual(filled.call_count, 3)
         self.assertEqual(filled.call_args.args[-1], (100, 120, 140, 255))
 
-        with patch("src.ui.arcade.draw_line") as line:
+        with patch("src.ui.renderer.arcade.draw_line") as line:
             self.renderer._draw_species_tree_extinct_marker((10.0, 20.0))
 
         self.assertEqual(line.call_count, 2)
@@ -2613,8 +2613,8 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         route = {(1, 2): ((10.0, 20.0), (110.0, 20.0))}
 
         with (
-            patch("src.ui.arcade.draw_line") as line,
-            patch("src.ui.arcade.draw_circle_filled"),
+            patch("src.ui.renderer.arcade.draw_line") as line,
+            patch("src.ui.renderer.arcade.draw_circle_filled"),
         ):
             self.renderer._draw_species_tree_edges(
                 records,
@@ -2655,7 +2655,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
         with (
             patch.object(self.renderer, "_draw_species_tree_path") as path,
-            patch("src.ui.arcade.draw_circle_filled"),
+            patch("src.ui.renderer.arcade.draw_circle_filled"),
         ):
             self.renderer._draw_species_tree_edges(
                 records,
@@ -2695,7 +2695,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         positions = {1: (80.0, 180.0), 2: (150.0, 110.0), 3: (220.0, 70.0)}
         self.renderer._species_tree_selected_id = 2
 
-        with patch("src.ui.arcade.draw_circle_filled") as filled:
+        with patch("src.ui.renderer.arcade.draw_circle_filled") as filled:
             self.renderer._draw_species_tree_nodes(
                 records,
                 layout,
@@ -3002,8 +3002,8 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         )[1]
 
         with (
-            patch("src.ui.arcade.draw_line") as line,
-            patch("src.ui.arcade.draw_lrbt_rectangle_filled") as focus,
+            patch("src.ui.renderer.arcade.draw_line") as line,
+            patch("src.ui.renderer.arcade.draw_lrbt_rectangle_filled") as focus,
         ):
             self.renderer._draw_species_tree_canvas_grid(layout, canvas)
 
@@ -3154,7 +3154,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.renderer.open_species_tree(world)
 
         with patch(
-            "src.ui.generate_inspector_report",
+            "src.ui.components.species_tree.inspector.generate_inspector_report",
             wraps=generate_inspector_report,
         ) as generate:
             self.renderer._draw_species_tree_window(world)
@@ -3209,11 +3209,11 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
         with (
             patch(
-                "src.ui.arcade.Texture",
+                "src.ui.renderer.arcade.Texture",
                 side_effect=textures,
                 create=True,
             ) as texture,
-            patch("src.ui.arcade.draw_texture_rect", create=True),
+            patch("src.ui.renderer.arcade.draw_texture_rect", create=True),
         ):
             self.renderer._draw_species_tree_window(world)
             self.assertEqual(executor.submit.call_count, 0)
@@ -3268,7 +3268,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.renderer._species_tree_radar_texture = object()
         self.renderer._species_tree_radar_species_id = 2
 
-        with patch("src.ui.arcade.draw_texture_rect", create=True) as draw:
+        with patch("src.ui.renderer.arcade.draw_texture_rect", create=True) as draw:
             text_viewport = self.renderer._draw_species_radar_chart(viewport)
 
         draw.assert_called_once()
@@ -3289,7 +3289,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.renderer._species_tree_radar_species_id = 1
         self.renderer._species_tree_radar_future = old_future
 
-        with patch("src.ui.arcade.Texture", create=True) as texture:
+        with patch("src.ui.renderer.arcade.Texture", create=True) as texture:
             self.renderer._consume_species_radar_result()
 
         texture.assert_not_called()
@@ -3299,7 +3299,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.renderer._species_tree_radar_future = new_future
         new_future.set_result(object())
         with patch(
-            "src.ui.arcade.Texture",
+            "src.ui.renderer.arcade.Texture",
             return_value="texture",
             create=True,
         ) as texture:
@@ -3357,8 +3357,8 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         bounds = arcade.LBWH(100.0, 100.0, 340.0, 600.0)
 
         with (
-            patch("src.ui.arcade.draw_circle_filled") as filled,
-            patch("src.ui.arcade.draw_circle_outline") as outlined,
+            patch("src.ui.renderer.arcade.draw_circle_filled") as filled,
+            patch("src.ui.renderer.arcade.draw_circle_outline") as outlined,
         ):
             self.renderer._draw_species_inspector(
                 bounds,
@@ -3451,7 +3451,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         )
         bounds = arcade.LBWH(100.0, 100.0, 340.0, 600.0)
 
-        with patch("src.ui.arcade.draw_circle_filled") as filled:
+        with patch("src.ui.renderer.arcade.draw_circle_filled") as filled:
             self.renderer._draw_species_inspector(bounds, None, record)
 
         self.assertIn(
@@ -3484,7 +3484,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         bounds = arcade.LBWH(100.0, 100.0, 340.0, 220.0)
         marker_positions: list[tuple[float, float]] = []
 
-        with patch("src.ui.arcade.draw_circle_filled") as filled:
+        with patch("src.ui.renderer.arcade.draw_circle_filled") as filled:
             self.renderer._scroll_offsets["species_tree_inspector"] = 0.0
             self.renderer._draw_species_inspector(bounds, None, record)
             marker = next(

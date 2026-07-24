@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unittest
 
-from src.brain_graph import (
+from src.ui.layouts.brain_graph import (
     BrainEdgeKind,
     BrainNodeKind,
     build_brain_graph_layout,

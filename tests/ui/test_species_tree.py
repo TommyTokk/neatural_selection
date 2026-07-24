@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unittest
 
-from src.species_tree import (
+from src.ui.layouts.species_tree import (
     SpeciesTreeLayout,
     TreeLayoutManager,
     build_species_tree_layout,

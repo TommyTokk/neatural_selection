@@ -9,10 +9,12 @@ import numpy as np
 from configs.sim_config import SimConfig
 from src.creature import Creature
 from src.food import Food
+from src.ui.common.drawing import ArcadePainter
 from src.world import World
 
 
 class EnvironmentRenderer:
+    """Provide EnvironmentRenderer UI behavior."""
     FOOD_SPRITE_TEXTURE_DIAMETER = 64
     FOOD_OUTLINE_ENABLE_COUNT = 225
     FOOD_OUTLINE_DISABLE_COUNT = 275
@@ -20,9 +22,17 @@ class EnvironmentRenderer:
     CREATURE_BASE_TEXTURE_DIAMETER = CREATURE_BASE_TEXTURE_RADIUS * 2
 
     def __init__(self, config: SimConfig) -> None:
+        """Initialize the component.
+
+        Parameters
+        ----------
+        config
+            Simulation configuration.
+        """
         self.config = config
         self.theme = config.theme
-        self._text_cache: dict[str, arcade.Text] = {}
+        self._painter = ArcadePainter()
+        self._text_cache = self._painter.text_cache
         self._biome_texture: object | None = None
         self._biome_texture_key: int | None = None
         self._pheromone_texture: object | None = None
@@ -42,6 +52,13 @@ class EnvironmentRenderer:
         self._creature_batch_disabled = False
 
     def draw(self, world: World) -> None:
+        """Return draw.
+
+        Parameters
+        ----------
+        world
+            Simulation world providing current state.
+        """
         bounds = world.layout.environment
         self._draw_panel(bounds)
         pan_x = world.environment_pan_x
@@ -68,6 +85,18 @@ class EnvironmentRenderer:
 
     @staticmethod
     def _environment_map_mode(world: World) -> str:
+        """Return environment map mode.
+
+        Parameters
+        ----------
+        world
+            Simulation world providing current state.
+
+        Returns
+        -------
+        str
+            Formatted or resolved value.
+        """
         mode = getattr(world, "environment_map_mode", None)
         if mode in {"none", "biome", "pheromones"}:
             return mode
@@ -79,33 +108,34 @@ class EnvironmentRenderer:
 
     @contextmanager
     def _environment_clip(self, bounds: arcade.Rect):
-        try:
-            from pyglet import gl
-        except ImportError:
-            yield
-            return
+        """Clip world drawing inside the environment border.
 
-        clip_bounds = self._content_clip_bounds(bounds)
-        x, y, width, height = self._scissor_box_for_bounds(clip_bounds)
-        previous_box = (gl.GLint * 4)()
-        was_enabled = bool(gl.glIsEnabled(gl.GL_SCISSOR_TEST))
-        gl.glGetIntegerv(gl.GL_SCISSOR_BOX, previous_box)
+        Parameters
+        ----------
+        bounds
+            Environment panel bounds.
 
-        gl.glEnable(gl.GL_SCISSOR_TEST)
-        gl.glScissor(x, y, width, height)
-        try:
+        Yields
+        ------
+        None
+            Control while clipping is active.
+        """
+        with self._painter.clip(bounds, inset=2.0):
             yield
-        finally:
-            gl.glScissor(
-                previous_box[0],
-                previous_box[1],
-                previous_box[2],
-                previous_box[3],
-            )
-            if not was_enabled:
-                gl.glDisable(gl.GL_SCISSOR_TEST)
 
     def _content_clip_bounds(self, bounds: arcade.Rect) -> arcade.Rect:
+        """Return content clip bounds.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+
+        Returns
+        -------
+        arcade.Rect
+            Computed UI rectangle.
+        """
         border_width = 2.0
         return arcade.LBWH(
             bounds.left + border_width,
@@ -115,6 +145,18 @@ class EnvironmentRenderer:
         )
 
     def _scissor_box_for_bounds(self, bounds: arcade.Rect) -> tuple[int, int, int, int]:
+        """Return scissor box for bounds.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+
+        Returns
+        -------
+        tuple[int, int, int, int]
+            Computed collection.
+        """
         scale_x, scale_y = self._framebuffer_scale()
         return (
             round(bounds.left * scale_x),
@@ -124,19 +166,23 @@ class EnvironmentRenderer:
         )
 
     def _framebuffer_scale(self) -> tuple[float, float]:
-        try:
-            window = arcade.get_window()
-            window_width, window_height = window.get_size()
-            framebuffer_width, framebuffer_height = window.get_framebuffer_size()
-        except (AttributeError, RuntimeError):
-            return 1.0, 1.0
+        """Return logical-to-framebuffer scale factors.
 
-        if window_width <= 0 or window_height <= 0:
-            return 1.0, 1.0
-
-        return framebuffer_width / window_width, framebuffer_height / window_height
+        Returns
+        -------
+        tuple[float, float]
+            Horizontal and vertical framebuffer scales.
+        """
+        return self._painter.framebuffer_scale()
 
     def _draw_panel(self, bounds: arcade.Rect) -> None:
+        """Draw panel.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        """
         self._draw_rounded_rect(
             bounds,
             self.theme.environment_background,
@@ -153,14 +199,26 @@ class EnvironmentRenderer:
         radius: float,
         border_width: float,
     ) -> None:
-        self._draw_rounded_rect_fill(bounds, border_color, radius)
-        inner = arcade.LBWH(
-            bounds.left + border_width,
-            bounds.bottom + border_width,
-            max(0, bounds.width - border_width * 2),
-            max(0, bounds.height - border_width * 2),
+        """Draw the environment panel with a rounded border.
+
+        Parameters
+        ----------
+        bounds
+            Outer rectangle.
+        fill_color, border_color
+            Arcade-compatible colors.
+        radius
+            Outer corner radius.
+        border_width
+            Border thickness.
+        """
+        self._painter.draw_rounded_rect(
+            bounds,
+            fill_color,
+            border_color,
+            radius,
+            border_width,
         )
-        self._draw_rounded_rect_fill(inner, fill_color, max(0, radius - border_width))
 
     def _draw_rounded_rect_fill(
         self,
@@ -168,44 +226,33 @@ class EnvironmentRenderer:
         color: arcade.Color | tuple[int, ...],
         radius: float,
     ) -> None:
-        radius = min(radius, bounds.width / 2, bounds.height / 2)
-        if radius <= 0:
-            arcade.draw_lrbt_rectangle_filled(
-                bounds.left,
-                bounds.right,
-                bounds.bottom,
-                bounds.top,
-                color,
-            )
-            return
-        arcade.draw_lrbt_rectangle_filled(
-            bounds.left + radius,
-            bounds.right - radius,
-            bounds.bottom,
-            bounds.top,
-            color,
-        )
-        arcade.draw_lrbt_rectangle_filled(
-            bounds.left,
-            bounds.right,
-            bounds.bottom + radius,
-            bounds.top - radius,
-            color,
-        )
-        arcade.draw_circle_filled(
-            bounds.left + radius, bounds.bottom + radius, radius, color
-        )
-        arcade.draw_circle_filled(
-            bounds.right - radius, bounds.bottom + radius, radius, color
-        )
-        arcade.draw_circle_filled(
-            bounds.left + radius, bounds.top - radius, radius, color
-        )
-        arcade.draw_circle_filled(
-            bounds.right - radius, bounds.top - radius, radius, color
-        )
+        """Draw a filled rounded environment rectangle.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle to fill.
+        color
+            Arcade-compatible fill color.
+        radius
+            Corner radius.
+        """
+        self._painter.draw_rounded_rect_fill(bounds, color, radius)
 
     def _draw_grid(self, bounds: arcade.Rect, zoom: float, pan_x: float, pan_y: float) -> None:
+        """Draw grid.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        zoom
+            Value used by the operation.
+        pan_x
+            Value used by the operation.
+        pan_y
+            Value used by the operation.
+        """
         step = max(18.0, 48.0 * zoom)
         center_x = (bounds.left + bounds.right) * 0.5 + pan_x
         center_y = (bounds.bottom + bounds.top) * 0.5 + pan_y
@@ -229,6 +276,15 @@ class EnvironmentRenderer:
             y += step
 
     def _draw_biomes(self, bounds: arcade.Rect, world: World) -> None:
+        """Draw biomes.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         biome_map = getattr(world, "biome_map", None)
         if biome_map is None:
             return
@@ -240,6 +296,15 @@ class EnvironmentRenderer:
         )
 
     def _draw_pheromones(self, bounds: arcade.Rect, world: World) -> None:
+        """Draw pheromones.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         pheromones = getattr(world, "pheromones", None)
         if pheromones is None:
             return
@@ -255,6 +320,17 @@ class EnvironmentRenderer:
         world: World,
         texture: object | None,
     ) -> None:
+        """Draw world map texture.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        texture
+            Value used by the operation.
+        """
         draw_texture_rect = getattr(arcade, "draw_texture_rect", None)
         if texture is None or draw_texture_rect is None:
             return
@@ -283,6 +359,18 @@ class EnvironmentRenderer:
             draw_texture_rect(texture, rect)
 
     def _texture_for_biome_map(self, biome_map: object) -> object | None:
+        """Return texture for biome map.
+
+        Parameters
+        ----------
+        biome_map
+            Value used by the operation.
+
+        Returns
+        -------
+        object | None
+            Computed result.
+        """
         render_rgba = getattr(biome_map, "render_rgba", None)
         texture_key = id(render_rgba)
         if self._biome_texture is not None and self._biome_texture_key == texture_key:
@@ -309,6 +397,18 @@ class EnvironmentRenderer:
 
     @staticmethod
     def _pheromone_rgba(pheromones: object) -> np.ndarray:
+        """Return pheromone rgba.
+
+        Parameters
+        ----------
+        pheromones
+            Value used by the operation.
+
+        Returns
+        -------
+        np.ndarray
+            Computed result.
+        """
         trail = np.asarray(getattr(pheromones, "trail"), dtype=np.float32)
         alarm = np.asarray(getattr(pheromones, "alarm"), dtype=np.float32)
         if trail.shape != alarm.shape:
@@ -342,6 +442,18 @@ class EnvironmentRenderer:
         return output
 
     def _texture_for_pheromones(self, pheromones: object) -> object | None:
+        """Return texture for pheromones.
+
+        Parameters
+        ----------
+        pheromones
+            Value used by the operation.
+
+        Returns
+        -------
+        object | None
+            Computed result.
+        """
         revision = int(getattr(pheromones, "update_count", 0))
         texture_key = (id(pheromones), revision)
         if (
@@ -371,6 +483,15 @@ class EnvironmentRenderer:
         return texture
 
     def _draw_environment_header(self, bounds: arcade.Rect, world: World) -> None:
+        """Draw environment header.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         self._draw_text(
             "env_fps",
             f"FPS: {world.fps:0.0f}",
@@ -392,20 +513,24 @@ class EnvironmentRenderer:
         *,
         bold: bool = False,
     ) -> None:
-        rx = round(x)
-        ry = round(y)
-        cached = self._text_cache.get(key)
-        if cached is None:
-            cached = arcade.Text(text, rx, ry, color, size, bold=bold)
-            self._text_cache[key] = cached
-        else:
-            cached.text = text
-            cached.x = rx
-            cached.y = ry
-            cached.color = color
-            cached.font_size = size
-            cached.bold = bold
-        cached.draw()
+        """Draw cached environment text.
+
+        Parameters
+        ----------
+        key
+            Stable text cache key.
+        text
+            Text to display.
+        x, y
+            Text anchor coordinates.
+        color
+            Arcade-compatible text color.
+        size
+            Font size.
+        bold
+            Whether to render bold text.
+        """
+        self._painter.draw_text(key, text, x, y, color, size, bold=bold)
 
     def _draw_food(
         self,
@@ -413,6 +538,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw food.
+
+        Parameters
+        ----------
+        foods
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         zoom = world.environment_zoom
         draw_outlines = self._should_draw_food_outlines(len(foods), zoom)
         visible_foods: list[tuple[Food, float, float, float]] = []
@@ -443,6 +579,18 @@ class EnvironmentRenderer:
         self,
         visible_foods: list[tuple[Food, float, float, float]],
     ) -> bool:
+        """Draw food sprite batch.
+
+        Parameters
+        ----------
+        visible_foods
+            Value used by the operation.
+
+        Returns
+        -------
+        bool
+            Whether the operation succeeded or consumed the input.
+        """
         if self._food_batch_disabled:
             return False
 
@@ -502,6 +650,20 @@ class EnvironmentRenderer:
         return True
 
     def _should_draw_food_outlines(self, food_count: int, zoom: float) -> bool:
+        """Return whether should draw food outlines.
+
+        Parameters
+        ----------
+        food_count
+            Value used by the operation.
+        zoom
+            Value used by the operation.
+
+        Returns
+        -------
+        bool
+            Whether the operation succeeded or consumed the input.
+        """
         if self._food_outlines_enabled is None:
             self._food_outlines_enabled = food_count <= 250
         elif (
@@ -517,18 +679,39 @@ class EnvironmentRenderer:
         return zoom >= 1.25 or self._food_outlines_enabled
 
     def _has_active_window(self) -> bool:
+        """Return whether has active window.
+
+        Returns
+        -------
+        bool
+            Whether the operation succeeded or consumed the input.
+        """
         try:
             return arcade.get_window() is not None
         except (AttributeError, RuntimeError):
             return False
 
     def _create_food_sprite(self) -> object:
+        """Create food sprite.
+
+        Returns
+        -------
+        object
+            Computed result.
+        """
         sprite_cls = getattr(arcade, "Sprite", None)
         if sprite_cls is None:
             raise RuntimeError("Arcade Sprite is unavailable.")
         return sprite_cls(self._food_circle_texture())
 
     def _food_circle_texture(self) -> object:
+        """Return food circle texture.
+
+        Returns
+        -------
+        object
+            Computed result.
+        """
         if self._food_sprite_texture is not None:
             return self._food_sprite_texture
 
@@ -547,6 +730,18 @@ class EnvironmentRenderer:
         self,
         color: arcade.Color | tuple[int, ...],
     ) -> tuple[int, int, int, int]:
+        """Return rgba color.
+
+        Parameters
+        ----------
+        color
+            Arcade-compatible color.
+
+        Returns
+        -------
+        tuple[int, int, int, int]
+            Computed collection.
+        """
         channels = tuple(color)
         if len(channels) >= 4:
             return (
@@ -558,9 +753,28 @@ class EnvironmentRenderer:
         return (int(channels[0]), int(channels[1]), int(channels[2]), 255)
 
     def _food_sprite_key(self, food: Food) -> int:
+        """Return food sprite key.
+
+        Parameters
+        ----------
+        food
+            Value used by the operation.
+
+        Returns
+        -------
+        int
+            Computed result.
+        """
         return getattr(food, "id", id(food))
 
     def _prune_food_sprite_cache(self, visible_keys: set[int]) -> None:
+        """Remove stale food sprite cache.
+
+        Parameters
+        ----------
+        visible_keys
+            Value used by the operation.
+        """
         if len(self._food_sprite_cache) <= max(2000, len(visible_keys) * 3):
             return
         self._food_sprite_cache = {
@@ -576,6 +790,19 @@ class EnvironmentRenderer:
         world: World,
         selected_creature_id: int | None,
     ) -> None:
+        """Draw creatures.
+
+        Parameters
+        ----------
+        creatures
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        selected_creature_id
+            Value used by the operation.
+        """
         zoom = world.environment_zoom
         visible_creatures: list[tuple[Creature, float, float, float]] = []
         for creature in creatures:
@@ -597,6 +824,17 @@ class EnvironmentRenderer:
         world: World,
         zoom: float,
     ) -> None:
+        """Draw creatures immediate.
+
+        Parameters
+        ----------
+        visible_creatures
+            Value used by the operation.
+        world
+            Simulation world providing current state.
+        zoom
+            Value used by the operation.
+        """
         for creature, draw_x, draw_y, radius in visible_creatures:
             arcade.draw_circle_filled(draw_x, draw_y, radius, creature.color)
             heading_x = draw_x + cos(creature.heading) * radius
@@ -621,6 +859,22 @@ class EnvironmentRenderer:
         zoom: float,
         active_creatures: list[Creature],
     ) -> bool:
+        """Draw creature sprite batch.
+
+        Parameters
+        ----------
+        visible_creatures
+            Value used by the operation.
+        zoom
+            Value used by the operation.
+        active_creatures
+            Value used by the operation.
+
+        Returns
+        -------
+        bool
+            Whether the operation succeeded or consumed the input.
+        """
         if self._creature_batch_disabled or not visible_creatures:
             return False
 
@@ -713,18 +967,39 @@ class EnvironmentRenderer:
         return True
 
     def _create_creature_sprite(self) -> object:
+        """Create creature sprite.
+
+        Returns
+        -------
+        object
+            Computed result.
+        """
         sprite_cls = getattr(arcade, "Sprite", None)
         if sprite_cls is None:
             raise RuntimeError("Arcade Sprite is unavailable.")
         return sprite_cls(self._creature_base_texture())
 
     def _create_creature_detail_sprite(self) -> object:
+        """Create creature detail sprite.
+
+        Returns
+        -------
+        object
+            Computed result.
+        """
         sprite_cls = getattr(arcade, "Sprite", None)
         if sprite_cls is None:
             raise RuntimeError("Arcade Sprite is unavailable.")
         return sprite_cls(self._creature_detail_base_texture())
 
     def _creature_base_texture(self) -> object:
+        """Return creature base texture.
+
+        Returns
+        -------
+        object
+            Computed result.
+        """
         if self._creature_sprite_texture is not None:
             return self._creature_sprite_texture
 
@@ -741,6 +1016,13 @@ class EnvironmentRenderer:
         return self._creature_sprite_texture
 
     def _creature_detail_base_texture(self) -> object:
+        """Return creature detail base texture.
+
+        Returns
+        -------
+        object
+            Computed result.
+        """
         if self._creature_detail_texture is not None:
             return self._creature_detail_texture
 
@@ -796,12 +1078,43 @@ class EnvironmentRenderer:
             raise RuntimeError("Could not create creature detail texture.") from exc
 
     def _creature_sprite_angle(self, creature: Creature) -> float:
+        """Return creature sprite angle.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+
+        Returns
+        -------
+        float
+            Computed result.
+        """
         return (270.0 - degrees(creature.heading)) % 360.0
 
     def _creature_sprite_key(self, creature: Creature) -> int:
+        """Return creature sprite key.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+
+        Returns
+        -------
+        int
+            Computed result.
+        """
         return getattr(creature, "creature_id", id(creature))
 
     def _prune_creature_sprite_cache(self, active_keys: set[int]) -> None:
+        """Remove stale creature sprite cache.
+
+        Parameters
+        ----------
+        active_keys
+            Value used by the operation.
+        """
         self._creature_sprite_cache = {
             key: sprite
             for key, sprite in self._creature_sprite_cache.items()
@@ -818,6 +1131,15 @@ class EnvironmentRenderer:
         world: World,
         bounds: arcade.Rect,
     ) -> None:
+        """Draw selected creature status.
+
+        Parameters
+        ----------
+        world
+            Simulation world providing current state.
+        bounds
+            Rectangle defining the relevant UI area.
+        """
         creature = world.selected_creature
         if creature is None:
             return
@@ -848,6 +1170,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw metabolism bars.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         zoom = world.environment_zoom
         center_x, center_y = creature.position
         draw_x, draw_y = world.environment_to_screen(center_x, center_y)
@@ -910,6 +1243,15 @@ class EnvironmentRenderer:
         world: World,
         bounds: arcade.Rect,
     ) -> None:
+        """Draw selected overlay.
+
+        Parameters
+        ----------
+        world
+            Simulation world providing current state.
+        bounds
+            Rectangle defining the relevant UI area.
+        """
         selected = world.selected_creature
         if selected is None:
             return
@@ -937,6 +1279,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw flock steering debug.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         del bounds
         debug_by_creature = getattr(world, "_last_flock_steering_debug", {})
         debug = debug_by_creature.get(creature.creature_id)
@@ -992,6 +1345,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw acoustic debug.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         snapshots = getattr(world, "_last_sensor_snapshots", {})
         snapshot = snapshots.get(creature.creature_id)
         acoustic = None if snapshot is None else getattr(snapshot, "acoustic", None)
@@ -1023,6 +1387,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw pheromone debug.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         snapshots = getattr(world, "_last_sensor_snapshots", {})
         snapshot = snapshots.get(creature.creature_id)
         pheromones = None if snapshot is None else getattr(snapshot, "pheromones", None)
@@ -1070,6 +1445,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw vision cone.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         zoom = world.environment_zoom
         left_eye_model, right_eye_model = self._creature_eye_positions(creature)
         left_eye = world.environment_to_screen(*left_eye_model)
@@ -1090,6 +1476,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw biome sensor markers.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         sensor_positions_for = getattr(world, "biome_sensor_positions_for", None)
         if sensor_positions_for is None:
             return
@@ -1116,6 +1513,26 @@ class EnvironmentRenderer:
         start_factor: float = 0.0,
         end_factor: float = 1.0,
     ) -> list[tuple[float, float]]:
+        """Return vision cone points.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+        origin
+            Value used by the operation.
+        zoom
+            Value used by the operation.
+        start_factor
+            Value used by the operation.
+        end_factor
+            Value used by the operation.
+
+        Returns
+        -------
+        list[tuple[float, float]]
+            Computed collection.
+        """
         heading = creature.heading
         cone_radius = creature.vision.range * zoom
         cone_angle = creature.vision.angle
@@ -1143,6 +1560,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw visible food highlights.
+
+        Parameters
+        ----------
+        foods
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         zoom = world.environment_zoom
         for food in foods:
             pos_x, pos_y = food.position
@@ -1160,6 +1588,17 @@ class EnvironmentRenderer:
         bounds: arcade.Rect,
         world: World,
     ) -> None:
+        """Draw visible creature highlights.
+
+        Parameters
+        ----------
+        creatures
+            Value used by the operation.
+        bounds
+            Rectangle defining the relevant UI area.
+        world
+            Simulation world providing current state.
+        """
         zoom = world.environment_zoom
         for creature in creatures:
             pos_x, pos_y = creature.position
@@ -1174,6 +1613,18 @@ class EnvironmentRenderer:
     def _creature_eye_positions(
         self, creature: Creature
     ) -> tuple[tuple[float, float], tuple[float, float]]:
+        """Return creature eye positions.
+
+        Parameters
+        ----------
+        creature
+            Value used by the operation.
+
+        Returns
+        -------
+        tuple[tuple[float, float], tuple[float, float]]
+            Computed collection.
+        """
         center_x, center_y = creature.position
         heading = creature.heading
         radius = creature.radius
@@ -1189,6 +1640,24 @@ class EnvironmentRenderer:
     def _circle_fits_visible_bounds(
         self, bounds: arcade.Rect, x: float, y: float, radius: float
     ) -> bool:
+        """Return circle fits visible bounds.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        x
+            Logical screen coordinate.
+        y
+            Logical screen coordinate.
+        radius
+            Requested logical size.
+
+        Returns
+        -------
+        bool
+            Whether the operation succeeded or consumed the input.
+        """
         return (
             x - radius >= bounds.left
             and x + radius <= bounds.right
@@ -1199,6 +1668,24 @@ class EnvironmentRenderer:
     def _circle_intersects_visible_bounds(
         self, bounds: arcade.Rect, x: float, y: float, radius: float
     ) -> bool:
+        """Return circle intersects visible bounds.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        x
+            Logical screen coordinate.
+        y
+            Logical screen coordinate.
+        radius
+            Requested logical size.
+
+        Returns
+        -------
+        bool
+            Whether the operation succeeded or consumed the input.
+        """
         return (
             x + radius >= bounds.left
             and x - radius <= bounds.right
@@ -1214,6 +1701,26 @@ class EnvironmentRenderer:
         right: float,
         top: float,
     ) -> bool:
+        """Return rect fits visible bounds.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        left
+            Logical screen coordinate.
+        bottom
+            Logical screen coordinate.
+        right
+            Logical screen coordinate.
+        top
+            Logical screen coordinate.
+
+        Returns
+        -------
+        bool
+            Whether the operation succeeded or consumed the input.
+        """
         return (
             left >= bounds.left
             and right <= bounds.right
@@ -1229,6 +1736,26 @@ class EnvironmentRenderer:
         right: float,
         top: float,
     ) -> bool:
+        """Return rect intersects visible bounds.
+
+        Parameters
+        ----------
+        bounds
+            Rectangle defining the relevant UI area.
+        left
+            Logical screen coordinate.
+        bottom
+            Logical screen coordinate.
+        right
+            Logical screen coordinate.
+        top
+            Logical screen coordinate.
+
+        Returns
+        -------
+        bool
+            Whether the operation succeeded or consumed the input.
+        """
         return (
             right >= bounds.left
             and left <= bounds.right

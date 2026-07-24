@@ -1,0 +1,1 @@
+"""Floating simulation panel components."""

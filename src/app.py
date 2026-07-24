@@ -7,10 +7,10 @@ configure_graphics()
 import arcade
 
 from configs.sim_config import SimConfig, build_sim_config
-from src.menu import StartMenuView
 from src.persistence import PersistenceManager
-from src.rendering import EnvironmentRenderer
-from src.ui import UiRenderer
+from src.ui.renderer import UiRenderer
+from src.ui.renderers.environment import EnvironmentRenderer
+from src.ui.views.start_menu import StartMenuView
 from src.world import World
 
 

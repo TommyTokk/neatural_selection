@@ -170,9 +170,10 @@ arcade.draw_circle_filled = lambda *args, **kwargs: None
 arcade.draw_polygon_filled = lambda *args, **kwargs: None
 arcade.draw_texture_rectangle = lambda *args, **kwargs: None
 
-for optional_module in ("neat",):
-    if optional_module not in sys.modules:
-        sys.modules[optional_module] = ModuleType(optional_module)
+if "neat" not in sys.modules:
+    # Prefer the installed package because app-level tests import the complete
+    # world/controller stack, which relies on neat submodules.
+    importlib.import_module("neat")
 
 if "pymunk" not in sys.modules:
     pymunk = ModuleType("pymunk")
@@ -186,8 +187,8 @@ if not hasattr(pymunk, "Shape"):
 
 
 from configs.sim_config import build_sim_config
-import src.menu as menu_module
-from src.menu import StartMenuView
+import src.ui.views.start_menu as menu_module
+from src.ui.views.start_menu import StartMenuView
 
 
 class _FakeNSString:
