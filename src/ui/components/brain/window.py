@@ -193,6 +193,7 @@ class BrainWindowComponent:
 
         layout: BrainGraphLayout | None = None
         if brain is None:
+            self._clear_brain_render_caches()
             self._brain_selection_identity = None
             self._brain_selected_node_key = None
             self._draw_rounded_rect(
@@ -240,6 +241,7 @@ class BrainWindowComponent:
             self._brain_selection_identity = identity
             self._brain_selected_node_key = None
             self._scroll_offsets["brain_node_inspector"] = 0.0
+            self._clear_brain_selection_caches()
         elif (
             self._brain_selected_node_key is not None
             and self._brain_selected_node_key not in layout.nodes
@@ -254,6 +256,25 @@ class BrainWindowComponent:
         self._brain_selection_identity = None
         self._brain_node_bounds.clear()
         self._scroll_offsets["brain_node_inspector"] = 0.0
+        self._clear_brain_render_caches()
+    def _clear_brain_selection_caches(self) -> None:
+        """Release cached data derived from the selected graph node."""
+        state = self._brain_state
+        state.highlight_layout = None
+        state.highlight_node_key = None
+        state.highlight = None
+        state.inspector_brain = None
+        state.inspector_layout = None
+        state.inspector_node_key = None
+        state.inspector_lines = ()
+    def _clear_brain_render_caches(self) -> None:
+        """Release cached brain layout, selection, and wrapped content."""
+        state = self._brain_state
+        state.layout_cache_key = None
+        state.layout = None
+        self._clear_brain_selection_caches()
+        self._painter.wrapped_line_block_cache.clear()
+        self._painter.curve_cache.clear()
     def _brain_node_at(self, x: float, y: float) -> int | None:
         """Return brain node at.
 
@@ -325,4 +346,3 @@ class BrainWindowComponent:
             bounds.center_x + (position[0] - bounds.center_x) * self._brain_graph_zoom,
             bounds.center_y + (position[1] - bounds.center_y) * self._brain_graph_zoom,
         )
-

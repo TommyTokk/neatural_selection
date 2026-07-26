@@ -467,6 +467,7 @@ class BehaviorRadarAnalysisTest(unittest.TestCase):
             self.assertEqual(image.mode, "RGBA")
             self.assertGreater(image.width, 0)
             self.assertGreater(image.height, 0)
+            self.assertGreaterEqual(image.width, 600)
             self.assertEqual(image.width, image.height)
             self.assertEqual(tuple(plt.get_fignums()), before)
 

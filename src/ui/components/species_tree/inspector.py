@@ -49,6 +49,10 @@ _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 class SpeciesTreeInspectorComponent:
     """Group related behavior extracted from ``UiRenderer``."""
 
+    SPECIES_RADAR_MIN_SIZE = 220.0
+    SPECIES_RADAR_MAX_SIZE = 440.0
+    SPECIES_RADAR_WIDTH_RATIO = 0.62
+
     def _species_tree_inspector_width_limits(
         self,
         content: arcade.Rect,
@@ -719,7 +723,7 @@ class SpeciesTreeInspectorComponent:
         """
         sections = self._species_inspector_sections(report, record)
         radar_size = (
-            min(220.0, max(0.0, viewport.width - 24.0))
+            self._species_radar_chart_size(viewport.width)
             if self._species_tree_radar_species_id is not None
             else 0.0
         )
@@ -992,8 +996,7 @@ class SpeciesTreeInspectorComponent:
         if self._species_tree_radar_species_id is None:
             return viewport
         chart_size = min(
-            300.0,
-            viewport.width,
+            self._species_radar_chart_size(viewport.width),
             max(0.0, viewport.height - 96.0),
         )
         if chart_size <= 0.0:
@@ -1011,6 +1014,18 @@ class SpeciesTreeInspectorComponent:
             viewport.bottom,
             viewport.width,
             max(0.0, chart_bounds.bottom - gap - viewport.bottom),
+        )
+    def _species_radar_chart_size(self, viewport_width: float) -> float:
+        """Return a responsive radar size for the inspector width."""
+        available_width = max(0.0, viewport_width - 24.0)
+        preferred_width = max(
+            self.SPECIES_RADAR_MIN_SIZE,
+            viewport_width * self.SPECIES_RADAR_WIDTH_RATIO,
+        )
+        return min(
+            self.SPECIES_RADAR_MAX_SIZE,
+            available_width,
+            preferred_width,
         )
     def _draw_species_radar_chart_in_bounds(
         self,
@@ -1367,4 +1382,3 @@ class SpeciesTreeInspectorComponent:
         if value is None or value == 0.0:
             return "default"
         return "positive" if value > 0.0 else "negative"
-

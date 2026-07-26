@@ -8,6 +8,10 @@ from dataclasses import dataclass, field
 import arcade
 
 from src.analysis import InspectorReport
+from src.ui.layouts.brain_graph import (
+    BrainGraphHighlight,
+    BrainGraphLayout,
+)
 from src.ui.layouts.species_tree import (
     SpeciesTreeLayout,
     TreeLayoutManager,
@@ -44,6 +48,15 @@ class BrainWindowState:
     selected_node_key: int | None = None
     node_inspector_open: bool = True
     selection_identity: tuple[int, int] | None = None
+    layout_cache_key: tuple[object, ...] | None = None
+    layout: BrainGraphLayout | None = None
+    highlight_layout: BrainGraphLayout | None = None
+    highlight_node_key: int | None = None
+    highlight: BrainGraphHighlight | None = None
+    inspector_brain: object | None = None
+    inspector_layout: BrainGraphLayout | None = None
+    inspector_node_key: int | None = None
+    inspector_lines: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

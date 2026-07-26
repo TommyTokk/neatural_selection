@@ -80,6 +80,7 @@ for draw_name in (
     "draw_circle_filled",
     "draw_circle_outline",
     "draw_line",
+    "draw_line_strip",
     "draw_polygon_filled",
     "draw_texture_rectangle",
 ):
@@ -98,6 +99,7 @@ from src.ui.layouts.brain_graph import (
     BrainGraphEdge,
     BrainNodeKind,
     build_brain_graph_layout,
+    highlighted_path_through_node,
 )
 from src.creature import (
     FlockingTraits,
@@ -418,6 +420,63 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
 
         self.assertGreater(collapsed_width, open_width)
 
+    def test_brain_graph_layout_is_reused_for_stable_genome_and_bounds(
+        self,
+    ) -> None:
+        fixture = self.make_brain_world()
+        bounds = arcade.LBWH(20, 30, 600, 300)
+
+        with patch(
+            "src.ui.components.brain.graph.build_brain_graph_layout",
+            wraps=build_brain_graph_layout,
+        ) as build:
+            first = self.renderer._brain_graph_layout(
+                fixture.selected,
+                fixture.brain,
+                [-1],
+                [0],
+                bounds,
+            )
+            second = self.renderer._brain_graph_layout(
+                fixture.selected,
+                fixture.brain,
+                [-1],
+                [0],
+                bounds,
+            )
+            resized = self.renderer._brain_graph_layout(
+                fixture.selected,
+                fixture.brain,
+                [-1],
+                [0],
+                arcade.LBWH(20, 30, 640, 300),
+            )
+
+        self.assertIs(first, second)
+        self.assertIsNot(first, resized)
+        self.assertEqual(build.call_count, 2)
+
+    def test_brain_highlight_is_shared_for_stable_layout_and_node(self) -> None:
+        fixture = self.make_brain_world()
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+
+        with patch(
+            "src.ui.components.brain.graph.highlighted_path_through_node",
+            wraps=highlighted_path_through_node,
+        ) as build:
+            first = self.renderer._brain_highlight_for_node(layout, 1)
+            second = self.renderer._brain_highlight_for_node(layout, 1)
+
+        self.assertIs(first, second)
+        build.assert_called_once_with(layout, 1)
+
     def test_overlapping_node_hitboxes_select_nearest_node_center(self) -> None:
         self.renderer._brain_node_bounds = {
             1: arcade.LBWH(100, 90, 24, 24),
@@ -648,9 +707,11 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         )
         curves: list[list[tuple[float, float]]] = []
         arrows: list[list[tuple[float, float]]] = []
-        original_curve = self.renderer._draw_curve
+        original_curve = self.renderer._draw_brain_solid_curve
         original_arrow = self.renderer._draw_brain_arrowhead
-        self.renderer._draw_curve = lambda points, color, width: curves.append(points)
+        self.renderer._draw_brain_solid_curve = (
+            lambda points, color, width: curves.append(points)
+        )
         self.renderer._draw_brain_arrowhead = (
             lambda points, color, width: arrows.append(points)
         )
@@ -661,7 +722,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
                 arcade.LBWH(0, 0, 600, 300),
             )
         finally:
-            self.renderer._draw_curve = original_curve
+            self.renderer._draw_brain_solid_curve = original_curve
             self.renderer._draw_brain_arrowhead = original_arrow
 
         self.assertEqual(len(curves), 1)
@@ -669,6 +730,40 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertGreater(len(curves[0]), 20)
         self.assertEqual(curves[0][0], (100, 100))
         self.assertEqual(curves[0][-1], (500, 240))
+
+    def test_brain_curve_geometry_is_cached_and_drawn_as_one_strip(
+        self,
+    ) -> None:
+        start = (10.0, 20.0)
+        first_control = (30.0, 20.0)
+        second_control = (50.0, 60.0)
+        end = (70.0, 60.0)
+
+        first = self.renderer._cubic_bezier_points(
+            start,
+            first_control,
+            second_control,
+            end,
+        )
+        second = self.renderer._cubic_bezier_points(
+            start,
+            first_control,
+            second_control,
+            end,
+        )
+        with patch("src.ui.renderer.arcade.draw_line_strip") as strip:
+            self.renderer._draw_brain_solid_curve(
+                first,
+                self.renderer.theme.accent,
+                2.0,
+            )
+
+        self.assertIs(first, second)
+        strip.assert_called_once_with(
+            first,
+            self.renderer.theme.accent,
+            2.0,
+        )
 
     def test_disabled_edges_are_curved_without_arrowheads(self) -> None:
         edge = BrainGraphEdge(
@@ -680,9 +775,9 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         )
         curves: list[object] = []
         arrows: list[object] = []
-        original_curve = self.renderer._draw_curve
+        original_curve = self.renderer._draw_brain_solid_curve
         original_arrow = self.renderer._draw_brain_arrowhead
-        self.renderer._draw_curve = lambda *args: curves.append(args)
+        self.renderer._draw_brain_solid_curve = lambda *args: curves.append(args)
         self.renderer._draw_brain_arrowhead = lambda *args: arrows.append(args)
         try:
             self.renderer._draw_brain_graph_edge(
@@ -692,7 +787,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
                 disabled=True,
             )
         finally:
-            self.renderer._draw_curve = original_curve
+            self.renderer._draw_brain_solid_curve = original_curve
             self.renderer._draw_brain_arrowhead = original_arrow
 
         self.assertEqual(len(curves), 1)
@@ -784,7 +879,24 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
                     self.assertLessEqual(name.right + 10, badge.left)
                     self.assertGreater(name.width, 0)
 
-    def test_long_node_name_wraps_inside_fixed_name_area(self) -> None:
+    def test_short_node_name_preserves_compact_summary_height(self) -> None:
+        header = arcade.LBWH(100.0, 400.0, 260.0, 44.0)
+
+        summary, _, _, name_text = self.renderer._brain_node_summary_layout(
+            header,
+            "Accelerate",
+            "Output Node",
+        )
+
+        self.assertEqual(
+            summary.height,
+            self.renderer.BRAIN_NODE_SUMMARY_MIN_HEIGHT,
+        )
+        self.assertEqual(name_text, "Accelerate")
+
+    def test_long_node_name_expands_summary_without_overlapping_content(
+        self,
+    ) -> None:
         fixture = self.make_brain_world()
         long_name = "temperature_gradient_sensor_with_extended_range"
         layout = build_brain_graph_layout(
@@ -801,18 +913,218 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.renderer._draw_brain_node_inspector(fixture.brain, layout, bounds)
 
         rendered = self.renderer._text_cache["brain_node_inspector_name"]
-        summary = arcade.LBWH(
-            bounds.left + 14,
-            bounds.top - 44 - 68,
-            bounds.width - 28,
-            56,
+        header = arcade.LBWH(
+            bounds.left,
+            bounds.top - 44,
+            bounds.width,
+            44,
         )
-        badge, name = self.renderer._brain_node_badge_layout(summary, "Input Node")
+        summary, badge, name, expected_text = (
+            self.renderer._brain_node_summary_layout(
+                header,
+                long_name,
+                "Input Node",
+            )
+        )
         self.assertTrue(rendered.multiline)
         self.assertEqual(rendered.width, name.width)
-        self.assertIn("\n", rendered.text)
-        self.assertLessEqual(len(rendered.text.splitlines()), 2)
+        self.assertEqual(rendered.text, expected_text)
+        self.assertEqual(rendered.text.replace("\n", ""), long_name)
+        self.assertNotIn("...", rendered.text)
+        self.assertGreater(len(rendered.text.splitlines()), 2)
+        self.assertGreater(
+            summary.height,
+            self.renderer.BRAIN_NODE_SUMMARY_MIN_HEIGHT,
+        )
         self.assertLessEqual(rendered.x + rendered.width + 10, badge.left)
+        self.assertLessEqual(
+            self.renderer._scroll_regions["brain_node_inspector"].top,
+            summary.bottom,
+        )
+
+    def test_node_summary_uses_measured_wide_glyph_layout(self) -> None:
+        fixture = self.make_brain_world()
+        long_name = "WWWWWWWWWWWWWWWWWWWWWWWW"
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            [long_name],
+            ["accelerate"],
+        )
+        bounds = arcade.LBWH(100, 100, 260, 420)
+        self.renderer._brain_selected_node_key = -1
+
+        def measured_width(
+            text: str,
+            _font_size: float,
+            *,
+            bold: bool = False,
+        ) -> float:
+            """Return deliberately wide metrics for the regression case."""
+            weight = 1.05 if bold else 1.0
+            return sum(
+                12.0 if character == "W" else 4.0
+                for character in text
+            ) * weight
+
+        with patch.object(
+            self.renderer._painter,
+            "measure_text_width",
+            side_effect=measured_width,
+        ):
+            self.renderer._draw_brain_node_inspector(
+                fixture.brain,
+                layout,
+                bounds,
+            )
+
+        rendered = self.renderer._text_cache["brain_node_inspector_name"]
+        header = arcade.LBWH(
+            bounds.left,
+            bounds.top - 44,
+            bounds.width,
+            44,
+        )
+        summary, badge, name, _ = self.renderer._brain_node_summary_layout(
+            header,
+            long_name,
+            "Input Node",
+        )
+        self.assertTrue(all(
+            measured_width(line, 14.0, bold=True) <= name.width
+            for line in rendered.text.splitlines()
+        ))
+        self.assertLessEqual(name.right + 10.0, badge.left)
+        self.assertLessEqual(
+            self.renderer._scroll_regions["brain_node_inspector"].top,
+            summary.bottom,
+        )
+
+    def test_node_inspector_reuses_wrapped_layout_between_frames(self) -> None:
+        fixture = self.make_brain_world()
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["temperature_gradient_sensor_with_extended_range"],
+            ["accelerate"],
+        )
+        bounds = arcade.LBWH(100, 100, 260, 420)
+        self.renderer._brain_selected_node_key = -1
+        painter = self.renderer._painter
+
+        with patch.object(
+            painter,
+            "measure_text_width",
+            wraps=painter.measure_text_width,
+        ) as measure:
+            self.renderer._draw_brain_node_inspector(
+                fixture.brain,
+                layout,
+                bounds,
+            )
+            first_frame_measurements = measure.call_count
+            self.renderer._draw_brain_node_inspector(
+                fixture.brain,
+                layout,
+                bounds,
+            )
+
+        self.assertGreater(first_frame_measurements, 0)
+        self.assertEqual(measure.call_count, first_frame_measurements)
+
+    def test_node_inspector_lines_are_built_once_per_stable_selection(
+        self,
+    ) -> None:
+        fixture = self.make_brain_world()
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+        node = layout.nodes[1]
+
+        with patch.object(
+            self.renderer,
+            "_brain_node_inspector_lines",
+            wraps=self.renderer._brain_node_inspector_lines,
+        ) as build:
+            first = self.renderer._cached_brain_node_inspector_lines(
+                fixture.brain,
+                layout,
+                node,
+            )
+            second = self.renderer._cached_brain_node_inspector_lines(
+                fixture.brain,
+                layout,
+                node,
+            )
+
+        self.assertIs(first, second)
+        build.assert_called_once_with(fixture.brain, layout, node)
+
+    def test_scrollable_blocks_wrap_when_requested_and_count_visual_lines(
+        self,
+    ) -> None:
+        viewport = arcade.LBWH(100.0, 100.0, 100.0, 50.0)
+        value = "long_connection_identifier_that_must_wrap"
+
+        self.renderer._draw_scrollable_lines_in_bounds(
+            "responsive_block",
+            viewport,
+            [value],
+            line_spacing=20.0,
+            first_line_color=self.renderer.theme.text_primary,
+            body_color=self.renderer.theme.text_muted,
+            wrap_lines=True,
+        )
+
+        rendered = [
+            text.text
+            for key, text in self.renderer._text_cache.items()
+            if key.startswith("responsive_block_line_")
+        ]
+        visual_lines = self.renderer._wrapped_scrollable_lines(
+            [value],
+            viewport.width - 12.0,
+            draw_ethogram_markers=False,
+        )
+        self.assertGreater(len(rendered), 1)
+        self.assertEqual("".join(line for line, *_ in visual_lines), value)
+        self.assertFalse(any("..." in line for line, *_ in visual_lines))
+        self.assertTrue(
+            all(is_first_line for _, is_first_line, *_ in visual_lines)
+        )
+        self.assertEqual(
+            self.renderer._scroll_limits["responsive_block"],
+            len(visual_lines) * 20.0 - viewport.height,
+        )
+
+    def test_scrollable_block_draws_only_visible_wrapped_rows(self) -> None:
+        viewport = arcade.LBWH(100.0, 100.0, 180.0, 100.0)
+        lines = tuple(
+            f"Connection {index}: long_endpoint_identifier_{index}"
+            for index in range(5000)
+        )
+
+        with patch.object(self.renderer, "_draw_text") as draw_text:
+            self.renderer._draw_scrollable_lines_in_bounds(
+                "large_responsive_block",
+                viewport,
+                lines,
+                line_spacing=20.0,
+                first_line_color=self.renderer.theme.text_primary,
+                body_color=self.renderer.theme.text_muted,
+                wrap_lines=True,
+            )
+
+        self.assertLessEqual(draw_text.call_count, 5)
 
     def test_brain_footer_cells_and_text_are_centered_with_colored_titles(
         self,
@@ -3279,6 +3591,35 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertGreaterEqual(chart_bounds.bottom, viewport.bottom)
         self.assertLessEqual(chart_bounds.top, viewport.top)
         self.assertLess(text_viewport.top, chart_bounds.bottom)
+
+    def test_radar_chart_grows_with_large_inspector_width(self) -> None:
+        compact = self.renderer._species_radar_chart_size(320.0)
+        medium = self.renderer._species_radar_chart_size(600.0)
+        large = self.renderer._species_radar_chart_size(1200.0)
+
+        self.assertEqual(compact, 220.0)
+        self.assertEqual(medium, 372.0)
+        self.assertEqual(
+            large,
+            self.renderer.SPECIES_RADAR_MAX_SIZE,
+        )
+        self.assertLess(compact, medium)
+        self.assertLess(medium, large)
+
+    def test_large_radar_draw_uses_responsive_maximum_size(self) -> None:
+        viewport = arcade.LBWH(100.0, 100.0, 1200.0, 800.0)
+        self.renderer._species_tree_radar_texture = object()
+        self.renderer._species_tree_radar_species_id = 2
+
+        with patch("src.ui.renderer.arcade.draw_texture_rect", create=True) as draw:
+            self.renderer._draw_species_radar_chart(viewport)
+
+        _, chart_bounds = draw.call_args.args
+        self.assertEqual(
+            chart_bounds.width,
+            self.renderer.SPECIES_RADAR_MAX_SIZE,
+        )
+        self.assertEqual(chart_bounds.height, chart_bounds.width)
 
     def test_stale_radar_result_is_not_converted_to_texture(self) -> None:
         old_future: Future[object] = Future()

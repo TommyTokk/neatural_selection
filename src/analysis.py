@@ -22,6 +22,8 @@ BEHAVIOR_RADAR_LABELS = (
     "Fecundity",
     "Vigilance",
 )
+RADAR_AXIS_LABEL_SIZE = 12.5
+RADAR_VALUE_LABEL_SIZE = 9.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,7 +259,7 @@ def generate_radar_chart_image(
     figure = None
     try:
         figure, axis = plt.subplots(
-            figsize=(4, 4),
+            figsize=(4.5, 4.5),
             subplot_kw={"polar": True},
             facecolor="none",
         )
@@ -303,20 +305,31 @@ def generate_radar_chart_image(
         axis.set_yticks((0.25, 0.5, 0.75, 1.0))
         axis.set_yticklabels(("0.25", "0.50", "0.75", "1.0"))
         axis.set_rlabel_position(90)
-        axis.tick_params(axis="x", colors="#161a32", labelsize=9, pad=8)
-        axis.tick_params(axis="y", colors="#42474d", labelsize=7)
+        axis.tick_params(
+            axis="x",
+            colors="#161a32",
+            labelsize=RADAR_AXIS_LABEL_SIZE,
+            pad=10,
+        )
+        for axis_label in axis.get_xticklabels():
+            axis_label.set_fontweight("semibold")
+        axis.tick_params(
+            axis="y",
+            colors="#42474d",
+            labelsize=RADAR_VALUE_LABEL_SIZE,
+        )
         axis.grid(color="#4b5563", alpha=0.48, linewidth=0.9)
         axis.spines["polar"].set_color("#374151")
         axis.spines["polar"].set_linewidth(1.4)
         axis.spines["polar"].set_alpha(0.85)
-        figure.subplots_adjust(left=0.17, right=0.83, bottom=0.17, top=0.83)
+        figure.subplots_adjust(left=0.20, right=0.80, bottom=0.20, top=0.80)
 
         with BytesIO() as buffer:
             figure.savefig(
                 buffer,
                 format="png",
                 transparent=True,
-                dpi=110,
+                dpi=140,
             )
             buffer.seek(0)
             with Image.open(buffer) as image:

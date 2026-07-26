@@ -28,6 +28,28 @@ class ArcadePainter:
         self.text_cache: dict[str, arcade.Text] = {}
         self.texture_cache: dict[str, object | None] = {}
         self.sprite_cache: dict[str, object | None] = {}
+        self._text_measurers: dict[tuple[float, bool], arcade.Text] = {}
+        self._text_width_cache: dict[tuple[str, float, bool], float] = {}
+        self._wrapped_text_cache: dict[
+            tuple[str, float, float, bool],
+            tuple[str, ...],
+        ] = {}
+        self.wrapped_line_block_cache: dict[
+            tuple[tuple[str, ...], float, bool, bool],
+            tuple[
+                tuple[
+                    str,
+                    bool,
+                    tuple[int, int, int] | None,
+                    float,
+                ],
+                ...,
+            ],
+        ] = {}
+        self.curve_cache: dict[
+            tuple[object, ...],
+            tuple[tuple[float, float], ...],
+        ] = {}
 
     def draw_text(
         self,
@@ -85,20 +107,199 @@ class ArcadePainter:
                 cached = arcade.Text(text, rx, ry, color, size, **kwargs)
             self.text_cache[key] = cached
         else:
-            cached.text = text
-            cached.x = rx
-            cached.y = ry
-            cached.color = color
-            cached.font_size = size
-            cached.bold = bold
-            cached.width = width
-            cached.multiline = multiline
-            cached.align = align
-            cached.anchor_x = anchor_x
-            cached.anchor_y = anchor_y
-            if hasattr(cached, "rotation"):
+            target_color = tuple(color)
+            if len(target_color) == 3:
+                target_color = (*target_color, 255)
+            if getattr(cached, "text", None) != text:
+                cached.text = text
+            if getattr(cached, "x", None) != rx:
+                cached.x = rx
+            if getattr(cached, "y", None) != ry:
+                cached.y = ry
+            cached_color = tuple(getattr(cached, "color", ()))
+            if len(cached_color) == 3:
+                cached_color = (*cached_color, 255)
+            if cached_color != target_color:
+                cached.color = color
+            if getattr(cached, "font_size", None) != size:
+                cached.font_size = size
+            if getattr(cached, "bold", None) != bold:
+                cached.bold = bold
+            if getattr(cached, "width", None) != width:
+                cached.width = width
+            if getattr(cached, "multiline", None) != multiline:
+                cached.multiline = multiline
+            if getattr(cached, "align", None) != align:
+                cached.align = align
+            if getattr(cached, "anchor_x", None) != anchor_x:
+                cached.anchor_x = anchor_x
+            if getattr(cached, "anchor_y", None) != anchor_y:
+                cached.anchor_y = anchor_y
+            if (
+                hasattr(cached, "rotation")
+                and cached.rotation != rotation
+            ):
                 cached.rotation = rotation
         cached.draw()
+
+    def measure_text_width(
+        self,
+        text: str,
+        font_size: float,
+        *,
+        bold: bool = False,
+    ) -> float:
+        """Return the rendered width of text, caching stable measurements.
+
+        Arcade exposes accurate glyph metrics only while a window is active.
+        Headless callers use a conservative per-character estimate instead.
+        """
+        cache_key = (text, float(font_size), bool(bold))
+        cached_width = self._text_width_cache.get(cache_key)
+        if cached_width is not None:
+            return cached_width
+
+        style_key = (float(font_size), bool(bold))
+        measurer = self._text_measurers.get(style_key)
+        try:
+            if measurer is None:
+                measurer = arcade.Text(
+                    "",
+                    0,
+                    0,
+                    (255, 255, 255, 255),
+                    font_size,
+                    font_name=DEFAULT_FONTS,
+                    bold=bold,
+                )
+                self._text_measurers[style_key] = measurer
+            measurer.text = text
+            measured_width = float(measurer.content_width)
+        except (AttributeError, RuntimeError):
+            measured_width = self._estimated_text_width(text, font_size, bold)
+
+        if len(self._text_width_cache) >= 4096:
+            self._text_width_cache.clear()
+        self._text_width_cache[cache_key] = measured_width
+        return measured_width
+
+    def wrap_text(
+        self,
+        text: str,
+        width: float,
+        font_size: float,
+        *,
+        bold: bool = False,
+    ) -> tuple[str, ...]:
+        """Wrap text to an exact rendered width and cache the result."""
+        logical_width = max(1.0, float(width))
+        cache_key = (
+            text,
+            round(logical_width, 2),
+            float(font_size),
+            bool(bold),
+        )
+        cached_lines = self._wrapped_text_cache.get(cache_key)
+        if cached_lines is not None:
+            return cached_lines
+
+        if self.measure_text_width(text, font_size, bold=bold) <= logical_width:
+            lines = (text,)
+        else:
+            lines = self._wrap_measured_text(
+                text,
+                logical_width,
+                font_size,
+                bold=bold,
+            )
+
+        if len(self._wrapped_text_cache) >= 2048:
+            self._wrapped_text_cache.clear()
+        self._wrapped_text_cache[cache_key] = lines
+        return lines
+
+    def _wrap_measured_text(
+        self,
+        text: str,
+        width: float,
+        font_size: float,
+        *,
+        bold: bool,
+    ) -> tuple[str, ...]:
+        """Wrap one logical line using measured word and glyph advances."""
+        leading = len(text) - len(text.lstrip(" "))
+        indent = text[:leading]
+        words = text.strip().split()
+        if not words:
+            return (text,)
+
+        def fits(candidate: str) -> bool:
+            """Return whether a candidate fits the requested width."""
+            return (
+                self.measure_text_width(candidate, font_size, bold=bold)
+                <= width
+            )
+
+        lines: list[str] = []
+        current = indent
+        for word in words:
+            candidate = (
+                f"{current} {word}"
+                if current.strip()
+                else f"{indent}{word}"
+            )
+            if fits(candidate):
+                current = candidate
+                continue
+            if current.strip():
+                lines.append(current)
+                current = indent
+            if fits(f"{indent}{word}"):
+                current = f"{indent}{word}"
+                continue
+
+            remaining = word
+            while remaining:
+                chunk = ""
+                for character in remaining:
+                    candidate = f"{indent}{chunk}{character}"
+                    if chunk and not fits(candidate):
+                        break
+                    chunk += character
+                    if not fits(f"{indent}{chunk}"):
+                        break
+                if not chunk:
+                    chunk = remaining[0]
+                remaining = remaining[len(chunk) :]
+                wrapped_chunk = f"{indent}{chunk}"
+                if remaining:
+                    lines.append(wrapped_chunk)
+                else:
+                    current = wrapped_chunk
+
+        if current.strip() or not lines:
+            lines.append(current)
+        return tuple(lines)
+
+    @staticmethod
+    def _estimated_text_width(
+        text: str,
+        font_size: float,
+        bold: bool,
+    ) -> float:
+        """Estimate text width conservatively when no Arcade window exists."""
+        narrow = set(" .,;:'`!|ijlItf()[]{}")
+        wide = set("MW@#%&QGmwm")
+        units = 0.0
+        for character in text:
+            if character in narrow:
+                units += 0.36
+            elif character in wide:
+                units += 0.9
+            else:
+                units += 0.62
+        weight = 1.06 if bold else 1.0
+        return units * font_size * weight
 
     def icon_path(self, icon_name: str) -> Path:
         """Return the configured file path for an icon.

@@ -49,6 +49,10 @@ _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 class BrainInspectorComponent:
     """Group related behavior extracted from ``UiRenderer``."""
 
+    BRAIN_NODE_SUMMARY_MIN_HEIGHT = 56.0
+    BRAIN_NODE_SUMMARY_LINE_HEIGHT = 17.0
+    BRAIN_NODE_SUMMARY_VERTICAL_PADDING = 20.0
+
     def _draw_brain_node_inspector(
         self,
         brain: object | None,
@@ -124,11 +128,13 @@ class BrainInspectorComponent:
             )
             return
 
-        summary = arcade.LBWH(
-            bounds.left + 14,
-            header.bottom - 68,
-            bounds.width - 28,
-            56,
+        kind_label = f"{node.kind.value.title()} Node"
+        summary, badge, name_bounds, name_text = (
+            self._brain_node_summary_layout(
+                header,
+                self._brain_node_display_name(node),
+                kind_label,
+            )
         )
         kind_color = self._brain_node_kind_color(node.kind)
         arcade.draw_circle_filled(
@@ -144,8 +150,6 @@ class BrainInspectorComponent:
             kind_color,
             2,
         )
-        kind_label = f"{node.kind.value.title()} Node"
-        badge, name_bounds = self._brain_node_badge_layout(summary, kind_label)
         self._draw_rounded_rect(
             badge,
             self._brain_blend_color(
@@ -174,10 +178,7 @@ class BrainInspectorComponent:
         )
         self._draw_text(
             "brain_node_inspector_name",
-            self._brain_node_name_text(
-                self._brain_node_display_name(node),
-                name_bounds.width,
-            ),
+            name_text,
             name_bounds.left,
             summary.center_y,
             self.theme.text_primary,
@@ -198,13 +199,60 @@ class BrainInspectorComponent:
         self._draw_scrollable_lines_in_bounds(
             "brain_node_inspector",
             content,
-            self._brain_node_inspector_lines(brain, layout, node),
+            self._cached_brain_node_inspector_lines(brain, layout, node),
             line_spacing=20,
             first_line_color=self.theme.text_primary,
             body_color=self.theme.text_muted,
             first_line_bold=True,
             wrap_lines=True,
         )
+    def _brain_node_summary_layout(
+        self,
+        header: arcade.Rect,
+        name: str,
+        kind_label: str,
+    ) -> tuple[arcade.Rect, arcade.Rect, arcade.Rect, str]:
+        """Return responsive bounds and text for a selected-node summary.
+
+        Parameters
+        ----------
+        header
+            Inspector header used to anchor the summary.
+        name
+            Node display name.
+        kind_label
+            Node-kind badge label.
+
+        Returns
+        -------
+        tuple[arcade.Rect, arcade.Rect, arcade.Rect, str]
+            Summary, badge, name bounds, and wrapped name text.
+        """
+        summary_top = header.bottom - 12.0
+        summary_width = max(1.0, header.width - 28.0)
+        summary = arcade.LBWH(
+            header.left + 14.0,
+            summary_top - self.BRAIN_NODE_SUMMARY_MIN_HEIGHT,
+            summary_width,
+            self.BRAIN_NODE_SUMMARY_MIN_HEIGHT,
+        )
+        _, name_bounds = self._brain_node_badge_layout(summary, kind_label)
+        name_text = self._brain_node_name_text(name, name_bounds.width)
+        line_count = max(1, len(name_text.splitlines()))
+        summary_height = max(
+            self.BRAIN_NODE_SUMMARY_MIN_HEIGHT,
+            self.BRAIN_NODE_SUMMARY_VERTICAL_PADDING
+            + line_count * self.BRAIN_NODE_SUMMARY_LINE_HEIGHT,
+        )
+        summary = arcade.LBWH(
+            summary.left,
+            summary_top - summary_height,
+            summary.width,
+            summary_height,
+        )
+        badge, name_bounds = self._brain_node_badge_layout(summary, kind_label)
+        return summary, badge, name_bounds, name_text
+
     def _brain_node_badge_layout(
         self,
         summary: arcade.Rect,
@@ -256,14 +304,35 @@ class BrainInspectorComponent:
         str
             Formatted or resolved value.
         """
-        lines = self._wrap_line(name, width)
-        if len(lines) <= 2:
-            return "\n".join(lines)
+        return "\n".join(
+            self._wrap_line(
+                name,
+                width,
+                font_size=14.0,
+                bold=True,
+            )
+        )
+    def _cached_brain_node_inspector_lines(
+        self,
+        brain: object,
+        layout: BrainGraphLayout,
+        node: BrainGraphNode,
+    ) -> tuple[str, ...]:
+        """Return cached inspector content for the stable node selection."""
+        state = self._brain_state
+        if (
+            state.inspector_brain is brain
+            and state.inspector_layout is layout
+            and state.inspector_node_key == node.key
+        ):
+            return state.inspector_lines
 
-        max_chars = max(4, int(width / 7.0))
-        second_line = lines[1].rstrip()
-        second_line = second_line[: max(1, max_chars - 3)].rstrip() + "..."
-        return "\n".join((lines[0], second_line))
+        lines = tuple(self._brain_node_inspector_lines(brain, layout, node))
+        state.inspector_brain = brain
+        state.inspector_layout = layout
+        state.inspector_node_key = node.key
+        state.inspector_lines = lines
+        return lines
     def _brain_node_inspector_lines(
         self,
         brain: object,
@@ -326,7 +395,7 @@ class BrainInspectorComponent:
         connections_by_key = {
             connection.key: connection for connection in connections
         }
-        highlight = highlighted_path_through_node(layout, node.key)
+        highlight = self._brain_highlight_for_node(layout, node.key)
         incoming = sorted(
             (connection for connection in connections if connection.key[1] == node.key),
             key=lambda connection: order.get(connection.key[0], len(order)),
@@ -613,4 +682,3 @@ class BrainInspectorComponent:
         if kind == BrainNodeKind.OUTPUT:
             return (31, 168, 82)
         return (130, 54, 224)
-

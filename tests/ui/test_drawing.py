@@ -31,6 +31,129 @@ class ArcadePainterTest(unittest.TestCase):
         self.assertTrue(cached.bold)
         self.assertEqual(cached.draw.call_count, 2)
 
+    def test_draw_text_does_not_reassign_unchanged_layout_properties(
+        self,
+    ) -> None:
+        """Avoid invalidating Arcade's text layout on every frame."""
+
+        class CountingText:
+            def __init__(
+                self,
+                text: str,
+                x: float,
+                y: float,
+                color: object,
+                size: float,
+                **kwargs: object,
+            ) -> None:
+                object.__setattr__(self, "_count_changes", False)
+                self.text = text
+                self.x = x
+                self.y = y
+                normalized_color = tuple(color)  # type: ignore[arg-type]
+                self.color = (
+                    (*normalized_color, 255)
+                    if len(normalized_color) == 3
+                    else normalized_color
+                )
+                self.font_size = size
+                self.bold = kwargs.get("bold", False)
+                self.width = kwargs.get("width")
+                self.multiline = kwargs.get("multiline", False)
+                self.align = kwargs.get("align", "left")
+                self.anchor_x = kwargs.get("anchor_x", "left")
+                self.anchor_y = kwargs.get("anchor_y", "baseline")
+                self.rotation = kwargs.get("rotation", 0.0)
+                self.assignment_count = 0
+                object.__setattr__(self, "_count_changes", True)
+
+            def __setattr__(self, name: str, value: object) -> None:
+                if getattr(self, "_count_changes", False):
+                    object.__setattr__(
+                        self,
+                        "assignment_count",
+                        self.assignment_count + 1,
+                    )
+                object.__setattr__(self, name, value)
+
+            def draw(self) -> None:
+                return None
+
+        painter = ArcadePainter()
+        with patch(
+            "src.ui.common.drawing.arcade.Text",
+            CountingText,
+        ):
+            painter.draw_text(
+                "stable",
+                "Stable",
+                10,
+                20,
+                (1, 2, 3),
+                12,
+                width=100,
+                multiline=True,
+            )
+            cached = painter.text_cache["stable"]
+            painter.draw_text(
+                "stable",
+                "Stable",
+                10,
+                20,
+                (1, 2, 3),
+                12,
+                width=100,
+                multiline=True,
+            )
+
+        self.assertEqual(cached.assignment_count, 0)
+
+    def test_wrap_text_uses_glyph_widths_and_caches_layout(self) -> None:
+        """Use rendered widths instead of average character counts."""
+
+        class MeasuredText:
+            text_updates = 0
+
+            def __init__(
+                self,
+                text: str,
+                *_args: object,
+                **_kwargs: object,
+            ) -> None:
+                self._text = text
+
+            @property
+            def text(self) -> str:
+                return self._text
+
+            @text.setter
+            def text(self, value: str) -> None:
+                type(self).text_updates += 1
+                self._text = value
+
+            @property
+            def content_width(self) -> float:
+                return sum(
+                    12.0 if character == "W" else 4.0
+                    for character in self._text
+                )
+
+        painter = ArcadePainter()
+        with patch(
+            "src.ui.common.drawing.arcade.Text",
+            MeasuredText,
+        ):
+            first = painter.wrap_text("WWWWWW", 25.0, 12.0)
+            updates_after_first_layout = MeasuredText.text_updates
+            second = painter.wrap_text("WWWWWW", 25.0, 12.0)
+
+        self.assertEqual(first, ("WW", "WW", "WW"))
+        self.assertEqual(second, first)
+        self.assertEqual(
+            MeasuredText.text_updates,
+            updates_after_first_layout,
+        )
+
     def test_texture_draw_falls_back_to_rect_api(self) -> None:
         """Use the newer rectangle API when the legacy call is incompatible."""
         painter = ArcadePainter()

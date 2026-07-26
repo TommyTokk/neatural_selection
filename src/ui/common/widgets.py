@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from math import ceil, floor
 from pathlib import Path
+from collections.abc import Sequence
 
 import arcade
 
@@ -798,7 +800,7 @@ class CommonUiComponent:
         self,
         key: str,
         card_bounds: arcade.Rect,
-        lines: list[str],
+        lines: Sequence[str],
         *,
         line_spacing: float,
         first_line_color: arcade.Color | tuple[int, ...],
@@ -838,7 +840,7 @@ class CommonUiComponent:
         self,
         key: str,
         content: arcade.Rect,
-        lines: list[str],
+        lines: Sequence[str],
         *,
         line_spacing: float,
         first_line_color: arcade.Color | tuple[int, ...],
@@ -866,7 +868,7 @@ class CommonUiComponent:
         first_line_bold
             Value used by the operation.
         wrap_lines
-            Value used by the operation.
+            Whether logical lines should wrap within the available width.
         draw_ethogram_markers
             Value used by the operation.
         """
@@ -875,6 +877,7 @@ class CommonUiComponent:
                 lines,
                 content.width - 12.0,
                 draw_ethogram_markers=draw_ethogram_markers,
+                first_line_bold=first_line_bold,
             )
             if wrap_lines
             else [
@@ -887,13 +890,10 @@ class CommonUiComponent:
                 for line_index, line in enumerate(lines)
             ]
         )
-        scrollable = ScrollableText(
-            key=key,
-            bounds=content,
-            lines=tuple(line for line, *_metadata in visual_lines),
-            line_spacing=line_spacing,
+        scroll_limit = max(
+            0.0,
+            len(visual_lines) * line_spacing - content.height,
         )
-        scroll_limit = scrollable.scroll_limit()
         scroll_offset = max(
             0.0,
             min(scroll_limit, self._scroll_offsets.get(key, 0.0)),
@@ -902,12 +902,20 @@ class CommonUiComponent:
         self._scroll_limits[key] = scroll_limit
         self._scroll_regions[key] = content
 
-        for line_index, (line, is_first_line, marker_color, x) in enumerate(
-            visual_lines
-        ):
+        first_visible = max(
+            0,
+            ceil((scroll_offset - 12.0) / line_spacing),
+        )
+        visible_stop = min(
+            len(visual_lines),
+            floor(
+                (content.height - 12.0 + scroll_offset) / line_spacing
+            )
+            + 1,
+        )
+        for line_index in range(first_visible, visible_stop):
+            line, is_first_line, marker_color, x = visual_lines[line_index]
             y = content.top - 12 - line_index * line_spacing + scroll_offset
-            if y < content.bottom or y > content.top:
-                continue
             if marker_color is not None:
                 arcade.draw_circle_filled(
                     content.left + 8.0,
@@ -936,17 +944,19 @@ class CommonUiComponent:
             self._draw_scrollbar(content, scroll_offset, scroll_limit)
     def _wrapped_scrollable_lines(
         self,
-        lines: list[str],
+        lines: Sequence[str],
         width: float,
         *,
         draw_ethogram_markers: bool,
-    ) -> list[
+        first_line_bold: bool = False,
+    ) -> tuple[
         tuple[
             str,
             bool,
             tuple[int, int, int] | None,
             float,
-        ]
+        ],
+        ...,
     ]:
         """Return wrapped scrollable lines.
 
@@ -958,17 +968,30 @@ class CommonUiComponent:
             Requested logical size.
         draw_ethogram_markers
             Value used by the operation.
+        first_line_bold
+            Whether the first logical line uses the bold text metrics.
 
         Returns
         -------
-        list[tuple[str, bool, tuple[int, int, int] | None, float]]
+        tuple[tuple[str, bool, tuple[int, int, int] | None, float], ...]
             Computed collection.
         """
+        logical_lines = lines if isinstance(lines, tuple) else tuple(lines)
+        cache_key = (
+            logical_lines,
+            round(float(width), 2),
+            bool(draw_ethogram_markers),
+            bool(first_line_bold),
+        )
+        cached_lines = self._painter.wrapped_line_block_cache.get(cache_key)
+        if cached_lines is not None:
+            return cached_lines
+
         visual_lines: list[
             tuple[str, bool, tuple[int, int, int] | None, float]
         ] = []
         base_x = 0.0
-        for logical_index, raw_line in enumerate(lines):
+        for logical_index, raw_line in enumerate(logical_lines):
             marker_color: tuple[int, int, int] | None = None
             line = raw_line
             marker_indent = 0.0
@@ -979,19 +1002,27 @@ class CommonUiComponent:
                     marker_indent = 20.0
 
             available_width = max(24.0, width - marker_indent)
-            wrapped = self._wrap_line(line, available_width)
+            wrapped = self._wrap_line(
+                line,
+                available_width,
+                bold=first_line_bold and logical_index == 0,
+            )
             if not wrapped:
                 wrapped = [""]
             for wrapped_index, wrapped_line in enumerate(wrapped):
                 visual_lines.append(
                     (
                         wrapped_line,
-                        logical_index == 0 and wrapped_index == 0,
+                        logical_index == 0,
                         marker_color if wrapped_index == 0 else None,
                         base_x + marker_indent,
                     )
                 )
-        return visual_lines
+        wrapped_block = tuple(visual_lines)
+        if len(self._painter.wrapped_line_block_cache) >= 16:
+            self._painter.wrapped_line_block_cache.clear()
+        self._painter.wrapped_line_block_cache[cache_key] = wrapped_block
+        return wrapped_block
     @staticmethod
     def _ethogram_marker_color(
         marker: str,
@@ -1013,7 +1044,14 @@ class CommonUiComponent:
             "🔴": (255, 55, 65),
             "⚪": (150, 160, 170),
         }.get(marker)
-    def _wrap_line(self, text: str, width: float) -> list[str]:
+    def _wrap_line(
+        self,
+        text: str,
+        width: float,
+        *,
+        font_size: float = 12.0,
+        bold: bool = False,
+    ) -> list[str]:
         """Wrap line.
 
         Parameters
@@ -1022,51 +1060,24 @@ class CommonUiComponent:
             Text displayed by the UI.
         width
             Requested logical size.
+        font_size
+            Font size used to measure the visual line length.
+        bold
+            Whether to use the bold font metrics.
 
         Returns
         -------
         list[str]
             Computed collection.
         """
-        max_chars = max(4, int(width / 7.0))
-        if len(text) <= max_chars:
-            return [text]
-        leading = len(text) - len(text.lstrip(" "))
-        indent = text[:leading]
-        continuation_indent = indent
-        words = text.strip().split()
-        if not words:
-            return [text]
-
-        lines: list[str] = []
-        current = indent
-        chunk_size = max(1, max_chars - len(continuation_indent))
-        for word in words:
-            if len(word) > chunk_size:
-                if current.strip():
-                    lines.append(current)
-                    current = continuation_indent
-                for start in range(0, len(word), chunk_size):
-                    chunk = word[start : start + chunk_size]
-                    if start + chunk_size < len(word):
-                        lines.append(f"{continuation_indent}{chunk}")
-                    else:
-                        current = f"{continuation_indent}{chunk}"
-                continue
-            candidate = (
-                f"{current} {word}"
-                if current.strip()
-                else f"{continuation_indent}{word}"
+        return list(
+            self._painter.wrap_text(
+                text,
+                width,
+                font_size,
+                bold=bold,
             )
-            if len(candidate) <= max_chars:
-                current = candidate
-                continue
-            if current.strip():
-                lines.append(current)
-            current = f"{continuation_indent}{word}"
-        if current.strip() or not lines:
-            lines.append(current)
-        return lines
+        )
     def _card_content_bounds(self, bounds: arcade.Rect) -> arcade.Rect:
         """Return card content bounds.
 

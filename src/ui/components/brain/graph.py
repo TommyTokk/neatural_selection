@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Sequence
 from contextlib import contextmanager
 from math import ceil, cos, floor, hypot, isfinite, log1p, log10, pi, sin
 from pathlib import Path
@@ -28,6 +29,7 @@ from src.ui.components.state import (
 from src.ui.layouts.brain_graph import (
     BrainEdgeKind,
     BrainGraphEdge,
+    BrainGraphHighlight,
     BrainGraphLayout,
     BrainGraphNode,
     BrainNodeKind,
@@ -85,13 +87,12 @@ class BrainGraphComponent:
 
         input_keys = list(world.neat_controller.config.genome_config.input_keys)
         output_keys = list(world.neat_controller.config.genome_config.output_keys)
-        layout = build_brain_graph_layout(
-            brain.genome,
+        layout = self._brain_graph_layout(
+            selected,
+            brain,
             input_keys,
             output_keys,
             layout_bounds,
-            SENSOR_INPUT_NAMES,
-            ACTION_OUTPUT_NAMES,
         )
         lanes = self._draw_brain_graph_lanes(bounds, layout)
         self._sync_brain_graph_selection(selected, brain, layout)
@@ -102,7 +103,7 @@ class BrainGraphComponent:
         )
         selected_key = self._brain_selected_node_key
         highlight = (
-            highlighted_path_through_node(layout, selected_key)
+            self._brain_highlight_for_node(layout, selected_key)
             if selected_key is not None
             else None
         )
@@ -277,6 +278,70 @@ class BrainGraphComponent:
                         top - bottom,
                     )
         return layout
+    def _brain_graph_layout(
+        self,
+        selected: object,
+        brain: object,
+        input_keys: list[int],
+        output_keys: list[int],
+        layout_bounds: arcade.Rect,
+    ) -> BrainGraphLayout:
+        """Return a cached layout for the selected immutable genome."""
+        identity = (
+            int(getattr(selected, "creature_id")),
+            int(getattr(brain, "genome_id")),
+        )
+        genome = getattr(brain, "genome")
+        genome_nodes = getattr(genome, "nodes", {})
+        genome_connections = getattr(genome, "connections", {})
+        cache_key = (
+            identity,
+            id(genome),
+            id(genome_nodes),
+            len(genome_nodes),
+            id(genome_connections),
+            len(genome_connections),
+            tuple(input_keys),
+            tuple(output_keys),
+            layout_bounds.left,
+            layout_bounds.bottom,
+            layout_bounds.width,
+            layout_bounds.height,
+        )
+        state = self._brain_state
+        if state.layout_cache_key == cache_key and state.layout is not None:
+            return state.layout
+
+        layout = build_brain_graph_layout(
+            genome,
+            input_keys,
+            output_keys,
+            layout_bounds,
+            SENSOR_INPUT_NAMES,
+            ACTION_OUTPUT_NAMES,
+        )
+        state.layout_cache_key = cache_key
+        state.layout = layout
+        return layout
+    def _brain_highlight_for_node(
+        self,
+        layout: BrainGraphLayout,
+        node_key: int,
+    ) -> BrainGraphHighlight:
+        """Return a cached signal-path highlight for one graph selection."""
+        state = self._brain_state
+        if (
+            state.highlight_layout is layout
+            and state.highlight_node_key == node_key
+            and state.highlight is not None
+        ):
+            return state.highlight
+
+        highlight = highlighted_path_through_node(layout, node_key)
+        state.highlight_layout = layout
+        state.highlight_node_key = node_key
+        state.highlight = highlight
+        return highlight
     def _draw_brain_graph_edge(
         self,
         edge: BrainGraphEdge,
@@ -352,7 +417,7 @@ class BrainGraphComponent:
             if dashed:
                 self._draw_dashed_curve(points, color, width)
             else:
-                self._draw_curve(points, color, width)
+                self._draw_brain_solid_curve(points, color, width)
             if draw_arrow:
                 self._draw_brain_arrowhead(points, color, width)
             return
@@ -370,7 +435,7 @@ class BrainGraphComponent:
         if dashed:
             self._draw_dashed_curve(points, color, width)
         else:
-            self._draw_curve(points, color, width)
+            self._draw_brain_solid_curve(points, color, width)
         if draw_arrow:
             self._draw_brain_arrowhead(points, color, width)
     def _draw_brain_graph_label(
@@ -902,7 +967,7 @@ class BrainGraphComponent:
             (x + 22.0, y - 24.0),
             (x + 8.0, y - 2.0),
         ]
-        final_curve: list[tuple[float, float]] = []
+        final_curve: Sequence[tuple[float, float]] = ()
         for start, control, end in (
             (points[0], points[1], points[2]),
             (points[2], points[3], points[0]),
@@ -911,13 +976,13 @@ class BrainGraphComponent:
             if dashed:
                 self._draw_dashed_curve(curve, color, width)
             else:
-                self._draw_curve(curve, color, width)
+                self._draw_brain_solid_curve(curve, color, width)
             final_curve = curve
         if draw_arrow:
             self._draw_brain_arrowhead(final_curve, color, width)
     def _draw_curve(
         self,
-        points: list[tuple[float, float]],
+        points: Sequence[tuple[float, float]],
         color: arcade.Color | tuple[int, ...],
         width: float,
     ) -> None:
@@ -934,9 +999,21 @@ class BrainGraphComponent:
         """
         for start, end in zip(points, points[1:]):
             arcade.draw_line(start[0], start[1], end[0], end[1], color, width)
+    def _draw_brain_solid_curve(
+        self,
+        points: Sequence[tuple[float, float]],
+        color: arcade.Color | tuple[int, ...],
+        width: float,
+    ) -> None:
+        """Draw one brain connection with a single line-strip call."""
+        draw_line_strip = getattr(arcade, "draw_line_strip", None)
+        if draw_line_strip is not None:
+            draw_line_strip(points, color, width)
+            return
+        self._draw_curve(points, color, width)
     def _draw_dashed_curve(
         self,
-        points: list[tuple[float, float]],
+        points: Sequence[tuple[float, float]],
         color: arcade.Color | tuple[int, ...],
         width: float,
         *,
@@ -992,7 +1069,7 @@ class BrainGraphComponent:
         end: tuple[float, float],
         *,
         steps: int = 24,
-    ) -> list[tuple[float, float]]:
+    ) -> tuple[tuple[float, float], ...]:
         """Return quadratic bezier points.
 
         Parameters
@@ -1008,9 +1085,13 @@ class BrainGraphComponent:
 
         Returns
         -------
-        list[tuple[float, float]]
+        tuple[tuple[float, float], ...]
             Computed collection.
         """
+        cache_key = ("quadratic", start, control, end, steps)
+        cached = self._painter.curve_cache.get(cache_key)
+        if cached is not None:
+            return cached
         points: list[tuple[float, float]] = []
         for index in range(steps + 1):
             t = index / steps
@@ -1025,7 +1106,11 @@ class BrainGraphComponent:
                     + t * t * end[1],
                 )
             )
-        return points
+        curve = tuple(points)
+        if len(self._painter.curve_cache) >= 4096:
+            self._painter.curve_cache.clear()
+        self._painter.curve_cache[cache_key] = curve
+        return curve
     def _cubic_bezier_points(
         self,
         start: tuple[float, float],
@@ -1034,7 +1119,7 @@ class BrainGraphComponent:
         end: tuple[float, float],
         *,
         steps: int = 28,
-    ) -> list[tuple[float, float]]:
+    ) -> tuple[tuple[float, float], ...]:
         """Return cubic bezier points.
 
         Parameters
@@ -1052,9 +1137,20 @@ class BrainGraphComponent:
 
         Returns
         -------
-        list[tuple[float, float]]
+        tuple[tuple[float, float], ...]
             Computed collection.
         """
+        cache_key = (
+            "cubic",
+            start,
+            first_control,
+            second_control,
+            end,
+            steps,
+        )
+        cached = self._painter.curve_cache.get(cache_key)
+        if cached is not None:
+            return cached
         points: list[tuple[float, float]] = []
         for index in range(steps + 1):
             t = index / steps
@@ -1071,10 +1167,14 @@ class BrainGraphComponent:
                     + t**3 * end[1],
                 )
             )
-        return points
+        curve = tuple(points)
+        if len(self._painter.curve_cache) >= 4096:
+            self._painter.curve_cache.clear()
+        self._painter.curve_cache[cache_key] = curve
+        return curve
     def _draw_brain_arrowhead(
         self,
-        points: list[tuple[float, float]],
+        points: Sequence[tuple[float, float]],
         color: arcade.Color | tuple[int, ...],
         width: float,
     ) -> None:
@@ -1409,4 +1509,3 @@ class BrainGraphComponent:
             f"Social: panic {value(8, outputs):.2f} / "
             f"herding {value(9, outputs):.2f}"
         )
-
