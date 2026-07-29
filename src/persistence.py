@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 import pickle
 import logging
+from math import isfinite
 import shutil
 from threading import Condition, Thread
 from typing import TYPE_CHECKING, Any
@@ -23,9 +24,9 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 14
+CHECKPOINT_VERSION = 15
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -429,6 +430,16 @@ class PersistenceManager:
                         0.0,
                         float(getattr(creature, "stomach_energy", 0.0)),
                     ),
+                    "stomach_difficulty_load": max(
+                        0.0,
+                        float(
+                            getattr(
+                                creature,
+                                "stomach_difficulty_load",
+                                0.0,
+                            )
+                        ),
+                    ),
                     "vision": copy.deepcopy(creature.vision),
                     "physical_traits": copy.deepcopy(creature.physical_traits),
                     "flocking_traits": copy.deepcopy(
@@ -465,6 +476,7 @@ class PersistenceManager:
                     "energy_density": food.energy_density,
                     "energy_value": food.energy_value,
                     "original_energy_value": food.original_energy_value,
+                    "original_radius": food.original_radius,
                 }
             )
 
@@ -628,6 +640,11 @@ class PersistenceManager:
                 "genomes": evolution_state["genomes"],
                 "generation": neat_controller.population.generation,
                 "next_genome_id": next_genome_id,
+                "evolution_rng_state": getattr(
+                    neat_controller,
+                    "evolution_random_state",
+                    lambda: None,
+                )(),
                 **allocator_state,
             },
             "species_manager": {
@@ -900,7 +917,15 @@ class PersistenceManager:
                     founder_creature_id = archived.creature_id
                     founder_color = tuple(archived.color[:3])
 
-            zero = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+            zero = SpeciesTraitSnapshot(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                stomach_capacity=0.0,
+                digestion_rate=0.0,
+                digestion_efficiency=0.0,
+            )
             deltas = None
             neat_changes = None
             neural_shifts = ()
@@ -947,6 +972,10 @@ class PersistenceManager:
                     separation_gene_component=0.0,
                     alignment_gene_component=0.0,
                     cohesion_gene_component=0.0,
+                    stomach_capacity_component=0.0,
+                    digestion_rate_component=0.0,
+                    digestion_efficiency_component=0.0,
+                    digestive_trait_component=0.0,
                 )
             elif can_reconstruct:
                 (
@@ -970,6 +999,12 @@ class PersistenceManager:
                     + components.vision_range
                     + components.vision_angle
                     + components.movement_cost_multiplier
+                    + (
+                        components.stomach_capacity
+                        + components.digestion_rate
+                        + components.digestion_efficiency
+                    )
+                    / 3.0
                 )
                 neat_distance = genome.distance(
                     parent_genome,
@@ -1012,6 +1047,18 @@ class PersistenceManager:
                         flocking_traits.cohesion_gene
                         - parent_flocking.cohesion_gene
                     ),
+                    stomach_capacity=(
+                        physical_traits.stomach_capacity
+                        - parent_physical.stomach_capacity
+                    ),
+                    digestion_rate=(
+                        physical_traits.digestion_rate
+                        - parent_physical.digestion_rate
+                    ),
+                    digestion_efficiency=(
+                        physical_traits.digestion_efficiency
+                        - parent_physical.digestion_efficiency
+                    ),
                 )
                 distances = SpeciesDistanceBreakdown(
                     neat_distance=neat_distance,
@@ -1040,6 +1087,19 @@ class PersistenceManager:
                     separation_gene_component=separation_component,
                     alignment_gene_component=alignment_component,
                     cohesion_gene_component=cohesion_component,
+                    stomach_capacity_component=(
+                        components.stomach_capacity
+                    ),
+                    digestion_rate_component=components.digestion_rate,
+                    digestion_efficiency_component=(
+                        components.digestion_efficiency
+                    ),
+                    digestive_trait_component=(
+                        components.stomach_capacity
+                        + components.digestion_rate
+                        + components.digestion_efficiency
+                    )
+                    / 3.0,
                 )
 
             records[species_id] = SpeciesRecord(
@@ -1118,6 +1178,27 @@ class PersistenceManager:
                 separation_gene=genes[0],
                 alignment_gene=genes[1],
                 cohesion_gene=genes[2],
+                stomach_capacity=float(
+                    getattr(
+                        value,
+                        "stomach_capacity",
+                        0.0 if not bounded_genes else 1.6,
+                    )
+                ),
+                digestion_rate=float(
+                    getattr(
+                        value,
+                        "digestion_rate",
+                        0.0 if not bounded_genes else 0.2,
+                    )
+                ),
+                digestion_efficiency=float(
+                    getattr(
+                        value,
+                        "digestion_efficiency",
+                        0.0 if not bounded_genes else 0.9,
+                    )
+                ),
             )
 
         raw_distances = record.distances
@@ -1162,6 +1243,26 @@ class PersistenceManager:
             cohesion_gene_component=getattr(
                 raw_distances,
                 "cohesion_gene_component",
+                None,
+            ),
+            stomach_capacity_component=getattr(
+                raw_distances,
+                "stomach_capacity_component",
+                None,
+            ),
+            digestion_rate_component=getattr(
+                raw_distances,
+                "digestion_rate_component",
+                None,
+            ),
+            digestion_efficiency_component=getattr(
+                raw_distances,
+                "digestion_efficiency_component",
+                None,
+            ),
+            digestive_trait_component=getattr(
+                raw_distances,
+                "digestive_trait_component",
                 None,
             ),
         )
@@ -1460,7 +1561,7 @@ class PersistenceManager:
         *,
         allow_brain_contract_reset: bool = False,
     ) -> World:
-        from src.creature import LineageInfo, TraitMutationDelta
+        from src.creature import LineageInfo, PhysicalTraits, TraitMutationDelta
         from src.food import Food
         from src.world import ArchivedCreatureTraits, World
 
@@ -1516,6 +1617,15 @@ class PersistenceManager:
                     movement_cost_multiplier=float(
                         getattr(delta, "movement_cost_multiplier", 0.0)
                     ),
+                    stomach_capacity=float(
+                        getattr(delta, "stomach_capacity", 0.0)
+                    ),
+                    digestion_rate=float(
+                        getattr(delta, "digestion_rate", 0.0)
+                    ),
+                    digestion_efficiency=float(
+                        getattr(delta, "digestion_efficiency", 0.0)
+                    ),
                     separation_gene=float(
                         getattr(delta, "separation_gene", 0.0)
                     ),
@@ -1528,7 +1638,92 @@ class PersistenceManager:
                 ),
             )
 
+        def normalized_physical(
+            value: object,
+            stomach_energy: float = 0.0,
+        ) -> PhysicalTraits:
+            def finite_or_default(raw: object, default: float) -> float:
+                try:
+                    parsed = float(raw)
+                except (TypeError, ValueError):
+                    return default
+                return parsed if isfinite(parsed) else default
+
+            radius = finite_or_default(
+                getattr(value, "radius", trait_config.default_radius),
+                trait_config.default_radius,
+            )
+            legacy_capacity = (
+                radius * config.metabolism.stomach_capacity_per_radius
+            )
+            capacity = finite_or_default(
+                getattr(value, "stomach_capacity", legacy_capacity),
+                legacy_capacity,
+            )
+            saved_stomach = finite_or_default(stomach_energy, 0.0)
+            capacity = max(capacity, max(0.0, saved_stomach))
+            return PhysicalTraits(
+                radius=max(
+                    trait_config.min_radius,
+                    min(trait_config.max_radius, radius),
+                ),
+                movement_cost_multiplier=max(
+                    trait_config.min_movement_cost_multiplier,
+                    min(
+                        trait_config.max_movement_cost_multiplier,
+                        finite_or_default(
+                            getattr(
+                                value,
+                                "movement_cost_multiplier",
+                                trait_config.default_movement_cost_multiplier,
+                            ),
+                            trait_config.default_movement_cost_multiplier,
+                        ),
+                    ),
+                ),
+                stomach_capacity=max(
+                    trait_config.min_stomach_capacity,
+                    min(trait_config.max_stomach_capacity, capacity),
+                ),
+                digestion_rate=max(
+                    trait_config.min_digestion_rate,
+                    min(
+                        trait_config.max_digestion_rate,
+                        finite_or_default(
+                            getattr(
+                                value,
+                                "digestion_rate",
+                                trait_config.default_digestion_rate,
+                            ),
+                            trait_config.default_digestion_rate,
+                        ),
+                    ),
+                ),
+                digestion_efficiency=max(
+                    trait_config.min_digestion_efficiency,
+                    min(
+                        trait_config.max_digestion_efficiency,
+                        finite_or_default(
+                            getattr(
+                                value,
+                                "digestion_efficiency",
+                                trait_config.default_digestion_efficiency,
+                            ),
+                            trait_config.default_digestion_efficiency,
+                        ),
+                    ),
+                ),
+            )
+
         for creature_state in state["creatures"]:
+            saved_stomach_energy = max(
+                0.0,
+                float(creature_state.get("stomach_energy", 0.0)),
+            )
+            creature_state["physical_traits"] = normalized_physical(
+                creature_state["physical_traits"],
+                saved_stomach_energy,
+            )
             creature_state["flocking_traits"] = normalized_flocking(
                 creature_state.get("flocking_traits")
             )
@@ -1541,7 +1736,9 @@ class PersistenceManager:
             normalized_archives[int(genome_id)] = ArchivedCreatureTraits(
                 creature_id=int(archived.creature_id),
                 vision=copy.deepcopy(archived.vision),
-                physical_traits=copy.deepcopy(archived.physical_traits),
+                physical_traits=normalized_physical(
+                    archived.physical_traits
+                ),
                 color=copy.deepcopy(archived.color),
                 lineage=normalized_lineage(archived.lineage),
                 flocking_traits=normalized_flocking(
@@ -1660,6 +1857,19 @@ class PersistenceManager:
                 )
             controller.population.population = population_state["genomes"]
             controller.population.generation = population_state["generation"]
+            saved_evolution_rng_state = population_state.get(
+                "evolution_rng_state"
+            )
+            restore_evolution_rng = getattr(
+                controller,
+                "restore_evolution_random_state",
+                None,
+            )
+            if (
+                saved_evolution_rng_state is not None
+                and callable(restore_evolution_rng)
+            ):
+                restore_evolution_rng(saved_evolution_rng_state)
             species_state = state["species_manager"]
             controller.species_manager.compatibility_threshold = species_state[
                 "compatibility_threshold"
@@ -1676,7 +1886,7 @@ class PersistenceManager:
                     )
                 )
             )
-            controller.species_manager.representatives = (
+            migrated_representatives = (
                 PersistenceManager._migrate_species_representatives(
                     species_state["representatives"],
                     state["creatures"],
@@ -1684,6 +1894,20 @@ class PersistenceManager:
                     default_flocking_traits,
                 )
             )
+            controller.species_manager.representatives = {
+                species_id: (
+                    genome,
+                    normalized_physical(physical_traits),
+                    vision,
+                    flocking_traits,
+                )
+                for species_id, (
+                    genome,
+                    physical_traits,
+                    vision,
+                    flocking_traits,
+                ) in migrated_representatives.items()
+            }
             controller.species_manager.next_species_id = species_state[
                 "next_species_id"
             ]
@@ -1708,10 +1932,35 @@ class PersistenceManager:
                     lineage=creature_state["lineage"],
                 )
                 creature.name = creature_state["name"]
-                creature.stomach_energy = max(
-                    0.0,
-                    float(creature_state.get("stomach_energy", 0.0)),
+                raw_stomach_energy = float(
+                    creature_state.get("stomach_energy", 0.0)
                 )
+                if not isfinite(raw_stomach_energy):
+                    raw_stomach_energy = 0.0
+                creature.stomach_energy = min(
+                    creature.physical_traits.stomach_capacity,
+                    max(0.0, raw_stomach_energy),
+                )
+                raw_difficulty_load = float(
+                    creature_state.get(
+                        "stomach_difficulty_load",
+                        creature.stomach_energy,
+                    )
+                )
+                if not isfinite(raw_difficulty_load):
+                    raw_difficulty_load = creature.stomach_energy
+                if creature.stomach_energy <= 0.0:
+                    creature.stomach_difficulty_load = 0.0
+                else:
+                    creature.stomach_difficulty_load = max(
+                        creature.stomach_energy
+                        * config.metabolism.min_food_difficulty_multiplier,
+                        min(
+                            creature.stomach_energy
+                            * config.metabolism.max_food_difficulty_multiplier,
+                            raw_difficulty_load,
+                        ),
+                    )
                 creature.body.velocity = creature_state["velocity"]
                 creature.body.angular_velocity = creature_state["angular_velocity"]
                 creature.biome_fertility_ema = float(
@@ -1757,6 +2006,20 @@ class PersistenceManager:
                 )
                 food.energy_value = food_state["energy_value"]
                 food.original_energy_value = food_state["original_energy_value"]
+                food.original_radius = float(
+                    food_state.get(
+                        "original_radius",
+                        (
+                            food.original_radius
+                            if food.energy_density <= 0.0
+                            else (
+                                food.original_energy_value
+                                / (3.141592653589793 * food.energy_density)
+                            )
+                            ** 0.5
+                        ),
+                    )
+                )
                 food.body.velocity = food_state["velocity"]
                 food.body.angle = food_state["angle"]
                 food.body.angular_velocity = food_state["angular_velocity"]

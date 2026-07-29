@@ -87,6 +87,18 @@ class FakeView:
         del x, y, dx, dy
         return None
 
+    def on_mouse_drag(
+        self,
+        x: int,
+        y: int,
+        dx: int,
+        dy: int,
+        buttons: int,
+        modifiers: int,
+    ) -> bool | None:
+        del x, y, dx, dy, buttons, modifiers
+        return None
+
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:
         del symbol, modifiers
         return None
@@ -694,6 +706,101 @@ class CreateAndRunMenuTest(unittest.TestCase):
 
         self.assertEqual(calls, [(120, 240, 1, 0, True)])
 
+    def test_environment_click_captures_creature_before_world_advances(
+        self,
+    ) -> None:
+        calls: list[tuple[str, object]] = []
+        ui = SimpleNamespace(
+            handle_mouse_press=lambda world, x, y: False,
+        )
+        view = self._game_view_with_ui(ui)
+        view.world.layout = SimpleNamespace(
+            environment=arcade.LBWH(0, 0, 800, 600),
+        )
+        view.world.creature_id_at = (
+            lambda x, y: calls.append(("hit", (x, y))) or 17
+        )
+        view.world.select_creature_by_id = (
+            lambda creature_id: calls.append(("select", creature_id))
+        )
+
+        view.on_mouse_press(120, 240, arcade.MOUSE_BUTTON_LEFT, 0)
+        # Simulate the creature moving away during intervening fixed steps.
+        view.world.creature_id_at = lambda x, y: None
+        view.on_mouse_release(120, 240, arcade.MOUSE_BUTTON_LEFT, 0)
+
+        self.assertEqual(
+            calls,
+            [("hit", (120, 240)), ("select", 17)],
+        )
+
+    def test_environment_drag_discards_pending_click_selection(self) -> None:
+        selected: list[int | None] = []
+        ui = SimpleNamespace(
+            handle_mouse_press=lambda world, x, y: False,
+        )
+        view = self._game_view_with_ui(ui)
+        view.world.layout = SimpleNamespace(
+            environment=arcade.LBWH(0, 0, 800, 600),
+        )
+        view.world.creature_id_at = lambda x, y: 17
+        view.world.select_creature_by_id = selected.append
+        view.world.pan_environment = lambda dx, dy: None
+
+        view.on_mouse_press(120, 240, arcade.MOUSE_BUTTON_LEFT, 0)
+        view.on_mouse_drag(
+            130,
+            240,
+            10,
+            0,
+            arcade.MOUSE_BUTTON_LEFT,
+            0,
+        )
+        view.on_mouse_release(130, 240, arcade.MOUSE_BUTTON_LEFT, 0)
+
+        self.assertEqual(selected, [])
+
+    def test_new_press_recovers_from_a_missed_ui_release(self) -> None:
+        press_results = iter((True, False))
+        cancelled: list[str] = []
+        selected: list[int | None] = []
+        ui = SimpleNamespace(
+            handle_mouse_press=lambda world, x, y: next(press_results),
+            cancel_pointer_interaction=lambda: cancelled.append("cancel"),
+        )
+        view = self._game_view_with_ui(ui)
+        view.world.layout = SimpleNamespace(
+            environment=arcade.LBWH(0, 0, 800, 600),
+        )
+        view.world.creature_id_at = lambda x, y: 23
+        view.world.select_creature_by_id = selected.append
+
+        view.on_mouse_press(10, 10, arcade.MOUSE_BUTTON_LEFT, 0)
+        # No release arrives. The next press must cancel stale UI capture and
+        # start a fresh environment interaction immediately.
+        view.on_mouse_press(120, 240, arcade.MOUSE_BUTTON_LEFT, 0)
+        view.on_mouse_release(120, 240, arcade.MOUSE_BUTTON_LEFT, 0)
+
+        self.assertEqual(cancelled, ["cancel"])
+        self.assertEqual(selected, [23])
+
+    def test_focus_loss_cancels_pointer_and_command_key_capture(self) -> None:
+        cancelled: list[str] = []
+        ui = SimpleNamespace(
+            handle_mouse_press=lambda world, x, y: True,
+            cancel_pointer_interaction=lambda: cancelled.append("cancel"),
+        )
+        view = self._game_view_with_ui(ui)
+        view._command_keys_down.add(arcade.key.LCOMMAND)
+
+        view.on_mouse_press(10, 10, arcade.MOUSE_BUTTON_LEFT, 0)
+        view.on_deactivate()
+
+        self.assertEqual(cancelled, ["cancel"])
+        self.assertFalse(view._is_dragging_ui_control)
+        self.assertFalse(view._is_dragging_environment)
+        self.assertEqual(view._command_keys_down, set())
+
     def test_game_view_closes_ui_resources_when_hidden(self) -> None:
         calls: list[str] = []
         ui = SimpleNamespace(close=lambda: calls.append("ui"))
@@ -725,6 +832,35 @@ class CreateAndRunMenuTest(unittest.TestCase):
 
         self.assertIs(view.world, restored_world)
         self.assertIs(view.config, config)
+
+    def test_fresh_game_views_use_independent_brain_seeds(self) -> None:
+        app = importlib.import_module("src.app")
+        config = build_sim_config()
+        received_seeds: list[int] = []
+
+        def fake_world(
+            received_config: object,
+            *,
+            brain_initialization_seed: int,
+        ) -> object:
+            self.assertIs(received_config, config)
+            received_seeds.append(brain_initialization_seed)
+            return SimpleNamespace(config=received_config)
+
+        with (
+            patch.object(app.secrets, "randbits", side_effect=(101, 202)),
+            patch.object(app, "World", side_effect=fake_world),
+            patch.object(
+                app,
+                "EnvironmentRenderer",
+                return_value="environment-renderer",
+            ),
+            patch.object(app, "UiRenderer", return_value="ui-renderer"),
+        ):
+            app.NeatGameView(config)
+            app.NeatGameView(config)
+
+        self.assertEqual(received_seeds, [101, 202])
 
     def test_create_and_run_shows_start_menu_initially(self) -> None:
         created_windows: list[FakeWindow] = []

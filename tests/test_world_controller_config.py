@@ -41,6 +41,7 @@ class FakeNeatBrainController:
         trait_config: object | None = None,
         vision_config: object | None = None,
         flocking_trait_distance_coefficient: float = 1.0,
+        random_seed: int | None = None,
     ) -> None:
         self.config_path = config_path
         self.compatibility_threshold = compatibility_threshold
@@ -50,6 +51,7 @@ class FakeNeatBrainController:
         self.flocking_trait_distance_coefficient = (
             flocking_trait_distance_coefficient
         )
+        self.random_seed = random_seed
         self.assigned_creatures: list[object] = []
 
     def assign_initial_brains(self, creatures: list[object]) -> None:
@@ -110,6 +112,36 @@ class NeatControllerWiringTest(unittest.TestCase):
             world.neat_controller.flocking_trait_distance_coefficient,
             1.0,
         )
+        self.assertEqual(world.neat_controller.random_seed, config.random_seed)
+
+    def test_world_accepts_a_separate_brain_initialization_seed(self) -> None:
+        config = build_sim_config()
+        config.population.initial_creatures = 0
+        config.food.initial_food_items = 0
+        config.persistence.enable_telemetry = False
+        brain_seed = 987_654_321
+
+        original_rebuild_boundaries = World._rebuild_boundaries
+        original_spawn_creatures = World._spawn_creatures
+        original_neat_controller = world_module.NeatBrainController
+
+        World._rebuild_boundaries = lambda self: None
+        World._spawn_creatures = lambda self: []
+        world_module.NeatBrainController = FakeNeatBrainController
+
+        try:
+            world = World(
+                config,
+                simulation_paths=SimpleNamespace(),
+                brain_initialization_seed=brain_seed,
+            )
+        finally:
+            World._rebuild_boundaries = original_rebuild_boundaries
+            World._spawn_creatures = original_spawn_creatures
+            world_module.NeatBrainController = original_neat_controller
+
+        self.assertEqual(world.brain_initialization_seed, brain_seed)
+        self.assertEqual(world.neat_controller.random_seed, brain_seed)
 
 
 if __name__ == "__main__":

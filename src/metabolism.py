@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections.abc import Callable, Sequence
-from math import cos, sin
+from math import cos, isfinite, sin
 
 from src.food import Food
 from src.creature import Creature
-from configs.sim_config import CommunicationConfig, MetabolismConfig, TraitConfig
+from configs.sim_config import (
+    CommunicationConfig,
+    FoodConfig,
+    MetabolismConfig,
+    TraitConfig,
+)
 from src.vision import VisionSystem
 
 
@@ -24,6 +29,7 @@ class MetabolismReport:
     touched_foods: list[Food] = field(default_factory=list)
     food_consumptions: list[FoodConsumption] = field(default_factory=list)
     digested_energy_gained: dict[int, float] = field(default_factory=dict)
+    digestion_processing_costs: dict[int, float] = field(default_factory=dict)
     dead_creatures: list[Creature] = field(default_factory=list)
 
 
@@ -37,6 +43,7 @@ class EnergyCostBreakdown:
     sprint: float = 0.0
     acoustic: float = 0.0
     pheromone: float = 0.0
+    digestive_upkeep: float = 0.0
 
     @property
     def total(self) -> float:
@@ -48,7 +55,16 @@ class EnergyCostBreakdown:
             + self.body
             + self.acoustic
             + self.pheromone
+            + self.digestive_upkeep
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DigestionResult:
+    raw_digested: float
+    gross_energy: float
+    processing_cost: float
+    net_energy_gained: float
 
 
 class Metabolism:
@@ -59,12 +75,15 @@ class Metabolism:
         trait_config: TraitConfig | None = None,
         genome_for_creature_id: Callable[[int], object | None] | None = None,
         communication_config: CommunicationConfig | None = None,
+        food_config: FoodConfig | None = None,
     ) -> None:
         self.config = config
         self.vision = vision
         self.trait_config = trait_config or TraitConfig()
         self.genome_for_creature_id = genome_for_creature_id
         self.communication_config = communication_config or CommunicationConfig()
+        self.food_config = food_config or FoodConfig()
+        self._validate_config()
 
     def update(
         self,
@@ -84,42 +103,59 @@ class Metabolism:
         food_consumptions: list[FoodConsumption] = []
         dead_creatures: list[Creature] = []
         digested_energy_gained: dict[int, float] = {}
+        digestion_processing_costs: dict[int, float] = {}
 
         for creature in creatures:
-            energy_gained = self.digest(creature, delta_time)
-            if energy_gained > 0.0:
-                digested_energy_gained[creature.creature_id] = energy_gained
-
-            # Consume the energy from the creatures
             sprint_intensity = (
                 0.0
                 if sprint_intensities is None
                 else sprint_intensities.get(creature.creature_id, 0.0)
             )
-            self.consume_energy(
+            upkeep = (
+                self.energy_cost_breakdown_per_second(
+                    creature,
+                    max_speed,
+                    sprint_intensity=sprint_intensity,
+                    age_seconds=(
+                        None
+                        if creature_age_seconds is None
+                        else creature_age_seconds.get(creature.creature_id)
+                    ),
+                    communication_intensities=(
+                        (0.0, 0.0, 0.0)
+                        if communication_intensities is None
+                        else communication_intensities.get(
+                            creature.creature_id,
+                            (0.0, 0.0, 0.0),
+                        )
+                    ),
+                ).total
+                * max(0.0, delta_time)
+                * max(
+                    0.0,
+                    (
+                        1.0
+                        if energy_cost_multipliers is None
+                        else energy_cost_multipliers.get(
+                            creature.creature_id,
+                            1.0,
+                        )
+                    ),
+                )
+            )
+            digestion = self._digest_with_ledger(
                 creature,
                 delta_time,
-                max_speed,
-                sprint_intensity=sprint_intensity,
-                energy_cost_multiplier=(
-                    1.0
-                    if energy_cost_multipliers is None
-                    else energy_cost_multipliers.get(creature.creature_id, 1.0)
-                ),
-                age_seconds=(
-                    None
-                    if creature_age_seconds is None
-                    else creature_age_seconds.get(creature.creature_id)
-                ),
-                communication_intensities=(
-                    (0.0, 0.0, 0.0)
-                    if communication_intensities is None
-                    else communication_intensities.get(
-                        creature.creature_id,
-                        (0.0, 0.0, 0.0),
-                    )
-                ),
+                upkeep_cost=upkeep,
             )
+            if digestion.net_energy_gained > 0.0:
+                digested_energy_gained[creature.creature_id] = (
+                    digestion.net_energy_gained
+                )
+            if digestion.processing_cost > 0.0:
+                digestion_processing_costs[creature.creature_id] = (
+                    digestion.processing_cost
+                )
 
             if can_eat is not None and not can_eat(creature):
                 if self.is_dead(creature):
@@ -155,27 +191,105 @@ class Metabolism:
             touched_foods=touched_foods,
             food_consumptions=food_consumptions,
             digested_energy_gained=digested_energy_gained,
+            digestion_processing_costs=digestion_processing_costs,
             dead_creatures=dead_creatures,
         )
 
     def digest(self, creature: Creature, delta_time: float) -> float:
-        stomach_energy = max(0.0, getattr(creature, "stomach_energy", 0.0))
-        to_digest = min(
-            stomach_energy,
-            max(0.0, self.config.digestion_rate_per_second) * max(0.0, delta_time),
-        )
-        if to_digest <= 0.0:
-            creature.stomach_energy = stomach_energy
-            return 0.0
+        return self._digest_with_ledger(
+            creature,
+            delta_time,
+            upkeep_cost=0.0,
+        ).net_energy_gained
 
-        creature.stomach_energy = stomach_energy - to_digest
-        previous_energy = creature.energy
-        net_energy = to_digest * max(0.0, self.config.digestion_efficiency)
+    def _digest_with_ledger(
+        self,
+        creature: Creature,
+        delta_time: float,
+        *,
+        upkeep_cost: float,
+    ) -> DigestionResult:
+        stomach_energy = max(0.0, getattr(creature, "stomach_energy", 0.0))
+        stomach_load = self.normalized_stomach_difficulty_load(
+            creature,
+            stomach_energy,
+        )
+        traits = getattr(creature, "physical_traits", None)
+        digestion_rate = max(
+            0.0,
+            float(
+                getattr(
+                    traits,
+                    "digestion_rate",
+                    self.config.digestion_rate_per_second,
+                )
+            ),
+        )
+        digestion_efficiency = min(
+            1.0,
+            max(
+                0.0,
+                float(
+                    getattr(
+                        traits,
+                        "digestion_efficiency",
+                        self.config.digestion_efficiency,
+                    )
+                ),
+            ),
+        )
+        difficulty = (
+            1.0
+            if stomach_energy <= 0.0
+            else stomach_load / stomach_energy
+        )
+        processing_fraction = self.digestion_processing_fraction(
+            digestion_rate,
+            difficulty,
+        )
+        net_per_raw = digestion_efficiency * (1.0 - processing_fraction)
+        upkeep = max(0.0, upkeep_cost)
+        previous_energy = min(
+            self.config.max_energy,
+            max(0.0, creature.energy),
+        )
+        needed_net = max(
+            0.0,
+            self.config.max_energy - previous_energy + upkeep,
+        )
+        raw_limit = min(
+            stomach_energy,
+            digestion_rate * max(0.0, delta_time),
+        )
+        raw_digested = (
+            0.0
+            if net_per_raw <= 0.0
+            else min(raw_limit, needed_net / net_per_raw)
+        )
+        gross_energy = raw_digested * digestion_efficiency
+        processing_cost = gross_energy * processing_fraction
+        net_energy = gross_energy - processing_cost
+
+        remaining_stomach = max(0.0, stomach_energy - raw_digested)
+        remaining_load = max(
+            0.0,
+            stomach_load - raw_digested * difficulty,
+        )
+        if remaining_stomach <= 1e-12:
+            remaining_stomach = 0.0
+            remaining_load = 0.0
+        creature.stomach_energy = remaining_stomach
+        creature.stomach_difficulty_load = remaining_load
         creature.energy = min(
             self.config.max_energy,
-            creature.energy + net_energy,
+            max(0.0, previous_energy + net_energy - upkeep),
         )
-        return max(0.0, creature.energy - previous_energy)
+        return DigestionResult(
+            raw_digested=raw_digested,
+            gross_energy=gross_energy,
+            processing_cost=processing_cost,
+            net_energy_gained=net_energy,
+        )
 
     def consume_energy(
         self,
@@ -226,6 +340,9 @@ class Metabolism:
         )
         vision = self.vision.energy_cost_per_second(creature)
         body = self.body_energy_cost_per_second(creature)
+        digestive_upkeep = self.digestive_upkeep_energy_cost_per_second(
+            creature
+        )
         sound, trail, alarm = communication_intensities
         acoustic = (
             max(0.0, self.communication_config.acoustic_energy_cost_per_second)
@@ -244,6 +361,7 @@ class Metabolism:
             + max(0.0, movement - base_movement)
             + acoustic
             + pheromone
+            + digestive_upkeep
         )
 
         return EnergyCostBreakdown(
@@ -261,6 +379,7 @@ class Metabolism:
             trait=trait,
             acoustic=acoustic,
             pheromone=pheromone,
+            digestive_upkeep=digestive_upkeep,
         )
 
     def trait_energy_cost_per_second(
@@ -279,6 +398,215 @@ class Metabolism:
         max_radius = max(self.trait_config.max_radius, 0.0001)
         radius_ratio = max(0.0, creature.radius) / max_radius
         return self.trait_config.body_metabolism_cost_factor * radius_ratio**2
+
+    def digestive_upkeep_energy_cost_per_second(
+        self,
+        creature: Creature,
+    ) -> float:
+        traits = getattr(creature, "physical_traits", None)
+        capacity = max(
+            0.0,
+            float(
+                getattr(
+                    traits,
+                    "stomach_capacity",
+                    self.trait_config.default_stomach_capacity,
+                )
+            ),
+        )
+        rate = max(
+            0.0,
+            float(
+                getattr(
+                    traits,
+                    "digestion_rate",
+                    self.trait_config.default_digestion_rate,
+                )
+            ),
+        )
+        efficiency = max(
+            0.0,
+            float(
+                getattr(
+                    traits,
+                    "digestion_efficiency",
+                    self.trait_config.default_digestion_efficiency,
+                )
+            ),
+        )
+        capacity_ratio = capacity / max(
+            self.trait_config.default_stomach_capacity,
+            1e-12,
+        )
+        rate_ratio = rate / max(
+            self.trait_config.default_digestion_rate,
+            1e-12,
+        )
+        efficiency_ratio = efficiency / max(
+            self.trait_config.default_digestion_efficiency,
+            1e-12,
+        )
+        weighted_scale = (
+            self.config.digestive_capacity_upkeep_weight * capacity_ratio**2
+            + self.config.digestive_rate_upkeep_weight * rate_ratio**2
+            + self.config.digestive_efficiency_upkeep_weight
+            * efficiency_ratio**2
+        )
+        return min(
+            self.config.max_digestive_upkeep_per_second,
+            self.config.digestive_upkeep_at_default_per_second
+            * weighted_scale,
+        )
+
+    def digestion_processing_fraction(
+        self,
+        digestion_rate: float,
+        difficulty: float,
+    ) -> float:
+        rate_ratio = max(0.0, digestion_rate) / max(
+            self.trait_config.max_digestion_rate,
+            1e-12,
+        )
+        fraction = (
+            self.config.digestion_processing_base_fraction
+            * max(0.0, difficulty)
+            * (1.0 + self.config.digestion_rate_cost_factor * rate_ratio**2)
+        )
+        return min(
+            max(0.0, self.config.max_digestion_processing_fraction),
+            max(0.0, fraction),
+        )
+
+    def _validate_config(self) -> None:
+        trait = self.trait_config
+        metabolism = self.config
+
+        def require_finite(name: str, value: float) -> float:
+            numeric = float(value)
+            if not isfinite(numeric):
+                raise ValueError(f"{name} must be finite.")
+            return numeric
+
+        ranges = (
+            (
+                "stomach_capacity",
+                trait.min_stomach_capacity,
+                trait.default_stomach_capacity,
+                trait.max_stomach_capacity,
+            ),
+            (
+                "digestion_rate",
+                trait.min_digestion_rate,
+                trait.default_digestion_rate,
+                trait.max_digestion_rate,
+            ),
+            (
+                "digestion_efficiency",
+                trait.min_digestion_efficiency,
+                trait.default_digestion_efficiency,
+                trait.max_digestion_efficiency,
+            ),
+        )
+        for name, minimum, default, maximum in ranges:
+            minimum = require_finite(f"min_{name}", minimum)
+            default = require_finite(f"default_{name}", default)
+            maximum = require_finite(f"max_{name}", maximum)
+            if minimum <= 0.0 or not minimum <= default <= maximum:
+                raise ValueError(
+                    f"{name} must have 0 < minimum <= default <= maximum."
+                )
+            if maximum <= minimum:
+                raise ValueError(f"{name} range must have positive width.")
+        if trait.max_digestion_efficiency > 1.0:
+            raise ValueError("digestion_efficiency cannot exceed 1.0.")
+        mutation_rate = require_finite(
+            "digestive_trait_mutation_rate",
+            trait.digestive_trait_mutation_rate,
+        )
+        if not 0.0 <= mutation_rate <= 1.0:
+            raise ValueError(
+                "digestive_trait_mutation_rate must be between 0 and 1."
+            )
+        nonnegative = {
+            "stomach_capacity_mutation_stddev": (
+                trait.stomach_capacity_mutation_stddev
+            ),
+            "digestion_rate_mutation_stddev": (
+                trait.digestion_rate_mutation_stddev
+            ),
+            "digestion_efficiency_mutation_stddev": (
+                trait.digestion_efficiency_mutation_stddev
+            ),
+            "initial_stomach_capacity_jitter": (
+                trait.initial_stomach_capacity_jitter
+            ),
+            "initial_digestion_rate_jitter": (
+                trait.initial_digestion_rate_jitter
+            ),
+            "initial_digestion_efficiency_jitter": (
+                trait.initial_digestion_efficiency_jitter
+            ),
+            "digestive_upkeep_at_default_per_second": (
+                metabolism.digestive_upkeep_at_default_per_second
+            ),
+            "max_digestive_upkeep_per_second": (
+                metabolism.max_digestive_upkeep_per_second
+            ),
+            "digestion_processing_base_fraction": (
+                metabolism.digestion_processing_base_fraction
+            ),
+            "digestion_rate_cost_factor": (
+                metabolism.digestion_rate_cost_factor
+            ),
+            "min_food_difficulty_multiplier": (
+                metabolism.min_food_difficulty_multiplier
+            ),
+            "max_food_difficulty_multiplier": (
+                metabolism.max_food_difficulty_multiplier
+            ),
+        }
+        for name, value in nonnegative.items():
+            if require_finite(name, value) < 0.0:
+                raise ValueError(f"{name} cannot be negative.")
+        weights = (
+            metabolism.digestive_capacity_upkeep_weight,
+            metabolism.digestive_rate_upkeep_weight,
+            metabolism.digestive_efficiency_upkeep_weight,
+        )
+        if any(
+            require_finite("digestive upkeep weight", weight) < 0.0
+            for weight in weights
+        ) or sum(weights) <= 0.0:
+            raise ValueError(
+                "Digestive upkeep weights must be nonnegative and sum above zero."
+            )
+        if (
+            metabolism.max_food_difficulty_multiplier
+            < metabolism.min_food_difficulty_multiplier
+        ):
+            raise ValueError(
+                "Food difficulty maximum must be at least its minimum."
+            )
+        min_food_radius = require_finite(
+            "min_food_radius",
+            self.food_config.min_food_radius,
+        )
+        max_food_radius = require_finite(
+            "max_food_radius",
+            self.food_config.max_food_radius,
+        )
+        if min_food_radius <= 0.0 or max_food_radius <= min_food_radius:
+            raise ValueError(
+                "Food radii must have 0 < minimum < maximum."
+            )
+        max_processing = require_finite(
+            "max_digestion_processing_fraction",
+            metabolism.max_digestion_processing_fraction,
+        )
+        if not 0.0 <= max_processing <= 0.5:
+            raise ValueError(
+                "max_digestion_processing_fraction must be in [0, 0.5]."
+            )
 
     def brain_upkeep_energy_cost_per_second(
         self,
@@ -308,10 +636,7 @@ class Metabolism:
         food: Food,
         delta_time: float,
     ) -> FoodConsumption:
-        stomach_capacity = max(
-            0.0,
-            creature.radius * self.config.stomach_capacity_per_radius,
-        )
+        stomach_capacity = self.stomach_capacity(creature)
         stomach_energy = max(0.0, creature.stomach_energy)
         stomach_space = max(0.0, stomach_capacity - stomach_energy)
         if stomach_space <= 0.0:
@@ -326,26 +651,105 @@ class Metabolism:
             max(0.0, self.config.max_bite_size_per_second)
             * max(0.0, delta_time)
         )
-        bite = min(stomach_space, bite_limit, max(0.0, food.energy_value))
+        food_energy = max(0.0, food.energy_value)
+        bite = min(stomach_space, bite_limit, food_energy)
+        tolerance = max(0.0, self.config.micro_food_remainder_ratio)
+        if (
+            food_energy <= stomach_space
+            and food_energy <= bite_limit * (1.0 + tolerance)
+        ):
+            bite = food_energy
         result = food.consume_energy(
             bite,
             0.0,
         )
+        swallowed = min(stomach_space, max(0.0, result.energy_removed))
         creature.stomach_energy = min(
             stomach_capacity,
-            stomach_energy + result.energy_removed,
+            stomach_energy + swallowed,
         )
-        depleted = result.depleted or (
-            result.energy_removed > 0.0 and food.energy_value <= 0.01
+        difficulty = self.food_difficulty_multiplier(food)
+        previous_load = self.normalized_stomach_difficulty_load(
+            creature,
+            stomach_energy,
         )
-        if depleted:
-            food.energy_value = 0.0
+        creature.stomach_difficulty_load = (
+            previous_load + swallowed * difficulty
+        )
+        depleted = result.depleted
         return FoodConsumption(
             creature_id=creature.creature_id,
             food=food,
-            energy_swallowed=result.energy_removed,
+            energy_swallowed=swallowed,
             depleted=depleted,
         )
+
+    def stomach_capacity(self, creature: Creature) -> float:
+        traits = getattr(creature, "physical_traits", None)
+        inherited = getattr(traits, "stomach_capacity", None)
+        if inherited is not None:
+            return max(0.0, float(inherited))
+        return max(
+            0.0,
+            creature.radius * self.config.stomach_capacity_per_radius,
+        )
+
+    def food_difficulty_multiplier(self, food: Food) -> float:
+        minimum_radius = float(self.food_config.min_food_radius)
+        maximum_radius = float(self.food_config.max_food_radius)
+        original_radius = max(
+            0.0,
+            float(getattr(food, "original_radius", food.radius)),
+        )
+        if maximum_radius <= minimum_radius:
+            normalized_radius = 0.5
+        else:
+            normalized_radius = min(
+                max(
+                    (original_radius - minimum_radius)
+                    / (maximum_radius - minimum_radius),
+                    0.0,
+                ),
+                1.0,
+            )
+        minimum_difficulty = max(
+            0.0,
+            self.config.min_food_difficulty_multiplier,
+        )
+        maximum_difficulty = max(
+            minimum_difficulty,
+            self.config.max_food_difficulty_multiplier,
+        )
+        return minimum_difficulty + normalized_radius * (
+            maximum_difficulty - minimum_difficulty
+        )
+
+    def normalized_stomach_difficulty_load(
+        self,
+        creature: Creature,
+        stomach_energy: float | None = None,
+    ) -> float:
+        energy = (
+            max(0.0, getattr(creature, "stomach_energy", 0.0))
+            if stomach_energy is None
+            else max(0.0, stomach_energy)
+        )
+        if energy <= 0.0:
+            return 0.0
+        load = max(
+            0.0,
+            getattr(creature, "stomach_difficulty_load", 0.0),
+        )
+        if load <= 0.0:
+            return energy
+        minimum_load = (
+            energy * max(0.0, self.config.min_food_difficulty_multiplier)
+        )
+        maximum_load = energy * max(
+            self.config.min_food_difficulty_multiplier,
+            self.config.max_food_difficulty_multiplier,
+        )
+        return min(max(load, minimum_load), maximum_load)
 
     def find_eatable_food(
         self,

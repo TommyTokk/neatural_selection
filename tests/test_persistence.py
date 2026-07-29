@@ -50,10 +50,9 @@ class PersistenceManagerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_checkpoint_versions_9_through_11_remain_loadable(self) -> None:
-        PersistenceManager._validate_state({"version": 9})
-        PersistenceManager._validate_state({"version": 10})
-        PersistenceManager._validate_state({"version": 11})
+    def test_checkpoint_versions_2_through_14_remain_loadable(self) -> None:
+        for version in range(2, 15):
+            PersistenceManager._validate_state({"version": version})
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
         first_state = {"version": CHECKPOINT_VERSION, "value": "first"}
@@ -423,6 +422,7 @@ class PersistenceManagerTest(unittest.TestCase):
         self.assertEqual(state["brain_contract"]["sensor_schema"], 4)
         self.assertEqual(state["brain_contract"]["inputs"], 43)
         self.assertNotIn("previous_biome", state["world"])
+        self.assertEqual(state["world"]["physics_accumulator"], 0.0)
         self.assertEqual(state["world"]["time_since_last_quick_save"], 20.0)
         self.assertEqual(state["world"]["time_since_last_archive_save"], 50.0)
         self.assertEqual(state["world"]["next_creature_id"], 5)
@@ -509,7 +509,14 @@ class PersistenceManagerTest(unittest.TestCase):
             world.creatures[0].color = saved_member_color
             world.creatures[0].biome_fertility_ema = 0.37
             world.creatures[0].biome_fertility_ema_updated_at = 4.25
+            world._physics_accumulator = 0.007
             world.creatures[0].stomach_energy = 0.42
+            world.creatures[0].stomach_difficulty_load = 0.47
+            saved_digestive_traits = (
+                world.creatures[0].physical_traits.stomach_capacity,
+                world.creatures[0].physical_traits.digestion_rate,
+                world.creatures[0].physical_traits.digestion_efficiency,
+            )
             world.pheromones.deposit(
                 world.creatures[0].position,
                 trail_amount=0.4,
@@ -531,6 +538,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 min_remainder_ratio=0.0,
             )
             saved_food_energy = world.foods[0].energy_value
+            saved_food_original_radius = world.foods[0].original_radius
             luca = world.species_history[1]
             second_species = replace(
                 luca,
@@ -589,11 +597,24 @@ class PersistenceManagerTest(unittest.TestCase):
                 saved_member_color,
             )
             self.assertEqual(restored.creatures[0].biome_fertility_ema, 0.37)
+            self.assertEqual(restored._physics_accumulator, 0.007)
             self.assertEqual(
                 restored.creatures[0].biome_fertility_ema_updated_at,
                 4.25,
             )
             self.assertAlmostEqual(restored.creatures[0].stomach_energy, 0.42)
+            self.assertAlmostEqual(
+                restored.creatures[0].stomach_difficulty_load,
+                0.47,
+            )
+            self.assertEqual(
+                (
+                    restored.creatures[0].physical_traits.stomach_capacity,
+                    restored.creatures[0].physical_traits.digestion_rate,
+                    restored.creatures[0].physical_traits.digestion_efficiency,
+                ),
+                saved_digestive_traits,
+            )
             self.assertAlmostEqual(restored.pheromones.accumulator, 0.1)
             self.assertAlmostEqual(
                 float(restored.pheromones.trail.sum()),
@@ -632,6 +653,10 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertEqual(result.species_id, 3)
             self.assertIn((1, 3), post_load_layout.edges)
             self.assertAlmostEqual(restored.foods[0].energy_value, saved_food_energy)
+            self.assertAlmostEqual(
+                restored.foods[0].original_radius,
+                saved_food_original_radius,
+            )
             self.assertIsNot(restored_brain, original_brain)
             self.assertEqual(restored.live_brain_count(), 1)
             self.assertEqual(restored.simulation_paths, world.simulation_paths)
@@ -675,6 +700,70 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertEqual(
                 restored.creatures[0].biome_fertility_ema_updated_at,
                 restored.elapsed_time,
+            )
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
+
+    def test_version_14_checkpoint_migrates_digestive_state(self) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 1
+        self.config.food.initial_food_items = 0
+        world = World(self.config, simulation_paths=self.simulation_paths)
+        restored = None
+        try:
+            state = PersistenceManager._capture_state(
+                world,
+                world.neat_controller,
+            )
+            state["version"] = 14
+            legacy_physical = SimpleNamespace(
+                radius=18.0,
+                movement_cost_multiplier=1.1,
+            )
+            state["creatures"][0]["physical_traits"] = legacy_physical
+            state["creatures"][0]["stomach_energy"] = 2.0
+            state["creatures"][0].pop("stomach_difficulty_load")
+            for species_id, representative in list(
+                state["species_manager"]["representatives"].items()
+            ):
+                genome, _, vision, flocking = representative
+                state["species_manager"]["representatives"][species_id] = (
+                    genome,
+                    legacy_physical,
+                    vision,
+                    flocking,
+                )
+
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+            )
+
+            creature = restored.creatures[0]
+            self.assertEqual(creature.physical_traits.stomach_capacity, 2.0)
+            self.assertEqual(creature.physical_traits.digestion_rate, 0.2)
+            self.assertEqual(
+                creature.physical_traits.digestion_efficiency,
+                0.9,
+            )
+            self.assertEqual(creature.stomach_energy, 2.0)
+            self.assertEqual(creature.stomach_difficulty_load, 2.0)
+            representative_traits = (
+                restored.neat_controller.species_manager.representatives[1][1]
+            )
+            self.assertAlmostEqual(
+                representative_traits.stomach_capacity,
+                1.8,
+            )
+            self.assertEqual(representative_traits.digestion_rate, 0.2)
+            self.assertEqual(
+                representative_traits.digestion_efficiency,
+                0.9,
             )
         finally:
             world.close()

@@ -126,6 +126,11 @@ class FakeCreature:
     body: object = field(default_factory=object)
     shape: object = field(default_factory=object)
 
+    def contains_point(self, x: float, y: float) -> bool:
+        delta_x = x - self.position[0]
+        delta_y = y - self.position[1]
+        return delta_x * delta_x + delta_y * delta_y <= self.radius * self.radius
+
 
 class CapturingFoodSpawner:
     captured_bounds: tuple[float, float, float, float] | None = None
@@ -189,6 +194,7 @@ class WorldCameraTest(unittest.TestCase):
         world.environment_zoom = config.zoom.default
         world.environment_pan_x = 0.0
         world.environment_pan_y = 0.0
+        world._camera_follows_selected_creature = True
         world.environment_map_mode = "none"
         world.foods = []
         world.creatures = []
@@ -196,6 +202,52 @@ class WorldCameraTest(unittest.TestCase):
         world._food_grid_dirty = True
         world._food_grid_cell_size = 100.0
         return world
+
+    def test_creature_selection_uses_id_captured_from_press_frame(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=7, position=(0.0, 0.0))
+        world.creatures = [creature]
+        x, y = world.environment_to_screen(*creature.position)
+
+        captured_id = world.creature_id_at(x, y)
+        creature.position = (900.0, 700.0)
+        world.select_creature_by_id(captured_id)
+
+        self.assertEqual(captured_id, 7)
+        self.assertEqual(world.selected_creature_id, 7)
+
+    def test_manual_pan_is_not_overwritten_by_camera_follow(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=7, position=(0.0, 0.0))
+        world.creatures = [creature]
+        world.select_creature_by_id(creature.creature_id)
+
+        world.pan_environment(40.0, 25.0)
+        manual_pan = (world.environment_pan_x, world.environment_pan_y)
+        creature.position = (100.0, 80.0)
+        world._follow_selected_creature()
+
+        self.assertFalse(world._camera_follow_enabled())
+        self.assertEqual(
+            (world.environment_pan_x, world.environment_pan_y),
+            manual_pan,
+        )
+
+    def test_reset_view_is_not_overwritten_by_camera_follow(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=7, position=(100.0, 80.0))
+        world.creatures = [creature]
+        world.select_creature_by_id(creature.creature_id)
+
+        world.reset_environment_view()
+        world._follow_selected_creature()
+
+        self.assertFalse(world._camera_follow_enabled())
+        self.assertEqual(world.environment_zoom, world.config.zoom.default)
+        self.assertEqual(
+            (world.environment_pan_x, world.environment_pan_y),
+            (0.0, 0.0),
+        )
 
     def test_fixed_world_bounds_do_not_change_after_resize(self) -> None:
         world = self.make_world_shell()

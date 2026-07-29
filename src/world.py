@@ -156,10 +156,16 @@ class World:
         *,
         bootstrap: bool = True,
         simulation_paths: SimulationPaths | None = None,
+        brain_initialization_seed: int | None = None,
     ) -> None:
         config.flocking.validate()
         self.config = config
         self.rng = Random(config.random_seed)
+        self.brain_initialization_seed = (
+            config.random_seed
+            if brain_initialization_seed is None
+            else brain_initialization_seed
+        )
         self.elapsed_time = 0.0
         self.fps = 0.0
         self.is_paused = False
@@ -192,6 +198,7 @@ class World:
         self.environment_zoom = config.zoom.default
         self.environment_pan_x = 0.0
         self.environment_pan_y = 0.0
+        self._camera_follows_selected_creature = True
         self.vision = VisionSystem(
             config.vision,
             config.metabolism.eating_distance,
@@ -292,11 +299,13 @@ class World:
         # constructor remain usable. The production controller advertises
         # this argument and selects the schema-4 input topology before any
         # genomes are created.
-        if (
-            "sensor_contract"
-            in inspect.signature(NeatBrainController).parameters
-        ):
+        controller_parameters = inspect.signature(
+            NeatBrainController
+        ).parameters
+        if "sensor_contract" in controller_parameters:
             controller_kwargs["sensor_contract"] = sensor_contract
+        if "random_seed" in controller_parameters:
+            controller_kwargs["random_seed"] = self.brain_initialization_seed
         self.neat_controller = NeatBrainController(
             sensor_contract.neat_config_path,
             **controller_kwargs,
@@ -320,6 +329,7 @@ class World:
             config.trait,
             genome_for_creature_id=self._genome_for_creature_id,
             communication_config=config.communication,
+            food_config=config.food,
         )
         self.rt_neat = RtNeatManager(self.neat_controller)
         self._trait_archive_by_genome_id: dict[int, ArchivedCreatureTraits] = {}
@@ -357,9 +367,8 @@ class World:
             self._refresh_stats()
             return
 
-        self._update_speciation_threshold(delta_time)
-        scaled_delta_time = delta_time * self.simulation_speed
-        self.elapsed_time += scaled_delta_time
+        real_delta_time = max(0.0, delta_time)
+        scaled_delta_time = real_delta_time * self.simulation_speed
         self._physics_accumulator += min(
             scaled_delta_time, self.FIXED_TIMESTEP * self.MAX_FRAME_STEPS
         )
@@ -369,6 +378,8 @@ class World:
             self._physics_accumulator >= self.FIXED_TIMESTEP
             and steps < self.MAX_FRAME_STEPS
         ):
+            self.elapsed_time += self.FIXED_TIMESTEP
+            self._update_speciation_threshold(self.FIXED_TIMESTEP)
             self._apply_creature_intents()
             self._commit_communication_intents(self.FIXED_TIMESTEP)
             self.space.step(self.FIXED_TIMESTEP)
@@ -382,15 +393,15 @@ class World:
             self._update_chronometers(self.FIXED_TIMESTEP)
             self._update_metabolism(self.FIXED_TIMESTEP)
             self.pheromones.accumulate(self.FIXED_TIMESTEP)
+            self._spawn_foods(self.FIXED_TIMESTEP)
+            self._update_reproduction(self.FIXED_TIMESTEP)
+            self._update_flocking_telemetry(self.FIXED_TIMESTEP)
             self._physics_accumulator -= self.FIXED_TIMESTEP
             steps += 1
 
-        self._spawn_foods(scaled_delta_time)
-        self._update_reproduction(scaled_delta_time)
-        self._update_flocking_telemetry(scaled_delta_time)
         self._refresh_stats()
         self._follow_selected_creature()
-        self._update_persistence_timer(delta_time)
+        self._update_persistence_timer(real_delta_time)
 
     def close(self) -> None:
         if self._closed:
@@ -752,17 +763,22 @@ class World:
             self.config.zoom.minimum,
             min(self.config.zoom.maximum, updated_zoom),
         )
-        if self.selected_creature is None:
+        if (
+            self.selected_creature is None
+            or not self._camera_follow_enabled()
+        ):
             self._clamp_environment_pan()
         else:
             self._follow_selected_creature()
 
     def pan_environment(self, delta_x: float, delta_y: float) -> None:
+        self._camera_follows_selected_creature = False
         self.environment_pan_x += delta_x
         self.environment_pan_y += delta_y
         self._clamp_environment_pan()
 
     def reset_environment_view(self) -> None:
+        self._camera_follows_selected_creature = False
         self.environment_pan_x = 0.0
         self.environment_pan_y = 0.0
         self.environment_zoom = self.config.zoom.default
@@ -797,6 +813,7 @@ class World:
             self.environment_map_mode = "none"
 
     def set_simulation_speed(self, speed: float) -> None:
+        """Set the target multiplier; completed fixed steps remain authoritative."""
         clamped_speed = max(
             self.MIN_SIMULATION_SPEED, min(self.MAX_SIMULATION_SPEED, speed)
         )
@@ -1290,21 +1307,37 @@ class World:
     def toggle_debug_vision(self) -> None:
         self.debug_vision_enabled = not self.debug_vision_enabled
 
-    def select_creature_at(self, x: float, y: float) -> None:
+    def creature_id_at(self, x: float, y: float) -> int | None:
+        """Return the creature rendered under a screen-space pointer."""
         environment = self.layout.environment
         if not ut.contains(environment, x, y):
-            self.selected_creature_id = None
-            return
+            return None
         world_x, world_y = self.screen_to_environment(x, y)
-        chosen: Creature | None = None
         for creature in reversed(self.creatures):
             if creature.contains_point(world_x, world_y) and self._creature_is_visible(
                 creature
             ):
-                chosen = creature
-                break
-        self.selected_creature_id = None if chosen is None else chosen.creature_id
+                return creature.creature_id
+        return None
+
+    def select_creature_by_id(self, creature_id: int | None) -> None:
+        """Select a UI-captured target without repeating mutable hit testing."""
+        chosen = next(
+            (
+                creature
+                for creature in self.creatures
+                if creature.creature_id == creature_id
+            ),
+            None,
+        )
+        self.selected_creature_id = (
+            None if chosen is None else chosen.creature_id
+        )
+        self._camera_follows_selected_creature = chosen is not None
         self._focus_selected_creature()
+
+    def select_creature_at(self, x: float, y: float) -> None:
+        self.select_creature_by_id(self.creature_id_at(x, y))
 
     def kill_selected_creature(self) -> bool:
         selected = self.selected_creature
@@ -1473,9 +1506,39 @@ class World:
             trait_config.min_movement_cost_multiplier,
             trait_config.max_movement_cost_multiplier,
         )
+        stomach_capacity = self._clamp(
+            trait_config.default_stomach_capacity
+            + self.rng.gauss(
+                0.0,
+                trait_config.initial_stomach_capacity_jitter,
+            ),
+            trait_config.min_stomach_capacity,
+            trait_config.max_stomach_capacity,
+        )
+        digestion_rate = self._clamp(
+            trait_config.default_digestion_rate
+            + self.rng.gauss(
+                0.0,
+                trait_config.initial_digestion_rate_jitter,
+            ),
+            trait_config.min_digestion_rate,
+            trait_config.max_digestion_rate,
+        )
+        digestion_efficiency = self._clamp(
+            trait_config.default_digestion_efficiency
+            + self.rng.gauss(
+                0.0,
+                trait_config.initial_digestion_efficiency_jitter,
+            ),
+            trait_config.min_digestion_efficiency,
+            trait_config.max_digestion_efficiency,
+        )
         return PhysicalTraits(
             radius=radius,
             movement_cost_multiplier=movement_cost_multiplier,
+            stomach_capacity=stomach_capacity,
+            digestion_rate=digestion_rate,
+            digestion_efficiency=digestion_efficiency,
         )
 
     def _initial_flocking_traits(self) -> FlockingTraits:
@@ -1644,16 +1707,77 @@ class World:
             trait_config.max_movement_cost_multiplier,
         )
 
+        def mutate_digestive(
+            value: float,
+            mutation_stddev: float,
+            minimum: float,
+            maximum: float,
+        ) -> float:
+            if self.rng.random() >= trait_config.digestive_trait_mutation_rate:
+                return self._clamp(value, minimum, maximum)
+            return self._clamp(
+                value + self.rng.gauss(0.0, mutation_stddev),
+                minimum,
+                maximum,
+            )
+
+        parent_stomach_capacity = getattr(
+            parent_traits,
+            "stomach_capacity",
+            trait_config.default_stomach_capacity,
+        )
+        parent_digestion_rate = getattr(
+            parent_traits,
+            "digestion_rate",
+            trait_config.default_digestion_rate,
+        )
+        parent_digestion_efficiency = getattr(
+            parent_traits,
+            "digestion_efficiency",
+            trait_config.default_digestion_efficiency,
+        )
+        child_stomach_capacity = mutate_digestive(
+            parent_stomach_capacity,
+            trait_config.stomach_capacity_mutation_stddev,
+            trait_config.min_stomach_capacity,
+            trait_config.max_stomach_capacity,
+        )
+        child_digestion_rate = mutate_digestive(
+            parent_digestion_rate,
+            trait_config.digestion_rate_mutation_stddev,
+            trait_config.min_digestion_rate,
+            trait_config.max_digestion_rate,
+        )
+        child_digestion_efficiency = mutate_digestive(
+            parent_digestion_efficiency,
+            trait_config.digestion_efficiency_mutation_stddev,
+            trait_config.min_digestion_efficiency,
+            trait_config.max_digestion_efficiency,
+        )
+
         return (
             PhysicalTraits(
                 radius=child_radius,
                 movement_cost_multiplier=child_movement_cost_multiplier,
+                stomach_capacity=child_stomach_capacity,
+                digestion_rate=child_digestion_rate,
+                digestion_efficiency=child_digestion_efficiency,
             ),
             TraitMutationDelta(
                 radius=child_radius - parent_traits.radius,
                 movement_cost_multiplier=(
                     child_movement_cost_multiplier
                     - parent_traits.movement_cost_multiplier
+                ),
+                stomach_capacity=(
+                    child_stomach_capacity - parent_stomach_capacity
+                ),
+                digestion_rate=(
+                    child_digestion_rate - parent_digestion_rate
+                ),
+                digestion_efficiency=(
+                    child_digestion_efficiency
+                    - parent_digestion_efficiency
                 ),
             ),
         )
@@ -1695,6 +1819,9 @@ class World:
             vision_angle=vision_delta.vision_angle,
             radius=physical_delta.radius,
             movement_cost_multiplier=physical_delta.movement_cost_multiplier,
+            stomach_capacity=physical_delta.stomach_capacity,
+            digestion_rate=physical_delta.digestion_rate,
+            digestion_efficiency=physical_delta.digestion_efficiency,
             separation_gene=flocking_delta.separation_gene,
             alignment_gene=flocking_delta.alignment_gene,
             cohesion_gene=flocking_delta.cohesion_gene,
@@ -2757,6 +2884,7 @@ class World:
         if selected is None:
             return
 
+        self._camera_follows_selected_creature = True
         self.environment_zoom = max(
             self.config.zoom.minimum,
             min(self.config.zoom.maximum, self.SELECTED_CREATURE_ZOOM),
@@ -2764,6 +2892,8 @@ class World:
         self._follow_selected_creature()
 
     def _follow_selected_creature(self) -> None:
+        if not self._camera_follow_enabled():
+            return
         selected = self.selected_creature
         if selected is None:
             return
@@ -2772,6 +2902,11 @@ class World:
         self.environment_pan_x = -selected_x * self.environment_zoom
         self.environment_pan_y = -selected_y * self.environment_zoom
         self._clamp_environment_pan()
+
+    def _camera_follow_enabled(self) -> bool:
+        return bool(
+            getattr(self, "_camera_follows_selected_creature", True)
+        )
 
     def _creature_is_visible(self, creature: Creature) -> bool:
         draw_x, draw_y = self.environment_to_screen(*creature.position)
@@ -2988,6 +3123,22 @@ class World:
             fitness = self.fitness.get(creature_id)
             if fitness is not None:
                 fitness.record_food(energy_gained, depleted=False)
+
+        processing_costs = getattr(
+            report,
+            "digestion_processing_costs",
+            {},
+        )
+        self._last_digestion_processing_costs_per_second = {
+            creature_id: (
+                cost / delta_time if delta_time > 0.0 else 0.0
+            )
+            for creature_id, cost in processing_costs.items()
+        }
+        for creature_id, processing_cost in processing_costs.items():
+            fitness = self.fitness.get(creature_id)
+            if fitness is not None:
+                fitness.record_trait_cost(processing_cost, 1.0)
 
         for food in report.touched_foods:
             reindex_shape = getattr(self.space, "reindex_shape", None)
@@ -3442,6 +3593,11 @@ class World:
                 movement_cost_multiplier=(
                     creature.physical_traits.movement_cost_multiplier
                 ),
+                stomach_capacity=creature.physical_traits.stomach_capacity,
+                digestion_rate=creature.physical_traits.digestion_rate,
+                digestion_efficiency=(
+                    creature.physical_traits.digestion_efficiency
+                ),
             ),
             flocking_traits=FlockingTraits(
                 separation_gene=getattr(
@@ -3481,6 +3637,15 @@ class World:
                     radius=creature.lineage.mutation_delta.radius,
                     movement_cost_multiplier=(
                         creature.lineage.mutation_delta.movement_cost_multiplier
+                    ),
+                    stomach_capacity=(
+                        creature.lineage.mutation_delta.stomach_capacity
+                    ),
+                    digestion_rate=(
+                        creature.lineage.mutation_delta.digestion_rate
+                    ),
+                    digestion_efficiency=(
+                        creature.lineage.mutation_delta.digestion_efficiency
                     ),
                     separation_gene=(
                         creature.lineage.mutation_delta.separation_gene
@@ -3816,10 +3981,20 @@ class World:
         action = self._last_actions.get(creature.creature_id)
         if action is None:
             return False
-        stomach_capacity = max(
-            0.0,
-            creature.radius
-            * self.config.metabolism.stomach_capacity_per_radius,
+        physical_traits = getattr(creature, "physical_traits", None)
+        inherited_capacity = getattr(
+            physical_traits,
+            "stomach_capacity",
+            None,
+        )
+        stomach_capacity = (
+            max(0.0, float(inherited_capacity))
+            if inherited_capacity is not None
+            else max(
+                0.0,
+                creature.radius
+                * self.config.metabolism.stomach_capacity_per_radius,
+            )
         )
         stomach_space = max(
             0.0,

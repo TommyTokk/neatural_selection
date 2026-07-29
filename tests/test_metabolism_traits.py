@@ -27,9 +27,81 @@ class FakeVision:
 
 
 class MetabolismTraitCostTest(unittest.TestCase):
+    def test_default_and_maximum_digestive_upkeep_are_bounded(self) -> None:
+        config = MetabolismConfig(
+            basic_metabolism_rate=0.0,
+            movement_energy_cost_factor=0.0,
+        )
+        traits = TraitConfig()
+        metabolism = Metabolism(
+            config,
+            FakeVision(cost=0.0),
+            traits,
+        )
+        default = FakeCreature(
+            radius=16.0,
+            speed=0.0,
+            energy=1.0,
+            physical_traits=PhysicalTraits(
+                radius=16.0,
+                stomach_capacity=traits.default_stomach_capacity,
+                digestion_rate=traits.default_digestion_rate,
+                digestion_efficiency=traits.default_digestion_efficiency,
+            ),
+        )
+        maximum = FakeCreature(
+            radius=16.0,
+            speed=0.0,
+            energy=1.0,
+            physical_traits=PhysicalTraits(
+                radius=16.0,
+                stomach_capacity=traits.max_stomach_capacity,
+                digestion_rate=traits.max_digestion_rate,
+                digestion_efficiency=traits.max_digestion_efficiency,
+            ),
+        )
+
+        default_cost = metabolism.digestive_upkeep_energy_cost_per_second(
+            default
+        )
+        maximum_cost = metabolism.digestive_upkeep_energy_cost_per_second(
+            maximum
+        )
+
+        self.assertAlmostEqual(default_cost, 0.004)
+        self.assertGreater(maximum_cost, default_cost)
+        self.assertLessEqual(maximum_cost, 0.012)
+
+    def test_invalid_digestive_configuration_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            Metabolism(
+                MetabolismConfig(),
+                FakeVision(cost=0.0),
+                TraitConfig(digestive_trait_mutation_rate=1.1),
+            )
+        with self.assertRaises(ValueError):
+            Metabolism(
+                MetabolismConfig(
+                    max_digestion_processing_fraction=0.6,
+                ),
+                FakeVision(cost=0.0),
+                TraitConfig(),
+            )
+        with self.assertRaises(ValueError):
+            Metabolism(
+                MetabolismConfig(
+                    digestive_upkeep_at_default_per_second=-0.001,
+                ),
+                FakeVision(cost=0.0),
+                TraitConfig(),
+            )
+
     def test_communication_costs_are_charged_and_reported_as_trait_cost(self) -> None:
         metabolism = Metabolism(
-            MetabolismConfig(basic_metabolism_rate=0.0),
+            MetabolismConfig(
+                basic_metabolism_rate=0.0,
+                digestive_upkeep_at_default_per_second=0.0,
+            ),
             FakeVision(cost=0.0),
             TraitConfig(body_metabolism_cost_factor=0.0),
             communication_config=CommunicationConfig(
@@ -59,6 +131,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
             MetabolismConfig(
                 basic_metabolism_rate=0.0,
                 movement_energy_cost_factor=0.02,
+                digestive_upkeep_at_default_per_second=0.0,
             ),
             FakeVision(cost=0.01),
             TraitConfig(
@@ -103,6 +176,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
                 basic_metabolism_rate=0.0,
                 movement_energy_cost_factor=0.0,
                 sprint_energy_cost_per_second=0.04,
+                digestive_upkeep_at_default_per_second=0.0,
             ),
             FakeVision(cost=0.0),
             TraitConfig(body_metabolism_cost_factor=0.0),
@@ -134,6 +208,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
                 basic_metabolism_rate=0.1,
                 movement_energy_cost_factor=0.0,
                 sprint_energy_cost_per_second=0.0,
+                digestive_upkeep_at_default_per_second=0.0,
             ),
             FakeVision(cost=0.0),
             TraitConfig(body_metabolism_cost_factor=0.0),
@@ -168,6 +243,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
                 brain_upkeep_per_connection=0.0005,
                 movement_energy_cost_factor=0.0,
                 sprint_energy_cost_per_second=0.0,
+                digestive_upkeep_at_default_per_second=0.0,
             ),
             FakeVision(cost=0.0),
             TraitConfig(body_metabolism_cost_factor=0.0),
@@ -212,6 +288,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
                 brain_upkeep_per_connection=0.0005,
                 movement_energy_cost_factor=0.0,
                 sprint_energy_cost_per_second=0.0,
+                digestive_upkeep_at_default_per_second=0.0,
             ),
             FakeVision(cost=0.0),
             TraitConfig(body_metabolism_cost_factor=0.0),

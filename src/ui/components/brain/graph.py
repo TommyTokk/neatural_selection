@@ -204,8 +204,8 @@ class BrainGraphComponent:
             fill_color = self.theme.panel_background
             outline_color = self._brain_node_kind_color(node.kind)
             radius = min(
-                13.0,
-                base_radius + (1.5 if node.kind == BrainNodeKind.HIDDEN else 0.0),
+                15.0,
+                base_radius + (2.0 if node.kind == BrainNodeKind.HIDDEN else 0.0),
             )
 
             in_selection = (
@@ -720,7 +720,7 @@ class BrainGraphComponent:
             if densest_column <= 1
             else usable_height / (densest_column - 1)
         )
-        radius = max(5.0, min(11.0, (row_step - 2.0) * 0.55))
+        radius = max(6.0, min(13.0, (row_step - 2.0) * 0.62))
         font_size = max(8.0, min(11.0, row_step * 0.6))
         return radius, font_size
     def _draw_brain_legend(self, bounds: arcade.Rect) -> None:

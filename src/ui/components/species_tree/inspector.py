@@ -1177,6 +1177,18 @@ class SpeciesTreeInspectorComponent:
                     f"{traits.movement_cost_multiplier:.3f}x",
                 ),
                 _SpeciesInspectorRow(
+                    "Stomach capacity",
+                    f"{traits.stomach_capacity:.3f} energy",
+                ),
+                _SpeciesInspectorRow(
+                    "Digestion rate",
+                    f"{traits.digestion_rate:.3f} energy/s",
+                ),
+                _SpeciesInspectorRow(
+                    "Digestion efficiency",
+                    f"{traits.digestion_efficiency:.1%}",
+                ),
+                _SpeciesInspectorRow(
                     "Separation gene",
                     f"{traits.separation_gene:.3f}",
                 ),

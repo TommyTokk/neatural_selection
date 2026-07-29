@@ -1922,6 +1922,9 @@ class SpeciesTreeCanvasComponent:
             "vision_range": "Vision range",
             "vision_angle": "Vision angle",
             "movement_cost_multiplier": "Move cost",
+            "stomach_capacity": "Stomach capacity",
+            "digestion_rate": "Digestion rate",
+            "digestion_efficiency": "Digestion efficiency",
         }
         summaries = [
             f"{insight.percent_change:+.0f}% {trait_labels[insight.trait]}"
@@ -1934,4 +1937,3 @@ class SpeciesTreeCanvasComponent:
         if not summaries:
             lines.append("Morphology: baseline or unavailable")
         return lines
-

@@ -674,7 +674,8 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertEqual(len(dense_layout.nodes), 39)
         self.assertLess(dense_radius, sparse_radius)
         self.assertLess(dense_font, sparse_font)
-        self.assertGreaterEqual(dense_radius, 5.0)
+        self.assertEqual(sparse_radius, 13.0)
+        self.assertGreaterEqual(dense_radius, 6.0)
         self.assertGreaterEqual(dense_font, 8.0)
 
     def test_graph_nodes_use_static_white_fill_and_hide_hidden_canvas_labels(
@@ -682,9 +683,13 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
     ) -> None:
         fixture = self.make_brain_world()
         fills: list[object] = []
+        radii: list[float] = []
         original = self.renderer._draw_brain_node
         self.renderer._draw_brain_node = (
-            lambda position, fill, outline, **kwargs: fills.append(fill)
+            lambda position, fill, outline, **kwargs: (
+                fills.append(fill),
+                radii.append(kwargs["radius"]),
+            )
         )
         try:
             self.renderer._draw_brain_graph(
@@ -695,6 +700,8 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             self.renderer._draw_brain_node = original
 
         self.assertEqual(fills, [self.renderer.theme.panel_background] * 3)
+        self.assertEqual(min(radii), 13.0)
+        self.assertEqual(max(radii), 15.0)
         self.assertNotIn("brain_window_node_label_1", self.renderer._text_cache)
 
     def test_forward_edges_use_curves_and_enabled_arrowheads(self) -> None:
@@ -1982,9 +1989,10 @@ class FloatingSimulationUiTest(unittest.TestCase):
             label: str,
             value: str,
             *args: object,
-        ) -> None:
+        ) -> float:
             del viewport, args
             rows[key] = (label, value)
+            return 25.0
 
         self.renderer._draw_metric_row_in_viewport = capture_metric_row
         try:
@@ -1998,7 +2006,8 @@ class FloatingSimulationUiTest(unittest.TestCase):
             rows["inspector_mutations"],
             (
                 "Mutations",
-                "R +1.0, V +2.0/-0.03, M +0.04, F +0.00/+0.00/+0.00",
+                "R +1.0, V +2.0/-0.03, M +0.04, "
+                "D +0.00/+0.00/+0.00, F +0.00/+0.00/+0.00",
             ),
         )
         self.assertEqual(
@@ -2013,6 +2022,109 @@ class FloatingSimulationUiTest(unittest.TestCase):
             rows["inspector_collision_avoidance"],
             ("Collision avoidance", "Universal / automatic"),
         )
+
+    def test_shared_card_metric_row_wraps_within_available_width(self) -> None:
+        width = 260.0
+        consumed = self.renderer._draw_metric_row(
+            "responsive_metric",
+            "A deliberately long inherited morphology label",
+            "R +1.00 / V +2.00 / D +0.10 / F +0.20 / C +0.30",
+            20.0,
+            240.0,
+            width,
+        )
+
+        label = self.renderer._text_cache["responsive_metric_label"]
+        value = self.renderer._text_cache["responsive_metric_value"]
+        self.assertTrue(label.multiline)
+        self.assertTrue(value.multiline)
+        self.assertIn("\n", label.text)
+        self.assertIn("\n", value.text)
+        self.assertGreater(consumed, 25.0)
+        self.assertGreaterEqual(label.x, 20.0)
+        self.assertLessEqual(value.x + value.width, 20.0 + width)
+        for rendered, font_size in ((label, 10.0), (value, 12.0)):
+            for line in rendered.text.splitlines():
+                self.assertLessEqual(
+                    self.renderer._painter.measure_text_width(
+                        line,
+                        font_size,
+                    ),
+                    rendered.width,
+                )
+
+    def test_responsive_card_rows_stack_without_overlap_at_all_widths(
+        self,
+    ) -> None:
+        for width in (140.0, 260.0, 360.0):
+            with self.subTest(width=width):
+                first = self.renderer._metric_row_layout(
+                    "Inherited digestive morphology",
+                    "capacity 2.600 / rate 0.400 / efficiency 98.0%",
+                    20.0,
+                    240.0,
+                    width,
+                )
+                first_label, first_value = first[2], first[3]
+                second_y = 240.0 - first[4]
+                second = self.renderer._metric_row_layout(
+                    "Mutation delta",
+                    "+0.120 / +0.020 / +0.015",
+                    20.0,
+                    second_y,
+                    width,
+                )
+                second_label, second_value = second[2], second[3]
+
+                self.assertLessEqual(
+                    max(second_label.top, second_value.top),
+                    min(first_label.bottom, first_value.bottom),
+                )
+                for bounds in (
+                    first_label,
+                    first_value,
+                    second_label,
+                    second_value,
+                ):
+                    self.assertGreaterEqual(bounds.left, 20.0)
+                    self.assertLessEqual(bounds.right, 20.0 + width)
+
+    def test_creature_inspector_wraps_long_card_rows_without_clipping(
+        self,
+    ) -> None:
+        world = self.make_inspector_world()
+        world.selected_creature.lineage = LineageInfo(
+            mutation_delta=TraitMutationDelta(
+                radius=1.0,
+                vision_range=2.0,
+                vision_angle=-0.03,
+                movement_cost_multiplier=0.04,
+                stomach_capacity=0.12,
+                digestion_rate=0.02,
+                digestion_efficiency=0.01,
+                separation_gene=0.1,
+                alignment_gene=-0.1,
+                cohesion_gene=0.2,
+            )
+        )
+        self.renderer._panel_bounds["inspector"] = arcade.LBWH(
+            100,
+            100,
+            310,
+            330,
+        )
+
+        self.renderer._draw_inspector_panel(world)
+        self.renderer._scroll_offsets["inspector"] = (
+            self.renderer._scroll_limits["inspector"]
+        )
+        self.renderer._draw_inspector_panel(world)
+
+        value = self.renderer._text_cache["inspector_mutations_value"]
+        body = self.renderer._control_hitboxes["inspector_body"]
+        self.assertTrue(value.multiline)
+        self.assertIn("\n", value.text)
+        self.assertLessEqual(value.x + value.width, body.right)
 
     def test_progress_bar_zero_ratio_skips_fill(self) -> None:
         fills = []
@@ -2637,6 +2749,34 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertTrue(self.renderer.handle_mouse_press(world, 10, 10))
         self.assertEqual(calls, [])
         self.assertTrue(world.is_paused)
+
+    def test_cancelled_pointer_capture_does_not_commit_species_click(
+        self,
+    ) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        world = self.make_world(records)
+        self.renderer.open_species_tree(world)
+        self.renderer._draw_species_tree_window(world)
+        previous_selection = self.renderer._species_tree_selected_id
+        target_id = 1 if previous_selection == 2 else 2
+        node = self.renderer._species_tree_node_bounds[target_id]
+
+        self.renderer.handle_mouse_press(
+            world,
+            node.center_x,
+            node.center_y,
+        )
+        self.renderer.cancel_pointer_interaction()
+
+        self.assertEqual(
+            self.renderer._species_tree_selected_id,
+            previous_selection,
+        )
+        self.assertIsNone(self.renderer._species_tree_pending_selection_id)
+        self.assertFalse(self.renderer._species_tree_canvas_drag)
 
     def test_window_uses_full_inset_bounds_and_registers_nodes(self) -> None:
         records = {

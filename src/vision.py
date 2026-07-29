@@ -442,9 +442,15 @@ class VisionSystem:
         )
 
     def stomach_fullness(self, creature: Creature) -> float:
-        capacity = max(
-            0.0,
-            creature.radius * self.stomach_capacity_per_radius,
+        traits = getattr(creature, "physical_traits", None)
+        inherited_capacity = getattr(traits, "stomach_capacity", None)
+        capacity = (
+            max(0.0, float(inherited_capacity))
+            if inherited_capacity is not None
+            else max(
+                0.0,
+                creature.radius * self.stomach_capacity_per_radius,
+            )
         )
         if capacity <= 0.0:
             return 0.0

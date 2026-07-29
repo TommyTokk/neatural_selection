@@ -210,6 +210,60 @@ class InspectorPanelComponent:
             if physical_traits is not None
             else 1.0
         )
+        stomach_capacity = max(
+            0.0,
+            float(
+                getattr(
+                    physical_traits,
+                    "stomach_capacity",
+                    float(radius or 0.0)
+                    * float(
+                        getattr(
+                            world.config.metabolism,
+                            "stomach_capacity_per_radius",
+                            0.1,
+                        )
+                    ),
+                )
+            ),
+        )
+        stomach_energy = max(
+            0.0,
+            float(getattr(selected, "stomach_energy", 0.0)),
+        )
+        trait_config = getattr(world.config, "trait", None)
+        digestion_rate = float(
+            getattr(
+                physical_traits,
+                "digestion_rate",
+                getattr(trait_config, "default_digestion_rate", 0.2),
+            )
+        )
+        digestion_efficiency = float(
+            getattr(
+                physical_traits,
+                "digestion_efficiency",
+                getattr(trait_config, "default_digestion_efficiency", 0.9),
+            )
+        )
+        metabolism_model = getattr(world, "metabolism", None)
+        upkeep_calculator = getattr(
+            metabolism_model,
+            "digestive_upkeep_energy_cost_per_second",
+            None,
+        )
+        digestive_upkeep = (
+            float(upkeep_calculator(selected))
+            if callable(upkeep_calculator)
+            else 0.0
+        )
+        processing_cost = float(
+            getattr(
+                world,
+                "_last_digestion_processing_costs_per_second",
+                {},
+            ).get(selected.creature_id, 0.0)
+        )
         flocking_traits = getattr(selected, "flocking_traits", None)
         current_action = getattr(selected, "last_action", None)
         herding = float(getattr(current_action, "herding", 0.0))
@@ -246,9 +300,13 @@ class InspectorPanelComponent:
         padding = 18.0
         section_gap = 18.0
         species_row_height = 28.0 if species_id is not None else 0.0
-        total_height = (
-            (1074.0 if fitness_score is not None else 1042.0)
+        estimated_total_height = (
+            (1199.0 if fitness_score is not None else 1167.0)
             + species_row_height
+        )
+        total_height = max(
+            estimated_total_height,
+            self._inspector_content_height,
         )
         scroll_limit = max(0.0, total_height - viewport.height)
         scroll_offset = max(
@@ -263,6 +321,7 @@ class InspectorPanelComponent:
         right = viewport.right - padding
         width = max(0.0, right - left)
         y = viewport.top - 28.0 + scroll_offset
+        content_top = y
 
         self._draw_text_in_viewport(
             viewport,
@@ -374,7 +433,54 @@ class InspectorPanelComponent:
                 fill_color=(236, 153, 45),
             )
 
-        y -= 22.0 + section_gap
+        y -= 22.0
+        y -= self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_stomach_storage",
+            "Stored / capacity",
+            f"{stomach_energy:.3f} / {stomach_capacity:.3f}",
+            left,
+            y,
+            width,
+        )
+        y -= self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_stomach_fullness",
+            "Fullness",
+            f"{stomach_ratio:.1%}",
+            left,
+            y,
+            width,
+        )
+        y -= self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_digestion_traits",
+            "Rate / efficiency",
+            f"{digestion_rate:.3f}/s / {digestion_efficiency:.1%}",
+            left,
+            y,
+            width,
+        )
+        y -= self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_digestive_upkeep",
+            "Digestive upkeep",
+            f"{digestive_upkeep:.4f}/s",
+            left,
+            y,
+            width,
+        )
+        y -= self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_processing_cost",
+            "Recent processing cost",
+            f"{processing_cost:.4f}/s",
+            left,
+            y,
+            width,
+        )
+
+        y -= section_gap
         self._draw_inspector_section_label(
             viewport, "inspector_stats_section", "STATS", left, y
         )
@@ -419,7 +525,7 @@ class InspectorPanelComponent:
             viewport, "inspector_senses_section", "SENSES", left, y
         )
         y -= 24.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_vision_range",
             "Vision",
@@ -428,8 +534,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_flockmate_count",
             "Flockmates (eff/net)",
@@ -438,8 +543,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_vision_cost",
             "Cost",
@@ -448,8 +552,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_body",
             "Body",
@@ -458,8 +561,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_flocking_genes",
             "Flocking genes (inherited)",
@@ -476,8 +578,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_herding",
             "Herding (current)",
@@ -486,13 +587,12 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
         observation = (
             None if flock_runtime is None else flock_runtime.observation
         )
         intent = None if flock_runtime is None else flock_runtime.intent
         weights = None if intent is None else intent.weights
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_social_presence",
             "Presence (personal/social)",
@@ -508,7 +608,6 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
         flocking_config = getattr(world.config, "flocking", None)
         compatibility_config = getattr(
             flocking_config,
@@ -525,7 +624,7 @@ class InspectorPanelComponent:
             "value",
             raw_compatibility_mode,
         )
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_social_compatibility",
             "Social compatibility",
@@ -538,8 +637,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_effective_flocking_weights",
             "Effective weights",
@@ -556,8 +654,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_social_engagement",
             "Engagement / panic attenuation",
@@ -573,8 +670,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_desired_velocities",
             "Desired velocity N / S / blend",
@@ -591,8 +687,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_social_force_contribution",
             "Social requested / accepted",
@@ -608,8 +703,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_social_blend",
             "Social blend",
@@ -622,8 +716,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_local_group",
             "Persistent local group",
@@ -640,8 +733,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_flocking_benchmark",
             "Benchmark fitness",
@@ -654,8 +746,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_collision_avoidance",
             "Collision avoidance",
@@ -664,8 +755,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_lineage",
             "Lineage",
@@ -674,8 +764,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_mutations",
             "Mutations",
@@ -684,8 +773,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_food",
             "Food",
@@ -694,8 +782,7 @@ class InspectorPanelComponent:
             y,
             width,
         )
-        y -= 25.0
-        self._draw_metric_row_in_viewport(
+        y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_near",
             "Near",
@@ -706,8 +793,7 @@ class InspectorPanelComponent:
         )
 
         if fitness_score is not None:
-            y -= 25.0
-            self._draw_metric_row_in_viewport(
+            y -= self._draw_metric_row_in_viewport(
                 viewport,
                 "inspector_age",
                 "Age",
@@ -723,6 +809,20 @@ class InspectorPanelComponent:
         brain_button = arcade.LBWH(left, y - 36.0, button_width, 36)
         kill_button = arcade.LBWH(
             brain_button.right + button_gap, y - 36.0, button_width, 36
+        )
+        measured_content_height = max(
+            0.0,
+            content_top - min(brain_button.bottom, kill_button.bottom) + 28.0,
+        )
+        self._inspector_content_height = measured_content_height
+        measured_scroll_limit = max(
+            0.0,
+            measured_content_height - viewport.height,
+        )
+        self._scroll_limits["inspector"] = measured_scroll_limit
+        self._scroll_offsets["inspector"] = min(
+            scroll_offset,
+            measured_scroll_limit,
         )
         self._control_hitboxes.pop("open_brain_window", None)
         self._control_hitboxes.pop("kill_selected_creature", None)
@@ -746,8 +846,12 @@ class InspectorPanelComponent:
                 fill_color=(255, 218, 214),
                 text_color=self.theme.selected_outline,
             )
-        if scroll_limit > 0.0:
-            self._draw_scrollbar(viewport, scroll_offset, scroll_limit)
+        if measured_scroll_limit > 0.0:
+            self._draw_scrollbar(
+                viewport,
+                self._scroll_offsets["inspector"],
+                measured_scroll_limit,
+            )
     def _draw_selected_creature(self, world: World, bounds: arcade.Rect) -> None:
         """Draw selected creature.
 
@@ -1318,7 +1422,7 @@ class InspectorPanelComponent:
         width: float,
         *,
         value_color: arcade.Color | tuple[int, ...] | None = None,
-    ) -> None:
+    ) -> float:
         """Draw metric row in viewport.
 
         Parameters
@@ -1339,9 +1443,27 @@ class InspectorPanelComponent:
             Requested logical size.
         value_color
             Value used by the operation.
+
+        Returns
+        -------
+        float
+            Vertical space consumed by the responsive row.
         """
-        if viewport.bottom <= y <= viewport.top:
-            self._draw_metric_row(
+        row_height = self._metric_row_layout(
+            label,
+            value,
+            x,
+            y,
+            width,
+        )[-1]
+        row_bounds = arcade.LBWH(
+            x,
+            y - row_height,
+            width,
+            row_height,
+        )
+        if self._rect_intersects(row_bounds, viewport):
+            return self._draw_metric_row(
                 key,
                 label,
                 value,
@@ -1350,6 +1472,7 @@ class InspectorPanelComponent:
                 width,
                 value_color=value_color,
             )
+        return row_height
     def _draw_compact_value(
         self,
         key: str,
@@ -1433,9 +1556,30 @@ class InspectorPanelComponent:
         separation = getattr(mutation_delta, "separation_gene", 0.0)
         alignment = getattr(mutation_delta, "alignment_gene", 0.0)
         cohesion = getattr(mutation_delta, "cohesion_gene", 0.0)
+        stomach_capacity = getattr(mutation_delta, "stomach_capacity", 0.0)
+        digestion_rate = getattr(mutation_delta, "digestion_rate", 0.0)
+        digestion_efficiency = getattr(
+            mutation_delta,
+            "digestion_efficiency",
+            0.0,
+        )
+        digestive_delta = (
+            f"D {stomach_capacity:+.2f}/{digestion_rate:+.2f}/"
+            f"{digestion_efficiency:+.2f}, "
+            if any(
+                hasattr(mutation_delta, name)
+                for name in (
+                    "stomach_capacity",
+                    "digestion_rate",
+                    "digestion_efficiency",
+                )
+            )
+            else ""
+        )
         return (
             f"R {radius:+.1f}, V {vision_range:+.1f}/"
             f"{vision_angle:+.2f}, M {movement_cost:+.2f}, "
+            f"{digestive_delta}"
             f"F {separation:+.2f}/{alignment:+.2f}/{cohesion:+.2f}"
         )
     def _format_genome_fitness(self, fitness: object) -> str:

@@ -55,6 +55,9 @@ class TelemetryDatabase:
                 vision_range REAL,
                 vision_angle REAL,
                 movement_cost_multiplier REAL,
+                stomach_capacity REAL,
+                digestion_rate REAL,
+                digestion_efficiency REAL,
                 separation_gene REAL,
                 alignment_gene REAL,
                 cohesion_gene REAL,
@@ -62,6 +65,9 @@ class TelemetryDatabase:
                 vision_range_delta REAL,
                 vision_angle_delta REAL,
                 movement_cost_delta REAL,
+                stomach_capacity_delta REAL,
+                digestion_rate_delta REAL,
+                digestion_efficiency_delta REAL,
                 separation_gene_delta REAL,
                 alignment_gene_delta REAL,
                 cohesion_gene_delta REAL,
@@ -75,6 +81,10 @@ class TelemetryDatabase:
                 vision_range_component REAL,
                 vision_angle_component REAL,
                 movement_cost_component REAL,
+                stomach_capacity_component REAL,
+                digestion_rate_component REAL,
+                digestion_efficiency_component REAL,
+                digestive_trait_component REAL,
                 flocking_trait_distance REAL,
                 weighted_flocking_trait_distance REAL,
                 flocking_trait_distance_coefficient REAL,
@@ -157,6 +167,16 @@ class TelemetryDatabase:
             "separation_gene_component": "REAL",
             "alignment_gene_component": "REAL",
             "cohesion_gene_component": "REAL",
+            "stomach_capacity": "REAL",
+            "digestion_rate": "REAL",
+            "digestion_efficiency": "REAL",
+            "stomach_capacity_delta": "REAL",
+            "digestion_rate_delta": "REAL",
+            "digestion_efficiency_delta": "REAL",
+            "stomach_capacity_component": "REAL",
+            "digestion_rate_component": "REAL",
+            "digestion_efficiency_component": "REAL",
+            "digestive_trait_component": "REAL",
         }
         for name, column_type in required_columns.items():
             if name not in columns:
@@ -241,15 +261,20 @@ class TelemetryDatabase:
             "species_id", "parent_species_id", "founder_creature_id",
             "founder_genome_id", "time_emerged", "color_red", "color_green",
             "color_blue", "data_quality", "radius", "vision_range",
-            "vision_angle", "movement_cost_multiplier", "separation_gene",
+            "vision_angle", "movement_cost_multiplier", "stomach_capacity",
+            "digestion_rate", "digestion_efficiency", "separation_gene",
             "alignment_gene", "cohesion_gene", "radius_delta",
             "vision_range_delta", "vision_angle_delta", "movement_cost_delta",
+            "stomach_capacity_delta", "digestion_rate_delta",
+            "digestion_efficiency_delta",
             "separation_gene_delta", "alignment_gene_delta",
             "cohesion_gene_delta", "neat_distance", "phenotypic_distance",
             "weighted_phenotypic_distance", "composite_distance",
             "compatibility_threshold", "phenotypic_weight", "radius_component",
             "vision_range_component", "vision_angle_component",
-            "movement_cost_component", "flocking_trait_distance",
+            "movement_cost_component", "stomach_capacity_component",
+            "digestion_rate_component", "digestion_efficiency_component",
+            "digestive_trait_component", "flocking_trait_distance",
             "weighted_flocking_trait_distance",
             "flocking_trait_distance_coefficient", "separation_gene_component",
             "alignment_gene_component", "cohesion_gene_component",
@@ -268,6 +293,9 @@ class TelemetryDatabase:
             None if traits is None else traits.vision_range,
             None if traits is None else traits.vision_angle,
             None if traits is None else traits.movement_cost_multiplier,
+            None if traits is None else traits.stomach_capacity,
+            None if traits is None else traits.digestion_rate,
+            None if traits is None else traits.digestion_efficiency,
             None if traits is None else traits.separation_gene,
             None if traits is None else traits.alignment_gene,
             None if traits is None else traits.cohesion_gene,
@@ -275,6 +303,9 @@ class TelemetryDatabase:
             None if deltas is None else deltas.vision_range,
             None if deltas is None else deltas.vision_angle,
             None if deltas is None else deltas.movement_cost_multiplier,
+            None if deltas is None else deltas.stomach_capacity,
+            None if deltas is None else deltas.digestion_rate,
+            None if deltas is None else deltas.digestion_efficiency,
             None if deltas is None else deltas.separation_gene,
             None if deltas is None else deltas.alignment_gene,
             None if deltas is None else deltas.cohesion_gene,
@@ -288,6 +319,10 @@ class TelemetryDatabase:
             distances.vision_range_component,
             distances.vision_angle_component,
             distances.movement_cost_component,
+            distances.stomach_capacity_component,
+            distances.digestion_rate_component,
+            distances.digestion_efficiency_component,
+            distances.digestive_trait_component,
             distances.flocking_trait_distance,
             distances.weighted_flocking_trait_distance,
             distances.flocking_trait_distance_coefficient,
@@ -330,14 +365,19 @@ class TelemetryDatabase:
                 species_id, parent_species_id, founder_creature_id,
                 founder_genome_id, time_emerged, color_red, color_green,
                 color_blue, data_quality, radius, vision_range, vision_angle,
-                movement_cost_multiplier, separation_gene, alignment_gene,
+                movement_cost_multiplier, stomach_capacity, digestion_rate,
+                digestion_efficiency, separation_gene, alignment_gene,
                 cohesion_gene, radius_delta, vision_range_delta,
-                vision_angle_delta, movement_cost_delta, separation_gene_delta,
+                vision_angle_delta, movement_cost_delta,
+                stomach_capacity_delta, digestion_rate_delta,
+                digestion_efficiency_delta, separation_gene_delta,
                 alignment_gene_delta, cohesion_gene_delta, neat_distance,
                 phenotypic_distance, weighted_phenotypic_distance,
                 composite_distance, compatibility_threshold,
                 phenotypic_weight, radius_component, vision_range_component,
                 vision_angle_component, movement_cost_component,
+                stomach_capacity_component, digestion_rate_component,
+                digestion_efficiency_component, digestive_trait_component,
                 flocking_trait_distance, weighted_flocking_trait_distance,
                 flocking_trait_distance_coefficient, separation_gene_component,
                 alignment_gene_component, cohesion_gene_component,
@@ -367,6 +407,9 @@ class TelemetryDatabase:
                 vision_range,
                 vision_angle,
                 movement_cost_multiplier,
+                stomach_capacity,
+                digestion_rate,
+                digestion_efficiency,
                 separation_gene,
                 alignment_gene,
                 cohesion_gene,
@@ -374,6 +417,9 @@ class TelemetryDatabase:
                 vision_range_delta,
                 vision_angle_delta,
                 movement_cost_delta,
+                stomach_capacity_delta,
+                digestion_rate_delta,
+                digestion_efficiency_delta,
                 separation_gene_delta,
                 alignment_gene_delta,
                 cohesion_gene_delta,
@@ -387,6 +433,10 @@ class TelemetryDatabase:
                 vision_range_component,
                 vision_angle_component,
                 movement_cost_component,
+                stomach_capacity_component,
+                digestion_rate_component,
+                digestion_efficiency_component,
+                digestive_trait_component,
                 flocking_trait_distance,
                 weighted_flocking_trait_distance,
                 flocking_trait_distance_coefficient,
@@ -417,6 +467,9 @@ class TelemetryDatabase:
                     vision_range,
                     vision_angle,
                     movement_cost_multiplier,
+                    stomach_capacity,
+                    digestion_rate,
+                    digestion_efficiency,
                     separation_gene,
                     alignment_gene,
                     cohesion_gene,
@@ -428,6 +481,9 @@ class TelemetryDatabase:
                     vision_range_delta,
                     vision_angle_delta,
                     movement_cost_delta,
+                    stomach_capacity_delta,
+                    digestion_rate_delta,
+                    digestion_efficiency_delta,
                     separation_gene_delta,
                     alignment_gene_delta,
                     cohesion_gene_delta,
@@ -445,6 +501,14 @@ class TelemetryDatabase:
                     vision_range_component=vision_range_component,
                     vision_angle_component=vision_angle_component,
                     movement_cost_component=movement_cost_component,
+                    stomach_capacity_component=(
+                        stomach_capacity_component
+                    ),
+                    digestion_rate_component=digestion_rate_component,
+                    digestion_efficiency_component=(
+                        digestion_efficiency_component
+                    ),
+                    digestive_trait_component=digestive_trait_component,
                     flocking_trait_distance=flocking_trait_distance,
                     weighted_flocking_trait_distance=(
                         weighted_flocking_trait_distance
@@ -625,6 +689,9 @@ def _trait_snapshot(
     vision_range: float | None,
     vision_angle: float | None,
     movement_cost_multiplier: float | None,
+    stomach_capacity: float | None,
+    digestion_rate: float | None,
+    digestion_efficiency: float | None,
     separation_gene: float | None,
     alignment_gene: float | None,
     cohesion_gene: float | None,
@@ -646,6 +713,7 @@ def _trait_snapshot(
     ]
     if bounded_genes:
         genes = [max(0.0, min(1.0, gene)) for gene in genes]
+    digestive_defaults = (1.6, 0.2, 0.9) if bounded_genes else (0.0, 0.0, 0.0)
     return SpeciesTraitSnapshot(
         radius=float(radius),
         vision_range=float(vision_range),
@@ -654,6 +722,21 @@ def _trait_snapshot(
         separation_gene=genes[0],
         alignment_gene=genes[1],
         cohesion_gene=genes[2],
+        stomach_capacity=(
+            digestive_defaults[0]
+            if stomach_capacity is None
+            else float(stomach_capacity)
+        ),
+        digestion_rate=(
+            digestive_defaults[1]
+            if digestion_rate is None
+            else float(digestion_rate)
+        ),
+        digestion_efficiency=(
+            digestive_defaults[2]
+            if digestion_efficiency is None
+            else float(digestion_efficiency)
+        ),
     )
 
 

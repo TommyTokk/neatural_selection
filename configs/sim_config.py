@@ -372,6 +372,16 @@ class MetabolismConfig:
     digestion_efficiency: float = 0.9
     max_bite_size_per_second: float = 0.5
     starvation_energy_threshold: float = 0.3
+    digestive_upkeep_at_default_per_second: float = 0.004
+    max_digestive_upkeep_per_second: float = 0.012
+    digestive_capacity_upkeep_weight: float = 0.40
+    digestive_rate_upkeep_weight: float = 0.35
+    digestive_efficiency_upkeep_weight: float = 0.25
+    digestion_processing_base_fraction: float = 0.08
+    digestion_rate_cost_factor: float = 1.5
+    min_food_difficulty_multiplier: float = 0.75
+    max_food_difficulty_multiplier: float = 1.25
+    max_digestion_processing_fraction: float = 0.5
 
 
 @dataclass(slots=True)
@@ -448,6 +458,25 @@ class TraitConfig:
     max_movement_cost_multiplier: float = 1.35
     initial_movement_cost_jitter: float = 0.08
     movement_cost_mutation_stddev: float = 0.04
+
+    default_stomach_capacity: float = 1.6
+    min_stomach_capacity: float = 0.8
+    max_stomach_capacity: float = 2.6
+    initial_stomach_capacity_jitter: float = 0.15
+    stomach_capacity_mutation_stddev: float = 0.12
+
+    default_digestion_rate: float = 0.20
+    min_digestion_rate: float = 0.05
+    max_digestion_rate: float = 0.40
+    initial_digestion_rate_jitter: float = 0.025
+    digestion_rate_mutation_stddev: float = 0.02
+
+    default_digestion_efficiency: float = 0.90
+    min_digestion_efficiency: float = 0.55
+    max_digestion_efficiency: float = 0.98
+    initial_digestion_efficiency_jitter: float = 0.02
+    digestion_efficiency_mutation_stddev: float = 0.015
+    digestive_trait_mutation_rate: float = 0.15
 
     default_separation_gene: float = 0.5
     default_alignment_gene: float = 0.5

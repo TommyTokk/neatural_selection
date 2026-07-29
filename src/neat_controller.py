@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
+import random
 from typing import Any
 
 import copy
@@ -72,11 +74,17 @@ def calculate_phenotypic_distance(
         trait_config,
         vision_config,
     )
+    digestive_trait_component = (
+        components.stomach_capacity
+        + components.digestion_rate
+        + components.digestion_efficiency
+    ) / 3.0
     return (
         components.radius
         + components.vision_range
         + components.vision_angle
         + components.movement_cost_multiplier
+        + digestive_trait_component
     )
 
 
@@ -112,6 +120,48 @@ def calculate_phenotypic_distance_components(
             representative_physical_traits.movement_cost_multiplier,
             trait_config.min_movement_cost_multiplier,
             trait_config.max_movement_cost_multiplier,
+        ),
+        stomach_capacity=_normalized_trait_difference(
+            getattr(
+                child_physical_traits,
+                "stomach_capacity",
+                trait_config.default_stomach_capacity,
+            ),
+            getattr(
+                representative_physical_traits,
+                "stomach_capacity",
+                trait_config.default_stomach_capacity,
+            ),
+            trait_config.min_stomach_capacity,
+            trait_config.max_stomach_capacity,
+        ),
+        digestion_rate=_normalized_trait_difference(
+            getattr(
+                child_physical_traits,
+                "digestion_rate",
+                trait_config.default_digestion_rate,
+            ),
+            getattr(
+                representative_physical_traits,
+                "digestion_rate",
+                trait_config.default_digestion_rate,
+            ),
+            trait_config.min_digestion_rate,
+            trait_config.max_digestion_rate,
+        ),
+        digestion_efficiency=_normalized_trait_difference(
+            getattr(
+                child_physical_traits,
+                "digestion_efficiency",
+                trait_config.default_digestion_efficiency,
+            ),
+            getattr(
+                representative_physical_traits,
+                "digestion_efficiency",
+                trait_config.default_digestion_efficiency,
+            ),
+            trait_config.min_digestion_efficiency,
+            trait_config.max_digestion_efficiency,
         ),
     )
 
@@ -241,7 +291,24 @@ class ContinuousSpeciesManager:
                 child_flocking_traits.cohesion_gene
                 - representative_flocking_traits.cohesion_gene
             ),
+            stomach_capacity=(
+                child_physical_traits.stomach_capacity
+                - representative_physical_traits.stomach_capacity
+            ),
+            digestion_rate=(
+                child_physical_traits.digestion_rate
+                - representative_physical_traits.digestion_rate
+            ),
+            digestion_efficiency=(
+                child_physical_traits.digestion_efficiency
+                - representative_physical_traits.digestion_efficiency
+            ),
         )
+        digestive_trait_component = (
+            compatibility.phenotype_components.stomach_capacity
+            + compatibility.phenotype_components.digestion_rate
+            + compatibility.phenotype_components.digestion_efficiency
+        ) / 3.0
         distances = SpeciesDistanceBreakdown(
             neat_distance=compatibility.neat_distance,
             phenotypic_distance=compatibility.phenotypic_distance,
@@ -271,6 +338,16 @@ class ContinuousSpeciesManager:
             separation_gene_component=compatibility.separation_gene_component,
             alignment_gene_component=compatibility.alignment_gene_component,
             cohesion_gene_component=compatibility.cohesion_gene_component,
+            stomach_capacity_component=(
+                compatibility.phenotype_components.stomach_capacity
+            ),
+            digestion_rate_component=(
+                compatibility.phenotype_components.digestion_rate
+            ),
+            digestion_efficiency_component=(
+                compatibility.phenotype_components.digestion_efficiency
+            ),
+            digestive_trait_component=digestive_trait_component,
         )
         if compatibility.composite_distance > self.compatibility_threshold:
             neural_shifts = extract_neural_shifts(
@@ -334,11 +411,17 @@ class ContinuousSpeciesManager:
             self.trait_config,
             self.vision_config,
         )
+        digestive_trait_component = (
+            phenotype_components.stomach_capacity
+            + phenotype_components.digestion_rate
+            + phenotype_components.digestion_efficiency
+        ) / 3.0
         phenotypic_distance = (
             phenotype_components.radius
             + phenotype_components.vision_range
             + phenotype_components.vision_angle
             + phenotype_components.movement_cost_multiplier
+            + digestive_trait_component
         )
         weighted_phenotypic_distance = (
             self.phenotypic_weight * phenotypic_distance
@@ -389,7 +472,9 @@ class NeatBrainController:
         vision_config: VisionConfig | None = None,
         flocking_trait_distance_coefficient: float = 1.0,
         sensor_contract: SensorContract | None = None,
+        random_seed: int | None = None,
     ) -> None:
+        self._evolution_rng = random.Random(random_seed)
         self.config_path = Path(config_path)
         self.config = neat.Config(
             neat.DefaultGenome,
@@ -400,7 +485,8 @@ class NeatBrainController:
         )
         self.sensor_contract = sensor_contract or SENSOR_CONTRACT
         self._validate_network_contract()
-        self.population = neat.Population(self.config)
+        with self._using_evolution_rng():
+            self.population = neat.Population(self.config)
         self._next_genome_id_value = (
             max(self.population.population, default=0) + 1
         )
@@ -459,7 +545,8 @@ class NeatBrainController:
             str(self.config_path),
         )
         self._validate_network_contract()
-        self.population = neat.Population(self.config)
+        with self._using_evolution_rng():
+            self.population = neat.Population(self.config)
         self.brains = {}
         self._pairwise_compatibility_distance_cache.clear()
         self.species_manager.representatives = {}
@@ -801,7 +888,8 @@ class NeatBrainController:
         child_genome = copy.deepcopy(parent_genome)
         child_genome.key = self._next_genome_id()
         child_genome.fitness = None
-        child_genome.mutate(self.config.genome_config)
+        with self._using_evolution_rng():
+            child_genome.mutate(self.config.genome_config)
         speciation_result = self.species_manager.evaluate_species(
             child_genome,
             child_physical_traits,
@@ -818,6 +906,29 @@ class NeatBrainController:
         )
         self.brains[creature_id] = child_brain
         return child_brain, speciation_result
+
+    @contextmanager
+    def _using_evolution_rng(self):
+        evolution_rng = getattr(self, "_evolution_rng", None)
+        if evolution_rng is None:
+            yield
+            return
+        external_state = random.getstate()
+        random.setstate(evolution_rng.getstate())
+        try:
+            yield
+        finally:
+            evolution_rng.setstate(random.getstate())
+            random.setstate(external_state)
+
+    def evolution_random_state(self) -> object | None:
+        evolution_rng = getattr(self, "_evolution_rng", None)
+        return None if evolution_rng is None else evolution_rng.getstate()
+
+    def restore_evolution_random_state(self, state: object) -> None:
+        if not hasattr(self, "_evolution_rng"):
+            self._evolution_rng = random.Random()
+        self._evolution_rng.setstate(state)
 
     def best_genomes(self, count: int) -> list[Any]:
         scored_genomes = [

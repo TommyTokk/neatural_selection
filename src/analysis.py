@@ -104,6 +104,12 @@ _TRAIT_LABELS = {
         "Higher Movement Cost",
         "Lower Movement Cost",
     ),
+    "stomach_capacity": ("Larger Stomach", "Smaller Stomach"),
+    "digestion_rate": ("Faster Digestion", "Slower Digestion"),
+    "digestion_efficiency": (
+        "More Efficient Digestion",
+        "Less Efficient Digestion",
+    ),
 }
 
 _ACTION_LABELS = {
@@ -685,7 +691,35 @@ def _metabolic_costs(
         float(trait.body_metabolism_cost_factor)
         * (max(0.0, float(traits.radius)) / max_radius) ** 2
     )
-    idle = float(metabolism.basic_metabolism_rate) + vision_cost + body_cost
+    capacity_ratio = max(0.0, float(traits.stomach_capacity)) / max(
+        float(trait.default_stomach_capacity),
+        0.0001,
+    )
+    rate_ratio = max(0.0, float(traits.digestion_rate)) / max(
+        float(trait.default_digestion_rate),
+        0.0001,
+    )
+    efficiency_ratio = max(
+        0.0,
+        float(traits.digestion_efficiency),
+    ) / max(float(trait.default_digestion_efficiency), 0.0001)
+    digestive_upkeep = min(
+        float(metabolism.max_digestive_upkeep_per_second),
+        float(metabolism.digestive_upkeep_at_default_per_second)
+        * (
+            float(metabolism.digestive_capacity_upkeep_weight)
+            * capacity_ratio**2
+            + float(metabolism.digestive_rate_upkeep_weight) * rate_ratio**2
+            + float(metabolism.digestive_efficiency_upkeep_weight)
+            * efficiency_ratio**2
+        ),
+    )
+    idle = (
+        float(metabolism.basic_metabolism_rate)
+        + vision_cost
+        + body_cost
+        + digestive_upkeep
+    )
     movement = (
         float(metabolism.movement_energy_cost_factor)
         * max(0.0, float(traits.movement_cost_multiplier))

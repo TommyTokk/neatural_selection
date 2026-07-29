@@ -19,6 +19,9 @@ class VisionTraits:
 class PhysicalTraits:
     radius: float
     movement_cost_multiplier: float = 1.0
+    stomach_capacity: float = 1.6
+    digestion_rate: float = 0.2
+    digestion_efficiency: float = 0.9
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,9 @@ class TraitMutationDelta:
     vision_angle: float = 0.0
     radius: float = 0.0
     movement_cost_multiplier: float = 0.0
+    stomach_capacity: float = 0.0
+    digestion_rate: float = 0.0
+    digestion_efficiency: float = 0.0
     separation_gene: float = 0.0
     alignment_gene: float = 0.0
     cohesion_gene: float = 0.0
@@ -77,6 +83,7 @@ class Creature:
     color: Color
     flocking_traits: FlockingTraits = field(default_factory=FlockingTraits)
     stomach_energy: float = 0.0
+    stomach_difficulty_load: float = 0.0
     lineage: LineageInfo = field(default_factory=LineageInfo)
     render_sprite: object | None = None
     last_action: object | None = None

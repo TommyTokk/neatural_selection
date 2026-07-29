@@ -499,8 +499,8 @@ class CommonUiComponent:
         width: float,
         *,
         value_color: arcade.Color | tuple[int, ...] | None = None,
-    ) -> None:
-        """Draw metric row.
+    ) -> float:
+        """Draw a responsive, height-aware metric row shared by UI cards.
 
         Parameters
         ----------
@@ -518,23 +518,122 @@ class CommonUiComponent:
             Requested logical size.
         value_color
             Value used by the operation.
+
+        Returns
+        -------
+        float
+            Vertical space consumed by the responsive row.
         """
+        (
+            label_lines,
+            value_lines,
+            label_bounds,
+            value_bounds,
+            row_height,
+        ) = self._metric_row_layout(label, value, x, y, width)
         self._draw_text(
             f"{key}_label",
-            label,
-            x,
-            y,
+            "\n".join(label_lines),
+            label_bounds.left,
+            label_bounds.top,
             self.theme.text_muted,
             10,
+            width=label_bounds.width,
+            multiline=True,
+            anchor_y="top",
         )
         self._draw_text(
             f"{key}_value",
-            self._fit_line(value, width * 0.46),
-            x + width,
-            y,
+            "\n".join(value_lines),
+            value_bounds.left,
+            value_bounds.top,
             value_color or self.theme.text_primary,
             12,
-            anchor_x="right",
+            width=value_bounds.width,
+            multiline=True,
+            align=("left" if value_bounds.left == x else "right"),
+            anchor_y="top",
+        )
+        return row_height
+
+    def _metric_row_layout(
+        self,
+        label: str,
+        value: str,
+        x: float,
+        y: float,
+        width: float,
+    ) -> tuple[
+        tuple[str, ...],
+        tuple[str, ...],
+        arcade.Rect,
+        arcade.Rect,
+        float,
+    ]:
+        """Measure a responsive card row and wrap both text columns."""
+        available_width = max(1.0, float(width))
+        gap = 12.0
+        if available_width < 180.0:
+            label_width = available_width
+            value_width = available_width
+            label_lines = tuple(
+                self._wrap_line(label, label_width, font_size=10.0)
+            )
+            value_lines = tuple(
+                self._wrap_line(value, value_width, font_size=12.0)
+            )
+            label_height = max(1, len(label_lines)) * 13.0
+            value_top = y - label_height - 3.0
+            value_height = max(1, len(value_lines)) * 15.0
+            row_height = label_height + 3.0 + value_height + 7.0
+            return (
+                label_lines,
+                value_lines,
+                arcade.LBWH(
+                    x,
+                    y - label_height,
+                    label_width,
+                    label_height,
+                ),
+                arcade.LBWH(
+                    x,
+                    value_top - value_height,
+                    value_width,
+                    value_height,
+                ),
+                row_height,
+            )
+
+        label_width = max(1.0, (available_width - gap) * 0.46)
+        value_width = max(1.0, available_width - gap - label_width)
+        value_left = x + label_width + gap
+        label_lines = tuple(
+            self._wrap_line(label, label_width, font_size=10.0)
+        )
+        value_lines = tuple(
+            self._wrap_line(value, value_width, font_size=12.0)
+        )
+        text_height = max(
+            max(1, len(label_lines)) * 13.0,
+            max(1, len(value_lines)) * 15.0,
+        )
+        row_height = max(25.0, text_height + 7.0)
+        return (
+            label_lines,
+            value_lines,
+            arcade.LBWH(
+                x,
+                y - text_height,
+                label_width,
+                text_height,
+            ),
+            arcade.LBWH(
+                value_left,
+                y - text_height,
+                value_width,
+                text_height,
+            ),
+            row_height,
         )
     def _draw_progress_bar(
         self,

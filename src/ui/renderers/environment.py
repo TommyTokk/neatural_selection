@@ -1196,7 +1196,14 @@ class EnvironmentRenderer:
         energy_ratio = max(0.0, min(1.0, creature.energy / max_energy))
         stomach_capacity = max(
             0.0,
-            creature.radius * self.config.metabolism.stomach_capacity_per_radius,
+            float(
+                getattr(
+                    getattr(creature, "physical_traits", None),
+                    "stomach_capacity",
+                    creature.radius
+                    * self.config.metabolism.stomach_capacity_per_radius,
+                )
+            ),
         )
         stomach_ratio = (
             0.0

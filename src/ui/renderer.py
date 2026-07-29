@@ -58,6 +58,10 @@ class UiRenderer(
         "_panel_bounds": ("_panel_state", "bounds"),
         "_active_panel_drag": ("_panel_state", "active_drag"),
         "_panel_drag_offset": ("_panel_state", "drag_offset"),
+        "_inspector_content_height": (
+            "_panel_state",
+            "inspector_content_height",
+        ),
         "_brain_window_open": ("_brain_state", "open"),
         "_brain_window_bounds": ("_brain_state", "bounds"),
         "_brain_graph_zoom": ("_brain_state", "graph_zoom"),
@@ -622,12 +626,21 @@ class UiRenderer(
     def handle_mouse_release(self) -> None:
         """Handle mouse release.
         """
+        self._finish_pointer_interaction(commit=True)
+
+    def cancel_pointer_interaction(self) -> None:
+        """Release all pointer capture without committing a pending click."""
+        self._finish_pointer_interaction(commit=False)
+
+    def _finish_pointer_interaction(self, *, commit: bool) -> None:
+        """Clear gesture state and optionally commit a captured click."""
         self._active_slider = False
         self._active_panel_drag = None
         self._species_tree_scroll_drag = None
         self._species_tree_inspector_resize_drag = False
         if (
-            self._species_tree_canvas_drag
+            commit
+            and self._species_tree_canvas_drag
             and not self._species_tree_canvas_drag_started
             and self._species_tree_pending_selection_id is not None
         ):

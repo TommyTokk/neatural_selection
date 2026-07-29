@@ -18,6 +18,9 @@ class SpeciesTraitSnapshot:
     separation_gene: float = 0.0
     alignment_gene: float = 0.0
     cohesion_gene: float = 0.0
+    stomach_capacity: float = 0.0
+    digestion_rate: float = 0.0
+    digestion_efficiency: float = 0.0
 
     @classmethod
     def from_traits(
@@ -35,6 +38,21 @@ class SpeciesTraitSnapshot:
             separation_gene=flocking.separation_gene,
             alignment_gene=flocking.alignment_gene,
             cohesion_gene=flocking.cohesion_gene,
+            stomach_capacity=getattr(
+                physical_traits,
+                "stomach_capacity",
+                1.6,
+            ),
+            digestion_rate=getattr(
+                physical_traits,
+                "digestion_rate",
+                0.2,
+            ),
+            digestion_efficiency=getattr(
+                physical_traits,
+                "digestion_efficiency",
+                0.9,
+            ),
         )
 
 
@@ -56,6 +74,10 @@ class SpeciesDistanceBreakdown:
     separation_gene_component: float | None = None
     alignment_gene_component: float | None = None
     cohesion_gene_component: float | None = None
+    stomach_capacity_component: float | None = None
+    digestion_rate_component: float | None = None
+    digestion_efficiency_component: float | None = None
+    digestive_trait_component: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

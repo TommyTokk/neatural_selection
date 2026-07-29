@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import secrets
+
 from src.graphics import configure_graphics, log_graphics_context
 
 configure_graphics()
@@ -24,7 +26,10 @@ class NeatGameView(arcade.View):
         super().__init__()
         if world is None:
             self.config = config or build_sim_config()
-            self.world = World(self.config)
+            self.world = World(
+                self.config,
+                brain_initialization_seed=secrets.randbits(64),
+            )
         else:
             self.world = world
             self.config = world.config
@@ -33,16 +38,25 @@ class NeatGameView(arcade.View):
         self.ui_renderer = UiRenderer(self.config)
         self._is_dragging_environment = False
         self._is_dragging_ui_control = False
+        self._pressed_environment_creature_id: int | None = None
         self._drag_distance = 0.0
         self._command_keys_down: set[int] = set()
 
     def on_show_view(self) -> None:
+        self._cancel_input_capture()
         if self.window is not None:
             self.window.background_color = self.config.theme.window_background
 
     def on_hide_view(self) -> None:
+        self._cancel_input_capture()
         self.ui_renderer.close()
         self.world.close()
+
+    def on_deactivate(self) -> bool | None:
+        """Cancel held input when the window loses keyboard/pointer focus."""
+        self._cancel_input_capture()
+        parent_handler = getattr(super(), "on_deactivate", None)
+        return None if parent_handler is None else parent_handler()
 
     def on_resize(self, width: int, height: int) -> bool | None:
         self.world.resize(width, height)
@@ -59,17 +73,25 @@ class NeatGameView(arcade.View):
     def on_mouse_press(
         self, x: int, y: int, button: int, modifiers: int
     ) -> bool | None:
+        if button == arcade.MOUSE_BUTTON_LEFT:
+            # A new press proves any previous capture missed its release.
+            self._cancel_pointer_capture()
         if button == arcade.MOUSE_BUTTON_LEFT and self.ui_renderer.handle_mouse_press(
             self.world, x, y
         ):
             self._is_dragging_ui_control = True
             self._is_dragging_environment = False
+            self._pressed_environment_creature_id = None
             self._drag_distance = 0.0
             return super().on_mouse_press(x, y, button, modifiers)
 
         env = self.world.layout.environment
         if button == arcade.MOUSE_BUTTON_LEFT and env.left <= x <= env.right and env.bottom <= y <= env.top:
             self._is_dragging_environment = True
+            # Capture the rendered target before fixed steps can move it.
+            self._pressed_environment_creature_id = (
+                self.world.creature_id_at(x, y)
+            )
             self._drag_distance = 0.0
         return super().on_mouse_press(x, y, button, modifiers)
 
@@ -83,8 +105,11 @@ class NeatGameView(arcade.View):
 
         if button == arcade.MOUSE_BUTTON_LEFT and self._is_dragging_environment:
             if self._drag_distance < 5.0:
-                self.world.select_creature_at(x, y)
+                self.world.select_creature_by_id(
+                    self._pressed_environment_creature_id
+                )
             self._is_dragging_environment = False
+            self._pressed_environment_creature_id = None
         return super().on_mouse_release(x, y, button, modifiers)
 
     def on_mouse_drag(
@@ -149,6 +174,24 @@ class NeatGameView(arcade.View):
     def on_key_release(self, symbol: int, modifiers: int) -> bool | None:
         self._command_keys_down.discard(symbol)
         return super().on_key_release(symbol, modifiers)
+
+    def _cancel_pointer_capture(self) -> None:
+        if self._is_dragging_ui_control:
+            cancel = getattr(
+                self.ui_renderer,
+                "cancel_pointer_interaction",
+                None,
+            )
+            if cancel is not None:
+                cancel()
+        self._is_dragging_ui_control = False
+        self._is_dragging_environment = False
+        self._pressed_environment_creature_id = None
+        self._drag_distance = 0.0
+
+    def _cancel_input_capture(self) -> None:
+        self._cancel_pointer_capture()
+        self._command_keys_down.clear()
 
     @staticmethod
     def _command_key_symbols() -> tuple[int, ...]:

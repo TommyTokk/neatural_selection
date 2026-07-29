@@ -25,10 +25,28 @@ def species_record() -> SpeciesRecord:
         founder_color=(10, 20, 30),
         data_quality="exact",
         founder_traits=SpeciesTraitSnapshot(
-            17.0, 123.0, 1.2, 1.1, 0.8, 0.3, 0.6
+            17.0,
+            123.0,
+            1.2,
+            1.1,
+            0.8,
+            0.3,
+            0.6,
+            stomach_capacity=2.1,
+            digestion_rate=0.27,
+            digestion_efficiency=0.94,
         ),
         trait_deltas=SpeciesTraitSnapshot(
-            1.0, 5.0, 0.1, 0.05, 0.1, -0.2, 0.05
+            1.0,
+            5.0,
+            0.1,
+            0.05,
+            0.1,
+            -0.2,
+            0.05,
+            stomach_capacity=0.2,
+            digestion_rate=0.03,
+            digestion_efficiency=0.01,
         ),
         distances=SpeciesDistanceBreakdown(
             neat_distance=2.0,
@@ -47,6 +65,10 @@ def species_record() -> SpeciesRecord:
             separation_gene_component=0.1,
             alignment_gene_component=0.2,
             cohesion_gene_component=0.45,
+            stomach_capacity_component=0.2,
+            digestion_rate_component=0.3,
+            digestion_efficiency_component=0.1,
+            digestive_trait_component=0.2,
         ),
         neat_changes=NeatChangeSummary(
             nodes_added=1,
@@ -237,6 +259,10 @@ class TelemetryDatabaseTest(unittest.TestCase):
         self.assertIn("emergence_food_ratio", columns)
         self.assertIn("emergence_pop_ratio", columns)
         self.assertIn("neural_shifts_json", columns)
+        self.assertIn("stomach_capacity", columns)
+        self.assertIn("digestion_rate", columns)
+        self.assertIn("digestion_efficiency", columns)
+        self.assertIn("digestive_trait_component", columns)
 
     def test_legacy_history_row_loads_with_unavailable_neat_changes(self) -> None:
         self.database.connection.execute(

@@ -58,12 +58,20 @@ from src.world import World
 
 
 class FakeRng:
-    def __init__(self, gaussian_values: list[float]) -> None:
+    def __init__(
+        self,
+        gaussian_values: list[float],
+        random_value: float = 1.0,
+    ) -> None:
         self.gaussian_values = gaussian_values
+        self.random_value = random_value
 
     def gauss(self, mean: float, deviation: float) -> float:
         del mean, deviation
         return self.gaussian_values.pop(0)
+
+    def random(self) -> float:
+        return self.random_value
 
 
 class FakeFitness:
@@ -197,10 +205,15 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertAlmostEqual(deposits[0][2], 0.25 * rate_per_step)
         self.assertEqual(deposits[1][1:], (0.0, 0.0))
 
-    def make_world_with_mutations(self, mutations: list[float]) -> World:
+    def make_world_with_mutations(
+        self,
+        mutations: list[float],
+        *,
+        random_value: float = 1.0,
+    ) -> World:
         world = object.__new__(World)
         world.config = build_sim_config()
-        world.rng = FakeRng(mutations)
+        world.rng = FakeRng(mutations, random_value)
         return world
 
     def test_mutated_vision_inherits_parent_values_with_small_variation(self) -> None:
@@ -261,6 +274,58 @@ class WorldVisionMutationTest(unittest.TestCase):
         )
         self.assertEqual(delta.radius, 0.0)
         self.assertEqual(delta.movement_cost_multiplier, 0.0)
+
+    def test_digestive_mutation_probability_zero_is_exact_inheritance(
+        self,
+    ) -> None:
+        world = self.make_world_with_mutations(
+            [0.0, 0.0],
+            random_value=0.0,
+        )
+        world.config.trait.digestive_trait_mutation_rate = 0.0
+        parent = PhysicalTraits(
+            radius=16.0,
+            movement_cost_multiplier=1.0,
+            stomach_capacity=2.1,
+            digestion_rate=0.27,
+            digestion_efficiency=0.94,
+        )
+
+        child, delta = world._mutated_physical_traits(parent)
+
+        self.assertEqual(child, parent)
+        self.assertEqual(delta.stomach_capacity, 0.0)
+        self.assertEqual(delta.digestion_rate, 0.0)
+        self.assertEqual(delta.digestion_efficiency, 0.0)
+
+    def test_digestive_mutation_probability_one_mutates_and_clamps_all(
+        self,
+    ) -> None:
+        world = self.make_world_with_mutations(
+            [0.0, 0.0, 100.0, -100.0, 100.0],
+            random_value=0.0,
+        )
+        world.config.trait.digestive_trait_mutation_rate = 1.0
+
+        child, delta = world._mutated_physical_traits(
+            PhysicalTraits(radius=16.0)
+        )
+
+        self.assertEqual(
+            child.stomach_capacity,
+            world.config.trait.max_stomach_capacity,
+        )
+        self.assertEqual(
+            child.digestion_rate,
+            world.config.trait.min_digestion_rate,
+        )
+        self.assertEqual(
+            child.digestion_efficiency,
+            world.config.trait.max_digestion_efficiency,
+        )
+        self.assertNotEqual(delta.stomach_capacity, 0.0)
+        self.assertNotEqual(delta.digestion_rate, 0.0)
+        self.assertNotEqual(delta.digestion_efficiency, 0.0)
 
     def test_sensor_snapshot_records_food_discoveries_from_single_vision_pass(self) -> None:
         world = object.__new__(World)

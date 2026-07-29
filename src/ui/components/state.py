@@ -35,6 +35,7 @@ class PanelState:
     bounds: dict[str, arcade.Rect] = field(default_factory=dict)
     active_drag: str | None = None
     drag_offset: tuple[float, float] = (0.0, 0.0)
+    inspector_content_height: float = 0.0
 
 
 @dataclass(slots=True)

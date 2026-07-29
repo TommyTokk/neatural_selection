@@ -20,6 +20,7 @@ from src.creature import (
 from src.flocking import SocialCompatibilityResolver
 from src.neat_controller import calculate_flocking_trait_distance
 from src.persistence import (
+    CHECKPOINT_VERSION,
     CheckpointContractError,
     PersistenceManager,
     SimulationPaths,
@@ -447,7 +448,7 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 world,
                 world.neat_controller,
             )
-            self.assertEqual(state["version"], 14)
+            self.assertEqual(state["version"], CHECKPOINT_VERSION)
             self.assertEqual(state["brain_contract"]["sensor_schema"], 4)
             self.assertEqual(state["brain_contract"]["inputs"], 43)
             serialized_keys: set[str] = set()

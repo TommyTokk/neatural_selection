@@ -62,10 +62,20 @@ class FakeGene:
         self.aggregation = aggregation
 
 
-def physical(radius: float = 16.0, movement: float = 1.0) -> PhysicalTraits:
+def physical(
+    radius: float = 16.0,
+    movement: float = 1.0,
+    *,
+    stomach_capacity: float = 1.6,
+    digestion_rate: float = 0.2,
+    digestion_efficiency: float = 0.9,
+) -> PhysicalTraits:
     return PhysicalTraits(
         radius=radius,
         movement_cost_multiplier=movement,
+        stomach_capacity=stomach_capacity,
+        digestion_rate=digestion_rate,
+        digestion_efficiency=digestion_efficiency,
     )
 
 
@@ -74,6 +84,31 @@ def vision(range_: float = 100.0, angle: float = 1.0) -> VisionTraits:
 
 
 class PhenotypicDistanceTest(unittest.TestCase):
+    def test_digestive_traits_contribute_one_combined_component(self) -> None:
+        trait_config = TraitConfig()
+        vision_config = VisionConfig()
+        representative = physical(
+            stomach_capacity=trait_config.min_stomach_capacity,
+            digestion_rate=trait_config.min_digestion_rate,
+            digestion_efficiency=trait_config.min_digestion_efficiency,
+        )
+        child = physical(
+            stomach_capacity=trait_config.max_stomach_capacity,
+            digestion_rate=trait_config.max_digestion_rate,
+            digestion_efficiency=trait_config.max_digestion_efficiency,
+        )
+
+        distance = calculate_phenotypic_distance(
+            child,
+            vision(),
+            representative,
+            vision(),
+            trait_config,
+            vision_config,
+        )
+
+        self.assertAlmostEqual(distance, 1.0)
+
     def test_radius_and_vision_range_are_normalized_by_configured_ranges(self) -> None:
         trait_config = TraitConfig()
         vision_config = VisionConfig()
