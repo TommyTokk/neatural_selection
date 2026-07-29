@@ -4,12 +4,12 @@ from math import hypot, pi
 from random import Random
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pymunk
 
 from configs.sim_config import SimConfig
-from src.action import Action, calculate_flocking_weights
+from src.action import Action
 from src.collision import CREATURE_CATEGORY, FOOD_CATEGORY
 from src.creature import (
     Creature,
@@ -18,6 +18,7 @@ from src.creature import (
     PhysicalTraits,
     VisionTraits,
 )
+from src.flocking import calculate_flocking_weights
 from src.vision import FlockSensorSnapshot
 from src.world import World
 
@@ -142,7 +143,7 @@ class WorldFlockingMotionTest(unittest.TestCase):
             self.world.MAX_ANGULAR_SPEED * 0.65,
         )
 
-    def test_zero_new_outputs_preserve_legacy_force_and_limits(self) -> None:
+    def test_zero_social_evidence_preserves_neural_force_and_limits(self) -> None:
         self.world._apply_action(
             self.creature,
             action(accelerate=0.5, rotate=0.25),
@@ -174,147 +175,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
         self.assertAlmostEqual(
             command.max_angular_speed,
             self.world.MAX_ANGULAR_SPEED * 1.5,
-        )
-
-    def test_separation_alignment_and_cohesion_have_independent_weights(self) -> None:
-        flock = FlockSensorSnapshot(
-            center_proximity=0.25,
-            center_angle=0.5,
-            average_relative_heading=0.5,
-            flockmate_count=1,
-            crowd_separation_absolute_angle=pi,
-            cohesion_absolute_angle=pi / 4.0,
-            crowd_separation_strength=1.0,
-            average_flockmate_proximity=0.75,
-            average_flockmate_velocity=(0.0, 100.0),
-        )
-        snapshot = SimpleNamespace(flock=flock)
-
-        self.creature.flocking_traits = FlockingTraits(1.0, 0.0, 0.0)
-        separation = self.world._flock_steering_force(
-            self.creature,
-            action(herding=1.0),
-            snapshot,
-            self.world.MAX_SPEED,
-            self.world.config.action.max_forward_force,
-        )
-        self.creature.flocking_traits = FlockingTraits(0.0, 1.0, 0.0)
-        alignment = self.world._flock_steering_force(
-            self.creature,
-            action(herding=1.0),
-            snapshot,
-            self.world.MAX_SPEED,
-            self.world.config.action.max_forward_force,
-        )
-        self.creature.flocking_traits = FlockingTraits(0.0, 0.0, 1.0)
-        cohesion = self.world._flock_steering_force(
-            self.creature,
-            action(herding=1.0),
-            snapshot,
-            self.world.MAX_SPEED,
-            self.world.config.action.max_forward_force,
-        )
-
-        self.assertLess(separation[0], 0.0)
-        self.assertAlmostEqual(separation[1], 0.0, places=10)
-        self.assertGreater(alignment[1], 0.0)
-        self.assertGreater(cohesion[0], 0.0)
-        self.assertGreater(cohesion[1], 0.0)
-
-    def test_alignment_force_is_attenuated_by_flockmate_proximity(self) -> None:
-        self.creature.flocking_traits = FlockingTraits(0.0, 1.0, 0.0)
-
-        def alignment_force(proximity: float) -> tuple[float, float]:
-            flock = FlockSensorSnapshot(
-                average_relative_heading=0.5,
-                flockmate_count=1,
-                average_flockmate_proximity=proximity,
-                average_flockmate_velocity=(0.0, 100.0),
-            )
-            return self.world._flock_steering_force(
-                self.creature,
-                action(herding=1.0),
-                SimpleNamespace(flock=flock),
-                self.world.MAX_SPEED,
-                self.world.config.action.max_forward_force,
-            )
-
-        far_magnitude = hypot(*alignment_force(0.01))
-        near_magnitude = hypot(*alignment_force(0.90))
-        unattenuated_magnitude = 100.0
-
-        self.assertAlmostEqual(far_magnitude, unattenuated_magnitude * 0.01)
-        self.assertAlmostEqual(near_magnitude, unattenuated_magnitude * 0.90)
-        self.assertAlmostEqual(near_magnitude / far_magnitude, 90.0)
-
-    def test_stationary_flock_velocity_produces_no_alignment_acceleration(
-        self,
-    ) -> None:
-        self.creature.flocking_traits = FlockingTraits(0.0, 1.0, 0.0)
-        flock = FlockSensorSnapshot(
-            flockmate_count=1.0,
-            average_flockmate_proximity=1.0,
-            average_flockmate_velocity=(0.0, 0.0),
-        )
-
-        force = self.world._flock_steering_force(
-            self.creature,
-            action(herding=1.0),
-            SimpleNamespace(flock=flock),
-            self.world.MAX_SPEED,
-            self.world.config.action.max_forward_force,
-        )
-
-        self.assertEqual(force, (0.0, 0.0))
-
-    def test_alignment_matches_slow_flockmate_speed_without_seeking_max_speed(
-        self,
-    ) -> None:
-        self.creature.flocking_traits = FlockingTraits(0.0, 1.0, 0.0)
-        self.creature.body.velocity.x = 10.0
-        flock = FlockSensorSnapshot(
-            flockmate_count=1.0,
-            average_flockmate_proximity=1.0,
-            average_flockmate_velocity=(30.0, 0.0),
-        )
-
-        force = self.world._flock_steering_force(
-            self.creature,
-            action(herding=1.0),
-            SimpleNamespace(flock=flock),
-            self.world.MAX_SPEED,
-            self.world.config.action.max_forward_force,
-        )
-
-        self.assertEqual(force, (20.0, 0.0))
-
-    def test_avoidance_cannot_be_cancelled_by_social_or_voluntary_force(
-        self,
-    ) -> None:
-        self.creature.heading = pi
-        with (
-            patch.object(
-                self.world,
-                "_collision_avoidance_force",
-                return_value=(40.0, 0.0),
-            ),
-            patch.object(
-                self.world,
-                "_flock_steering_force",
-                return_value=(-20.0, 30.0),
-            ),
-        ):
-            self.world._apply_action(
-                self.creature,
-                action(accelerate=1.0, herding=1.0),
-                snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
-            )
-
-        self.assertAlmostEqual(self.creature.body.applied_force[0], 40.0)
-        self.assertAlmostEqual(self.creature.body.applied_force[1], 30.0)
-        self.assertEqual(
-            self.world._last_flock_steering_debug[1].force,
-            (0.0, 30.0),
         )
 
     def test_force_allocator_deducts_each_component_magnitude(self) -> None:
@@ -357,89 +217,6 @@ class WorldFlockingMotionTest(unittest.TestCase):
             0.0,
         )
 
-    def test_action_caches_exact_net_flock_steering_force(self) -> None:
-        flock = FlockSensorSnapshot(
-            center_proximity=0.25,
-            center_angle=0.5,
-            average_relative_heading=0.5,
-            flockmate_count=1,
-            crowd_separation_absolute_angle=-pi / 2.0,
-            cohesion_absolute_angle=pi / 4.0,
-            crowd_separation_strength=0.4,
-            average_flockmate_proximity=0.75,
-            average_flockmate_velocity=(0.0, 100.0),
-        )
-        self.creature.flocking_traits = FlockingTraits(0.3, 0.6, 0.9)
-        active_action = action(herding=0.8)
-        snapshot = SimpleNamespace(flock=flock)
-        expected = self.world._flock_steering_force(
-            self.creature,
-            active_action,
-            snapshot,
-            self.world.MAX_SPEED,
-            self.world.config.action.max_forward_force,
-        )
-
-        self.world._apply_action(
-            self.creature,
-            active_action,
-            snapshot=snapshot,
-        )
-
-        debug = self.world._last_flock_steering_debug[1]
-        self.assertAlmostEqual(debug.force[0], expected[0])
-        self.assertAlmostEqual(debug.force[1], expected[1])
-        self.assertEqual(
-            debug.max_force,
-            self.world.config.action.max_forward_force,
-        )
-
-    def test_cached_absolute_flock_targets_do_not_rotate_with_observer(
-        self,
-    ) -> None:
-        self.creature.heading = 0.0
-        cases = (
-            (
-                FlockingTraits(1.0, 0.0, 0.0),
-                FlockSensorSnapshot(
-                    crowd_separation_absolute_angle=0.0,
-                    crowd_separation_strength=1.0,
-                ),
-            ),
-            (
-                FlockingTraits(0.0, 1.0, 0.0),
-                FlockSensorSnapshot(
-                    average_relative_heading=-0.5,
-                    flockmate_count=1,
-                    average_flockmate_proximity=1.0,
-                    average_flockmate_velocity=(100.0, 0.0),
-                ),
-            ),
-            (
-                FlockingTraits(0.0, 0.0, 1.0),
-                FlockSensorSnapshot(
-                    center_angle=-1.0,
-                    cohesion_absolute_angle=0.0,
-                    flockmate_count=1,
-                    center_proximity=0.0,
-                ),
-            ),
-        )
-
-        for traits, flock in cases:
-            with self.subTest(traits=traits):
-                self.creature.flocking_traits = traits
-                force = self.world._flock_steering_force(
-                    self.creature,
-                    action(herding=1.0),
-                    SimpleNamespace(flock=flock),
-                    self.world.MAX_SPEED,
-                    self.world.config.action.max_forward_force,
-                )
-
-                self.assertGreater(force[0], 0.0)
-                self.assertAlmostEqual(force[1], 0.0)
-
     def test_turn_control_is_applied_once_across_complete_physics_tick(
         self,
     ) -> None:
@@ -476,7 +253,7 @@ class WorldFlockingMotionTest(unittest.TestCase):
             (0.0, 0.0),
         )
 
-    def test_action_caches_zero_flock_force_when_herding_is_inactive(self) -> None:
+    def test_minimum_engagement_can_act_when_neural_herding_is_zero(self) -> None:
         snapshot = SimpleNamespace(
             flock=FlockSensorSnapshot(
                 center_proximity=0.0,
@@ -491,7 +268,7 @@ class WorldFlockingMotionTest(unittest.TestCase):
             snapshot=snapshot,
         )
 
-        self.assertEqual(
+        self.assertNotEqual(
             self.world._last_flock_steering_debug[1].force,
             (0.0, 0.0),
         )
@@ -526,17 +303,38 @@ class WorldFlockingMotionTest(unittest.TestCase):
             alignment_gene=0.4,
             cohesion_gene=0.7,
         )
+        inactive = calculate_flocking_weights(
+            herding=0.0,
+            panic=0.0,
+            personal_space_presence=0.0,
+            social_presence=0.0,
+            **genes,
+        )
+        active = calculate_flocking_weights(
+            herding=1.0,
+            panic=0.0,
+            personal_space_presence=1.0,
+            social_presence=1.0,
+            **genes,
+        )
+        panicked = calculate_flocking_weights(
+            herding=1.0,
+            panic=1.0,
+            personal_space_presence=1.0,
+            social_presence=1.0,
+            **genes,
+        )
         self.assertEqual(
-            calculate_flocking_weights(herding=0.0, panic=0.0, **genes),
+            (inactive.separation, inactive.alignment, inactive.cohesion),
             (0.0, 0.0, 0.0),
         )
         self.assertEqual(
-            calculate_flocking_weights(herding=1.0, panic=0.0, **genes),
+            (active.separation, active.alignment, active.cohesion),
             (0.9, 0.4, 0.7),
         )
         self.assertEqual(
-            calculate_flocking_weights(herding=1.0, panic=1.0, **genes),
-            (0.9, 0.0, 0.0),
+            (panicked.separation, panicked.alignment, panicked.cohesion),
+            (0.9, 0.2, 0.35),
         )
 
 class FlockingTraitEvolutionTest(unittest.TestCase):
@@ -584,7 +382,7 @@ class FlockingTraitEvolutionTest(unittest.TestCase):
         world.config.trait.flocking_gene_mutation_rate = 0.5
         world.config.trait.flocking_gene_replace_rate = 0.0
         world.rng = Mock()
-        world.rng.random.side_effect = [0.1, 0.9, 0.9]
+        world.rng.random.side_effect = [0.1, 0.9, 0.9, 0.9, 0.9]
         world.rng.gauss.return_value = 0.1
         parent = FlockingTraits(0.4, 0.5, 0.6)
 
@@ -599,7 +397,7 @@ class FlockingTraitEvolutionTest(unittest.TestCase):
         world.config.trait.flocking_gene_mutation_rate = 0.0
         world.config.trait.flocking_gene_replace_rate = 0.005
         world.rng = Mock()
-        world.rng.random.side_effect = [0.001, 0.9, 0.9]
+        world.rng.random.side_effect = [0.001, 0.9, 0.9, 0.9, 0.9]
         world.rng.uniform.return_value = 0.8
         parent = FlockingTraits(0.4, 0.5, 0.6)
 

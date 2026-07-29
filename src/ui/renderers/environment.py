@@ -1262,6 +1262,7 @@ class EnvironmentRenderer:
             self._draw_acoustic_debug(selected, bounds, world)
             self._draw_pheromone_debug(selected, bounds, world)
             self._draw_flock_steering_debug(selected, bounds, world)
+            self._draw_flocking_velocity_debug(selected, bounds, world)
             self._draw_visible_food_highlights(
                 world.visible_foods_for(selected),
                 bounds,
@@ -1338,6 +1339,46 @@ class EnvironmentRenderer:
             color,
             line_width,
         )
+
+    def _draw_flocking_velocity_debug(
+        self,
+        creature: Creature,
+        bounds: arcade.Rect,
+        world: World,
+    ) -> None:
+        """Draw cached neural, social, blended, and avoidance vectors."""
+        del bounds
+        runtime = getattr(world, "_last_flocking_runtime", {}).get(
+            creature.creature_id
+        )
+        if runtime is None:
+            return
+        vectors = (
+            (runtime.neural_desired_velocity, (65, 125, 220, 210)),
+            (runtime.intent.desired_velocity, (145, 85, 210, 210)),
+            (runtime.blended_desired_velocity, (45, 165, 105, 220)),
+            (runtime.mandatory_avoidance, (205, 60, 70, 230)),
+        )
+        center_x, center_y = world.environment_to_screen(*creature.position)
+        start_offset = creature.radius * world.environment_zoom + 4.0
+        scale = 56.0 / max(1.0, world.MAX_SPEED)
+        for vector, color in vectors:
+            magnitude = hypot(*vector)
+            if magnitude <= 1e-9:
+                continue
+            unit_x = vector[0] / magnitude
+            unit_y = vector[1] / magnitude
+            start_x = center_x + unit_x * start_offset
+            start_y = center_y + unit_y * start_offset
+            length = min(64.0, max(8.0, magnitude * scale))
+            arcade.draw_line(
+                start_x,
+                start_y,
+                start_x + unit_x * length,
+                start_y + unit_y * length,
+                color,
+                2.0,
+            )
 
     def _draw_acoustic_debug(
         self,

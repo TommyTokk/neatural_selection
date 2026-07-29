@@ -422,38 +422,6 @@ class NeatConfigurationTest(unittest.TestCase):
         )
 
 
-class LegacyBrainContractMigrationTest(unittest.TestCase):
-    def test_missing_output_nodes_are_added_inert_and_disconnected(self) -> None:
-        class FakeNode:
-            def __init__(self, key: int) -> None:
-                self.key = key
-                self.bias = 0.0
-
-            def init_attributes(self, config: object) -> None:
-                del config
-
-        genome = SimpleNamespace(
-            nodes={key: FakeNode(key) for key in range(8)},
-            connections={},
-        )
-        genome_config = SimpleNamespace(
-            output_keys=list(range(ACTION_OUTPUT_COUNT)),
-            node_gene_type=FakeNode,
-            bias_min_value=-5.0,
-        )
-        controller = NeatBrainController.__new__(NeatBrainController)
-        controller.config = SimpleNamespace(genome_config=genome_config)
-        controller.population = SimpleNamespace(population={1: genome})
-        controller.species_manager = SimpleNamespace(representatives={1: genome})
-
-        controller.migrate_legacy_brain_contract()
-
-        self.assertEqual(set(genome.nodes), set(range(ACTION_OUTPUT_COUNT)))
-        for key in range(8, ACTION_OUTPUT_COUNT):
-            self.assertEqual(genome.nodes[key].bias, -5.0)
-        self.assertEqual(genome.connections, {})
-
-
 class SensorUsageTest(unittest.TestCase):
     def test_direct_hidden_disabled_and_disconnected_paths(self) -> None:
         def gene(source: int, target: int, enabled: bool = True) -> SimpleNamespace:

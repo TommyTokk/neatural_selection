@@ -20,7 +20,11 @@ from src.speciation import (
     NeuralShift,
     extract_neural_shifts,
 )
-from src.vision import SENSOR_INPUT_COUNT, SensorSnapshot
+from src.vision import (
+    SENSOR_CONTRACT,
+    SensorContract,
+    SensorSnapshot,
+)
 
 FALLBACK_ACTION = Action(
     accelerate=0.0,
@@ -384,6 +388,7 @@ class NeatBrainController:
         trait_config: TraitConfig | None = None,
         vision_config: VisionConfig | None = None,
         flocking_trait_distance_coefficient: float = 1.0,
+        sensor_contract: SensorContract | None = None,
     ) -> None:
         self.config_path = Path(config_path)
         self.config = neat.Config(
@@ -393,6 +398,7 @@ class NeatBrainController:
             neat.DefaultStagnation,
             str(self.config_path),
         )
+        self.sensor_contract = sensor_contract or SENSOR_CONTRACT
         self._validate_network_contract()
         self.population = neat.Population(self.config)
         self._next_genome_id_value = (
@@ -434,10 +440,9 @@ class NeatBrainController:
             )
 
         for creature, (genome_id, genome) in zip(creatures, genomes):
-            self.brains[creature.creature_id] = NeatBrain.from_genome(
+            self.brains[creature.creature_id] = self._brain_from_genome(
                 genome_id,
                 genome,
-                self.config,
             )
 
     def reset_for_new_sensing_epoch(
@@ -485,10 +490,9 @@ class NeatBrainController:
             )
 
         for creature, (genome_id, genome) in zip(creatures, genomes):
-            self.brains[creature.creature_id] = NeatBrain.from_genome(
+            self.brains[creature.creature_id] = self._brain_from_genome(
                 genome_id,
                 genome,
-                self.config,
             )
 
     def decide(self, creature_id: int, snapshot: SensorSnapshot) -> Action:
@@ -649,40 +653,20 @@ class NeatBrainController:
                 f"Cannot restore creature {creature_id}: "
                 f"genome {genome_id} is missing from the population."
             )
-        brain = NeatBrain.from_genome(genome_id, genome, self.config)
+        brain = self._brain_from_genome(genome_id, genome)
         self.brains[creature_id] = brain
         return brain
 
-    def migrate_legacy_brain_contract(self) -> None:
-        """Bring saved genomes forward to the current brain contract.
-
-        New input keys need no genome nodes and therefore remain unconnected
-        until mutation evolves a connection. Missing action outputs do require
-        explicit, inert nodes.
-        """
-        genomes = self._known_genomes()
-        seen: set[int] = set()
-        for genome in genomes:
-            identity = id(genome)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            self._ensure_current_output_nodes(genome)
-
-    def _ensure_current_output_nodes(self, genome: Any) -> None:
-        genome_config = self.config.genome_config
-        nodes = getattr(genome, "nodes", None)
-        if nodes is None:
-            return
-
-        for output_key in genome_config.output_keys:
-            if output_key in nodes:
-                continue
-            node = genome_config.node_gene_type(output_key)
-            node.init_attributes(genome_config)
-            if hasattr(node, "bias"):
-                node.bias = float(getattr(genome_config, "bias_min_value", -5.0))
-            nodes[output_key] = node
+    def _brain_from_genome(self, genome_id: int, genome: Any) -> NeatBrain:
+        """Build a brain already labelled with the selected sensor contract."""
+        brain = NeatBrain.from_genome(genome_id, genome, self.config)
+        contract = getattr(
+            self,
+            "sensor_contract",
+            SENSOR_CONTRACT,
+        )
+        brain.last_input_names = contract.input_names
+        return brain
 
     def evolution_allocator_state(self) -> dict[str, int]:
         """Return allocator positions needed to continue mutating after a load."""
@@ -828,10 +812,9 @@ class NeatBrainController:
         )
         self.population.population[child_genome.key] = child_genome
 
-        child_brain = NeatBrain.from_genome(
+        child_brain = self._brain_from_genome(
             child_genome.key,
             child_genome,
-            self.config,
         )
         self.brains[creature_id] = child_brain
         return child_brain, speciation_result
@@ -879,10 +862,11 @@ class NeatBrainController:
         input_count = len(genome_config.input_keys)
         output_count = len(genome_config.output_keys)
 
-        if input_count != SENSOR_INPUT_COUNT:
+        if input_count != self.sensor_contract.input_count:
             raise ValueError(
                 f"NEAT config input count mismatch. "
-                f"Config: {input_count}, code: {SENSOR_INPUT_COUNT}"
+                f"Config: {input_count}, "
+                f"code: {self.sensor_contract.input_count}"
             )
 
         if output_count != ACTION_OUTPUT_COUNT:

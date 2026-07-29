@@ -15,6 +15,158 @@ class PheromoneBoundaryMode(str, Enum):
     ABSORB = "absorb"
 
 
+class SocialCompatibilityMode(str, Enum):
+    LEGACY = "legacy"
+    SPECIES = "species"
+    SOCIAL_TAG = "social_tag"
+
+
+@dataclass(slots=True)
+class LongRangeSocialConfig:
+    enabled: bool = False
+    range: float = 400.0
+    strength: float = 1.0
+
+
+@dataclass(slots=True)
+class CohortSpawnConfig:
+    enabled: bool = False
+    size: int = 6
+    radius: float = 150.0
+
+
+@dataclass(slots=True)
+class SocialCompatibilityConfig:
+    #mode: SocialCompatibilityMode = SocialCompatibilityMode.LEGACY
+    mode: SocialCompatibilityMode = SocialCompatibilityMode.SOCIAL_TAG
+    social_tag_sigma: float = 0.35
+
+
+@dataclass(slots=True)
+class FlockingTelemetryConfig:
+    interval_seconds: float = 1.0
+    group_detection_range: float = 150.0
+    minimum_group_compatibility: float = 0.5
+    persistence_overlap_threshold: float = 0.5
+
+
+@dataclass(slots=True)
+class FlockingBenchmarkConfig:
+    enabled: bool = False
+    reward_rate: float = 0.01
+    target_group_size: int = 4
+    target_spacing: float = 60.0
+    spacing_tolerance: float = 30.0
+    reference_speed: float = 50.0
+    max_per_evaluation: float = 1.0
+
+
+@dataclass(slots=True)
+class FlockingConfig:
+    minimum_social_engagement: float = 0.25
+    panic_suppression_strength: float = 0.5
+    max_social_influence: float = 0.35
+    target_group_size: int = 4
+    preferred_personal_space: float = 60.0
+    long_range: LongRangeSocialConfig = field(
+        default_factory=LongRangeSocialConfig
+    )
+    cohort_spawn: CohortSpawnConfig = field(default_factory=CohortSpawnConfig)
+    compatibility: SocialCompatibilityConfig = field(
+        default_factory=SocialCompatibilityConfig
+    )
+    telemetry: FlockingTelemetryConfig = field(
+        default_factory=FlockingTelemetryConfig
+    )
+    benchmark: FlockingBenchmarkConfig = field(
+        default_factory=FlockingBenchmarkConfig
+    )
+
+    def __post_init__(self) -> None:
+        try:
+            self.compatibility.mode = SocialCompatibilityMode(
+                self.compatibility.mode
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid social compatibility configuration: {error}"
+            ) from error
+
+        fractions = {
+            "minimum_social_engagement": self.minimum_social_engagement,
+            "panic_suppression_strength": self.panic_suppression_strength,
+            "max_social_influence": self.max_social_influence,
+            "long_range.strength": self.long_range.strength,
+            "telemetry.minimum_group_compatibility": (
+                self.telemetry.minimum_group_compatibility
+            ),
+            "telemetry.persistence_overlap_threshold": (
+                self.telemetry.persistence_overlap_threshold
+            ),
+        }
+        for name, value in fractions.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(f"{name} must be finite and within [0, 1].")
+
+        positive = {
+            "preferred_personal_space": self.preferred_personal_space,
+            "long_range.range": self.long_range.range,
+            "cohort_spawn.radius": self.cohort_spawn.radius,
+            "compatibility.social_tag_sigma": (
+                self.compatibility.social_tag_sigma
+            ),
+            "telemetry.interval_seconds": self.telemetry.interval_seconds,
+            "telemetry.group_detection_range": (
+                self.telemetry.group_detection_range
+            ),
+            "benchmark.spacing_tolerance": (
+                self.benchmark.spacing_tolerance
+            ),
+            "benchmark.reference_speed": self.benchmark.reference_speed,
+        }
+        for name, value in positive.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value <= 0.0
+            ):
+                raise ValueError(f"{name} must be finite and positive.")
+        if self.telemetry.interval_seconds < 0.25:
+            raise ValueError("flocking telemetry interval must be at least 0.25s.")
+        for name, value in {
+            "target_group_size": self.target_group_size,
+            "cohort_spawn.size": self.cohort_spawn.size,
+            "benchmark.target_group_size": self.benchmark.target_group_size,
+        }.items():
+            if type(value) is not int or value < 2:
+                raise ValueError(f"{name} must be an integer of at least 2.")
+        nonnegative = {
+            "benchmark.reward_rate": self.benchmark.reward_rate,
+            "benchmark.target_spacing": self.benchmark.target_spacing,
+            "benchmark.max_per_evaluation": (
+                self.benchmark.max_per_evaluation
+            ),
+        }
+        for name, value in nonnegative.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"{name} must be finite and nonnegative.")
+
+    def validate(self) -> None:
+        """Revalidate values after command-line or UI mutation."""
+        self.__post_init__()
+
+
 @dataclass(slots=True)
 class DisplayConfig:
     width: int = 1440
@@ -304,6 +456,12 @@ class TraitConfig:
     flocking_gene_mutation_rate: float = 0.05
     flocking_gene_mutation_power: float = 0.05
     flocking_gene_replace_rate: float = 0.005
+    default_social_tag_x: float = 0.5
+    default_social_tag_y: float = 0.5
+    initial_social_tag_stdev: float = 0.15
+    social_tag_mutation_rate: float = 0.05
+    social_tag_mutation_power: float = 0.05
+    social_tag_replace_rate: float = 0.005
 
     body_metabolism_cost_factor: float = 0.006
 
@@ -367,6 +525,7 @@ class ActionConfig:
 
 @dataclass(slots=True)
 class SimConfig:
+    random_seed: int = 7
     display: DisplayConfig = field(default_factory=DisplayConfig)
     layout: LayoutConfig = field(default_factory=LayoutConfig)
     theme: ThemeConfig = field(default_factory=ThemeConfig)
@@ -405,6 +564,9 @@ class SimConfig:
 
     # Acoustic and pheromone communication
     communication: CommunicationConfig = field(default_factory=CommunicationConfig)
+
+    # Evolutionary flocking architecture and experiments.
+    flocking: FlockingConfig = field(default_factory=FlockingConfig)
 
 
 def build_sim_config() -> SimConfig:

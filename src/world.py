@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 from colorsys import hsv_to_rgb, rgb_to_hsv
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import inspect
 from math import atan2, cos, exp, floor, hypot, pi, sin, sqrt
-from random import Random, choice
+from random import Random
 from typing import Literal
 
 import pymunk
 import numpy as np
 
-from configs.sim_config import SimConfig
+from configs.sim_config import (
+    SimConfig,
+    SocialCompatibilityMode,
+)
 import src.utils as ut
 from src.action import (
     Action,
     acceleration_force_vector,
-    calculate_flocking_weights,
     is_active_intent,
 )
 from src.biome import Biome, BiomeGenerationHandler
@@ -28,10 +31,25 @@ from src.creature import (
     VisionTraits,
 )
 from src.fitness import CreatureFitness
+from src.flocking import (
+    FlockingRuntimeSnapshot,
+    SocialCompatibilityResolver,
+    SocialObservation,
+    accepted_counterfactual_contribution,
+    blend_desired_velocity,
+    calculate_flocking_weights,
+    calculate_social_intent,
+    configured_social_influence,
+)
 from src.food import Food
 from src.food_spawner import FoodSpawner
 from src.metabolism import Metabolism
-from src.vision import BiomeSensorSnapshot, SensorSnapshot, VisionSystem
+from src.vision import (
+    BiomeSensorSnapshot,
+    SENSOR_CONTRACT,
+    SensorSnapshot,
+    VisionSystem,
+)
 from src.neat_controller import NeatBrainController, SpeciationResult
 from src.persistence import PersistenceManager, SavePriority, SimulationPaths
 from src.rt_neat import RtNeatManager
@@ -42,6 +60,10 @@ from src.speciation import (
     SpeciesTraitSnapshot,
 )
 from src.telemetry import TelemetryDatabase
+from src.flocking_telemetry import (
+    FlockingTelemetryAggregator,
+    PersistentGroupTracker,
+)
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
 from src.communication import (
     AcousticDebugInfo,
@@ -135,8 +157,9 @@ class World:
         bootstrap: bool = True,
         simulation_paths: SimulationPaths | None = None,
     ) -> None:
+        config.flocking.validate()
         self.config = config
-        self.rng = Random(7)
+        self.rng = Random(config.random_seed)
         self.elapsed_time = 0.0
         self.fps = 0.0
         self.is_paused = False
@@ -145,11 +168,17 @@ class World:
         self._physics_accumulator = 0.0
         self._reproduction_accumulator = 0.0
         self._speciation_adjustment_accumulator = 0.0
+        self._flocking_telemetry_accumulator = 0.0
         self.physics_step_count = 0
         self._last_actions: dict[int, Action] = {}
         self._last_sensor_snapshots: dict[int, SensorSnapshot] = {}
         self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
         self._last_flock_steering_debug: dict[int, _FlockSteeringDebug] = {}
+        self._last_flocking_runtime: dict[int, FlockingRuntimeSnapshot] = {}
+        self.brain_contract_reset_occurred = False
+        self._flocking_group_tracker = PersistentGroupTracker(
+            config.flocking.telemetry.persistence_overlap_threshold
+        )
         self._motion_commands: dict[int, MotionCommand] = {}
         self._communication_positions = np.empty((0, 2), dtype=np.float64)
         self._communication_trail_amounts = np.empty(0, dtype=np.float64)
@@ -167,6 +196,7 @@ class World:
             config.vision,
             config.metabolism.eating_distance,
             config.metabolism.stomach_capacity_per_radius,
+            flocking_config=config.flocking,
         )
         self.space = pymunk.Space()
         self.space.gravity = (0.0, 0.0)
@@ -246,20 +276,41 @@ class World:
             biome_food_counts=self._biome_food_counts(),
         )
 
-        self.neat_controller = NeatBrainController(
-            "configs/neat_herbivore.ini",
-            compatibility_threshold=config.speciation.compatibility_threshold,
-            phenotypic_weight=config.speciation.phenotypic_weight,
-            trait_config=config.trait,
-            vision_config=config.vision,
-            flocking_trait_distance_coefficient=(
+        sensor_contract = SENSOR_CONTRACT
+        controller_kwargs = {
+            "compatibility_threshold": (
+                config.speciation.compatibility_threshold
+            ),
+            "phenotypic_weight": config.speciation.phenotypic_weight,
+            "trait_config": config.trait,
+            "vision_config": config.vision,
+            "flocking_trait_distance_coefficient": (
                 config.speciation.flocking_trait_distance_coefficient
             ),
+        }
+        # Small test/extension controllers written against the historical
+        # constructor remain usable. The production controller advertises
+        # this argument and selects the schema-4 input topology before any
+        # genomes are created.
+        if (
+            "sensor_contract"
+            in inspect.signature(NeatBrainController).parameters
+        ):
+            controller_kwargs["sensor_contract"] = sensor_contract
+        self.neat_controller = NeatBrainController(
+            sensor_contract.neat_config_path,
+            **controller_kwargs,
         )
-        self.vision.flock_compatibility_resolver = getattr(
-            self.neat_controller,
-            "flocking_compatibility",
-            None,
+        self.social_compatibility = SocialCompatibilityResolver(
+            config.flocking.compatibility,
+            getattr(
+                self.neat_controller,
+                "flocking_compatibility",
+                lambda _first, _second: 0.0,
+            ),
+        )
+        self.vision.flock_compatibility_resolver = (
+            self.social_compatibility.compatibility
         )
         if bootstrap:
             self.neat_controller.assign_initial_brains(self.creatures)
@@ -327,6 +378,7 @@ class World:
             self._limit_creature_motion()
             self._sync_carried_foods()
             self._update_fitness_survival(self.FIXED_TIMESTEP)
+            self._update_flocking_benchmark(self.FIXED_TIMESTEP)
             self._update_chronometers(self.FIXED_TIMESTEP)
             self._update_metabolism(self.FIXED_TIMESTEP)
             self.pheromones.accumulate(self.FIXED_TIMESTEP)
@@ -335,6 +387,7 @@ class World:
 
         self._spawn_foods(scaled_delta_time)
         self._update_reproduction(scaled_delta_time)
+        self._update_flocking_telemetry(scaled_delta_time)
         self._refresh_stats()
         self._follow_selected_creature()
         self._update_persistence_timer(delta_time)
@@ -414,6 +467,62 @@ class World:
             len(self.foods),
             self.rt_neat.stats.best_fitness,
         )
+
+    def _update_flocking_benchmark(self, delta_time: float) -> None:
+        config = self.config.flocking.benchmark
+        if not config.enabled:
+            return
+        runtime = getattr(self, "_last_flocking_runtime", {})
+        for creature_id, snapshot in runtime.items():
+            fitness = self.fitness.get(creature_id)
+            if fitness is not None:
+                fitness.record_flocking_benchmark(
+                    snapshot.observation,
+                    delta_time,
+                    config,
+                )
+
+    def _update_flocking_telemetry(self, delta_time: float) -> None:
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return
+        interval = self.config.flocking.telemetry.interval_seconds
+        self._flocking_telemetry_accumulator += max(0.0, delta_time)
+        if self._flocking_telemetry_accumulator < interval:
+            return
+        self._flocking_telemetry_accumulator %= interval
+        group_config = self.config.flocking.telemetry
+        groups = self._flocking_group_tracker.sample(
+            self.creatures,
+            sim_time=self.elapsed_time,
+            group_range=group_config.group_detection_range,
+            minimum_compatibility=(
+                group_config.minimum_group_compatibility
+            ),
+            compatibility=self.social_compatibility.compatibility,
+            nearby=self._nearby_creatures_for,
+        )
+        for creature_id, (group_id, group_size) in (
+            groups.group_by_creature.items()
+        ):
+            snapshot = self._last_flocking_runtime.get(creature_id)
+            if snapshot is not None:
+                self._last_flocking_runtime[creature_id] = replace(
+                    snapshot,
+                    local_group_id=group_id,
+                    local_group_size=group_size,
+                )
+        metrics = FlockingTelemetryAggregator.aggregate(
+            sim_time=self.elapsed_time,
+            population_size=len(self.creatures),
+            runtime=self._last_flocking_runtime,
+            groups=groups,
+        )
+        metrics["benchmark_reward_contribution"] = sum(
+            fitness.flocking_benchmark_reward
+            for fitness in self.fitness.values()
+        )
+        telemetry.log_flocking_metrics(metrics)
 
     def _log_initial_telemetry(self) -> None:
         telemetry = self.telemetry
@@ -524,6 +633,7 @@ class World:
         self._last_sensor_snapshots = {}
         self._last_acoustic_debug = {}
         self._last_flock_steering_debug = {}
+        self._last_flocking_runtime = {}
         self._motion_commands = {}
         self.rt_neat.stats = type(self.rt_neat.stats)()
         self.rt_neat.eligible_parent_ids = []
@@ -978,9 +1088,22 @@ class World:
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
+        flocking_config = getattr(self.config, "flocking", None)
+        long_range_config = getattr(
+            flocking_config,
+            "long_range",
+            None,
+        )
+        social_query_range = (
+            long_range_config.range
+            if long_range_config is not None
+            and long_range_config.enabled
+            else 0.0
+        )
         nearby_creatures = self._nearby_creatures_for(
             creature,
-            creature.vision.range + self.config.trait.max_radius,
+            max(creature.vision.range, social_query_range)
+            + self.config.trait.max_radius,
         )
 
         fitness = self.fitness.get(creature.creature_id)
@@ -1201,6 +1324,19 @@ class World:
             )
 
     def _spawn_creatures(self) -> list[Creature]:
+        cohort = self.config.flocking.cohort_spawn
+        if cohort.enabled:
+            positions = self._cohort_spawn_positions(
+                self.config.population.initial_creatures,
+            )
+            return [
+                self._spawn_creature(
+                    index + 1,
+                    position=positions[index],
+                    color=self._initial_creature_color(0),
+                )
+                for index in range(self.config.population.initial_creatures)
+            ]
         return [
             self._spawn_creature(
                 index + 1,
@@ -1208,6 +1344,37 @@ class World:
             )
             for index in range(self.config.population.initial_creatures)
         ]
+
+    def _cohort_spawn_positions(
+        self,
+        count: int,
+    ) -> list[tuple[float, float]]:
+        cohort = self.config.flocking.cohort_spawn
+        left, bottom, right, top = self.environment_world_bounds
+        margin = self.config.trait.max_radius + 10.0
+        positions: list[tuple[float, float]] = []
+        while len(positions) < count:
+            center_x = self.rng.uniform(left + margin, right - margin)
+            center_y = self.rng.uniform(bottom + margin, top - margin)
+            cohort_count = min(cohort.size, count - len(positions))
+            for _ in range(cohort_count):
+                angle = self.rng.uniform(0.0, 2.0 * pi)
+                distance = sqrt(self.rng.random()) * cohort.radius
+                positions.append(
+                    (
+                        self._clamp(
+                            center_x + cos(angle) * distance,
+                            left + margin,
+                            right - margin,
+                        ),
+                        self._clamp(
+                            center_y + sin(angle) * distance,
+                            bottom + margin,
+                            top - margin,
+                        ),
+                    )
+                )
+        return positions
 
     def _spawn_creature(
         self,
@@ -1338,6 +1505,32 @@ class World:
                 0.0,
                 1.0,
             ),
+            social_tag_x=(
+                self._clamp(
+                    self.rng.gauss(
+                        config.default_social_tag_x,
+                        config.initial_social_tag_stdev,
+                    ),
+                    0.0,
+                    1.0,
+                )
+                if self.config.flocking.compatibility.mode
+                is SocialCompatibilityMode.SOCIAL_TAG
+                else config.default_social_tag_x
+            ),
+            social_tag_y=(
+                self._clamp(
+                    self.rng.gauss(
+                        config.default_social_tag_y,
+                        config.initial_social_tag_stdev,
+                    ),
+                    0.0,
+                    1.0,
+                )
+                if self.config.flocking.compatibility.mode
+                is SocialCompatibilityMode.SOCIAL_TAG
+                else config.default_social_tag_y
+            ),
         )
 
     def _mutated_flocking_traits(
@@ -1357,10 +1550,31 @@ class World:
                 value += self.rng.gauss(0.0, config.flocking_gene_mutation_power)
             return self._clamp(value, 0.0, 1.0)
 
+        def mutate_social_tag(value: float) -> float:
+            if (
+                self.config.flocking.compatibility.mode
+                is not SocialCompatibilityMode.SOCIAL_TAG
+            ):
+                return value
+            roll = self.rng.random()
+            if roll < config.social_tag_replace_rate:
+                return self.rng.uniform(0.0, 1.0)
+            if roll < (
+                config.social_tag_replace_rate
+                + config.social_tag_mutation_rate
+            ):
+                value += self.rng.gauss(
+                    0.0,
+                    config.social_tag_mutation_power,
+                )
+            return self._clamp(value, 0.0, 1.0)
+
         child = FlockingTraits(
             separation_gene=mutate(parent_traits.separation_gene),
             alignment_gene=mutate(parent_traits.alignment_gene),
             cohesion_gene=mutate(parent_traits.cohesion_gene),
+            social_tag_x=mutate_social_tag(parent_traits.social_tag_x),
+            social_tag_y=mutate_social_tag(parent_traits.social_tag_y),
         )
         return (
             child,
@@ -1372,6 +1586,8 @@ class World:
                     child.alignment_gene - parent_traits.alignment_gene
                 ),
                 cohesion_gene=child.cohesion_gene - parent_traits.cohesion_gene,
+                social_tag_x=child.social_tag_x - parent_traits.social_tag_x,
+                social_tag_y=child.social_tag_y - parent_traits.social_tag_y,
             ),
         )
 
@@ -1482,6 +1698,8 @@ class World:
             separation_gene=flocking_delta.separation_gene,
             alignment_gene=flocking_delta.alignment_gene,
             cohesion_gene=flocking_delta.cohesion_gene,
+            social_tag_x=flocking_delta.social_tag_x,
+            social_tag_y=flocking_delta.social_tag_y,
         )
         return ChildCreatureTraits(
             vision=child_vision,
@@ -1580,7 +1798,7 @@ class World:
 
         # Calculate the raw spawn position based on the parent's position and heading, moving backward along the parent's heading by the calculated distance.
         parent_x, parent_y = parent.position
-        angle = parent.heading + choice((-pi / 4, pi / 4))
+        angle = parent.heading + self.rng.choice((-pi / 4, pi / 4))
         raw_x = (
             parent_x + cos(angle) * distance
         )  # Calculate the x-coordinate of the spawn position based on the parent's heading and distance.
@@ -1830,6 +2048,8 @@ class World:
             action (Action): The action to apply, containing acceleration, rotation, and other parameters.
             snapshot (SensorSnapshot | None): The sensor snapshot of the creature, used for flocking calculations. If None, flocking forces will not be applied.
         """
+        if not hasattr(self, "_last_flocking_runtime"):
+            self._last_flocking_runtime = {}
 
         # Calculate the target thrust and panic intensity based on the action's parameters.
         target_thrust = action.accelerate
@@ -1900,42 +2120,72 @@ class World:
             )
         )
 
-        social_flock_force = (0.0, 0.0)
-        if remaining_force_budget > 0.0:
-            requested_social_force = self._flock_steering_force(
-                creature,
-                action,
-                snapshot,
-                current_max_speed,
-                current_max_forward_force,
+        current_velocity = (
+            creature.body.velocity.x,
+            creature.body.velocity.y,
+        )
+        neural_request = acceleration_force_vector(
+            thrust,
+            creature.heading,
+            current_max_forward_force,
+            current_max_backward_force,
+        )
+        neural_desired_velocity = (
+            current_velocity[0] + neural_request[0],
+            current_velocity[1] + neural_request[1],
+        )
+        social_intent, social_observation = self._social_intent(
+            creature,
+            action,
+            snapshot,
+            current_max_speed,
+            current_max_forward_force,
+        )
+        social_influence = configured_social_influence(
+            self.config.flocking,
+            social_intent,
+        )
+        blended_desired_velocity = blend_desired_velocity(
+            neural_desired_velocity,
+            social_intent.desired_velocity,
+            social_influence,
+        )
+        blended_request = (
+            blended_desired_velocity[0] - current_velocity[0],
+            blended_desired_velocity[1] - current_velocity[1],
+        )
+        (
+            voluntary_force,
+            _counterfactual_neural_force,
+            social_flock_force,
+        ) = accepted_counterfactual_contribution(
+            blended_request=blended_request,
+            neural_request=neural_request,
+            mandatory_avoidance=mandatory_avoidance_force,
+            remaining_budget=remaining_force_budget,
+        )
+        requested_social_contribution = (
+            blended_request[0] - neural_request[0],
+            blended_request[1] - neural_request[1],
+        )
+        turn_steering_force = (
+            mandatory_avoidance_force[0] + social_flock_force[0],
+            mandatory_avoidance_force[1] + social_flock_force[1],
+        )
+        self._last_flocking_runtime[creature.creature_id] = (
+            FlockingRuntimeSnapshot(
+                observation=social_observation,
+                intent=social_intent,
+                neural_desired_velocity=neural_desired_velocity,
+                blended_desired_velocity=blended_desired_velocity,
+                mandatory_avoidance=mandatory_avoidance_force,
+                requested_social_contribution=requested_social_contribution,
+                accepted_social_contribution=social_flock_force,
+                social_influence=social_influence,
+                neural_herding=getattr(action, "herding", 0.0),
+                panic=panic,
             )
-            requested_social_force = self._remove_opposing_component(
-                requested_social_force,
-                mandatory_avoidance_force,
-            )
-            social_flock_force, remaining_force_budget = (
-                self._allocate_force_budget(
-                    requested_social_force,
-                    remaining_force_budget,
-                )
-            )
-
-        voluntary_force = (0.0, 0.0)
-        if remaining_force_budget > 0.0:
-            requested_voluntary_force = acceleration_force_vector(
-                thrust,
-                creature.heading,
-                current_max_forward_force,
-                current_max_backward_force,
-            )
-            requested_voluntary_force = self._remove_opposing_component(
-                requested_voluntary_force,
-                mandatory_avoidance_force,
-            )
-            voluntary_force, remaining_force_budget = self._allocate_force_budget(
-                requested_voluntary_force,
-                remaining_force_budget,
-            )
+        )
 
         if not hasattr(self, "_last_flock_steering_debug"):
             self._last_flock_steering_debug = {}
@@ -1945,22 +2195,19 @@ class World:
                 current_max_forward_force,
             )
         )
-        steering_force = (
-            social_flock_force[0] + mandatory_avoidance_force[0],
-            social_flock_force[1] + mandatory_avoidance_force[1],
-        )
-
-        # The sum is bounded by construction because each accepted vector's
-        # magnitude is deducted from the same scalar budget.
+        # The blended voluntary request and mandatory avoidance share the
+        # finite force budget.
         total_force = (
-            voluntary_force[0] + steering_force[0],
-            voluntary_force[1] + steering_force[1],
+            voluntary_force[0]
+            + mandatory_avoidance_force[0],
+            voluntary_force[1]
+            + mandatory_avoidance_force[1],
         )
         # Both social steering and mandatory avoidance may turn the creature away
         # from its direct neural heading.
         flock_turn_bias = self._flock_turn_bias(
             creature,
-            steering_force,
+            turn_steering_force,
             current_max_forward_force,
         )
 
@@ -1994,17 +2241,17 @@ class World:
         )
         creature.body.angular_velocity *= active_angular_velocity_retention
 
-    def _flock_steering_force(
+    def _flock_component_forces(
         self,
         creature: Creature,
-        action: Action,
-        snapshot: SensorSnapshot | None,
+        snapshot: SensorSnapshot,
         max_speed: float,
         max_force: float,
-    ) -> tuple[float, float]:
-        if snapshot is None:
-            return 0.0, 0.0
-
+    ) -> tuple[
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+    ]:
         flock = snapshot.flock
         separation = self._steering_toward_relative_angle(
             creature,
@@ -2035,24 +2282,183 @@ class World:
                 max_force,
                 1.0 - flock.center_proximity,
             )
+        return separation, alignment, cohesion
 
-        traits = getattr(creature, "flocking_traits", FlockingTraits())
-        separation_weight, alignment_weight, cohesion_weight = (
-            calculate_flocking_weights(
-                herding=getattr(action, "herding", 0.0),
-                panic=getattr(action, "flee_panic_intensity", 0.0),
-                separation_gene=traits.separation_gene,
-                alignment_gene=traits.alignment_gene,
-                cohesion_gene=traits.cohesion_gene,
-            )
+    @staticmethod
+    def _social_observation(flock: object) -> SocialObservation:
+        effective_count = max(
+            0.0,
+            float(getattr(flock, "flockmate_count", 0.0)),
         )
+        personal_space_count = max(
+            0,
+            int(getattr(flock, "visible_personal_space_count", 0)),
+        )
+        separation_strength = max(
+            0.0,
+            min(
+                1.0,
+                float(getattr(flock, "crowd_separation_strength", 0.0)),
+            ),
+        )
+        return SocialObservation(
+            present=effective_count > 1e-12,
+            visible_creature_count=max(
+                0,
+                int(getattr(flock, "visible_creature_count", 0)),
+            ),
+            compatible_visible_count=max(
+                0,
+                int(getattr(flock, "compatible_visible_count", 0)),
+            ),
+            personal_space_presence=(
+                1.0
+                if personal_space_count > 0
+                else (1.0 if separation_strength > 1e-12 else 0.0)
+            ),
+            social_presence=max(0.0, min(1.0, effective_count)),
+            effective_count=effective_count,
+            center_forward=float(getattr(flock, "center_forward", 0.0)),
+            center_right=float(getattr(flock, "center_right", 0.0)),
+            relative_velocity_forward=float(
+                getattr(flock, "relative_velocity_forward", 0.0)
+            ),
+            relative_velocity_right=float(
+                getattr(flock, "relative_velocity_right", 0.0)
+            ),
+            mean_proximity=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            flock,
+                            "average_flockmate_proximity",
+                            0.0,
+                        )
+                    ),
+                ),
+            ),
+            center_distance=max(
+                0.0,
+                float(getattr(flock, "center_distance", 0.0)),
+            ),
+            mean_neighbor_distance=max(
+                0.0,
+                float(getattr(flock, "mean_neighbor_distance", 0.0)),
+            ),
+            mean_heading_error=max(
+                0.0,
+                float(getattr(flock, "mean_heading_error", 0.0)),
+            ),
+            mean_group_velocity=tuple(
+                getattr(
+                    flock,
+                    "actual_average_flockmate_velocity",
+                    getattr(
+                        flock,
+                        "average_flockmate_velocity",
+                        (0.0, 0.0),
+                    ),
+                )
+            ),
+            long_range=getattr(
+                flock,
+                "long_range",
+                SocialObservation().long_range,
+            ),
+        )
+
+    def _social_intent(
+        self,
+        creature: Creature,
+        action: Action,
+        snapshot: SensorSnapshot | None,
+        max_speed: float,
+        max_force: float,
+    ):
+        if snapshot is None:
+            observation = SocialObservation()
+            return (
+                calculate_social_intent(
+                    current_velocity=(
+                        creature.body.velocity.x,
+                        creature.body.velocity.y,
+                    ),
+                    separation_velocity=(
+                        creature.body.velocity.x,
+                        creature.body.velocity.y,
+                    ),
+                    alignment_velocity=(
+                        creature.body.velocity.x,
+                        creature.body.velocity.y,
+                    ),
+                    cohesion_velocity=(
+                        creature.body.velocity.x,
+                        creature.body.velocity.y,
+                    ),
+                    weights=calculate_flocking_weights(
+                        herding=0.0,
+                        panic=0.0,
+                        separation_gene=0.0,
+                        alignment_gene=0.0,
+                        cohesion_gene=0.0,
+                        personal_space_presence=0.0,
+                        social_presence=0.0,
+                    ),
+                    effective_count=0.0,
+                    target_group_size=self.config.flocking.target_group_size,
+                    max_speed=max_speed,
+                ),
+                observation,
+            )
+
+        separation, alignment, cohesion = self._flock_component_forces(
+            creature,
+            snapshot,
+            max_speed,
+            max_force,
+        )
+        current_velocity = (
+            creature.body.velocity.x,
+            creature.body.velocity.y,
+        )
+        observation = self._social_observation(snapshot.flock)
+        traits = getattr(creature, "flocking_traits", FlockingTraits())
+        weights = calculate_flocking_weights(
+            herding=getattr(action, "herding", 0.0),
+            panic=getattr(action, "flee_panic_intensity", 0.0),
+            separation_gene=traits.separation_gene,
+            alignment_gene=traits.alignment_gene,
+            cohesion_gene=traits.cohesion_gene,
+            personal_space_presence=observation.personal_space_presence,
+            social_presence=observation.social_presence,
+            minimum_social_engagement=(
+                self.config.flocking.minimum_social_engagement
+            ),
+            panic_suppression_strength=(
+                self.config.flocking.panic_suppression_strength
+            ),
+        )
+
+        def desired_from_force(force: tuple[float, float]) -> tuple[float, float]:
+            return (
+                current_velocity[0] + force[0],
+                current_velocity[1] + force[1],
+            )
+
         return (
-            separation[0] * separation_weight
-            + alignment[0] * alignment_weight
-            + cohesion[0] * cohesion_weight,
-            separation[1] * separation_weight
-            + alignment[1] * alignment_weight
-            + cohesion[1] * cohesion_weight,
+            calculate_social_intent(
+                current_velocity=current_velocity,
+                separation_velocity=desired_from_force(separation),
+                alignment_velocity=desired_from_force(alignment),
+                cohesion_velocity=desired_from_force(cohesion),
+                weights=weights,
+                effective_count=observation.effective_count,
+                target_group_size=self.config.flocking.target_group_size,
+                max_speed=max_speed,
+            ),
+            observation,
         )
 
     def _steering_toward_velocity(
@@ -2926,6 +3332,9 @@ class World:
             self._unindex_creature_shape(creature)
             self.space.remove(creature.body, creature.shape)
             self.neat_controller.remove_brain(creature.creature_id)
+            social_compatibility = getattr(self, "social_compatibility", None)
+            if social_compatibility is not None:
+                social_compatibility.discard_creature(creature.creature_id)
             self._last_actions.pop(creature.creature_id, None)
             last_snapshots = getattr(self, "_last_sensor_snapshots", None)
             if last_snapshots is not None:
@@ -2936,6 +3345,9 @@ class World:
             flock_debug = getattr(self, "_last_flock_steering_debug", None)
             if flock_debug is not None:
                 flock_debug.pop(creature.creature_id, None)
+            flock_runtime = getattr(self, "_last_flocking_runtime", None)
+            if flock_runtime is not None:
+                flock_runtime.pop(creature.creature_id, None)
             motion_commands = getattr(self, "_motion_commands", None)
             if motion_commands is not None:
                 motion_commands.pop(creature.creature_id, None)
@@ -3047,6 +3459,16 @@ class World:
                     "cohesion_gene",
                     0.5,
                 ),
+                social_tag_x=getattr(
+                    getattr(creature, "flocking_traits", FlockingTraits()),
+                    "social_tag_x",
+                    0.5,
+                ),
+                social_tag_y=getattr(
+                    getattr(creature, "flocking_traits", FlockingTraits()),
+                    "social_tag_y",
+                    0.5,
+                ),
             ),
             color=creature.color,
             lineage=LineageInfo(
@@ -3065,6 +3487,12 @@ class World:
                     ),
                     alignment_gene=creature.lineage.mutation_delta.alignment_gene,
                     cohesion_gene=creature.lineage.mutation_delta.cohesion_gene,
+                    social_tag_x=(
+                        creature.lineage.mutation_delta.social_tag_x
+                    ),
+                    social_tag_y=(
+                        creature.lineage.mutation_delta.social_tag_y
+                    ),
                 ),
             ),
         )

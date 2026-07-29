@@ -23,8 +23,10 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 12
-LEGACY_CHECKPOINT_VERSIONS = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+CHECKPOINT_VERSION = 14
+LEGACY_CHECKPOINT_VERSIONS = {
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -41,6 +43,10 @@ def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
 
 
 class CheckpointError(RuntimeError):
+    pass
+
+
+class CheckpointContractError(CheckpointError):
     pass
 
 
@@ -267,6 +273,8 @@ class PersistenceManager:
         cls,
         config: SimConfig,
         simulation_directory: str | Path | None = None,
+        *,
+        allow_brain_contract_reset: bool = False,
     ) -> World:
         """Load a checkpoint into a World.
 
@@ -285,7 +293,17 @@ class PersistenceManager:
                 with candidate.open("rb") as checkpoint_stream:
                     state = pickle.load(checkpoint_stream)
                 cls._validate_state(state)
-                return cls._restore_world(state, config, simulation_paths)
+                return cls._restore_world(
+                    state,
+                    config,
+                    simulation_paths,
+                    allow_brain_contract_reset=allow_brain_contract_reset,
+                )
+            except CheckpointContractError:
+                # Contract rejection is a policy decision, not checkpoint
+                # corruption. Never fall back to another checkpoint and make
+                # a destructive neural reset appear implicit.
+                raise
             except (
                 OSError,
                 EOFError,
@@ -311,6 +329,8 @@ class PersistenceManager:
         cls,
         config: SimConfig,
         checkpoint_file: str | Path,
+        *,
+        allow_brain_contract_reset: bool = False,
     ) -> World:
         """Load exactly one checkpoint file into a World.
 
@@ -330,7 +350,14 @@ class PersistenceManager:
             with checkpoint.open("rb") as checkpoint_stream:
                 state = pickle.load(checkpoint_stream)
             cls._validate_state(state)
-            return cls._restore_world(state, config, simulation_paths)
+            return cls._restore_world(
+                state,
+                config,
+                simulation_paths,
+                allow_brain_contract_reset=allow_brain_contract_reset,
+            )
+        except CheckpointContractError:
+            raise
         except Exception as error:
             raise CheckpointError(
                 f"Could not load checkpoint {checkpoint}: {error}"
@@ -513,14 +540,46 @@ class PersistenceManager:
                 "pheromone_metadata": pheromones.state_metadata(),
                 "acoustic_signals": copy.deepcopy(acoustics.signals),
             }
+        world_config = getattr(world, "config", None)
+        flocking_config = getattr(world_config, "flocking", None)
+        compatibility_config = getattr(
+            flocking_config,
+            "compatibility",
+            None,
+        )
+        compatibility_mode = getattr(
+            compatibility_config,
+            "mode",
+            "legacy",
+        )
 
         return {
             "version": CHECKPOINT_VERSION,
             "brain_contract": {
                 "inputs": input_count,
                 "outputs": output_count,
-                "sensor_schema": SENSING_SCHEMA_VERSION,
+                "sensor_schema": getattr(
+                    getattr(world, "vision", None),
+                    "sensor_contract",
+                    None,
+                ).schema_version
+                if getattr(
+                    getattr(world, "vision", None),
+                    "sensor_contract",
+                    None,
+                )
+                is not None
+                else SENSING_SCHEMA_VERSION,
                 "action_schema": ACTION_SCHEMA_VERSION,
+            },
+            "flocking_contract": {
+                "compatibility_mode": str(
+                    getattr(
+                        compatibility_mode,
+                        "value",
+                        compatibility_mode,
+                    )
+                ),
             },
             "simulation_id": world.simulation_paths.simulation_id,
             "sim_time": world.elapsed_time,
@@ -539,6 +598,18 @@ class PersistenceManager:
                 "simulation_speed": world.simulation_speed,
                 "is_paused": world.is_paused,
                 "selected_creature_id": world.selected_creature_id,
+                "flocking_telemetry_accumulator": getattr(
+                    world,
+                    "_flocking_telemetry_accumulator",
+                    0.0,
+                ),
+                "flocking_group_tracker": getattr(
+                    world,
+                    "_flocking_group_tracker",
+                    None,
+                ).state_dict()
+                if getattr(world, "_flocking_group_tracker", None) is not None
+                else None,
                 "held_foods": copy.deepcopy(world._held_food_by_creature_id),
                 "food_carriers": copy.deepcopy(world._carrier_by_food_id),
             },
@@ -669,6 +740,16 @@ class PersistenceManager:
                     value,
                     "cohesion_gene",
                     default_flocking.cohesion_gene,
+                ),
+                social_tag_x=getattr(
+                    value,
+                    "social_tag_x",
+                    default_flocking.social_tag_x,
+                ),
+                social_tag_y=getattr(
+                    value,
+                    "social_tag_y",
+                    default_flocking.social_tag_y,
                 ),
             )
 
@@ -1376,6 +1457,8 @@ class PersistenceManager:
         state: dict[str, Any],
         config: SimConfig,
         simulation_paths: SimulationPaths,
+        *,
+        allow_brain_contract_reset: bool = False,
     ) -> World:
         from src.creature import LineageInfo, TraitMutationDelta
         from src.food import Food
@@ -1386,6 +1469,8 @@ class PersistenceManager:
             separation_gene=trait_config.default_separation_gene,
             alignment_gene=trait_config.default_alignment_gene,
             cohesion_gene=trait_config.default_cohesion_gene,
+            social_tag_x=trait_config.default_social_tag_x,
+            social_tag_y=trait_config.default_social_tag_y,
         )
 
         def normalized_flocking(value: object | None) -> FlockingTraits:
@@ -1405,6 +1490,16 @@ class PersistenceManager:
                     value,
                     "cohesion_gene",
                     default_flocking_traits.cohesion_gene,
+                ),
+                social_tag_x=getattr(
+                    value,
+                    "social_tag_x",
+                    default_flocking_traits.social_tag_x,
+                ),
+                social_tag_y=getattr(
+                    value,
+                    "social_tag_y",
+                    default_flocking_traits.social_tag_y,
                 ),
             )
 
@@ -1428,6 +1523,8 @@ class PersistenceManager:
                         getattr(delta, "alignment_gene", 0.0)
                     ),
                     cohesion_gene=float(getattr(delta, "cohesion_gene", 0.0)),
+                    social_tag_x=float(getattr(delta, "social_tag_x", 0.0)),
+                    social_tag_y=float(getattr(delta, "social_tag_y", 0.0)),
                 ),
             )
 
@@ -1480,6 +1577,12 @@ class PersistenceManager:
             world.simulation_speed = runtime["simulation_speed"]
             world.is_paused = runtime["is_paused"]
             world.selected_creature_id = runtime["selected_creature_id"]
+            world._flocking_telemetry_accumulator = float(
+                runtime.get("flocking_telemetry_accumulator", 0.0)
+            )
+            world._flocking_group_tracker.restore(
+                runtime.get("flocking_group_tracker")
+            )
             legacy_fertility_baselines = runtime.get("previous_biome", {})
 
             communication_state = state.get("communication")
@@ -1514,12 +1617,32 @@ class PersistenceManager:
             saved_input_count = int(contract.get("inputs", 23))
             saved_output_count = int(contract.get("outputs", 8))
             reset_brain_epoch = (
-                saved_sensor_schema != SENSING_SCHEMA_VERSION
+                saved_sensor_schema
+                != world.vision.sensor_contract.schema_version
                 or saved_action_schema != ACTION_SCHEMA_VERSION
-                or saved_input_count != SENSOR_INPUT_COUNT
+                or saved_input_count
+                != len(controller.config.genome_config.input_keys)
                 or saved_output_count != ACTION_OUTPUT_COUNT
             )
+            world.brain_contract_reset_occurred = reset_brain_epoch
             if reset_brain_epoch:
+                message = (
+                    "Checkpoint brain contract "
+                    f"(sensor schema {saved_sensor_schema}, action schema "
+                    f"{saved_action_schema}, {saved_input_count} inputs, "
+                    f"{saved_output_count} outputs) is incompatible with the "
+                    "requested contract "
+                    f"(sensor schema {world.vision.sensor_contract.schema_version}, "
+                    f"action schema {ACTION_SCHEMA_VERSION}, "
+                    f"{len(controller.config.genome_config.input_keys)} inputs, "
+                    f"{ACTION_OUTPUT_COUNT} outputs)."
+                )
+                if not allow_brain_contract_reset:
+                    raise CheckpointContractError(
+                        message
+                        + " Pass allow_brain_contract_reset=True to explicitly "
+                        "discard evolved neural/species state and start a fresh epoch."
+                    )
                 LOGGER.warning(
                     "Checkpoint brain contract (sensor schema %s, action schema "
                     "%s, %s inputs, %s outputs) is incompatible with the current contract "
@@ -1530,9 +1653,9 @@ class PersistenceManager:
                     saved_action_schema,
                     saved_input_count,
                     saved_output_count,
-                    SENSING_SCHEMA_VERSION,
+                    world.vision.sensor_contract.schema_version,
                     ACTION_SCHEMA_VERSION,
-                    SENSOR_INPUT_COUNT,
+                    len(controller.config.genome_config.input_keys),
                     ACTION_OUTPUT_COUNT,
                 )
             controller.population.population = population_state["genomes"]
@@ -1564,15 +1687,6 @@ class PersistenceManager:
             controller.species_manager.next_species_id = species_state[
                 "next_species_id"
             ]
-            if not reset_brain_epoch and (
-                int(contract.get("inputs", 23)) < len(
-                    controller.config.genome_config.input_keys
-                )
-                or int(contract.get("outputs", 8)) < len(
-                    controller.config.genome_config.output_keys
-                )
-            ):
-                controller.migrate_legacy_brain_contract()
             if not reset_brain_epoch:
                 controller.restore_evolution_allocators(
                     population_state.get("next_node_id"),

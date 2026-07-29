@@ -94,6 +94,34 @@ class TelemetryDatabase:
                 best_fitness REAL
             );
 
+            CREATE TABLE IF NOT EXISTS flocking_population_metrics (
+                sim_time REAL PRIMARY KEY,
+                population_size INTEGER,
+                seeing_any_percent REAL,
+                seeing_compatible_percent REAL,
+                effective_count_ge_2_percent REAL,
+                mean_effective_count REAL,
+                max_effective_count REAL,
+                mean_engagement REAL,
+                mean_neural_herding REAL,
+                mean_panic REAL,
+                mean_panic_attenuation REAL,
+                mean_separation_weight REAL,
+                mean_alignment_weight REAL,
+                mean_cohesion_weight REAL,
+                mean_requested_social_force REAL,
+                mean_accepted_social_force REAL,
+                mean_social_blend REAL,
+                mean_alignment_error REAL,
+                mean_center_distance REAL,
+                in_groups_ge_3_percent REAL,
+                largest_group_size INTEGER,
+                mean_group_lifetime REAL,
+                fragmentation_count INTEGER,
+                merger_count INTEGER,
+                benchmark_reward_contribution REAL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_species_parent
                 ON species(parent_species_id);
             CREATE INDEX IF NOT EXISTS idx_creatures_species
@@ -101,6 +129,7 @@ class TelemetryDatabase:
             """
         )
         self._ensure_species_history_columns()
+        self._ensure_flocking_population_metrics_columns()
         self.connection.commit()
         self._closed = False
 
@@ -133,6 +162,46 @@ class TelemetryDatabase:
             if name not in columns:
                 self.connection.execute(
                     f"ALTER TABLE species_history ADD COLUMN {name} {column_type}"
+                )
+
+    def _ensure_flocking_population_metrics_columns(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self.connection.execute(
+                "PRAGMA table_info(flocking_population_metrics)"
+            ).fetchall()
+        }
+        required_columns = {
+            "population_size": "INTEGER",
+            "seeing_any_percent": "REAL",
+            "seeing_compatible_percent": "REAL",
+            "effective_count_ge_2_percent": "REAL",
+            "mean_effective_count": "REAL",
+            "max_effective_count": "REAL",
+            "mean_engagement": "REAL",
+            "mean_neural_herding": "REAL",
+            "mean_panic": "REAL",
+            "mean_panic_attenuation": "REAL",
+            "mean_separation_weight": "REAL",
+            "mean_alignment_weight": "REAL",
+            "mean_cohesion_weight": "REAL",
+            "mean_requested_social_force": "REAL",
+            "mean_accepted_social_force": "REAL",
+            "mean_social_blend": "REAL",
+            "mean_alignment_error": "REAL",
+            "mean_center_distance": "REAL",
+            "in_groups_ge_3_percent": "REAL",
+            "largest_group_size": "INTEGER",
+            "mean_group_lifetime": "REAL",
+            "fragmentation_count": "INTEGER",
+            "merger_count": "INTEGER",
+            "benchmark_reward_contribution": "REAL",
+        }
+        for name, column_type in required_columns.items():
+            if name not in columns:
+                self.connection.execute(
+                    "ALTER TABLE flocking_population_metrics "
+                    f"ADD COLUMN {name} {column_type}"
                 )
 
     def log_species(
@@ -515,6 +584,25 @@ class TelemetryDatabase:
                 best_fitness = excluded.best_fitness
             """,
             (sim_time, alive_count, food_count, best_fitness),
+        )
+        self.connection.commit()
+
+    def log_flocking_metrics(
+        self,
+        metrics: dict[str, float | int],
+    ) -> None:
+        columns = tuple(metrics)
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in columns
+            if column != "sim_time"
+        )
+        self.connection.execute(
+            "INSERT INTO flocking_population_metrics "
+            f"({', '.join(columns)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(sim_time) DO UPDATE SET {updates}",
+            tuple(metrics[column] for column in columns),
         )
         self.connection.commit()
 

@@ -40,6 +40,7 @@ class NeatBrain:
     # Last activation-aware outputs, centered independently in [-1, 1].
     last_outputs: list[float] = field(default_factory=list)
     last_action: Action | None = None
+    last_input_names: tuple[str, ...] = SENSOR_INPUT_NAMES
 
     @classmethod
     def from_genome(cls, genome_id: int, genome: Any, config: neat.Config) -> NeatBrain:
@@ -66,6 +67,7 @@ class NeatBrain:
         """
 
         self.last_inputs = snapshot.as_inputs()
+        self.last_input_names = snapshot.sensor_contract.input_names
         raw_outputs = self.network.activate(self.last_inputs)
         centered_outputs = self._normalize_outputs(raw_outputs)
         self.last_outputs = centered_outputs
@@ -153,8 +155,8 @@ class NeatBrain:
             result.append(
                 SensorUsage(
                     input_name=(
-                        SENSOR_INPUT_NAMES[index]
-                        if index < len(SENSOR_INPUT_NAMES)
+                        self.last_input_names[index]
+                        if index < len(self.last_input_names)
                         else str(input_key)
                     ),
                     current_value=(

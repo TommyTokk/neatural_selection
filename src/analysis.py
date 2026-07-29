@@ -155,6 +155,15 @@ _SENSORY_DESCRIPTIONS = {
         "Cohort Alignment Delta (Average Heading)"
     ),
     "flockmate_count": "Effective Compatible Flockmate Count",
+    "flock_presence": "Compatible Flock Presence",
+    "flock_effective_count": "Target-Scaled Compatible Flockmate Count",
+    "flock_center_forward": "Flock Centre Forward Offset",
+    "flock_center_right": "Flock Centre Right Offset",
+    "flock_relative_velocity_forward": "Flock Relative Forward Velocity",
+    "flock_relative_velocity_right": "Flock Relative Right Velocity",
+    "long_range_social_intensity": "Long-Range Social Intensity",
+    "long_range_social_direction_forward": "Long-Range Social Forward Direction",
+    "long_range_social_direction_right": "Long-Range Social Right Direction",
     "stomach_fullness": "Stomach Fullness (Satiety)",
     "sound_strength": "Acoustic Signal Strength",
     "sound_dir_sin": "Acoustic Relative Direction (Sine)",
@@ -168,13 +177,8 @@ _SENSORY_DESCRIPTIONS = {
     "alarm_pheromone_forward_right": "Alarm Pheromone Concentration (Forward Right)",
 }
 
-if set(_SENSORY_DESCRIPTIONS) != set(SENSOR_INPUT_NAMES):
+if not set(SENSOR_INPUT_NAMES).issubset(_SENSORY_DESCRIPTIONS):
     raise RuntimeError("Sensory descriptions must match SensorSnapshot.as_inputs().")
-
-_SENSORY_LEXICON = tuple(
-    _SENSORY_DESCRIPTIONS[name] for name in SENSOR_INPUT_NAMES
-)
-
 
 def calculate_behavior_scores(
     genome: Any,
@@ -584,8 +588,8 @@ def _sense_labels_by_input_key(
 ) -> dict[int, str]:
     keys = _ordered_input_keys(input_keys)
     return {
-        key: _SENSORY_LEXICON[index]
-        for index, key in enumerate(keys[: len(_SENSORY_LEXICON)])
+        key: _SENSORY_DESCRIPTIONS[SENSOR_INPUT_NAMES[index]]
+        for index, key in enumerate(keys[: len(SENSOR_INPUT_NAMES)])
     }
 
 

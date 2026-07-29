@@ -25,7 +25,11 @@ from src.world import World
 CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "configs" / "neat_herbivore.ini"
 )
-FLOCK_SENSOR_NAMES = SENSOR_INPUT_NAMES[23:27]
+FLOCK_SENSOR_NAMES = (
+    "flock_presence",
+    "flock_effective_count",
+    "flock_center_right",
+)
 
 
 def flocking_only_brain(genome_id: int) -> NeatBrain:
@@ -55,12 +59,12 @@ def flocking_only_brain(genome_id: int) -> NeatBrain:
     input_keys = config.genome_config.input_keys
     output_keys = config.genome_config.output_keys
     wiring = (
-        # Center direction and average heading steer the creature.
-        ("flock_center_angle", BrainOutputIndex.ROTATE, 2.0),
-        ("flock_average_relative_heading", BrainOutputIndex.ROTATE, 1.0),
-        # Proximity and flockmate count switch on the physical herding force.
-        ("flock_center_proximity", BrainOutputIndex.HERDING, 0.5),
-        ("flockmate_count", BrainOutputIndex.HERDING, 5.0),
+        # Positive action rotation is left; body-frame right is negative for a
+        # target on the left, hence the negative connection weight.
+        ("flock_center_right", BrainOutputIndex.ROTATE, -2.0),
+        # Presence and target-scaled count switch on social engagement.
+        ("flock_presence", BrainOutputIndex.HERDING, 0.5),
+        ("flock_effective_count", BrainOutputIndex.HERDING, 5.0),
     )
     for innovation, (sensor_name, output_index, weight) in enumerate(wiring, 1):
         input_index = SENSOR_INPUT_NAMES.index(sensor_name)
@@ -121,7 +125,10 @@ class FlockingOnlyBrainTest(unittest.TestCase):
         self.config.action.forward_velocity_retention = 1.0
         self.config.action.lateral_velocity_retention = 1.0
         self.config.action.linear_stop_threshold = 0.0
-        self.vision = VisionSystem(self.config.vision)
+        self.vision = VisionSystem(
+            self.config.vision,
+            flocking_config=self.config.flocking,
+        )
 
     def snapshot_for(
         self,
@@ -214,7 +221,7 @@ class FlockingOnlyBrainTest(unittest.TestCase):
             upper.position[1] - lower.position[1],
         )
 
-        for _ in range(30):
+        for _ in range(120):
             snapshots = {
                 member.creature_id: self.snapshot_for(member, creatures)
                 for member in creatures

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import exp, hypot, pi
 
-from configs.sim_config import FitnessConfig
+from configs.sim_config import FlockingBenchmarkConfig, FitnessConfig
+from src.flocking import SocialObservation
 
 
 @dataclass(slots=True)
@@ -19,6 +21,7 @@ class CreatureFitness:
     matured_offspring_ids: list[int] = field(default_factory=list)
     discovered_food_ids: set[int] = field(default_factory=set)
     evaluation_start_age_seconds: float = 0.0
+    flocking_benchmark_reward: float = 0.0
 
     def record_tick(self, delta_time: float, speed: float, max_speed: float) -> None:
         self.age_seconds += delta_time
@@ -48,6 +51,57 @@ class CreatureFitness:
     def seconds_since_reproduction(self) -> float:
         return self.age_seconds - self.last_reproduction_age
 
+    def record_flocking_benchmark(
+        self,
+        observation: SocialObservation,
+        delta_time: float,
+        config: FlockingBenchmarkConfig,
+    ) -> float:
+        if not config.enabled or observation.effective_count <= 0.0:
+            return 0.0
+        group_presence = min(
+            max(
+                observation.effective_count
+                / max(1, config.target_group_size - 1),
+                0.0,
+            ),
+            1.0,
+        )
+        alignment_quality = min(
+            max(1.0 - observation.mean_heading_error / pi, 0.0),
+            1.0,
+        )
+        spacing_quality = exp(
+            -(
+                (
+                    observation.mean_neighbor_distance
+                    - config.target_spacing
+                )
+                / config.spacing_tolerance
+            )
+            ** 2
+        )
+        movement_quality = min(
+            hypot(*observation.mean_group_velocity)
+            / config.reference_speed,
+            1.0,
+        )
+        quality = (
+            group_presence
+            * alignment_quality
+            * spacing_quality
+            * movement_quality
+        )
+        before = self.flocking_benchmark_reward
+        self.flocking_benchmark_reward = min(
+            config.max_per_evaluation,
+            before
+            + quality
+            * max(0.0, delta_time)
+            * config.reward_rate,
+        )
+        return self.flocking_benchmark_reward - before
+
     def average_speed(self) -> float:
         evaluation_age = self.evaluation_age_seconds()
         if evaluation_age <= 0.0:
@@ -73,4 +127,5 @@ class CreatureFitness:
             + len(self.matured_offspring_ids) * config.matured_offspring_weight
             - self.movement_effort * config.movement_effort_penalty
             - self.trait_energy_cost * config.trait_energy_cost_penalty_weight
+            + self.flocking_benchmark_reward
         )

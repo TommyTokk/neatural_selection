@@ -1712,6 +1712,20 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertIn("open_brain_window", self.renderer._control_hitboxes)
         self.assertIn("kill_selected_creature", self.renderer._control_hitboxes)
 
+    def test_inspector_snapshot_fallback_does_not_run_production_sensing(
+        self,
+    ) -> None:
+        selected = SimpleNamespace(creature_id=7)
+        world = SimpleNamespace(
+            _last_sensor_snapshots={},
+            sensor_snapshot_for=lambda _selected: self.fail(
+                "renderer triggered a sensing pass"
+            ),
+        )
+        snapshot = self.renderer._cached_inspector_snapshot(world, selected)
+        self.assertEqual(snapshot.food.visible, 0.0)
+        self.assertEqual(snapshot.creatures.visible, 0.0)
+
     def test_inspector_shows_live_effective_and_normalized_flockmate_count(
         self,
     ) -> None:
@@ -4014,7 +4028,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
-                        input_keys=list(range(-1, -39, -1)),
+                        input_keys=list(range(-1, -44, -1)),
                         output_keys=list(range(14)),
                     )
                 )
@@ -4024,15 +4038,15 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         labels = self.renderer._species_tree_neat_node_labels(world)
 
         self.assertEqual(
-            [labels[key] for key in range(-1, -39, -1)],
+            [labels[key] for key in range(-1, -44, -1)],
             list(SENSOR_INPUT_NAMES),
         )
         self.assertEqual(labels[-11], "food_proximity")
-        self.assertEqual(labels[-27], "flockmate_count")
-        self.assertEqual(labels[-28], "stomach_fullness")
-        self.assertEqual(labels[-29], "sound_strength")
-        self.assertEqual(labels[-38], "alarm_pheromone_forward_right")
-        self.assertEqual(self.renderer._short_brain_label(labels[-27]), "flock_n")
+        self.assertEqual(labels[-25], "flock_effective_count")
+        self.assertEqual(labels[-33], "stomach_fullness")
+        self.assertEqual(labels[-34], "sound_strength")
+        self.assertEqual(labels[-43], "alarm_pheromone_forward_right")
+        self.assertEqual(self.renderer._short_brain_label(labels[-25]), "flock_n")
         self.assertEqual(labels[0], "accelerate")
         self.assertEqual(labels[3], "want_eat")
         self.assertEqual(labels[10], "emit_sound")

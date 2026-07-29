@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from math import ceil, cos, floor, hypot, isfinite, log1p, log10, pi, sin
 from pathlib import Path
 import re
+from types import SimpleNamespace
 
 import arcade
 
@@ -192,7 +193,7 @@ class InspectorPanelComponent:
         if selected is None:
             return
 
-        snapshot = world.sensor_snapshot_for(selected)
+        snapshot = self._cached_inspector_snapshot(world, selected)
         fitness = world.fitness_for(selected)
         genome_id = world.neat_controller.genome_id_for(selected.creature_id)
         vision_cost = world.vision.energy_cost_per_second(selected)
@@ -212,6 +213,14 @@ class InspectorPanelComponent:
         flocking_traits = getattr(selected, "flocking_traits", None)
         current_action = getattr(selected, "last_action", None)
         herding = float(getattr(current_action, "herding", 0.0))
+        panic = float(
+            getattr(current_action, "flee_panic_intensity", 0.0)
+        )
+        flock_runtime = getattr(
+            world,
+            "_last_flocking_runtime",
+            {},
+        ).get(selected.creature_id)
         parent_id = getattr(lineage, "parent_id", None)
         generation = getattr(lineage, "generation", 0)
         fitness_score = (
@@ -238,7 +247,7 @@ class InspectorPanelComponent:
         section_gap = 18.0
         species_row_height = 28.0 if species_id is not None else 0.0
         total_height = (
-            (824.0 if fitness_score is not None else 792.0)
+            (1074.0 if fitness_score is not None else 1042.0)
             + species_row_height
         )
         scroll_limit = max(0.0, total_height - viewport.height)
@@ -478,6 +487,174 @@ class InspectorPanelComponent:
             width,
         )
         y -= 25.0
+        observation = (
+            None if flock_runtime is None else flock_runtime.observation
+        )
+        intent = None if flock_runtime is None else flock_runtime.intent
+        weights = None if intent is None else intent.weights
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_social_presence",
+            "Presence (personal/social)",
+            (
+                "Unavailable"
+                if observation is None
+                else (
+                    f"{observation.personal_space_presence:.2f} / "
+                    f"{observation.social_presence:.2f}"
+                )
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        flocking_config = getattr(world.config, "flocking", None)
+        compatibility_config = getattr(
+            flocking_config,
+            "compatibility",
+            None,
+        )
+        raw_compatibility_mode = getattr(
+            compatibility_config,
+            "mode",
+            "legacy",
+        )
+        compatibility_mode = getattr(
+            raw_compatibility_mode,
+            "value",
+            raw_compatibility_mode,
+        )
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_social_compatibility",
+            "Social compatibility",
+            (
+                f"{compatibility_mode} / tag "
+                f"({getattr(flocking_traits, 'social_tag_x', 0.5):.2f}, "
+                f"{getattr(flocking_traits, 'social_tag_y', 0.5):.2f})"
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_effective_flocking_weights",
+            "Effective weights",
+            (
+                "Unavailable"
+                if weights is None
+                else (
+                    f"S {weights.separation:.2f} / "
+                    f"A {weights.alignment:.2f} / "
+                    f"C {weights.cohesion:.2f}"
+                )
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_social_engagement",
+            "Engagement / panic attenuation",
+            (
+                f"{herding:.2f} / {1.0 - panic:.2f}"
+                if weights is None
+                else (
+                    f"{weights.engagement:.2f} / "
+                    f"{weights.panic_attenuation:.2f}"
+                )
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_desired_velocities",
+            "Desired velocity N / S / blend",
+            (
+                "Recomputing"
+                if flock_runtime is None
+                else (
+                    f"{hypot(*flock_runtime.neural_desired_velocity):.1f} / "
+                    f"{hypot(*intent.desired_velocity):.1f} / "
+                    f"{hypot(*flock_runtime.blended_desired_velocity):.1f}"
+                )
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_social_force_contribution",
+            "Social requested / accepted",
+            (
+                "Recomputing"
+                if flock_runtime is None
+                else (
+                    f"{hypot(*flock_runtime.requested_social_contribution):.2f} / "
+                    f"{hypot(*flock_runtime.accepted_social_contribution):.2f}"
+                )
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_social_blend",
+            "Social blend",
+            (
+                "Recomputing"
+                if flock_runtime is None
+                else f"{flock_runtime.social_influence:.1%}"
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_local_group",
+            "Persistent local group",
+            (
+                "None"
+                if flock_runtime is None
+                or flock_runtime.local_group_id is None
+                else (
+                    f"#{flock_runtime.local_group_id} / "
+                    f"{flock_runtime.local_group_size} members"
+                )
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
+        self._draw_metric_row_in_viewport(
+            viewport,
+            "inspector_flocking_benchmark",
+            "Benchmark fitness",
+            (
+                "0.000"
+                if fitness is None
+                else f"{fitness.flocking_benchmark_reward:.3f}"
+            ),
+            left,
+            y,
+            width,
+        )
+        y -= 25.0
         self._draw_metric_row_in_viewport(
             viewport,
             "inspector_collision_avoidance",
@@ -591,7 +768,7 @@ class InspectorPanelComponent:
                 "to inspect a herbivore.",
             ]
         else:
-            snapshot = world.sensor_snapshot_for(selected)
+            snapshot = self._cached_inspector_snapshot(world, selected)
             fitness = world.fitness_for(selected)
             lines = [
                 selected.name,
@@ -613,6 +790,7 @@ class InspectorPanelComponent:
                     fitness,
                     world.config.population,
                 )
+
                 genome_id = world.neat_controller.genome_id_for(selected.creature_id)
                 cooldown_remaining = max(
                     0.0,
@@ -680,6 +858,34 @@ class InspectorPanelComponent:
         self._control_hitboxes["kill_selected_creature"] = kill_button
         self._draw_button(open_button, "Open Brain", "open_brain_window")
         self._draw_button(kill_button, "Kill", "kill_selected_creature")
+
+    @staticmethod
+    def _cached_inspector_snapshot(
+        world: World,
+        selected: object,
+    ) -> object:
+        """Return cached sensing data without triggering simulation work."""
+        cached = getattr(world, "_last_sensor_snapshots", None)
+        if cached is None:
+            # Compatibility for lightweight UI hosts and existing test doubles;
+            # production World instances always own the cache.
+            return world.sensor_snapshot_for(selected)
+        snapshot = cached.get(getattr(selected, "creature_id", None))
+        if snapshot is not None:
+            return snapshot
+        empty_target = SimpleNamespace(
+            visible=0.0,
+            density=0.0,
+            proximity=0.0,
+            angle=0.0,
+        )
+        return SimpleNamespace(
+            food=empty_target,
+            creatures=empty_target,
+            stomach_fullness=0.0,
+            flock=SimpleNamespace(flockmate_count=0.0),
+        )
+
     def _draw_selected_brain(self, world: World, bounds: arcade.Rect) -> None:
         """Draw selected brain.
 
@@ -1270,4 +1476,3 @@ class InspectorPanelComponent:
         if fitness is None:
             return "None"
         return self._format_genome_fitness(fitness.score(world.config.fitness))
-

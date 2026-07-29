@@ -26,12 +26,16 @@ class FlockingTraits:
     separation_gene: float = 0.5
     alignment_gene: float = 0.5
     cohesion_gene: float = 0.5
+    social_tag_x: float = 0.5
+    social_tag_y: float = 0.5
 
     def __post_init__(self) -> None:
         for name in (
             "separation_gene",
             "alignment_gene",
             "cohesion_gene",
+            "social_tag_x",
+            "social_tag_y",
         ):
             object.__setattr__(
                 self,
@@ -49,6 +53,8 @@ class TraitMutationDelta:
     separation_gene: float = 0.0
     alignment_gene: float = 0.0
     cohesion_gene: float = 0.0
+    social_tag_x: float = 0.0
+    social_tag_y: float = 0.0
 
 
 @dataclass(slots=True)

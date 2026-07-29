@@ -294,6 +294,9 @@ class BrainGraphComponent:
         genome = getattr(brain, "genome")
         genome_nodes = getattr(genome, "nodes", {})
         genome_connections = getattr(genome, "connections", {})
+        input_names = tuple(getattr(brain, "last_input_names", ()))
+        if len(input_names) != len(input_keys):
+            input_names = SENSOR_INPUT_NAMES
         cache_key = (
             identity,
             id(genome),
@@ -302,6 +305,7 @@ class BrainGraphComponent:
             id(genome_connections),
             len(genome_connections),
             tuple(input_keys),
+            input_names,
             tuple(output_keys),
             layout_bounds.left,
             layout_bounds.bottom,
@@ -317,7 +321,7 @@ class BrainGraphComponent:
             input_keys,
             output_keys,
             layout_bounds,
-            SENSOR_INPUT_NAMES,
+            input_names,
             ACTION_OUTPUT_NAMES,
         )
         state.layout_cache_key = cache_key
@@ -1383,6 +1387,15 @@ class BrainGraphComponent:
             "flock_center_angle": "flock_a",
             "flock_average_relative_heading": "flock_h",
             "flockmate_count": "flock_n",
+            "flock_presence": "flock_on",
+            "flock_effective_count": "flock_n",
+            "flock_center_forward": "flock_f",
+            "flock_center_right": "flock_r",
+            "flock_relative_velocity_forward": "flock_vf",
+            "flock_relative_velocity_right": "flock_vr",
+            "long_range_social_intensity": "social_i",
+            "long_range_social_direction_forward": "social_f",
+            "long_range_social_direction_right": "social_r",
             "stomach_fullness": "stomach",
             "sound_strength": "sound",
             "sound_dir_sin": "sound_sin",

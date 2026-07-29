@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from enum import IntEnum
 from math import cos, sin
 
-
 class BrainOutputIndex(IntEnum):
     ACCELERATE = 0
     ROTATE = 1
@@ -94,28 +93,6 @@ class Action:
                 min(1.0, self.emit_alarm_pheromone),
             ),
         )
-
-
-def calculate_flocking_weights(
-    *,
-    herding: float,
-    panic: float,
-    separation_gene: float,
-    alignment_gene: float,
-    cohesion_gene: float,
-) -> tuple[float, float, float]:
-    """Return bounded crowd-separation and compatible-flocking weights."""
-    herding = max(0.0, min(1.0, herding))
-    panic = max(0.0, min(1.0, panic))
-    separation_gene = max(0.0, min(1.0, separation_gene))
-    alignment_gene = max(0.0, min(1.0, alignment_gene))
-    cohesion_gene = max(0.0, min(1.0, cohesion_gene))
-    calm = 1.0 - panic
-    return (
-        separation_gene * herding,
-        alignment_gene * herding * calm,
-        cohesion_gene * herding * calm,
-    )
 
 
 def acceleration_force_vector(

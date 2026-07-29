@@ -29,7 +29,13 @@ sys.modules.setdefault(
     ),
 )
 
-from configs.sim_config import MetabolismConfig, VisionConfig
+from configs.sim_config import (
+    FlockingConfig,
+    MetabolismConfig,
+    SocialCompatibilityConfig,
+    SocialCompatibilityMode,
+    VisionConfig,
+)
 from src.creature import VisionTraits
 from src.metabolism import Metabolism
 from src.vision import SENSOR_INPUT_COUNT, SENSOR_INPUT_NAMES, VisionSystem
@@ -642,7 +648,14 @@ class VisionEyeOriginTest(unittest.TestCase):
 
 class VisionWallSensorTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.vision = VisionSystem(VisionConfig())
+        self.vision = VisionSystem(
+            VisionConfig(),
+            flocking_config=FlockingConfig(
+                compatibility=SocialCompatibilityConfig(
+                    mode=SocialCompatibilityMode.SPECIES
+                )
+            ),
+        )
 
     def sense_inputs(
         self,
@@ -731,7 +744,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
         first_seventeen_inputs = inputs[:17]
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 38)
+        self.assertEqual(SENSOR_INPUT_COUNT, 43)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertEqual(SENSOR_INPUT_NAMES[1], "feeding_drive")
         self.assertEqual(SENSOR_INPUT_NAMES[2], "reproductive_readiness")
@@ -757,18 +770,18 @@ class VisionWallSensorTest(unittest.TestCase):
             self.assertLessEqual(biome_gradient_or_trend, 1.0)
         self.assertAlmostEqual(inputs[21], 0.0)
         self.assertAlmostEqual(inputs[22], 0.0)
-        self.assertEqual(inputs[23:27], [0.0, 0.0, 0.0, 0.0])
-        self.assertEqual(inputs[27:38], [0.0] * 11)
+        self.assertEqual(inputs[23:32], [0.0] * 9)
+        self.assertEqual(inputs[32:43], [0.0] * 11)
 
-    def test_stomach_fullness_is_the_28th_input_and_clamps(self) -> None:
+    def test_stomach_fullness_is_the_33rd_input_and_clamps(self) -> None:
         creature = creature_at((50.0, 50.0), radius=10.0)
         creature.stomach_energy = 0.5
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
-        self.assertAlmostEqual(inputs[27], 0.5)
+        self.assertAlmostEqual(inputs[32], 0.5)
 
         creature.stomach_energy = 2.0
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
-        self.assertEqual(inputs[27], 1.0)
+        self.assertEqual(inputs[32], 1.0)
 
     def test_feeding_drive_requires_low_energy_and_stomach_capacity(self) -> None:
         creature = creature_at((50.0, 50.0), radius=10.0, energy=0.1)
@@ -824,7 +837,7 @@ class VisionWallSensorTest(unittest.TestCase):
             1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 100.0),
         )
         self.assertGreater(snapshot.flock.crowd_separation_strength, 0.0)
-        self.assertGreater(snapshot.flock.crowd_separation_absolute_angle, 0.0)
+        self.assertLess(snapshot.flock.crowd_separation_absolute_angle, 0.0)
         self.assertEqual(snapshot.flock.average_flockmate_velocity, (0.0, 10.0))
 
     def test_symmetric_neighbors_cancel_separation_field(self) -> None:
@@ -906,7 +919,10 @@ class VisionWallSensorTest(unittest.TestCase):
             max_speed=100.0,
         )
 
-        self.assertAlmostEqual(snapshot.flock.crowd_separation_strength, 0.95)
+        self.assertAlmostEqual(
+            snapshot.flock.crowd_separation_strength,
+            1.0 - 2.0 / 60.0,
+        )
         self.assertAlmostEqual(
             snapshot.flock.crowd_separation_absolute_angle,
             pi,
@@ -918,7 +934,7 @@ class VisionWallSensorTest(unittest.TestCase):
             radius=10.0,
             vision_range=100.0,
         )
-        boundary_neighbor = creature_at((40.0, 0.0), creature_id=2)
+        boundary_neighbor = creature_at((60.0, 0.0), creature_id=2)
 
         snapshot = self.vision.sense(
             observer,
@@ -944,7 +960,7 @@ class VisionWallSensorTest(unittest.TestCase):
             foods=[],
             creatures=[
                 observer,
-                creature_at((39.999, 0.0), creature_id=2),
+                creature_at((59.999, 0.0), creature_id=2),
             ],
             world_bounds=(-100.0, -100.0, 100.0, 100.0),
             max_speed=100.0,
@@ -952,14 +968,14 @@ class VisionWallSensorTest(unittest.TestCase):
         at_boundary = self.vision.sense(
             observer,
             foods=[],
-            creatures=[observer, creature_at((40.0, 0.0), creature_id=3)],
+            creatures=[observer, creature_at((60.0, 0.0), creature_id=3)],
             world_bounds=(-100.0, -100.0, 100.0, 100.0),
             max_speed=100.0,
         )
 
         self.assertAlmostEqual(
             just_inside.flock.crowd_separation_strength,
-            1.0 - 39.999 / 40.0,
+            1.0 - 59.999 / 60.0,
         )
         self.assertEqual(at_boundary.flock.crowd_separation_strength, 0.0)
 
@@ -1027,7 +1043,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.flock.flockmate_count, 1.0)
-        self.assertAlmostEqual(snapshot.as_inputs()[26], 0.25)
+        self.assertAlmostEqual(snapshot.as_inputs()[24], 0.25)
         self.assertEqual(snapshot.flock.average_flockmate_velocity, (1.0, 6.0))
         self.assertAlmostEqual(
             snapshot.flock.average_flockmate_proximity,
@@ -1085,7 +1101,10 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.flock.flockmate_count, 0)
-        self.assertAlmostEqual(snapshot.flock.crowd_separation_strength, 0.50)
+        self.assertAlmostEqual(
+            snapshot.flock.crowd_separation_strength,
+            1.0 - 20.0 / 60.0,
+        )
         self.assertAlmostEqual(snapshot.flock.crowd_separation_absolute_angle, pi)
         self.assertEqual(snapshot.flock.center_proximity, 0.0)
         self.assertEqual(snapshot.flock.average_flockmate_velocity, (0.0, 0.0))
@@ -1161,9 +1180,12 @@ class VisionWallSensorTest(unittest.TestCase):
             max_speed=100.0,
         )
 
-        self.assertEqual(snapshot.as_inputs()[23:26], [0.0, 0.0, 0.0])
+        self.assertEqual(snapshot.as_inputs()[23:32], [0.0] * 9)
         self.assertEqual(snapshot.flock.flockmate_count, 0)
-        self.assertEqual(snapshot.flock.crowd_separation_strength, 0.0)
+        self.assertAlmostEqual(
+            snapshot.flock.crowd_separation_strength,
+            1.0 - 20.0 / 60.0,
+        )
         self.assertEqual(snapshot.flock.average_flockmate_proximity, 0.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:

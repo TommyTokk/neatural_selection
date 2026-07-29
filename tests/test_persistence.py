@@ -18,6 +18,7 @@ from configs.sim_config import build_sim_config
 from src.creature import FlockingTraits, PhysicalTraits, VisionTraits
 from src.persistence import (
     CHECKPOINT_VERSION,
+    CheckpointContractError,
     CheckpointError,
     PersistenceManager,
     SavePriority,
@@ -419,8 +420,8 @@ class PersistenceManagerTest(unittest.TestCase):
             state["creatures"][0]["biome_fertility_ema_updated_at"],
             8.5,
         )
-        self.assertEqual(state["brain_contract"]["sensor_schema"], 3)
-        self.assertEqual(state["brain_contract"]["inputs"], 38)
+        self.assertEqual(state["brain_contract"]["sensor_schema"], 4)
+        self.assertEqual(state["brain_contract"]["inputs"], 43)
         self.assertNotIn("previous_biome", state["world"])
         self.assertEqual(state["world"]["time_since_last_quick_save"], 20.0)
         self.assertEqual(state["world"]["time_since_last_archive_save"], 50.0)
@@ -664,6 +665,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 state,
                 self.config,
                 self.simulation_paths,
+                allow_brain_contract_reset=True,
             )
 
             expected = restored._biome_fertility_at(
@@ -722,6 +724,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 state,
                 self.config,
                 self.simulation_paths,
+                allow_brain_contract_reset=True,
             )
 
             self.assertEqual(
@@ -760,9 +763,9 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored,
                 restored.neat_controller,
             )
-            self.assertEqual(current_state["version"], 12)
-            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 3)
-            self.assertEqual(current_state["brain_contract"]["inputs"], 38)
+            self.assertEqual(current_state["version"], CHECKPOINT_VERSION)
+            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 4)
+            self.assertEqual(current_state["brain_contract"]["inputs"], 43)
             self.assertEqual(current_state["brain_contract"]["outputs"], 14)
             self.assertEqual(current_state["brain_contract"]["action_schema"], 1)
             saved_ema = current_state["creatures"][0]["biome_fertility_ema"]
@@ -807,10 +810,17 @@ class PersistenceManagerTest(unittest.TestCase):
             state["creatures"][0]["lineage"].generation = 4
             state["creatures"][0]["lineage"].mutation_delta.radius = 1.25
 
+            with self.assertRaises(CheckpointContractError):
+                PersistenceManager._restore_world(
+                    copy.deepcopy(state),
+                    self.config,
+                    self.simulation_paths,
+                )
             restored = PersistenceManager._restore_world(
                 state,
                 self.config,
                 self.simulation_paths,
+                allow_brain_contract_reset=True,
             )
 
             self.assertEqual(

@@ -20,7 +20,9 @@ CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "configs" / "neat_herbivore.ini"
 )
 WORLD_BOUNDS = (-300.0, -300.0, 300.0, 300.0)
-PHEROMONE_SENSOR_NAMES = SENSOR_INPUT_NAMES[32:38]
+PHEROMONE_SENSOR_NAMES = tuple(
+    name for name in SENSOR_INPUT_NAMES if "pheromone" in name
+)
 
 
 def pheromone_only_brain(genome_id: int) -> NeatBrain:
