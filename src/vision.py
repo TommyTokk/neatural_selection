@@ -94,6 +94,9 @@ class VisionTargetSnapshot:
     angle: float
     density: float
     count: int
+    nearest_id: int | None = None
+    surface_distance: float | None = None
+    relative_angle: float | None = None
 
 
 @dataclass(slots=True)
@@ -1126,6 +1129,16 @@ class VisionSystem:
         proximity, angle = self._nearest_proximity_and_angle(
             visible, creature.vision.angle
         )
+        nearest = min(
+            visible,
+            key=lambda candidate: candidate.surface_distance,
+        )
+        source = nearest.source
+        nearest_id = getattr(
+            source,
+            "id",
+            getattr(source, "creature_id", None),
+        )
 
         return VisionTargetSnapshot(
             visible=1.0,
@@ -1133,6 +1146,9 @@ class VisionSystem:
             angle=angle,
             density=self._clamp01(sum(target.closeness for target in visible)),
             count=len(visible),
+            nearest_id=nearest_id,
+            surface_distance=nearest.surface_distance,
+            relative_angle=nearest.signed_angle,
         )
 
     def _sense_walls(

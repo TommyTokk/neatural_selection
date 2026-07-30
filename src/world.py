@@ -3,7 +3,7 @@ from __future__ import annotations
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field, replace
 import inspect
-from math import atan2, cos, exp, floor, hypot, pi, sin, sqrt
+from math import atan2, ceil, cos, exp, floor, hypot, pi, sin, sqrt
 from random import Random
 from typing import Literal
 
@@ -71,6 +71,12 @@ from src.communication import (
     AcousticSystem,
     PheromoneSnapshot,
     PheromoneSystem,
+)
+from src.behavior_observer import (
+    BehaviorObservation,
+    BehaviorObserverDiagnostics,
+    BehaviorObserverService,
+    BehaviorSnapshot,
 )
 
 from src.ui.layouts.screen import build_screen_layout
@@ -181,6 +187,11 @@ class World:
         self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
         self._last_flock_steering_debug: dict[int, _FlockSteeringDebug] = {}
         self._last_flocking_runtime: dict[int, FlockingRuntimeSnapshot] = {}
+        self.behavior_observer = BehaviorObserverService(config.behavior)
+        self._behavior_selection_generation = 0
+        self._behavior_next_sample_time = 0.0
+        self._behavior_food_consumption_count = 0
+        self._behavior_food_consumed_energy_total = 0.0
         self.brain_contract_reset_occurred = False
         self._flocking_group_tracker = PersistentGroupTracker(
             config.flocking.telemetry.persistence_overlap_threshold
@@ -361,6 +372,9 @@ class World:
         self._clamp_environment_pan()
 
     def update(self, delta_time: float) -> None:
+        behavior_observer = getattr(self, "behavior_observer", None)
+        if behavior_observer is not None:
+            behavior_observer.poll()
         if delta_time > 0.0:
             instant_fps = 1.0 / delta_time
             self.fps = (
@@ -400,6 +414,7 @@ class World:
             self._spawn_foods(self.FIXED_TIMESTEP)
             self._update_reproduction(self.FIXED_TIMESTEP)
             self._update_flocking_telemetry(self.FIXED_TIMESTEP)
+            self._sample_selected_behavior()
             self._physics_accumulator -= self.FIXED_TIMESTEP
             steps += 1
 
@@ -412,10 +427,15 @@ class World:
             return
         self._closed = True
         try:
-            self.persistence_manager.close()
+            behavior_observer = getattr(self, "behavior_observer", None)
+            if behavior_observer is not None:
+                behavior_observer.close()
         finally:
-            if self.telemetry is not None:
-                self.telemetry.close()
+            try:
+                self.persistence_manager.close()
+            finally:
+                if self.telemetry is not None:
+                    self.telemetry.close()
 
     @property
     def save_in_progress(self) -> bool:
@@ -1068,6 +1088,29 @@ class World:
                 return creature
         return None
 
+    @property
+    def selected_behavior_snapshot(self) -> BehaviorSnapshot | None:
+        observer = getattr(self, "behavior_observer", None)
+        if observer is None:
+            return None
+        snapshot = observer.latest_snapshot
+        if snapshot is None:
+            return None
+        if (
+            snapshot.creature_id != self.selected_creature_id
+            or snapshot.selection_generation
+            != getattr(self, "_behavior_selection_generation", 0)
+        ):
+            return None
+        return snapshot
+
+    @property
+    def behavior_observer_diagnostics(self) -> BehaviorObserverDiagnostics:
+        observer = getattr(self, "behavior_observer", None)
+        if observer is None:
+            return BehaviorObserverDiagnostics(worker_health="unavailable")
+        return observer.diagnostics
+
     def biome_sensor_positions_for(
         self,
         creature: Creature,
@@ -1343,11 +1386,162 @@ class World:
             ),
             None,
         )
-        self.selected_creature_id = (
-            None if chosen is None else chosen.creature_id
+        selected_id = None if chosen is None else chosen.creature_id
+        selection_changed = selected_id != getattr(
+            self,
+            "selected_creature_id",
+            None,
         )
+        self.selected_creature_id = selected_id
+        if selection_changed:
+            self._reset_behavior_focus(selected_id)
         self._camera_follows_selected_creature = chosen is not None
         self._focus_selected_creature()
+
+    def _reset_behavior_focus(self, creature_id: int | None) -> None:
+        self._behavior_selection_generation = (
+            getattr(self, "_behavior_selection_generation", 0) + 1
+        )
+        self._behavior_food_consumption_count = 0
+        self._behavior_food_consumed_energy_total = 0.0
+        now = getattr(self, "elapsed_time", 0.0)
+        behavior_config = getattr(
+            getattr(self, "config", None),
+            "behavior",
+            None,
+        )
+        if behavior_config is None:
+            self._behavior_next_sample_time = now
+        else:
+            self._behavior_next_sample_time = (
+                ceil(now * behavior_config.sample_hz - 1e-12)
+                / behavior_config.sample_hz
+            )
+        observer = getattr(self, "behavior_observer", None)
+        if observer is not None:
+            observer.set_focus(
+                creature_id,
+                self._behavior_selection_generation,
+            )
+
+    def _sample_selected_behavior(self) -> None:
+        observer = getattr(self, "behavior_observer", None)
+        config = getattr(getattr(self, "config", None), "behavior", None)
+        if (
+            observer is None
+            or config is None
+            or not config.enabled
+        ):
+            return
+        selected = self.selected_creature
+        if selected is None:
+            return
+        now = self.elapsed_time
+        next_sample = getattr(self, "_behavior_next_sample_time", now)
+        if now + 1e-12 < next_sample:
+            return
+        interval = 1.0 / config.sample_hz
+        skipped_intervals = max(
+            1,
+            int((now - next_sample) // interval) + 1,
+        )
+        self._behavior_next_sample_time = (
+            next_sample + skipped_intervals * interval
+        )
+        sensor = self._last_sensor_snapshots.get(selected.creature_id)
+        if sensor is None:
+            return
+        food = sensor.food
+        flock = sensor.flock
+        pheromones = sensor.pheromones
+        compatible_group_visible = (
+            float(getattr(flock, "flockmate_count", 0.0)) > 1e-12
+        )
+        group_direction = (
+            self._signed_angle(
+                float(
+                    getattr(
+                        flock,
+                        "cohesion_absolute_angle",
+                        selected.heading,
+                    )
+                )
+                - selected.heading
+            )
+            if compatible_group_visible
+            else None
+        )
+        group_velocity = tuple(
+            getattr(
+                flock,
+                "actual_average_flockmate_velocity",
+                (0.0, 0.0),
+            )
+        )
+        observation = BehaviorObservation(
+            creature_id=selected.creature_id,
+            selection_generation=getattr(
+                self,
+                "_behavior_selection_generation",
+                0,
+            ),
+            simulation_time=now,
+            x=selected.position[0],
+            y=selected.position[1],
+            heading=selected.heading,
+            angular_velocity=float(selected.body.angular_velocity),
+            velocity_x=float(selected.body.velocity.x),
+            velocity_y=float(selected.body.velocity.y),
+            speed=selected.speed,
+            nearest_food_id=getattr(food, "nearest_id", None),
+            food_visible=bool(getattr(food, "visible", 0.0) > 0.0),
+            food_distance=getattr(food, "surface_distance", None),
+            food_relative_angle=getattr(food, "relative_angle", None),
+            compatible_group_visible=compatible_group_visible,
+            compatible_group_count=float(
+                getattr(flock, "flockmate_count", 0.0)
+            ),
+            compatible_group_distance=(
+                float(getattr(flock, "center_distance", 0.0))
+                if compatible_group_visible
+                else None
+            ),
+            compatible_group_direction=group_direction,
+            group_velocity_x=float(group_velocity[0]),
+            group_velocity_y=float(group_velocity[1]),
+            personal_space_occupied=bool(
+                int(
+                    getattr(
+                        flock,
+                        "visible_personal_space_count",
+                        0,
+                    )
+                )
+                > 0
+            ),
+            alarm_here=float(getattr(pheromones, "alarm_here", 0.0)),
+            alarm_forward_left=float(
+                getattr(pheromones, "alarm_forward_left", 0.0)
+            ),
+            alarm_forward_right=float(
+                getattr(pheromones, "alarm_forward_right", 0.0)
+            ),
+            carrying_food=(
+                selected.creature_id
+                in getattr(self, "_held_food_by_creature_id", {})
+            ),
+            food_consumption_count=getattr(
+                self,
+                "_behavior_food_consumption_count",
+                0,
+            ),
+            food_consumed_energy_total=getattr(
+                self,
+                "_behavior_food_consumed_energy_total",
+                0.0,
+            ),
+        )
+        observer.submit(observation)
 
     def select_creature_at(self, x: float, y: float) -> None:
         self.select_creature_by_id(self.creature_id_at(x, y))
@@ -3137,6 +3331,7 @@ class World:
             self._restore_movement_multipliers(with_infant_penalties)
 
         for consumption in report.food_consumptions:
+            self._record_behavior_food_consumption(consumption)
             fitness = self.fitness.get(consumption.creature_id)
             if fitness is not None:
                 fitness.record_food(
@@ -3190,6 +3385,30 @@ class World:
 
         if self.selected_creature_id is not None and self.selected_creature is None:
             self.selected_creature_id = None
+            self._reset_behavior_focus(None)
+
+    def _record_behavior_food_consumption(self, consumption: object) -> None:
+        if getattr(consumption, "creature_id", None) != self.selected_creature_id:
+            return
+        self._behavior_food_consumption_count = (
+            getattr(
+                self,
+                "_behavior_food_consumption_count",
+                0,
+            )
+            + 1
+        )
+        self._behavior_food_consumed_energy_total = (
+            getattr(
+                self,
+                "_behavior_food_consumed_energy_total",
+                0.0,
+            )
+            + max(
+                0.0,
+                float(getattr(consumption, "energy_swallowed", 0.0)),
+            )
+        )
 
     def _communication_intensities_for(
         self,
@@ -3542,6 +3761,7 @@ class World:
 
         if self.selected_creature_id == creature.creature_id:
             self.selected_creature_id = None
+            self._reset_behavior_focus(None)
 
         self._chronometers.pop(creature.creature_id, None)
         self._prune_historical_archives()

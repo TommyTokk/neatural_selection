@@ -568,6 +568,102 @@ class ActionConfig:
 
 
 @dataclass(slots=True)
+class BehaviorObserverConfig:
+    """Configuration for the focal temporal behaviour observer."""
+
+    enabled: bool = True
+    sample_hz: float = 10.0
+    window_seconds: float = 2.5
+    bout_start_seconds: float = 0.5
+    bout_end_grace_seconds: float = 0.3
+    feeding_display_seconds: float = 0.75
+    input_queue_capacity: int = 8
+    result_queue_capacity: int = 4
+    rest_speed_threshold: float = 2.0
+    food_visibility_ratio: float = 0.60
+    trend_consistency_ratio: float = 0.67
+    orientation_min_error_reduction: float = 0.15
+    orientation_min_turn_rate: float = 0.10
+    approach_min_closing_speed: float = 8.0
+    movement_alignment_threshold: float = 0.35
+    cohesion_min_closing_speed: float = 5.0
+    cohesion_min_velocity_alignment: float = 0.75
+    alarm_retreat_min_speed: float = 10.0
+    alarm_min_level: float = 0.10
+    alarm_min_spatial_gradient: float = 0.02
+    alarm_min_temporal_drop: float = 0.03
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ValueError("behavior.enabled must be a boolean.")
+        positive = {
+            "sample_hz": self.sample_hz,
+            "window_seconds": self.window_seconds,
+            "bout_start_seconds": self.bout_start_seconds,
+            "feeding_display_seconds": self.feeding_display_seconds,
+            "rest_speed_threshold": self.rest_speed_threshold,
+            "orientation_min_error_reduction": (
+                self.orientation_min_error_reduction
+            ),
+            "orientation_min_turn_rate": self.orientation_min_turn_rate,
+            "approach_min_closing_speed": self.approach_min_closing_speed,
+            "cohesion_min_closing_speed": self.cohesion_min_closing_speed,
+            "alarm_retreat_min_speed": self.alarm_retreat_min_speed,
+            "alarm_min_level": self.alarm_min_level,
+            "alarm_min_spatial_gradient": self.alarm_min_spatial_gradient,
+            "alarm_min_temporal_drop": self.alarm_min_temporal_drop,
+        }
+        for name, value in positive.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value <= 0.0
+            ):
+                raise ValueError(
+                    f"behavior.{name} must be finite and positive."
+                )
+        grace = self.bout_end_grace_seconds
+        if (
+            isinstance(grace, bool)
+            or not isinstance(grace, (int, float))
+            or not isfinite(grace)
+            or grace < 0.0
+        ):
+            raise ValueError(
+                "behavior.bout_end_grace_seconds must be finite and "
+                "nonnegative."
+            )
+        if self.window_seconds < self.bout_start_seconds:
+            raise ValueError(
+                "behavior.window_seconds must be at least "
+                "behavior.bout_start_seconds."
+            )
+        for name in ("input_queue_capacity", "result_queue_capacity"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise ValueError(
+                    f"behavior.{name} must be a positive integer."
+                )
+        for name in (
+            "food_visibility_ratio",
+            "trend_consistency_ratio",
+            "movement_alignment_threshold",
+            "cohesion_min_velocity_alignment",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(
+                    f"behavior.{name} must be finite and within [0, 1]."
+                )
+
+
+@dataclass(slots=True)
 class SimConfig:
     random_seed: int = 7
     display: DisplayConfig = field(default_factory=DisplayConfig)
@@ -593,6 +689,11 @@ class SimConfig:
 
     # Action config
     action: ActionConfig = field(default_factory=ActionConfig)
+
+    # Focal temporal behaviour observer
+    behavior: BehaviorObserverConfig = field(
+        default_factory=BehaviorObserverConfig
+    )
 
     # Trait config
     trait: TraitConfig = field(default_factory=TraitConfig)
