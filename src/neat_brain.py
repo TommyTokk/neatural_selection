@@ -35,21 +35,42 @@ class NeatBrain:
     genome_id: int  # Genome ID for the NEAT brain
     genome: Any  # Genome object representing the neural network structure
     network: neat.nn.FeedForwardNetwork  # Network created from the genome
+    herding_decay_rate: float = 1.0
     output_activations: list[str] = field(default_factory=list)
     last_inputs: list[float] = field(default_factory=list)
     # Last activation-aware outputs, centered independently in [-1, 1].
     last_outputs: list[float] = field(default_factory=list)
     last_action: Action | None = None
     last_input_names: tuple[str, ...] = SENSOR_INPUT_NAMES
+    herding_state: float = field(default=0.0, init=False)
+    last_raw_herding: float = field(default=0.0, init=False)
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.herding_decay_rate, bool)
+            or not isinstance(self.herding_decay_rate, (int, float))
+            or not isfinite(self.herding_decay_rate)
+            or not 0.0 < self.herding_decay_rate <= 1.0
+        ):
+            raise ValueError(
+                "herding_decay_rate must be finite and within (0, 1]."
+            )
 
     @classmethod
-    def from_genome(cls, genome_id: int, genome: Any, config: neat.Config) -> NeatBrain:
+    def from_genome(
+        cls,
+        genome_id: int,
+        genome: Any,
+        config: neat.Config,
+        herding_decay_rate: float = 1.0,
+    ) -> NeatBrain:
         network = neat.nn.FeedForwardNetwork.create(genome, config)
         output_activations = cls._output_activations_for(genome, config)
         return cls(
             genome_id=genome_id,
             genome=genome,
             network=network,
+            herding_decay_rate=herding_decay_rate,
             output_activations=output_activations,
         )
 
@@ -71,6 +92,15 @@ class NeatBrain:
         raw_outputs = self.network.activate(self.last_inputs)
         centered_outputs = self._normalize_outputs(raw_outputs)
         self.last_outputs = centered_outputs
+        self.last_raw_herding = self._positive_action_output(
+            centered_outputs[BrainOutputIndex.HERDING]
+        )
+        self.herding_state = self._clamp(
+            self.herding_state * (1.0 - self.herding_decay_rate)
+            + self.last_raw_herding * self.herding_decay_rate,
+            0.0,
+            1.0,
+        )
 
         self.last_action = Action(
             accelerate=centered_outputs[BrainOutputIndex.ACCELERATE],
@@ -96,9 +126,7 @@ class NeatBrain:
             flee_panic_intensity=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.PANIC]
             ),
-            herding=self._positive_action_output(
-                centered_outputs[BrainOutputIndex.HERDING]
-            ),
+            herding=self.herding_state,
             emit_sound=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.ACOUSTIC_EMISSION]
             ),

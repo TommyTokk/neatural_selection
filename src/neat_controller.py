@@ -473,6 +473,7 @@ class NeatBrainController:
         flocking_trait_distance_coefficient: float = 1.0,
         sensor_contract: SensorContract | None = None,
         random_seed: int | None = None,
+        herding_decay_rate: float = 1.0,
     ) -> None:
         self._evolution_rng = random.Random(random_seed)
         self.config_path = Path(config_path)
@@ -484,6 +485,7 @@ class NeatBrainController:
             str(self.config_path),
         )
         self.sensor_contract = sensor_contract or SENSOR_CONTRACT
+        self.herding_decay_rate = herding_decay_rate
         self._validate_network_contract()
         with self._using_evolution_rng():
             self.population = neat.Population(self.config)
@@ -747,6 +749,11 @@ class NeatBrainController:
     def _brain_from_genome(self, genome_id: int, genome: Any) -> NeatBrain:
         """Build a brain already labelled with the selected sensor contract."""
         brain = NeatBrain.from_genome(genome_id, genome, self.config)
+        brain.herding_decay_rate = getattr(
+            self,
+            "herding_decay_rate",
+            1.0,
+        )
         contract = getattr(
             self,
             "sensor_contract",

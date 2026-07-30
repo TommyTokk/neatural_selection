@@ -114,6 +114,7 @@ class TelemetryDatabase:
                 max_effective_count REAL,
                 mean_engagement REAL,
                 mean_neural_herding REAL,
+                mean_effective_herding REAL,
                 mean_panic REAL,
                 mean_panic_attenuation REAL,
                 mean_separation_weight REAL,
@@ -200,6 +201,7 @@ class TelemetryDatabase:
             "max_effective_count": "REAL",
             "mean_engagement": "REAL",
             "mean_neural_herding": "REAL",
+            "mean_effective_herding": "REAL",
             "mean_panic": "REAL",
             "mean_panic_attenuation": "REAL",
             "mean_separation_weight": "REAL",
@@ -223,6 +225,11 @@ class TelemetryDatabase:
                     "ALTER TABLE flocking_population_metrics "
                     f"ADD COLUMN {name} {column_type}"
                 )
+        self.connection.execute(
+            "UPDATE flocking_population_metrics "
+            "SET mean_effective_herding = mean_neural_herding "
+            "WHERE mean_effective_herding IS NULL"
+        )
 
     def log_species(
         self,

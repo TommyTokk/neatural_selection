@@ -539,6 +539,7 @@ class WorldVisionMutationTest(unittest.TestCase):
             reset_chronometer=0.0,
             want_grab=0.0,
             want_release=0.0,
+            herding=0.15,
         )
         snapshot = world.vision._snapshot()
         world._last_actions = {creature.creature_id: action}
@@ -559,6 +560,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         world._apply_creature_intents()
 
         self.assertEqual(applied, [(creature, action, snapshot)])
+        self.assertEqual(applied[0][1].herding, 0.15)
         self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 0)
         self.assertEqual(creature.biome_fertility_ema, 0.0)
 

@@ -99,15 +99,37 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             "emit_alarm_pheromone",
         ))
 
+    def test_new_brain_has_legacy_rate_and_zero_transient_herding_state(
+        self,
+    ) -> None:
+        brain = self.make_brain([0.0] * ACTION_OUTPUT_COUNT)
+
+        self.assertEqual(brain.herding_decay_rate, 1.0)
+        self.assertEqual(brain.herding_state, 0.0)
+        self.assertEqual(brain.last_raw_herding, 0.0)
+
+    def test_invalid_brain_decay_rates_fail(self) -> None:
+        for rate in (0.0, -0.1, float("nan"), float("inf"), 1.01):
+            with self.subTest(rate=rate):
+                with self.assertRaises(ValueError):
+                    NeatBrain(
+                        genome_id=1,
+                        genome=SimpleNamespace(),
+                        network=FakeNetwork([]),
+                        herding_decay_rate=rate,
+                    )
+
     def make_brain(
         self,
         outputs: object,
         activations: list[str] | None = None,
+        herding_decay_rate: float = 1.0,
     ) -> NeatBrain:
         return NeatBrain(
             genome_id=1,
             genome=SimpleNamespace(),
             network=FakeNetwork(outputs),
+            herding_decay_rate=herding_decay_rate,
             output_activations=(
                 ["clamped"] * ACTION_OUTPUT_COUNT
                 if activations is None
@@ -168,6 +190,78 @@ class NeatBrainActionMappingTest(unittest.TestCase):
                     self.decide_with_outputs(outputs).herding,
                     expected,
                 )
+
+    def test_herding_pulse_is_integrated_instead_of_applied_instantly(
+        self,
+    ) -> None:
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
+        outputs[BrainOutputIndex.HERDING] = 1.0
+        brain = self.make_brain(outputs, herding_decay_rate=0.15)
+
+        action = brain.decide(sensor_snapshot())
+
+        self.assertEqual(brain.last_outputs[BrainOutputIndex.HERDING], 1.0)
+        self.assertEqual(brain.last_raw_herding, 1.0)
+        self.assertAlmostEqual(brain.herding_state, 0.15)
+        self.assertAlmostEqual(action.herding, 0.15)
+
+    def test_sustained_herding_rises_monotonically_toward_one(self) -> None:
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
+        outputs[BrainOutputIndex.HERDING] = 1.0
+        brain = self.make_brain(outputs, herding_decay_rate=0.15)
+
+        values = [
+            brain.decide(sensor_snapshot()).herding
+            for _ in range(50)
+        ]
+
+        self.assertTrue(
+            all(first < second for first, second in zip(values, values[1:]))
+        )
+        self.assertAlmostEqual(values[-1], 1.0 - 0.85**50)
+        self.assertGreater(values[-1], 0.999)
+
+    def test_herding_decays_geometrically_after_raw_input_stops(self) -> None:
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
+        outputs[BrainOutputIndex.HERDING] = 1.0
+        brain = self.make_brain(outputs, herding_decay_rate=0.15)
+        brain.decide(sensor_snapshot())
+        initial_state = brain.herding_state
+        brain.network.outputs[BrainOutputIndex.HERDING] = 0.0
+
+        values = [
+            brain.decide(sensor_snapshot()).herding
+            for _ in range(4)
+        ]
+
+        self.assertAlmostEqual(values[0], initial_state * 0.85)
+        self.assertTrue(
+            all(first > second for first, second in zip(values, values[1:]))
+        )
+        self.assertAlmostEqual(values[-1], initial_state * 0.85**4)
+
+    def test_legacy_rate_follows_raw_herding_exactly(self) -> None:
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
+        brain = self.make_brain(outputs, herding_decay_rate=1.0)
+
+        for raw in (1.0, 0.2, 0.0, 0.8):
+            brain.network.outputs[BrainOutputIndex.HERDING] = raw
+            action = brain.decide(sensor_snapshot())
+            self.assertEqual(brain.last_raw_herding, raw)
+            self.assertEqual(brain.herding_state, raw)
+            self.assertEqual(action.herding, raw)
+
+    def test_invalid_raw_herding_evidence_remains_bounded(self) -> None:
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
+        brain = self.make_brain(outputs, herding_decay_rate=0.15)
+
+        for raw in (-10.0, float("nan"), float("inf"), float("-inf")):
+            brain.network.outputs[BrainOutputIndex.HERDING] = raw
+            action = brain.decide(sensor_snapshot())
+            self.assertGreaterEqual(brain.last_raw_herding, 0.0)
+            self.assertLessEqual(brain.last_raw_herding, 1.0)
+            self.assertGreaterEqual(action.herding, 0.0)
+            self.assertLessEqual(action.herding, 1.0)
 
     def test_all_action_fields_remain_within_their_documented_ranges(self) -> None:
         outputs = [-2.0, 2.0] * 8
@@ -346,6 +440,62 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         self.assertEqual(created_networks, [fake_network])
         self.assertIs(brain.network, first_network)
         self.assertEqual(fake_network.activate_count, 3)
+
+    def test_from_genome_propagates_rate_and_resets_transient_state(self) -> None:
+        class FakeFeedForwardNetwork:
+            @staticmethod
+            def create(genome: object, config: object) -> FakeNetwork:
+                del genome, config
+                return FakeNetwork([])
+
+        original_nn = getattr(neat, "nn", None)
+        neat.nn = SimpleNamespace(FeedForwardNetwork=FakeFeedForwardNetwork)
+
+        try:
+            config = SimpleNamespace(
+                genome_config=SimpleNamespace(output_keys=[])
+            )
+            brain = NeatBrain.from_genome(
+                1,
+                SimpleNamespace(nodes={}),
+                config,
+                herding_decay_rate=0.15,
+            )
+        finally:
+            if original_nn is None:
+                del neat.nn
+            else:
+                neat.nn = original_nn
+
+        self.assertEqual(brain.herding_decay_rate, 0.15)
+        self.assertEqual(brain.herding_state, 0.0)
+        self.assertEqual(brain.last_raw_herding, 0.0)
+
+    def test_controller_factory_propagates_rate_to_rebuilt_brains(self) -> None:
+        controller = NeatBrainController.__new__(NeatBrainController)
+        controller.config = object()
+        controller.sensor_contract = SimpleNamespace(input_names=("constant",))
+        controller.herding_decay_rate = 0.15
+        rebuilt_brain = SimpleNamespace(
+            last_input_names=(),
+            herding_decay_rate=1.0,
+        )
+        genome = SimpleNamespace()
+
+        with patch(
+            "src.neat_controller.NeatBrain.from_genome",
+            return_value=rebuilt_brain,
+        ) as from_genome:
+            result = controller._brain_from_genome(7, genome)
+
+        self.assertIs(result, rebuilt_brain)
+        self.assertEqual(result.last_input_names, ("constant",))
+        self.assertEqual(result.herding_decay_rate, 0.15)
+        from_genome.assert_called_once_with(
+            7,
+            genome,
+            controller.config,
+        )
 
     def test_rebuild_reads_activations_in_configured_output_key_order(self) -> None:
         class FakeFeedForwardNetwork:
