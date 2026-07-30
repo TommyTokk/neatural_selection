@@ -48,6 +48,8 @@ class BrainWindowState:
     node_bounds: dict[int, arcade.Rect] = field(default_factory=dict)
     selected_node_key: int | None = None
     node_inspector_open: bool = True
+    inspector_page: str = "node"
+    behavior_scroll_offset: float = 0.0
     selection_identity: tuple[int, int] | None = None
     layout_cache_key: tuple[object, ...] | None = None
     layout: BrainGraphLayout | None = None

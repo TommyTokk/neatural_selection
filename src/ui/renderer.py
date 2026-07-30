@@ -68,6 +68,11 @@ class UiRenderer(
         "_brain_node_bounds": ("_brain_state", "node_bounds"),
         "_brain_selected_node_key": ("_brain_state", "selected_node_key"),
         "_brain_node_inspector_open": ("_brain_state", "node_inspector_open"),
+        "_brain_inspector_page": ("_brain_state", "inspector_page"),
+        "_brain_behavior_scroll_offset": (
+            "_brain_state",
+            "behavior_scroll_offset",
+        ),
         "_brain_selection_identity": ("_brain_state", "selection_identity"),
         "_species_tree_open": ("_species_tree_state", "open"),
         "_species_tree_previous_pause": ("_species_tree_state", "previous_pause"),
@@ -452,12 +457,23 @@ class UiRenderer(
             if self._contains_hitbox("brain_window_close", x, y):
                 self._close_brain_window()
                 return True
+            if self._contains_hitbox("brain_inspector_page_node", x, y):
+                self._brain_inspector_page = "node"
+                return True
+            if self._contains_hitbox(
+                "brain_inspector_page_behaviors",
+                x,
+                y,
+            ):
+                self._brain_inspector_page = "behaviors"
+                return True
             if self._contains_hitbox("brain_node_inspector_toggle", x, y):
                 self._brain_node_inspector_open = not self._brain_node_inspector_open
                 return True
             node_key = self._brain_node_at(x, y)
             if node_key is not None:
                 self._brain_selected_node_key = node_key
+                self._brain_inspector_page = "node"
                 self._scroll_offsets["brain_node_inspector"] = 0.0
                 return True
             if self._contains_hitbox("brain_window_graph", x, y):
@@ -726,17 +742,25 @@ class UiRenderer(
             and self._brain_window_bounds is not None
             and self._contains_bounds(self._brain_window_bounds, x, y)
         ):
-            inspector_region = self._scroll_regions.get("brain_node_inspector")
+            scroll_key = (
+                "brain_behavior_inspector"
+                if self._brain_inspector_page == "behaviors"
+                else "brain_node_inspector"
+            )
+            inspector_region = self._scroll_regions.get(scroll_key)
             if (
                 inspector_region is not None
                 and self._contains_bounds(inspector_region, x, y)
             ):
-                limit = self._scroll_limits.get("brain_node_inspector", 0.0)
-                current = self._scroll_offsets.get("brain_node_inspector", 0.0)
-                self._scroll_offsets["brain_node_inspector"] = max(
+                limit = self._scroll_limits.get(scroll_key, 0.0)
+                current = self._scroll_offsets.get(scroll_key, 0.0)
+                new_offset = max(
                     0.0,
                     min(limit, current - scroll_y * 24.0),
                 )
+                self._scroll_offsets[scroll_key] = new_offset
+                if scroll_key == "brain_behavior_inspector":
+                    self._brain_behavior_scroll_offset = new_offset
             return True
 
         for key, bounds in self._scroll_regions.items():

@@ -216,7 +216,12 @@ class BrainWindowComponent:
 
         self._draw_brain_legend(legend_bounds)
         if inspector_bounds is not None:
-            self._draw_brain_node_inspector(brain, layout, inspector_bounds)
+            self._draw_brain_side_inspector(
+                world,
+                brain,
+                layout,
+                inspector_bounds,
+            )
         if brain is not None:
             self._draw_brain_footer(world, selected, brain, footer_bounds)
     def _sync_brain_graph_selection(
@@ -254,8 +259,11 @@ class BrainWindowComponent:
         self._brain_window_open = False
         self._brain_selected_node_key = None
         self._brain_selection_identity = None
+        self._brain_inspector_page = "node"
         self._brain_node_bounds.clear()
         self._scroll_offsets["brain_node_inspector"] = 0.0
+        self._scroll_offsets["brain_behavior_inspector"] = 0.0
+        self._brain_behavior_scroll_offset = 0.0
         self._clear_brain_render_caches()
     def _clear_brain_selection_caches(self) -> None:
         """Release cached data derived from the selected graph node."""

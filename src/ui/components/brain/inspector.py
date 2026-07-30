@@ -43,6 +43,7 @@ from src.ui.layouts.species_tree import (
 )
 from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
+from src.behavior_observer import BehaviorKind, BoutStatus
 
 _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 
@@ -53,11 +54,291 @@ class BrainInspectorComponent:
     BRAIN_NODE_SUMMARY_LINE_HEIGHT = 17.0
     BRAIN_NODE_SUMMARY_VERTICAL_PADDING = 20.0
 
+    def _draw_brain_side_inspector(
+        self,
+        world: World,
+        brain: object | None,
+        layout: BrainGraphLayout | None,
+        bounds: arcade.Rect,
+    ) -> None:
+        """Draw the switchable node/observed-behaviour side panel."""
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.panel_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        selector_height = 42.0
+        selector = arcade.LBWH(
+            bounds.left + 8.0,
+            bounds.top - selector_height - 6.0,
+            bounds.width - 16.0,
+            selector_height,
+        )
+        close_button = arcade.LBWH(
+            selector.right - 26.0,
+            selector.center_y - 11.0,
+            22.0,
+            22.0,
+        )
+        available_width = max(80.0, close_button.left - selector.left - 8.0)
+        gap = 5.0
+        tab_width = max(36.0, (available_width - gap) / 2.0)
+        node_tab = arcade.LBWH(
+            selector.left,
+            selector.bottom + 5.0,
+            tab_width,
+            selector.height - 10.0,
+        )
+        behavior_tab = arcade.LBWH(
+            node_tab.right + gap,
+            node_tab.bottom,
+            tab_width,
+            node_tab.height,
+        )
+        self._control_hitboxes["brain_inspector_page_node"] = node_tab
+        self._control_hitboxes["brain_inspector_page_behaviors"] = behavior_tab
+        self._control_hitboxes["brain_node_inspector_toggle"] = close_button
+        self._draw_brain_inspector_tab(
+            node_tab,
+            "NODE",
+            "node",
+            self._brain_inspector_page == "node",
+        )
+        self._draw_brain_inspector_tab(
+            behavior_tab,
+            "BEHAVIOURS",
+            "behaviors",
+            self._brain_inspector_page == "behaviors",
+        )
+        self._draw_panel_close_button(
+            close_button,
+            "brain_node_inspector",
+        )
+        content = arcade.LBWH(
+            bounds.left + 8.0,
+            bounds.bottom + 8.0,
+            bounds.width - 16.0,
+            max(1.0, selector.bottom - bounds.bottom - 14.0),
+        )
+        if self._brain_inspector_page == "behaviors":
+            self._draw_brain_behavior_inspector(world, content)
+        else:
+            self._draw_brain_node_inspector(
+                brain,
+                layout,
+                content,
+                show_close=False,
+            )
+
+    def _draw_brain_inspector_tab(
+        self,
+        bounds: arcade.Rect,
+        label: str,
+        key: str,
+        active: bool,
+    ) -> None:
+        """Draw one page selector and preserve its interaction key."""
+        fill = self.theme.accent_soft if active else self.theme.card_background
+        border = self.theme.accent if active else self.theme.panel_border
+        text_color = self.theme.accent if active else self.theme.text_muted
+        self._draw_rounded_rect(bounds, fill, border, 6.0, 1.0)
+        self._draw_text(
+            f"brain_inspector_tab_{key}",
+            label,
+            bounds.center_x,
+            bounds.center_y,
+            text_color,
+            9,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+
+    def _draw_brain_behavior_inspector(
+        self,
+        world: World,
+        bounds: arcade.Rect,
+    ) -> None:
+        """Draw focal temporal bouts and optional observer diagnostics."""
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        lines = [
+            "OBSERVED BEHAVIOURS",
+            "World/action history, not neural intent",
+            "",
+        ]
+        behavior_config = getattr(
+            getattr(world, "config", None),
+            "behavior",
+            None,
+        )
+        snapshot = getattr(world, "selected_behavior_snapshot", None)
+        diagnostics = getattr(
+            world,
+            "behavior_observer_diagnostics",
+            None,
+        )
+        if behavior_config is not None and not behavior_config.enabled:
+            lines.extend(
+                [
+                    "Observer disabled",
+                    "Enable the behaviour observer in simulation configuration.",
+                ]
+            )
+        elif diagnostics is not None and diagnostics.last_error:
+            lines.extend(
+                [
+                    "Observer unavailable",
+                    diagnostics.last_error,
+                ]
+            )
+        elif snapshot is None:
+            lines.extend(
+                [
+                    "Collecting temporal evidence",
+                    "A bout appears after its start persistence is satisfied.",
+                ]
+            )
+        else:
+            delayed = (
+                not bool(getattr(world, "is_paused", False))
+                and behavior_config is not None
+                and float(getattr(world, "elapsed_time", 0.0))
+                - snapshot.simulation_time
+                > max(0.5, 3.0 / behavior_config.sample_hz)
+            )
+            if delayed:
+                lines.extend(["Observer updating", "Latest result is delayed.", ""])
+            behaviors = sorted(
+                snapshot.behaviors,
+                key=lambda state: (
+                    0 if state.status is BoutStatus.ACTIVE else 1,
+                    -state.evidence_score,
+                    list(BehaviorKind).index(state.behavior),
+                ),
+            )
+            if not behaviors:
+                lines.extend(
+                    [
+                        "No sustained bout detected",
+                        "Current motion does not satisfy an operational rule.",
+                    ]
+                )
+            for index, state in enumerate(behaviors):
+                if index:
+                    lines.append("")
+                lines.extend(
+                    [
+                        self._behavior_display_name(state.behavior),
+                        (
+                            f"{state.status.value.upper()} · "
+                            f"{state.duration_seconds:.1f} s"
+                        ),
+                        f"Evidence {state.evidence_score:.2f}",
+                    ]
+                )
+                for item in state.evidence:
+                    marker = "+" if item.passed else "-"
+                    value = self._format_behavior_evidence_value(
+                        item.value,
+                        item.unit,
+                    )
+                    lines.append(f"[{marker}] {item.label}: {value}")
+
+        if (
+            bool(getattr(world, "debug_vision_enabled", False))
+            and diagnostics is not None
+        ):
+            lines.extend(
+                [
+                    "",
+                    "OBSERVER DIAGNOSTICS",
+                    (
+                        f"Samples {diagnostics.samples_produced} · "
+                        f"dropped {diagnostics.samples_dropped}"
+                    ),
+                    (
+                        f"Processed {diagnostics.observations_processed} · "
+                        f"results dropped {diagnostics.results_dropped}"
+                    ),
+                    (
+                        "Result latency unavailable"
+                        if diagnostics.result_latency_ms is None
+                        else (
+                            f"Result latency "
+                            f"{diagnostics.result_latency_ms:.1f} ms"
+                        )
+                    ),
+                    (
+                        f"Worker {diagnostics.worker_health} · "
+                        f"queue "
+                        f"{diagnostics.input_queue_size if diagnostics.input_queue_size is not None else 'n/a'}"
+                    ),
+                ]
+            )
+        content = arcade.LBWH(
+            bounds.left + 14.0,
+            bounds.bottom + 14.0,
+            bounds.width - 28.0,
+            bounds.height - 28.0,
+        )
+        self._scroll_offsets["brain_behavior_inspector"] = (
+            self._brain_behavior_scroll_offset
+        )
+        self._draw_scrollable_lines_in_bounds(
+            "brain_behavior_inspector",
+            content,
+            lines,
+            line_spacing=20,
+            first_line_color=self.theme.text_primary,
+            body_color=self.theme.text_muted,
+            first_line_bold=True,
+            wrap_lines=True,
+        )
+        self._brain_behavior_scroll_offset = self._scroll_offsets.get(
+            "brain_behavior_inspector",
+            0.0,
+        )
+
+    @staticmethod
+    def _behavior_display_name(behavior: BehaviorKind) -> str:
+        """Return concise user-facing copy for an observational label."""
+        labels = {
+            BehaviorKind.FOOD_ORIENTATION: "Food orientation",
+            BehaviorKind.FOOD_APPROACH: "Food approach",
+            BehaviorKind.FEEDING: "Feeding",
+            BehaviorKind.RESTING: "Resting",
+            BehaviorKind.COHESION: "Cohesion",
+            BehaviorKind.ALARM_RETREAT: "Alarm retreat",
+        }
+        return labels[behavior]
+
+    @staticmethod
+    def _format_behavior_evidence_value(
+        value: float,
+        unit: str | None,
+    ) -> str:
+        """Format one compact rule-derived Evidence value."""
+        if unit in {"samples", "events"}:
+            number = str(int(round(value)))
+        else:
+            number = f"{value:.2f}"
+        return number if unit is None else f"{number} {unit}"
+
     def _draw_brain_node_inspector(
         self,
         brain: object | None,
         layout: BrainGraphLayout | None,
         bounds: arcade.Rect,
+        *,
+        show_close: bool = True,
     ) -> None:
         """Draw brain node inspector.
 
@@ -79,7 +360,6 @@ class BrainInspectorComponent:
         )
         header = arcade.LBWH(bounds.left, bounds.top - 44, bounds.width, 44)
         close_button = arcade.LBWH(bounds.right - 34, bounds.top - 34, 22, 22)
-        self._control_hitboxes["brain_node_inspector_toggle"] = close_button
         self._draw_text(
             "brain_node_inspector_title",
             "NODE INSPECTOR",
@@ -90,7 +370,9 @@ class BrainInspectorComponent:
             bold=True,
             anchor_y="center",
         )
-        self._draw_panel_close_button(close_button, "brain_node_inspector")
+        if show_close:
+            self._control_hitboxes["brain_node_inspector_toggle"] = close_button
+            self._draw_panel_close_button(close_button, "brain_node_inspector")
         arcade.draw_line(
             bounds.left + 12,
             header.bottom,
