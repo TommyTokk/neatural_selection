@@ -621,6 +621,9 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertEqual(snapshot.food.count, 3)
         self.assertAlmostEqual(snapshot.food.proximity, 0.75)
         self.assertAlmostEqual(snapshot.food.angle, 0.4 / (pi / 4))
+        self.assertEqual(snapshot.food.nearest_id, 3)
+        self.assertAlmostEqual(snapshot.food.surface_distance, 25.0)
+        self.assertAlmostEqual(snapshot.food.relative_angle, 0.4)
 
     def test_close_food_reports_max_proximity_and_center_angle(self) -> None:
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)

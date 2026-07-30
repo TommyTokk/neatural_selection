@@ -94,6 +94,14 @@ for optional_module in ("neat", "pymunk"):
 
 from configs.sim_config import build_sim_config
 from src.analysis import generate_inspector_report
+from src.behavior_observer import (
+    BehaviorEvidence,
+    BehaviorKind,
+    BehaviorObserverDiagnostics,
+    BehaviorSnapshot,
+    BehaviorStateSnapshot,
+    BoutStatus,
+)
 from src.flocking import FlockingRuntimeSnapshot
 from src.ui.layouts.brain_graph import (
     BrainEdgeKind,
@@ -136,6 +144,193 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertAlmostEqual(self.renderer._brain_graph_zoom, 1.0)
+
+    def test_brain_inspector_page_buttons_switch_pages(self) -> None:
+        self.renderer._control_hitboxes["brain_inspector_page_node"] = arcade.LBWH(
+            120,
+            340,
+            80,
+            24,
+        )
+        self.renderer._control_hitboxes[
+            "brain_inspector_page_behaviors"
+        ] = arcade.LBWH(210, 340, 100, 24)
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(SimpleNamespace(), 250, 350)
+        )
+        self.assertEqual(self.renderer._brain_inspector_page, "behaviors")
+        self.assertTrue(
+            self.renderer.handle_mouse_press(SimpleNamespace(), 150, 350)
+        )
+        self.assertEqual(self.renderer._brain_inspector_page, "node")
+
+    def test_clicking_neural_node_returns_to_node_page(self) -> None:
+        self.renderer._brain_inspector_page = "behaviors"
+        self.renderer._brain_node_bounds[7] = arcade.LBWH(180, 180, 24, 24)
+
+        handled = self.renderer.handle_mouse_press(
+            SimpleNamespace(),
+            190,
+            190,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(self.renderer._brain_selected_node_key, 7)
+        self.assertEqual(self.renderer._brain_inspector_page, "node")
+
+    def test_behavior_page_uses_evidence_copy_and_active_first(self) -> None:
+        captured = []
+        original = self.renderer._draw_scrollable_lines_in_bounds
+        self.renderer._draw_scrollable_lines_in_bounds = (
+            lambda key, bounds, lines, **kwargs: captured.extend(lines)
+        )
+        snapshot = BehaviorSnapshot(
+            creature_id=1,
+            selection_generation=1,
+            simulation_time=2.0,
+            behaviors=(
+                BehaviorStateSnapshot(
+                    behavior=BehaviorKind.RESTING,
+                    status=BoutStatus.EMERGING,
+                    evidence_score=0.40,
+                    duration_seconds=0.2,
+                    evidence=(),
+                ),
+                BehaviorStateSnapshot(
+                    behavior=BehaviorKind.FOOD_APPROACH,
+                    status=BoutStatus.ACTIVE,
+                    evidence_score=0.84,
+                    duration_seconds=1.8,
+                    evidence=(
+                        BehaviorEvidence(
+                            "closing_speed",
+                            "Food closing speed",
+                            24.0,
+                            "px/s",
+                            True,
+                        ),
+                    ),
+                ),
+            ),
+            observations_processed=20,
+            produced_monotonic=0.0,
+        )
+        config = build_sim_config()
+        world = SimpleNamespace(
+            config=config,
+            selected_behavior_snapshot=snapshot,
+            behavior_observer_diagnostics=BehaviorObserverDiagnostics(
+                worker_health="running"
+            ),
+            debug_vision_enabled=False,
+            elapsed_time=2.0,
+            is_paused=False,
+        )
+        try:
+            self.renderer._draw_brain_behavior_inspector(
+                world,
+                arcade.LBWH(100, 100, 280, 500),
+            )
+        finally:
+            self.renderer._draw_scrollable_lines_in_bounds = original
+
+        self.assertLess(
+            captured.index("Food approach"),
+            captured.index("Resting"),
+        )
+        self.assertIn("ACTIVE · 1.8 s", captured)
+        self.assertIn("Evidence 0.84", captured)
+
+    def test_behavior_page_renders_empty_error_delayed_and_debug_states(
+        self,
+    ) -> None:
+        captured = []
+        original = self.renderer._draw_scrollable_lines_in_bounds
+        self.renderer._draw_scrollable_lines_in_bounds = (
+            lambda key, bounds, lines, **kwargs: captured.extend(lines)
+        )
+        config = build_sim_config()
+        bounds = arcade.LBWH(100, 100, 280, 500)
+        try:
+            collecting = SimpleNamespace(
+                config=config,
+                selected_behavior_snapshot=None,
+                behavior_observer_diagnostics=BehaviorObserverDiagnostics(
+                    worker_health="running"
+                ),
+                debug_vision_enabled=False,
+                elapsed_time=1.0,
+                is_paused=False,
+            )
+            self.renderer._draw_brain_behavior_inspector(
+                collecting,
+                bounds,
+            )
+            self.assertIn("Collecting temporal evidence", captured)
+
+            captured.clear()
+            error = SimpleNamespace(
+                **{
+                    **vars(collecting),
+                    "behavior_observer_diagnostics": (
+                        BehaviorObserverDiagnostics(
+                            worker_health="error",
+                            last_error="worker failed",
+                        )
+                    ),
+                },
+            )
+            self.renderer._draw_brain_behavior_inspector(error, bounds)
+            self.assertIn("Observer unavailable", captured)
+            self.assertIn("worker failed", captured)
+
+            captured.clear()
+            snapshot = BehaviorSnapshot(
+                creature_id=1,
+                selection_generation=1,
+                simulation_time=0.0,
+                behaviors=(),
+                observations_processed=1,
+                produced_monotonic=0.0,
+            )
+            delayed = SimpleNamespace(
+                **{
+                    **vars(collecting),
+                    "selected_behavior_snapshot": snapshot,
+                    "debug_vision_enabled": True,
+                    "elapsed_time": 1.0,
+                }
+            )
+            self.renderer._draw_brain_behavior_inspector(delayed, bounds)
+            self.assertIn("Observer updating", captured)
+            self.assertIn("No sustained bout detected", captured)
+            self.assertIn("OBSERVER DIAGNOSTICS", captured)
+        finally:
+            self.renderer._draw_scrollable_lines_in_bounds = original
+
+    def test_behavior_page_has_independent_scroll_offset(self) -> None:
+        self.renderer._brain_inspector_page = "behaviors"
+        self.renderer._scroll_regions[
+            "brain_behavior_inspector"
+        ] = arcade.LBWH(200, 180, 200, 120)
+        self.renderer._scroll_limits["brain_behavior_inspector"] = 100
+
+        handled = self.renderer.handle_mouse_scroll(250, 220, -1)
+
+        self.assertTrue(handled)
+        self.assertEqual(
+            self.renderer._scroll_offsets["brain_behavior_inspector"],
+            24,
+        )
+        self.assertEqual(
+            self.renderer._brain_behavior_scroll_offset,
+            24,
+        )
+        self.assertEqual(
+            self.renderer._scroll_offsets.get("brain_node_inspector", 0.0),
+            0.0,
+        )
 
     def test_brain_output_readout_labels_centered_values(self) -> None:
         readout = self.renderer._brain_output_readout([-0.25, 0.5])
@@ -241,6 +436,8 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.renderer._brain_selected_node_key = 7
         self.renderer._brain_selection_identity = (5, 10)
         self.renderer._brain_node_inspector_open = False
+        self.renderer._brain_inspector_page = "behaviors"
+        self.renderer._brain_behavior_scroll_offset = 48.0
         self.renderer._control_hitboxes["brain_window_close"] = arcade.LBWH(
             450,
             350,
@@ -255,6 +452,8 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertIsNone(self.renderer._brain_selected_node_key)
         self.assertIsNone(self.renderer._brain_selection_identity)
         self.assertFalse(self.renderer._brain_node_inspector_open)
+        self.assertEqual(self.renderer._brain_inspector_page, "node")
+        self.assertEqual(self.renderer._brain_behavior_scroll_offset, 0.0)
 
     def test_scroll_inside_node_inspector_updates_its_offset(self) -> None:
         self.renderer._scroll_regions["brain_node_inspector"] = arcade.LBWH(
