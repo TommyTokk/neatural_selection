@@ -35,6 +35,7 @@ class NeatBrain:
     genome_id: int  # Genome ID for the NEAT brain
     genome: Any  # Genome object representing the neural network structure
     network: neat.nn.FeedForwardNetwork  # Network created from the genome
+    brain_revision: int = 0
     herding_decay_rate: float = 1.0
     output_activations: list[str] = field(default_factory=list)
     last_inputs: list[float] = field(default_factory=list)
@@ -140,6 +141,14 @@ class NeatBrain:
         ).clamped()
         return self.last_action
 
+    def evaluate_pure(self, inputs: list[float] | tuple[float, ...]) -> tuple[float, ...]:
+        """Evaluate this exact network without mutating live/debug state."""
+        raw_outputs = self.network.activate(inputs)
+        return self.normalize_outputs_pure(
+            raw_outputs,
+            tuple(self.output_activations),
+        )
+
     def sensor_usage(
         self,
         input_keys: list[int] | tuple[int, ...],
@@ -200,13 +209,34 @@ class NeatBrain:
 
     def _normalize_outputs(self, raw_outputs: Any) -> list[float]:
         """Return 14 independent, finite neural outputs centered in [-1, 1]."""
+        return list(
+            self.normalize_outputs_pure(
+                raw_outputs,
+                tuple(self.output_activations),
+            )
+        )
+
+    @classmethod
+    def normalize_outputs_pure(
+        cls,
+        raw_outputs: Any,
+        output_activations: tuple[str, ...],
+    ) -> tuple[float, ...]:
+        """Normalize network outputs without reading or writing runtime state."""
         try:
             output_values = list(raw_outputs)
         except TypeError:
-            return DEFAULT_CENTERED_OUTPUTS.copy()
+            return tuple(DEFAULT_CENTERED_OUTPUTS)
 
         centered = [
-            self._center_output(value, self._output_activation(index))
+            cls._center_output_value(
+                value,
+                (
+                    output_activations[index]
+                    if index < len(output_activations)
+                    else None
+                ),
+            )
             for index, value in enumerate(output_values[:ACTION_OUTPUT_COUNT])
         ]
 
@@ -214,10 +244,15 @@ class NeatBrain:
         if missing_outputs > 0:
             centered.extend(DEFAULT_CENTERED_OUTPUTS[len(centered) :])
 
-        return centered
+        return tuple(centered)
 
     def _center_output(self, value: Any, activation: str | None) -> float:
         """Convert one already-activated NEAT output to centered [-1, 1]."""
+        return self._center_output_value(value, activation)
+
+    @staticmethod
+    def _center_output_value(value: Any, activation: str | None) -> float:
+        """Pure implementation of activation-aware output centering."""
         try:
             output = float(value)
         except (TypeError, ValueError, OverflowError):
@@ -231,13 +266,13 @@ class NeatBrain:
         )
 
         if activation_name == "sigmoid":
-            return 2.0 * self._clamp(output, 0.0, 1.0) - 1.0
+            return 2.0 * max(0.0, min(1.0, output)) - 1.0
 
         if activation_name in {"tanh", "clamped"}:
-            return self._clamp(output, -1.0, 1.0)
+            return max(-1.0, min(1.0, output))
 
         if activation_name == "relu":
-            return self._clamp(output, 0.0, 1.0)
+            return max(0.0, min(1.0, output))
 
         if activation_name == "lelu":
             return tanh(output)

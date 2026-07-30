@@ -102,6 +102,15 @@ from src.behavior_observer import (
     BoutStatus,
 )
 from src.flocking import FlockingRuntimeSnapshot
+from src.counterfactual_neat import (
+    CounterfactualDiagnostics,
+    EffectDirection,
+    InfluenceLabel,
+    OutputEffect,
+    SemanticEffectSnapshot,
+    SemanticIntervention,
+    WhySnapshot,
+)
 from src.ui.layouts.brain_graph import (
     BrainEdgeKind,
     BrainGraphEdge,
@@ -163,6 +172,440 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             self.renderer.handle_mouse_press(SimpleNamespace(), 150, 350)
         )
         self.assertEqual(self.renderer._brain_inspector_page, "node")
+
+    def test_why_page_button_and_scroll_state_are_independent(self) -> None:
+        self.renderer._control_hitboxes[
+            "brain_inspector_page_why"
+        ] = arcade.LBWH(320, 340, 70, 24)
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(SimpleNamespace(), 350, 350)
+        )
+        self.assertEqual(self.renderer._brain_inspector_page, "why")
+
+        self.renderer._scroll_regions["brain_why_inspector"] = arcade.LBWH(
+            200,
+            180,
+            200,
+            120,
+        )
+        self.renderer._scroll_limits["brain_why_inspector"] = 100
+        self.assertTrue(self.renderer.handle_mouse_scroll(250, 220, -1))
+        self.assertEqual(self.renderer._brain_why_scroll_offset, 24)
+        self.assertEqual(self.renderer._brain_behavior_scroll_offset, 0.0)
+
+    def test_why_labels_separate_food_gradient_and_satiation(self) -> None:
+        self.assertEqual(
+            self.renderer._why_intervention_label(
+                SemanticIntervention.VISIBLE_FOOD_CUES
+            ),
+            "Visible food cues",
+        )
+        self.assertEqual(
+            self.renderer._why_intervention_label(
+                SemanticIntervention.RESOURCE_GRADIENT_CUES
+            ),
+            "Resource gradient",
+        )
+        self.assertEqual(
+            self.renderer._why_intervention_label(
+                SemanticIntervention.SATIATED_STATE
+            ),
+            "Satiated state",
+        )
+
+    def test_why_card_click_toggles_one_expanded_card(self) -> None:
+        self.renderer._brain_inspector_page = "why"
+        food_key = self.renderer._brain_why_card_hitbox_key(
+            BehaviorKind.FOOD_APPROACH
+        )
+        rest_key = self.renderer._brain_why_card_hitbox_key(
+            BehaviorKind.RESTING
+        )
+        self.renderer._control_hitboxes[food_key] = arcade.LBWH(
+            310,
+            180,
+            100,
+            50,
+        )
+        self.renderer._control_hitboxes[rest_key] = arcade.LBWH(
+            310,
+            240,
+            100,
+            50,
+        )
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                SimpleNamespace(),
+                350,
+                200,
+            )
+        )
+        self.assertEqual(
+            self.renderer._brain_expanded_why_behavior,
+            BehaviorKind.FOOD_APPROACH.value,
+        )
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                SimpleNamespace(),
+                350,
+                260,
+            )
+        )
+        self.assertEqual(
+            self.renderer._brain_expanded_why_behavior,
+            BehaviorKind.RESTING.value,
+        )
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                SimpleNamespace(),
+                350,
+                260,
+            )
+        )
+        self.assertIsNone(self.renderer._brain_expanded_why_behavior)
+
+    def test_why_page_keeps_all_behavior_cards_in_fixed_positions(self) -> None:
+        captured = []
+        original_card = self.renderer._draw_brain_why_card
+
+        def capture_card(
+            bounds,
+            behavior,
+            state,
+            snapshot,
+            *,
+            expanded,
+        ):
+            captured.append(
+                (bounds, behavior, state, snapshot, expanded)
+            )
+
+        self.renderer._draw_brain_why_card = capture_card
+        config = build_sim_config()
+        empty_snapshot = BehaviorSnapshot(
+            creature_id=1,
+            selection_generation=1,
+            simulation_time=1.0,
+            behaviors=(),
+            observations_processed=10,
+            produced_monotonic=0.0,
+        )
+        world = SimpleNamespace(
+            config=config,
+            selected_behavior_snapshot=empty_snapshot,
+            selected_why_snapshots=(),
+            counterfactual_diagnostics=CounterfactualDiagnostics(
+                worker_health="running"
+            ),
+            debug_vision_enabled=False,
+            elapsed_time=1.0,
+            is_paused=False,
+        )
+        bounds = arcade.LBWH(100, 100, 280, 500)
+        try:
+            self.renderer._draw_brain_why_inspector(world, bounds)
+            empty_cards = tuple(captured)
+            empty_limit = self.renderer._scroll_limits[
+                "brain_why_inspector"
+            ]
+
+            captured.clear()
+            active_snapshot = replace(
+                empty_snapshot,
+                behaviors=(
+                    BehaviorStateSnapshot(
+                        behavior=BehaviorKind.FOOD_APPROACH,
+                        status=BoutStatus.ACTIVE,
+                        evidence_score=0.8,
+                        duration_seconds=1.0,
+                        evidence=(),
+                    ),
+                ),
+            )
+            active_world = SimpleNamespace(
+                **{
+                    **vars(world),
+                    "selected_behavior_snapshot": active_snapshot,
+                }
+            )
+            self.renderer._draw_brain_why_inspector(
+                active_world,
+                bounds,
+            )
+            active_cards = tuple(captured)
+            active_limit = self.renderer._scroll_limits[
+                "brain_why_inspector"
+            ]
+        finally:
+            self.renderer._draw_brain_why_card = original_card
+
+        self.assertEqual(
+            [item[1] for item in empty_cards],
+            list(BehaviorKind),
+        )
+        self.assertEqual(
+            [item[1] for item in active_cards],
+            list(BehaviorKind),
+        )
+        self.assertEqual(
+            [(item[0].top, item[0].bottom) for item in active_cards],
+            [(item[0].top, item[0].bottom) for item in empty_cards],
+        )
+        self.assertEqual(active_limit, empty_limit)
+        active_states = {
+            behavior: state
+            for _bounds, behavior, state, _snapshot, _expanded
+            in active_cards
+        }
+        self.assertIsNotNone(
+            active_states[BehaviorKind.FOOD_APPROACH]
+        )
+        self.assertIsNone(active_states[BehaviorKind.FEEDING])
+
+    def test_why_expansion_reserves_data_independent_detail_height(self) -> None:
+        captured = []
+        original_card = self.renderer._draw_brain_why_card
+
+        def capture_card(
+            bounds,
+            behavior,
+            state,
+            snapshot,
+            *,
+            expanded,
+        ):
+            captured.append((bounds, behavior, expanded))
+
+        self.renderer._draw_brain_why_card = capture_card
+        world = SimpleNamespace(
+            config=build_sim_config(),
+            selected_behavior_snapshot=BehaviorSnapshot(
+                creature_id=1,
+                selection_generation=1,
+                simulation_time=1.0,
+                behaviors=(),
+                observations_processed=10,
+                produced_monotonic=0.0,
+            ),
+            selected_why_snapshots=(),
+            counterfactual_diagnostics=CounterfactualDiagnostics(
+                worker_health="running"
+            ),
+            debug_vision_enabled=False,
+            elapsed_time=1.0,
+            is_paused=False,
+        )
+        bounds = arcade.LBWH(100, 100, 280, 500)
+        try:
+            self.renderer._brain_expanded_why_behavior = None
+            self.renderer._draw_brain_why_inspector(world, bounds)
+            collapsed_limit = self.renderer._scroll_limits[
+                "brain_why_inspector"
+            ]
+
+            captured.clear()
+            self.renderer._brain_expanded_why_behavior = (
+                BehaviorKind.FEEDING.value
+            )
+            self.renderer._draw_brain_why_inspector(world, bounds)
+            expanded_limit = self.renderer._scroll_limits[
+                "brain_why_inspector"
+            ]
+        finally:
+            self.renderer._draw_brain_why_card = original_card
+
+        expanded_cards = [
+            (card_bounds, behavior)
+            for card_bounds, behavior, expanded in captured
+            if expanded
+        ]
+        self.assertEqual(len(expanded_cards), 1)
+        card_bounds, behavior = expanded_cards[0]
+        detail_height = self.renderer._brain_why_detail_height(behavior)
+        self.assertIs(behavior, BehaviorKind.FEEDING)
+        self.assertAlmostEqual(
+            card_bounds.height,
+            self.renderer.BRAIN_WHY_CARD_HEIGHT + detail_height,
+        )
+        self.assertAlmostEqual(
+            expanded_limit,
+            collapsed_limit + detail_height,
+        )
+
+    def test_why_calculation_section_explains_formula_and_meaning(self) -> None:
+        copy = " ".join(
+            self.renderer._brain_why_calculation_lines(260.0)
+        ).lower()
+
+        self.assertIn("|actual − counterfactual|", copy)
+        self.assertIn("natural output span", copy)
+        self.assertIn("mean across scored outputs", copy)
+        self.assertIn("<0.10 minimal", copy)
+        self.assertIn("<0.30 weak", copy)
+        self.assertIn("<0.60 moderate", copy)
+        self.assertIn("mixed", copy)
+        self.assertIn("do not sum to 100%", copy)
+        self.assertIn("same factual food heading", copy)
+        self.assertIn("0.05 rad", copy)
+        self.assertIn("smaller turn", copy)
+
+    def test_expanded_why_card_draws_result_and_waiting_placeholders(
+        self,
+    ) -> None:
+        texts = []
+        original_text = self.renderer._draw_text
+        self.renderer._draw_text = (
+            lambda key, text, *args, **kwargs: texts.append((key, text))
+        )
+        state = BehaviorStateSnapshot(
+            behavior=BehaviorKind.FEEDING,
+            status=BoutStatus.ACTIVE,
+            evidence_score=1.0,
+            duration_seconds=0.8,
+            evidence=(),
+            bout_id=4,
+        )
+        output = OutputEffect(
+            output_name="want_eat",
+            actual=0.8,
+            counterfactual=0.2,
+            delta=0.6,
+            influence_score=0.6,
+            direction=EffectDirection.SUPPORTIVE,
+        )
+        effect = SemanticEffectSnapshot(
+            intervention=SemanticIntervention.VISIBLE_FOOD_CUES,
+            influence_score=0.6,
+            influence_label=InfluenceLabel.STRONG,
+            effect_direction=EffectDirection.SUPPORTIVE,
+            output_effects=(output,),
+            sample_count=3,
+        )
+        snapshot = WhySnapshot(
+            creature_id=1,
+            selection_generation=1,
+            brain_revision=2,
+            simulation_time=3.0,
+            behavior=BehaviorKind.FEEDING,
+            status=BoutStatus.ACTIVE,
+            bout_id=4,
+            behavior_duration=0.8,
+            effects=(effect,),
+            produced_monotonic=0.0,
+        )
+        detail_height = self.renderer._brain_why_detail_height(
+            BehaviorKind.FEEDING
+        )
+        try:
+            self.renderer._draw_brain_why_card(
+                arcade.LBWH(
+                    100,
+                    100,
+                    280,
+                    self.renderer.BRAIN_WHY_CARD_HEIGHT + detail_height,
+                ),
+                BehaviorKind.FEEDING,
+                state,
+                snapshot,
+                expanded=True,
+            )
+        finally:
+            self.renderer._draw_text = original_text
+
+        copy = " ".join(text for _key, text in texts)
+        self.assertIn("INFLUENCE 0.60 · STRONG · SUPPORTIVE · n=3", copy)
+        self.assertIn(
+            "actual +0.80  →  counterfactual +0.20  · SUPPORTIVE",
+            copy,
+        )
+        self.assertIn("If this creature were satiated", copy)
+        self.assertIn("WAITING FOR CURRENT BOUT", copy)
+
+    def test_food_rotate_displays_raw_values_with_target_direction(
+        self,
+    ) -> None:
+        texts = []
+        original_text = self.renderer._draw_text
+        self.renderer._draw_text = (
+            lambda key, text, *args, **kwargs: texts.append(text)
+        )
+        effect = SemanticEffectSnapshot(
+            intervention=SemanticIntervention.VISIBLE_FOOD_CUES,
+            influence_score=0.45,
+            influence_label=InfluenceLabel.MODERATE,
+            effect_direction=EffectDirection.SUPPORTIVE,
+            output_effects=(
+                OutputEffect(
+                    output_name="rotate",
+                    actual=-0.04,
+                    counterfactual=0.86,
+                    delta=-0.90,
+                    influence_score=0.45,
+                    direction=EffectDirection.SUPPORTIVE,
+                    actual_target_alignment=-0.04,
+                    counterfactual_target_alignment=-0.86,
+                ),
+            ),
+            sample_count=2,
+        )
+        try:
+            self.renderer._draw_brain_why_effect_card(
+                arcade.LBWH(100, 100, 280, 130),
+                BehaviorKind.FOOD_ORIENTATION,
+                0,
+                SemanticIntervention.VISIBLE_FOOD_CUES,
+                effect,
+                ("rotate",),
+                self.renderer.BRAIN_BEHAVIOR_ACCENTS[
+                    BehaviorKind.FOOD_ORIENTATION
+                ],
+            )
+        finally:
+            self.renderer._draw_text = original_text
+
+        copy = " ".join(texts)
+        self.assertIn(
+            "actual -0.04  →  counterfactual +0.86  · SUPPORTIVE",
+            copy,
+        )
+        self.assertNotIn("target_alignment", copy)
+
+    def test_food_why_card_reports_missing_target_context(self) -> None:
+        texts = []
+        original_text = self.renderer._draw_text
+        self.renderer._draw_text = (
+            lambda key, text, *args, **kwargs: texts.append(text)
+        )
+        state = BehaviorStateSnapshot(
+            behavior=BehaviorKind.FOOD_APPROACH,
+            status=BoutStatus.ACTIVE,
+            evidence_score=0.8,
+            duration_seconds=1.0,
+            evidence=(),
+            bout_id=2,
+            target_id=None,
+        )
+        try:
+            self.renderer._draw_brain_why_card(
+                arcade.LBWH(
+                    100,
+                    100,
+                    280,
+                    self.renderer.BRAIN_WHY_CARD_HEIGHT,
+                ),
+                BehaviorKind.FOOD_APPROACH,
+                state,
+                None,
+                expanded=False,
+            )
+        finally:
+            self.renderer._draw_text = original_text
+
+        self.assertIn("WAITING FOR TARGET", texts)
 
     def test_clicking_neural_node_returns_to_node_page(self) -> None:
         self.renderer._brain_inspector_page = "behaviors"
@@ -868,6 +1311,9 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.renderer._brain_inspector_page = "behaviors"
         self.renderer._brain_behavior_scroll_offset = 48.0
         self.renderer._brain_expanded_behavior = BehaviorKind.COHESION.value
+        self.renderer._brain_expanded_why_behavior = (
+            BehaviorKind.FEEDING.value
+        )
         self.renderer._control_hitboxes["brain_window_close"] = arcade.LBWH(
             450,
             350,
@@ -885,6 +1331,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertEqual(self.renderer._brain_inspector_page, "node")
         self.assertEqual(self.renderer._brain_behavior_scroll_offset, 0.0)
         self.assertIsNone(self.renderer._brain_expanded_behavior)
+        self.assertIsNone(self.renderer._brain_expanded_why_behavior)
 
     def test_scroll_inside_node_inspector_updates_its_offset(self) -> None:
         self.renderer._scroll_regions["brain_node_inspector"] = arcade.LBWH(

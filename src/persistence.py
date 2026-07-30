@@ -2115,6 +2115,8 @@ class PersistenceManager:
                         ]
                     ) + 1
                 controller._next_genome_id_value = next_genome_id
+            if not reset_brain_epoch:
+                world._reset_behavior_focus(world.selected_creature_id)
             world._prune_historical_archives()
             world._refresh_stats()
             return world

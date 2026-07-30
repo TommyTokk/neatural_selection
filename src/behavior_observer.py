@@ -17,7 +17,7 @@ from queue import Empty, Full
 from time import monotonic
 from typing import Any
 
-from configs.sim_config import BehaviorObserverConfig
+from configs.sim_config import BehaviorObserverConfig, CounterfactualWhyConfig
 
 
 LOGGER = logging.getLogger(__name__)
@@ -84,6 +84,8 @@ class BehaviorStateSnapshot:
     evidence_score: float
     duration_seconds: float
     evidence: tuple[BehaviorEvidence, ...]
+    bout_id: int = 0
+    target_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +123,7 @@ class _RuleEvidence:
     present: bool
     score: float
     evidence: tuple[BehaviorEvidence, ...]
+    target_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -129,6 +132,7 @@ class _BoutState:
     candidate_since: float | None = None
     active_since: float | None = None
     last_evidence_time: float | None = None
+    bout_id: int = 0
 
     def reset(self) -> None:
         self.status = None
@@ -171,6 +175,7 @@ class TemporalBehaviorAnalyzer:
         self._low_speed_count = 0
         for bout in self.bouts.values():
             bout.reset()
+            bout.bout_id = 0
 
     def process(self, observation: BehaviorObservation) -> BehaviorSnapshot:
         identity = (
@@ -244,6 +249,7 @@ class TemporalBehaviorAnalyzer:
         if rule.present:
             bout.last_evidence_time = now
             if bout.status is None:
+                bout.bout_id += 1
                 bout.status = BoutStatus.EMERGING
                 bout.candidate_since = now
             if (
@@ -280,6 +286,8 @@ class TemporalBehaviorAnalyzer:
                 now - (now if started is None else started),
             ),
             evidence=rule.evidence,
+            bout_id=bout.bout_id,
+            target_id=rule.target_id,
         )
 
     def _update_feeding(
@@ -291,6 +299,7 @@ class TemporalBehaviorAnalyzer:
         if rule.present:
             self._last_feeding_rule = rule
             if bout.status is None:
+                bout.bout_id += 1
                 bout.active_since = now
             bout.status = BoutStatus.ACTIVE
             bout.last_evidence_time = now
@@ -320,6 +329,7 @@ class TemporalBehaviorAnalyzer:
                 ),
             ),
             evidence=displayed_rule.evidence,
+            bout_id=bout.bout_id,
         )
 
     def _food_segment(self) -> list[BehaviorObservation]:
@@ -424,7 +434,12 @@ class TemporalBehaviorAnalyzer:
             consistency,
             1.0 if correct_turn else 0.0,
         )
-        return _RuleEvidence(passed, score, evidence)
+        return _RuleEvidence(
+            passed,
+            score,
+            evidence,
+            target_id=current.nearest_food_id,
+        )
 
     def _food_approach(self) -> _RuleEvidence:
         segment = self._food_segment()
@@ -501,7 +516,12 @@ class TemporalBehaviorAnalyzer:
             consistency,
             max(0.0, alignment),
         )
-        return _RuleEvidence(passed, score, evidence)
+        return _RuleEvidence(
+            passed,
+            score,
+            evidence,
+            target_id=current.nearest_food_id,
+        )
 
     def _feeding(self, observation: BehaviorObservation) -> _RuleEvidence:
         count_delta = (
@@ -742,13 +762,27 @@ class TemporalBehaviorAnalyzer:
 class BehaviorObserverService:
     """Main-process owner of the lazy worker and bounded IPC queues."""
 
-    def __init__(self, config: BehaviorObserverConfig) -> None:
+    def __init__(
+        self,
+        config: BehaviorObserverConfig,
+        why_config: CounterfactualWhyConfig | None = None,
+    ) -> None:
         self.config = config
+        self.why_config = (
+            why_config
+            if why_config is not None
+            else CounterfactualWhyConfig(enabled=False)
+        )
         self.latest_snapshot: BehaviorSnapshot | None = None
+        self.latest_why_snapshots: tuple[Any, ...] = ()
         self._focus: tuple[int, int] | None = None
+        self._why_focus: tuple[int, int, int] | None = None
         self._context: Any = None
         self._input_queue: Any = None
         self._result_queue: Any = None
+        self._why_control_queue: Any = None
+        self._why_probe_queue: Any = None
+        self._why_result_queue: Any = None
         self._stop_event: Any = None
         self._process: Any = None
         self._closed = False
@@ -758,6 +792,15 @@ class BehaviorObserverService:
         self._results_dropped = 0
         self._result_latency_ms: float | None = None
         self._last_error: str | None = None
+        self._why_probe_requests = 0
+        self._why_probe_requests_dropped = 0
+        self._why_probes_superseded = 0
+        self._why_evaluations_performed = 0
+        self._why_results_dropped = 0
+        self._why_result_latency_ms: float | None = None
+        self._why_latest_produced_monotonic: float | None = None
+        self._why_last_error: str | None = None
+        self._why_started_monotonic = monotonic()
 
     def set_focus(
         self,
@@ -773,8 +816,88 @@ class BehaviorObserverService:
             return
         self._focus = focus
         self.latest_snapshot = None
-        if focus is not None and self.config.enabled:
+        self.latest_why_snapshots = ()
+        self._why_focus = None
+        if (
+            focus is not None
+            and (self.config.enabled or self.why_config.enabled)
+        ):
             self._start()
+
+    def set_focal_brain(self, update: Any) -> bool:
+        """Send one complete latest-wins focal evaluator update."""
+        if not self.why_config.enabled or self._closed:
+            return False
+        if (
+            getattr(update, "creature_id", None) is None
+            and self._process is None
+        ):
+            self._why_focus = None
+            self.latest_why_snapshots = ()
+            return True
+        self._start()
+        if self._why_control_queue is None:
+            return False
+        revision = getattr(update, "brain_revision", None)
+        creature_id = getattr(update, "creature_id", None)
+        generation = int(getattr(update, "selection_generation", 0))
+        self._why_focus = (
+            None
+            if creature_id is None or revision is None
+            else (int(creature_id), generation, int(revision))
+        )
+        self.latest_why_snapshots = ()
+        return self._put_main_latest(
+            self._why_control_queue,
+            update,
+            count_probe_drop=False,
+        )
+
+    def submit_why(self, probe: Any) -> bool:
+        """Submit explanatory work without ever blocking the caller."""
+        if not self.why_config.enabled or self._closed:
+            return False
+        self._start()
+        if self._why_probe_queue is None:
+            return False
+        self._why_probe_requests += 1
+        return self._put_main_latest(
+            self._why_probe_queue,
+            probe,
+            count_probe_drop=True,
+        )
+
+    def _put_main_latest(
+        self,
+        queue: Any,
+        value: Any,
+        *,
+        count_probe_drop: bool,
+    ) -> bool:
+        try:
+            queue.put_nowait(value)
+            return True
+        except Full:
+            try:
+                queue.get_nowait()
+                if count_probe_drop:
+                    self._why_probe_requests_dropped += 1
+            except Empty:
+                pass
+            try:
+                queue.put_nowait(value)
+                return True
+            except Full:
+                if count_probe_drop:
+                    self._why_probe_requests_dropped += 1
+                return False
+        except (OSError, ValueError) as error:
+            if count_probe_drop:
+                self._why_probe_requests_dropped += 1
+            self._record_why_error(
+                f"Could not enqueue counterfactual work: {error}"
+            )
+            return False
 
     def submit(self, observation: BehaviorObservation) -> bool:
         if not self.config.enabled or self._closed:
@@ -835,6 +958,7 @@ class BehaviorObserverService:
                     result.selection_generation,
                 ):
                     self.latest_snapshot = result
+        self._poll_why_results()
         process = self._process
         if (
             process is not None
@@ -848,6 +972,48 @@ class BehaviorObserverService:
                 f"(code {process.exitcode})."
             )
         return self.latest_snapshot
+
+    def _poll_why_results(self) -> None:
+        queue = self._why_result_queue
+        if queue is None:
+            return
+        from src.counterfactual_neat import (
+            CounterfactualWorkerError,
+            WhyBatchResult,
+        )
+
+        while True:
+            try:
+                result = queue.get_nowait()
+            except Empty:
+                break
+            except (OSError, ValueError) as error:
+                self._record_why_error(
+                    f"Could not read counterfactual result: {error}"
+                )
+                break
+            if isinstance(result, CounterfactualWorkerError):
+                self._record_why_error(result.message)
+                continue
+            if not isinstance(result, WhyBatchResult):
+                self._record_why_error(
+                    f"Unexpected WHY result {type(result).__name__}."
+                )
+                continue
+            self._why_evaluations_performed = result.evaluations_performed
+            self._why_probes_superseded = result.probes_superseded
+            self._why_results_dropped = result.result_drops
+            self._why_latest_produced_monotonic = result.produced_monotonic
+            self._why_result_latency_ms = max(
+                0.0,
+                (monotonic() - result.produced_monotonic) * 1000.0,
+            )
+            if self._why_focus == (
+                result.creature_id,
+                result.selection_generation,
+                result.brain_revision,
+            ):
+                self.latest_why_snapshots = result.snapshots
 
     @property
     def diagnostics(self) -> BehaviorObserverDiagnostics:
@@ -872,6 +1038,46 @@ class BehaviorObserverService:
             last_error=self._last_error,
         )
 
+    @property
+    def counterfactual_diagnostics(self) -> Any:
+        from src.counterfactual_neat import CounterfactualDiagnostics
+
+        if not self.why_config.enabled:
+            health = "disabled"
+        elif self._why_last_error is not None:
+            health = "error"
+        elif self._process is None:
+            health = "idle"
+        elif self._process.is_alive():
+            health = "running"
+        else:
+            health = "stopped"
+        now = monotonic()
+        age = (
+            None
+            if self._why_latest_produced_monotonic is None
+            else max(
+                0.0,
+                (now - self._why_latest_produced_monotonic) * 1000.0,
+            )
+        )
+        elapsed = max(1e-12, now - self._why_started_monotonic)
+        return CounterfactualDiagnostics(
+            probe_requests=self._why_probe_requests,
+            probe_requests_dropped=self._why_probe_requests_dropped,
+            probes_superseded=self._why_probes_superseded,
+            evaluations_performed=self._why_evaluations_performed,
+            result_drops=self._why_results_dropped,
+            result_latency_ms=self._why_result_latency_ms,
+            latest_result_age_ms=age,
+            evaluations_per_second=(
+                self._why_evaluations_performed / elapsed
+            ),
+            probe_queue_size=_safe_qsize(self._why_probe_queue),
+            worker_health=health,
+            last_error=self._why_last_error,
+        )
+
     def close(self) -> None:
         if self._closed:
             return
@@ -887,7 +1093,13 @@ class BehaviorObserverService:
                 )
                 process.terminate()
                 process.join(timeout=0.5)
-        for queue in (self._input_queue, self._result_queue):
+        for queue in (
+            self._input_queue,
+            self._result_queue,
+            self._why_control_queue,
+            self._why_probe_queue,
+            self._why_result_queue,
+        ):
             if queue is None:
                 continue
             try:
@@ -898,7 +1110,7 @@ class BehaviorObserverService:
 
     def _start(self) -> None:
         if (
-            not self.config.enabled
+            not (self.config.enabled or self.why_config.enabled)
             or self._closed
             or (
                 self._process is not None
@@ -916,13 +1128,26 @@ class BehaviorObserverService:
             self._result_queue = self._context.Queue(
                 maxsize=self.config.result_queue_capacity
             )
+            self._why_control_queue = self._context.Queue(
+                maxsize=self.why_config.control_queue_capacity
+            )
+            self._why_probe_queue = self._context.Queue(
+                maxsize=self.why_config.probe_queue_capacity
+            )
+            self._why_result_queue = self._context.Queue(
+                maxsize=self.why_config.result_queue_capacity
+            )
             self._stop_event = self._context.Event()
             self._process = self._context.Process(
                 target=_behavior_worker_main,
                 args=(
                     self.config,
+                    self.why_config,
                     self._input_queue,
                     self._result_queue,
+                    self._why_control_queue,
+                    self._why_probe_queue,
+                    self._why_result_queue,
                     self._stop_event,
                 ),
                 name="behavior-observer",
@@ -939,22 +1164,51 @@ class BehaviorObserverService:
         self._last_error = message
         LOGGER.error(message)
 
+    def _record_why_error(self, message: str) -> None:
+        if message == self._why_last_error:
+            return
+        self._why_last_error = message
+        LOGGER.error(message)
+
 
 def _behavior_worker_main(
     config: BehaviorObserverConfig,
+    why_config: CounterfactualWhyConfig,
     input_queue: Any,
     result_queue: Any,
+    why_control_queue: Any,
+    why_probe_queue: Any,
+    why_result_queue: Any,
     stop_event: Any,
 ) -> None:
+    import pickle
+
+    from src.counterfactual_neat import (
+        CounterfactualBoutAggregator,
+        CounterfactualProbeInput,
+        CounterfactualProbeJob,
+        CounterfactualWorkerError,
+        FocalBrainUpdate,
+        PureNeatEvaluator,
+        WhyBatchResult,
+        validate_probe,
+    )
+
     analyzer = TemporalBehaviorAnalyzer(config)
     result_drops = 0
-    while not stop_event.is_set():
-        try:
-            observation = input_queue.get(timeout=0.1)
-        except Empty:
-            continue
-        except (OSError, EOFError, ValueError):
-            return
+    why_result_drops = 0
+    why_evaluations = 0
+    why_superseded = 0
+    evaluator: PureNeatEvaluator | None = None
+    why_focus: tuple[int, int, int] | None = None
+    pending_job: CounterfactualProbeJob | None = None
+    aggregator = CounterfactualBoutAggregator(
+        why_config.history_capacity,
+        why_config.target_center_dead_zone_radians,
+    )
+
+    def process_observation(observation: Any) -> None:
+        nonlocal result_drops
         try:
             snapshot = analyzer.process(observation)
         except Exception as error:  # Worker must report and continue.
@@ -975,13 +1229,192 @@ def _behavior_worker_main(
                 message,
                 result_drops,
             )
-            continue
+            return
         snapshot = replace(snapshot, result_drops=result_drops)
         result_drops = _put_latest(
             result_queue,
             snapshot,
             result_drops,
         )
+
+    while not stop_event.is_set():
+        # Temporal observations are the primary signal. Process every item
+        # already pending before touching explanatory work.
+        try:
+            observation = input_queue.get(timeout=0.005)
+        except Empty:
+            observation = None
+        except (OSError, EOFError, ValueError):
+            return
+        if observation is not None:
+            process_observation(observation)
+            while True:
+                try:
+                    process_observation(input_queue.get_nowait())
+                except Empty:
+                    break
+                except (OSError, EOFError, ValueError):
+                    return
+
+        # Apply only the newest complete focal evaluator update.
+        control, _discarded_controls = _drain_latest(why_control_queue)
+        if control is not None:
+            pending_job = None
+            aggregator.reset()
+            try:
+                if not isinstance(control, FocalBrainUpdate):
+                    raise TypeError(
+                        f"Unexpected control {type(control).__name__}."
+                    )
+                if (
+                    control.creature_id is None
+                    or control.brain_revision is None
+                    or control.evaluator_payload is None
+                ):
+                    evaluator = None
+                    why_focus = None
+                else:
+                    restored = pickle.loads(control.evaluator_payload)
+                    if not isinstance(restored, PureNeatEvaluator):
+                        raise TypeError("Invalid focal evaluator payload.")
+                    evaluator = restored
+                    why_focus = (
+                        control.creature_id,
+                        control.selection_generation,
+                        control.brain_revision,
+                    )
+            except Exception as error:
+                evaluator = None
+                why_focus = None
+                why_result_drops = _put_latest(
+                    why_result_queue,
+                    CounterfactualWorkerError(
+                        creature_id=getattr(control, "creature_id", None),
+                        selection_generation=getattr(
+                            control,
+                            "selection_generation",
+                            None,
+                        ),
+                        brain_revision=getattr(
+                            control,
+                            "brain_revision",
+                            None,
+                        ),
+                        message=(
+                            "Counterfactual brain update failed: "
+                            f"{type(error).__name__}: {error}"
+                        ),
+                    ),
+                    why_result_drops,
+                )
+
+        # New factual state supersedes queued or partially evaluated WHY work.
+        newest_probe, discarded_probes = _drain_latest(why_probe_queue)
+        why_superseded += discarded_probes
+        if newest_probe is not None:
+            if pending_job is not None:
+                why_superseded += 1
+            pending_job = None
+            try:
+                if not isinstance(newest_probe, CounterfactualProbeInput):
+                    raise TypeError(
+                        f"Unexpected probe {type(newest_probe).__name__}."
+                    )
+                validate_probe(newest_probe)
+                identity = (
+                    newest_probe.creature_id,
+                    newest_probe.selection_generation,
+                    newest_probe.brain_revision,
+                )
+                if evaluator is not None and identity == why_focus:
+                    pending_job = CounterfactualProbeJob(
+                        newest_probe,
+                        evaluator,
+                    )
+            except Exception as error:
+                why_result_drops = _put_latest(
+                    why_result_queue,
+                    CounterfactualWorkerError(
+                        creature_id=getattr(
+                            newest_probe,
+                            "creature_id",
+                            None,
+                        ),
+                        selection_generation=getattr(
+                            newest_probe,
+                            "selection_generation",
+                            None,
+                        ),
+                        brain_revision=getattr(
+                            newest_probe,
+                            "brain_revision",
+                            None,
+                        ),
+                        message=(
+                            "Counterfactual probe failed: "
+                            f"{type(error).__name__}: {error}"
+                        ),
+                    ),
+                    why_result_drops,
+                )
+
+        # Best effort: one activation, then immediately re-check behavior work.
+        if pending_job is not None:
+            try:
+                completed = pending_job.advance()
+                why_evaluations += 1
+                if completed:
+                    probe = pending_job.probe
+                    snapshots = aggregator.complete_job(pending_job)
+                    produced = monotonic()
+                    batch = WhyBatchResult(
+                        creature_id=probe.creature_id,
+                        selection_generation=probe.selection_generation,
+                        brain_revision=probe.brain_revision,
+                        simulation_time=probe.simulation_time,
+                        snapshots=snapshots,
+                        evaluations_performed=why_evaluations,
+                        probes_superseded=why_superseded,
+                        result_drops=why_result_drops,
+                        produced_monotonic=produced,
+                    )
+                    why_result_drops = _put_latest(
+                        why_result_queue,
+                        batch,
+                        why_result_drops,
+                    )
+                    pending_job = None
+            except Exception as error:
+                probe = pending_job.probe
+                pending_job = None
+                why_result_drops = _put_latest(
+                    why_result_queue,
+                    CounterfactualWorkerError(
+                        creature_id=probe.creature_id,
+                        selection_generation=probe.selection_generation,
+                        brain_revision=probe.brain_revision,
+                        message=(
+                            "Counterfactual evaluation failed: "
+                            f"{type(error).__name__}: {error}"
+                        ),
+                    ),
+                    why_result_drops,
+                )
+
+
+def _drain_latest(queue: Any) -> tuple[Any | None, int]:
+    latest = None
+    discarded = 0
+    while True:
+        try:
+            value = queue.get_nowait()
+        except Empty:
+            return latest, discarded
+        except (OSError, ValueError):
+            return latest, discarded
+        if latest is not None:
+            discarded += 1
+        latest = value
 
 
 def _put_latest(queue: Any, value: object, drops: int) -> int:
@@ -994,7 +1427,7 @@ def _put_latest(queue: Any, value: object, drops: int) -> int:
             drops += 1
         except Empty:
             pass
-        if isinstance(value, BehaviorSnapshot):
+        if hasattr(value, "result_drops"):
             value = replace(value, result_drops=drops)
         try:
             queue.put_nowait(value)

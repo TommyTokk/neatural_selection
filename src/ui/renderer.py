@@ -73,9 +73,17 @@ class UiRenderer(
             "_brain_state",
             "behavior_scroll_offset",
         ),
+        "_brain_why_scroll_offset": (
+            "_brain_state",
+            "why_scroll_offset",
+        ),
         "_brain_expanded_behavior": (
             "_brain_state",
             "expanded_behavior",
+        ),
+        "_brain_expanded_why_behavior": (
+            "_brain_state",
+            "expanded_why_behavior",
         ),
         "_brain_selection_identity": ("_brain_state", "selection_identity"),
         "_species_tree_open": ("_species_tree_state", "open"),
@@ -471,6 +479,9 @@ class UiRenderer(
             ):
                 self._brain_inspector_page = "behaviors"
                 return True
+            if self._contains_hitbox("brain_inspector_page_why", x, y):
+                self._brain_inspector_page = "why"
+                return True
             if self._brain_inspector_page == "behaviors":
                 for behavior in self.BRAIN_BEHAVIOR_ACCENTS:
                     hitbox_key = self._brain_behavior_card_hitbox_key(
@@ -480,6 +491,19 @@ class UiRenderer(
                         self._brain_expanded_behavior = (
                             None
                             if self._brain_expanded_behavior == behavior.value
+                            else behavior.value
+                        )
+                        return True
+            if self._brain_inspector_page == "why":
+                for behavior in self.BRAIN_BEHAVIOR_ACCENTS:
+                    hitbox_key = self._brain_why_card_hitbox_key(behavior)
+                    if self._contains_hitbox(hitbox_key, x, y):
+                        self._brain_expanded_why_behavior = (
+                            None
+                            if (
+                                self._brain_expanded_why_behavior
+                                == behavior.value
+                            )
                             else behavior.value
                         )
                         return True
@@ -758,11 +782,10 @@ class UiRenderer(
             and self._brain_window_bounds is not None
             and self._contains_bounds(self._brain_window_bounds, x, y)
         ):
-            scroll_key = (
-                "brain_behavior_inspector"
-                if self._brain_inspector_page == "behaviors"
-                else "brain_node_inspector"
-            )
+            scroll_key = {
+                "behaviors": "brain_behavior_inspector",
+                "why": "brain_why_inspector",
+            }.get(self._brain_inspector_page, "brain_node_inspector")
             inspector_region = self._scroll_regions.get(scroll_key)
             if (
                 inspector_region is not None
@@ -777,6 +800,8 @@ class UiRenderer(
                 self._scroll_offsets[scroll_key] = new_offset
                 if scroll_key == "brain_behavior_inspector":
                     self._brain_behavior_scroll_offset = new_offset
+                elif scroll_key == "brain_why_inspector":
+                    self._brain_why_scroll_offset = new_offset
             return True
 
         for key, bounds in self._scroll_regions.items():

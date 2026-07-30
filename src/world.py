@@ -3,8 +3,10 @@ from __future__ import annotations
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field, replace
 import inspect
-from math import atan2, ceil, cos, exp, floor, hypot, pi, sin, sqrt
+import pickle
+from math import atan2, ceil, cos, exp, floor, hypot, isfinite, pi, sin, sqrt
 from random import Random
+from time import monotonic
 from typing import Literal
 
 import pymunk
@@ -73,10 +75,19 @@ from src.communication import (
     PheromoneSystem,
 )
 from src.behavior_observer import (
+    BehaviorKind,
     BehaviorObservation,
     BehaviorObserverDiagnostics,
     BehaviorObserverService,
     BehaviorSnapshot,
+)
+from src.counterfactual_neat import (
+    CounterfactualDiagnostics,
+    CounterfactualProbeInput,
+    FocalBrainUpdate,
+    PureNeatEvaluator,
+    WhySnapshot,
+    mapped_probe_behaviors,
 )
 
 from src.ui.layouts.screen import build_screen_layout
@@ -187,9 +198,13 @@ class World:
         self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
         self._last_flock_steering_debug: dict[int, _FlockSteeringDebug] = {}
         self._last_flocking_runtime: dict[int, FlockingRuntimeSnapshot] = {}
-        self.behavior_observer = BehaviorObserverService(config.behavior)
+        self.behavior_observer = BehaviorObserverService(
+            config.behavior,
+            getattr(config, "counterfactual_why", None),
+        )
         self._behavior_selection_generation = 0
         self._behavior_next_sample_time = 0.0
+        self._why_next_probe_time = 0.0
         self._behavior_food_consumption_count = 0
         self._behavior_food_consumed_energy_total = 0.0
         self.brain_contract_reset_occurred = False
@@ -415,6 +430,7 @@ class World:
             self._update_reproduction(self.FIXED_TIMESTEP)
             self._update_flocking_telemetry(self.FIXED_TIMESTEP)
             self._sample_selected_behavior()
+            self._sample_selected_why()
             self._physics_accumulator -= self.FIXED_TIMESTEP
             steps += 1
 
@@ -674,6 +690,10 @@ class World:
         self.rt_neat.eligible_parent_ids = []
         self.rt_neat._lifespan_at_death_total = 0.0
         self.rt_neat._lifespan_at_death_count = 0
+
+        self._reset_behavior_focus(
+            getattr(self, "selected_creature_id", None)
+        )
 
         if not self.creatures:
             return
@@ -1111,6 +1131,64 @@ class World:
             return BehaviorObserverDiagnostics(worker_health="unavailable")
         return observer.diagnostics
 
+    @property
+    def selected_why_snapshots(self) -> tuple[WhySnapshot, ...]:
+        observer = getattr(self, "behavior_observer", None)
+        if observer is None:
+            return ()
+        selected = self.selected_creature
+        behavior_snapshot = self.selected_behavior_snapshot
+        if selected is None or behavior_snapshot is None:
+            return ()
+        brain = self.neat_controller.brain_for(selected.creature_id)
+        if brain is None:
+            return ()
+        current_bouts = {
+            (
+                state.behavior,
+                int(getattr(state, "bout_id", 0)),
+                getattr(state, "target_id", None),
+            )
+            for state in behavior_snapshot.behaviors
+        }
+        sensor = getattr(self, "_last_sensor_snapshots", {}).get(
+            selected.creature_id
+        )
+        food = None if sensor is None else getattr(sensor, "food", None)
+        current_food_target_id = (
+            getattr(food, "nearest_id", None)
+            if food is not None
+            and bool(getattr(food, "visible", 0.0) > 0.0)
+            else None
+        )
+        generation = getattr(self, "_behavior_selection_generation", 0)
+        return tuple(
+            snapshot
+            for snapshot in observer.latest_why_snapshots
+            if (
+                snapshot.creature_id == selected.creature_id
+                and snapshot.selection_generation == generation
+                and snapshot.brain_revision == brain.brain_revision
+                and (
+                    snapshot.behavior,
+                    snapshot.bout_id,
+                    snapshot.target_id,
+                )
+                in current_bouts
+                and (
+                    snapshot.target_id is None
+                    or snapshot.target_id == current_food_target_id
+                )
+            )
+        )
+
+    @property
+    def counterfactual_diagnostics(self) -> CounterfactualDiagnostics:
+        observer = getattr(self, "behavior_observer", None)
+        if observer is None:
+            return CounterfactualDiagnostics(worker_health="unavailable")
+        return observer.counterfactual_diagnostics
+
     def biome_sensor_positions_for(
         self,
         creature: Creature,
@@ -1417,12 +1495,56 @@ class World:
                 ceil(now * behavior_config.sample_hz - 1e-12)
                 / behavior_config.sample_hz
             )
+        why_config = getattr(
+            getattr(self, "config", None),
+            "counterfactual_why",
+            None,
+        )
+        if why_config is None:
+            self._why_next_probe_time = now
+        else:
+            self._why_next_probe_time = (
+                ceil(now * why_config.probe_hz - 1e-12)
+                / why_config.probe_hz
+            )
         observer = getattr(self, "behavior_observer", None)
         if observer is not None:
             observer.set_focus(
                 creature_id,
                 self._behavior_selection_generation,
             )
+            set_focal_brain = getattr(observer, "set_focal_brain", None)
+            if callable(set_focal_brain):
+                brain = (
+                    None
+                    if creature_id is None
+                    or not hasattr(self, "neat_controller")
+                    else self.neat_controller.brain_for(creature_id)
+                )
+                try:
+                    payload = (
+                        None
+                        if brain is None
+                        else pickle.dumps(
+                            PureNeatEvaluator.from_brain(brain),
+                            protocol=pickle.HIGHEST_PROTOCOL,
+                        )
+                    )
+                except (AttributeError, pickle.PickleError, TypeError):
+                    brain = None
+                    payload = None
+                set_focal_brain(
+                    FocalBrainUpdate(
+                        creature_id=creature_id if brain is not None else None,
+                        selection_generation=(
+                            self._behavior_selection_generation
+                        ),
+                        brain_revision=(
+                            None if brain is None else brain.brain_revision
+                        ),
+                        evaluator_payload=payload,
+                    )
+                )
 
     def _sample_selected_behavior(self) -> None:
         observer = getattr(self, "behavior_observer", None)
@@ -1542,6 +1664,132 @@ class World:
             ),
         )
         observer.submit(observation)
+
+    def _sample_selected_why(self) -> None:
+        observer = getattr(self, "behavior_observer", None)
+        config = getattr(
+            getattr(self, "config", None),
+            "counterfactual_why",
+            None,
+        )
+        behavior_config = getattr(
+            getattr(self, "config", None),
+            "behavior",
+            None,
+        )
+        if (
+            observer is None
+            or config is None
+            or not config.enabled
+            or behavior_config is None
+            or not behavior_config.enabled
+        ):
+            return
+        selected = self.selected_creature
+        snapshot = self.selected_behavior_snapshot
+        if selected is None or snapshot is None:
+            return
+        mapped = mapped_probe_behaviors(snapshot.behaviors)
+        sensor = getattr(self, "_last_sensor_snapshots", {}).get(
+            selected.creature_id
+        )
+        food = None if sensor is None else getattr(sensor, "food", None)
+        target_visible = bool(
+            food is not None and getattr(food, "visible", 0.0) > 0.0
+        )
+        food_target_id = (
+            getattr(food, "nearest_id", None)
+            if target_visible
+            else None
+        )
+        raw_food_relative_angle = (
+            getattr(food, "relative_angle", None)
+            if target_visible
+            else None
+        )
+        food_relative_angle = None
+        if raw_food_relative_angle is not None:
+            try:
+                candidate_angle = float(raw_food_relative_angle)
+            except (TypeError, ValueError):
+                candidate_angle = float("nan")
+            if isfinite(candidate_angle) and abs(candidate_angle) <= pi:
+                food_relative_angle = candidate_angle
+        target_context_valid = (
+            target_visible
+            and type(food_target_id) is int
+            and food_target_id >= 0
+            and food_relative_angle is not None
+        )
+        mapped = tuple(
+            observed
+            for observed in mapped
+            if (
+                observed.behavior
+                not in {
+                    BehaviorKind.FOOD_ORIENTATION,
+                    BehaviorKind.FOOD_APPROACH,
+                }
+                or (
+                    target_context_valid
+                    and observed.target_id == food_target_id
+                )
+            )
+        )
+        if not mapped:
+            return
+        now = self.elapsed_time
+        next_probe = getattr(self, "_why_next_probe_time", now)
+        if now + 1e-12 < next_probe:
+            return
+        interval = 1.0 / config.probe_hz
+        skipped_intervals = max(
+            1,
+            int((now - next_probe) // interval) + 1,
+        )
+        self._why_next_probe_time = (
+            next_probe + skipped_intervals * interval
+        )
+        brain = self.neat_controller.brain_for(selected.creature_id)
+        if (
+            brain is None
+            or len(brain.last_inputs) != SENSOR_CONTRACT.input_count
+            or not brain.last_outputs
+        ):
+            return
+        submit_why = getattr(observer, "submit_why", None)
+        if not callable(submit_why):
+            return
+        submit_why(
+            CounterfactualProbeInput(
+                creature_id=selected.creature_id,
+                selection_generation=getattr(
+                    self,
+                    "_behavior_selection_generation",
+                    0,
+                ),
+                brain_revision=brain.brain_revision,
+                simulation_time=now,
+                sensor_schema_version=SENSOR_CONTRACT.schema_version,
+                behaviors=mapped,
+                actual_inputs=tuple(float(value) for value in brain.last_inputs),
+                actual_outputs=tuple(
+                    float(value) for value in brain.last_outputs
+                ),
+                submitted_monotonic=monotonic(),
+                target_visible=target_visible,
+                food_target_id=(
+                    int(food_target_id)
+                    if target_context_valid
+                    else None
+                ),
+                food_relative_angle=(
+                    food_relative_angle
+                    if target_context_valid
+                    else None
+                ),
+            )
+        )
 
     def select_creature_at(self, x: float, y: float) -> None:
         self.select_creature_by_id(self.creature_id_at(x, y))

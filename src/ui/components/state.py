@@ -50,7 +50,9 @@ class BrainWindowState:
     node_inspector_open: bool = True
     inspector_page: str = "node"
     behavior_scroll_offset: float = 0.0
+    why_scroll_offset: float = 0.0
     expanded_behavior: str | None = None
+    expanded_why_behavior: str | None = None
     selection_identity: tuple[int, int] | None = None
     layout_cache_key: tuple[object, ...] | None = None
     layout: BrainGraphLayout | None = None

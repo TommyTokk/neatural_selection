@@ -62,8 +62,14 @@ seconds, and tolerate 0.3 seconds without matching evidence before ending.
 Feeding activates immediately and remains visible for 0.75 simulation seconds
 after the last consumption event.
 
-The Brain window keeps the neural graph visible and adds a `NODE | BEHAVIOURS`
-selector to its right panel. The behaviour page identifies the source as
+Food orientation and approach states carry the food target ID while their
+current rule evidence remains valid. A grace-period state without current
+target evidence exposes no target ID, preventing explanatory systems from
+attaching a stale or replacement food direction to the bout.
+
+The Brain window keeps the neural graph visible and adds a
+`NODE | BEHAVIOURS | WHY` selector to its right panel. The behaviour page
+identifies the source as
 world/action history and keeps one fixed card visible for every behaviour in
 the enum's stable order. Inactive cards remain dim; emerging and active cards
 brighten from their existing rule-derived Evidence score and show their status,

@@ -49,6 +49,16 @@ from src.behavior_observer import (
     BehaviorStateSnapshot,
     BoutStatus,
 )
+from src.counterfactual_neat import (
+    BEHAVIOR_EXPLANATION_SPECS,
+    MINIMAL_INFLUENCE_THRESHOLD,
+    MODERATE_INFLUENCE_THRESHOLD,
+    WEAK_INFLUENCE_THRESHOLD,
+    CounterfactualDiagnostics,
+    SemanticEffectSnapshot,
+    SemanticIntervention,
+    WhySnapshot,
+)
 
 _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 
@@ -65,6 +75,13 @@ class BrainInspectorComponent:
     BRAIN_BEHAVIOR_NOTICE_LINE_HEIGHT = 15.0
     BRAIN_BEHAVIOR_DIAGNOSTICS_HEIGHT = 138.0
     BRAIN_BEHAVIOR_DETAIL_LINE_HEIGHT = 17.0
+    BRAIN_WHY_HEADER_HEIGHT = BRAIN_BEHAVIOR_HEADER_HEIGHT
+    BRAIN_WHY_NOTICE_HEIGHT = BRAIN_BEHAVIOR_NOTICE_HEIGHT
+    BRAIN_WHY_CARD_HEIGHT = BRAIN_BEHAVIOR_CARD_HEIGHT
+    BRAIN_WHY_CARD_GAP = BRAIN_BEHAVIOR_CARD_GAP
+    BRAIN_WHY_EFFECT_GAP = 8.0
+    BRAIN_WHY_DETAIL_PADDING = 20.0
+    BRAIN_WHY_CALCULATION_LINE_HEIGHT = 15.0
     BRAIN_BEHAVIOR_ACCENTS = {
         BehaviorKind.FOOD_ORIENTATION: (58, 125, 225),
         BehaviorKind.FOOD_APPROACH: (17, 158, 145),
@@ -130,7 +147,7 @@ class BrainInspectorComponent:
         )
         available_width = max(80.0, close_button.left - selector.left - 8.0)
         gap = 5.0
-        tab_width = max(36.0, (available_width - gap) / 2.0)
+        tab_width = max(36.0, (available_width - 2.0 * gap) / 3.0)
         node_tab = arcade.LBWH(
             selector.left,
             selector.bottom + 5.0,
@@ -143,8 +160,15 @@ class BrainInspectorComponent:
             tab_width,
             node_tab.height,
         )
+        why_tab = arcade.LBWH(
+            behavior_tab.right + gap,
+            behavior_tab.bottom,
+            tab_width,
+            behavior_tab.height,
+        )
         self._control_hitboxes["brain_inspector_page_node"] = node_tab
         self._control_hitboxes["brain_inspector_page_behaviors"] = behavior_tab
+        self._control_hitboxes["brain_inspector_page_why"] = why_tab
         self._control_hitboxes["brain_node_inspector_toggle"] = close_button
         self._draw_brain_inspector_tab(
             node_tab,
@@ -158,6 +182,12 @@ class BrainInspectorComponent:
             "behaviors",
             self._brain_inspector_page == "behaviors",
         )
+        self._draw_brain_inspector_tab(
+            why_tab,
+            "WHY",
+            "why",
+            self._brain_inspector_page == "why",
+        )
         self._draw_panel_close_button(
             close_button,
             "brain_node_inspector",
@@ -170,12 +200,874 @@ class BrainInspectorComponent:
         )
         if self._brain_inspector_page == "behaviors":
             self._draw_brain_behavior_inspector(world, content)
+        elif self._brain_inspector_page == "why":
+            self._draw_brain_why_inspector(world, content)
         else:
             self._draw_brain_node_inspector(
                 brain,
                 layout,
                 content,
                 show_close=False,
+            )
+
+    def _draw_brain_why_inspector(
+        self,
+        world: World,
+        bounds: arcade.Rect,
+    ) -> None:
+        """Draw stable, expandable counterfactual behavior cards."""
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        why_config = getattr(
+            getattr(world, "config", None),
+            "counterfactual_why",
+            None,
+        )
+        behavior_snapshot = getattr(
+            world,
+            "selected_behavior_snapshot",
+            None,
+        )
+        snapshots = tuple(
+            getattr(world, "selected_why_snapshots", ()) or ()
+        )
+        diagnostics = getattr(
+            world,
+            "counterfactual_diagnostics",
+            CounterfactualDiagnostics(worker_health="unavailable"),
+        )
+        snapshot_by_behavior: dict[BehaviorKind, WhySnapshot] = {
+            snapshot.behavior: snapshot for snapshot in snapshots
+        }
+        states_by_behavior: dict[BehaviorKind, BehaviorStateSnapshot] = (
+            {}
+            if behavior_snapshot is None
+            else {
+                state.behavior: state
+                for state in behavior_snapshot.behaviors
+            }
+        )
+        for behavior in BehaviorKind:
+            self._control_hitboxes.pop(
+                self._brain_why_card_hitbox_key(behavior),
+                None,
+            )
+        expanded_behavior = next(
+            (
+                behavior
+                for behavior in BehaviorKind
+                if behavior.value == self._brain_expanded_why_behavior
+            ),
+            None,
+        )
+
+        status_title, status_message, status_is_error = (
+            self._brain_why_status(
+                world,
+                why_config,
+                behavior_snapshot,
+                states_by_behavior,
+                snapshots,
+                diagnostics,
+            )
+        )
+        status_lines = tuple(
+            self._wrap_line(
+                status_message,
+                max(24.0, bounds.width - 66.0),
+                font_size=10.0,
+            )
+        )[:2]
+        diagnostics_visible = bool(
+            getattr(world, "debug_vision_enabled", False)
+        )
+        diagnostics_height = 184.0 if diagnostics_visible else 0.0
+        content = arcade.LBWH(
+            bounds.left + 14.0,
+            bounds.bottom + 14.0,
+            bounds.width - 28.0,
+            bounds.height - 28.0,
+        )
+        drawing_width = max(1.0, content.width - 12.0)
+        calculation_lines = self._brain_why_calculation_lines(drawing_width)
+        calculation_height = (
+            44.0
+            + len(calculation_lines)
+            * self.BRAIN_WHY_CALCULATION_LINE_HEIGHT
+        )
+        cards_height = (
+            len(BehaviorKind) * self.BRAIN_WHY_CARD_HEIGHT
+            + (len(BehaviorKind) - 1) * self.BRAIN_WHY_CARD_GAP
+            + (
+                self._brain_why_detail_height(expanded_behavior)
+                if expanded_behavior is not None
+                else 0.0
+            )
+        )
+        total_height = (
+            self.BRAIN_WHY_HEADER_HEIGHT
+            + calculation_height
+            + self.BRAIN_WHY_CARD_GAP
+            + self.BRAIN_WHY_NOTICE_HEIGHT
+            + self.BRAIN_WHY_CARD_GAP
+            + cards_height
+            + (
+                self.BRAIN_WHY_CARD_GAP + diagnostics_height
+                if diagnostics_visible
+                else 0.0
+            )
+        )
+        scroll_key = "brain_why_inspector"
+        self._scroll_offsets[scroll_key] = self._brain_why_scroll_offset
+        scroll_limit = max(0.0, total_height - content.height)
+        scroll_offset = max(
+            0.0,
+            min(scroll_limit, self._scroll_offsets.get(scroll_key, 0.0)),
+        )
+        self._scroll_offsets[scroll_key] = scroll_offset
+        self._scroll_limits[scroll_key] = scroll_limit
+        self._scroll_regions[scroll_key] = content
+        self._brain_why_scroll_offset = scroll_offset
+        cursor_top = content.top + scroll_offset
+
+        with self._ui_clip(content):
+            self._draw_text(
+                "brain_why_title",
+                "WHY THIS BEHAVIOUR?",
+                content.left,
+                cursor_top - 16.0,
+                self.theme.text_primary,
+                11.5,
+                bold=True,
+            )
+            self._draw_text(
+                "brain_why_subtitle",
+                "Counterfactual effect on the current NEAT decision",
+                content.left,
+                cursor_top - 41.0,
+                self.theme.text_muted,
+                10.0,
+            )
+            cursor_top -= self.BRAIN_WHY_HEADER_HEIGHT
+
+            calculation_bounds = arcade.LBWH(
+                content.left,
+                cursor_top - calculation_height,
+                drawing_width,
+                calculation_height,
+            )
+            self._draw_brain_why_calculation_section(
+                calculation_bounds,
+                calculation_lines,
+            )
+            cursor_top = (
+                calculation_bounds.bottom - self.BRAIN_WHY_CARD_GAP
+            )
+
+            notice_bounds = arcade.LBWH(
+                content.left,
+                cursor_top - self.BRAIN_WHY_NOTICE_HEIGHT,
+                drawing_width,
+                self.BRAIN_WHY_NOTICE_HEIGHT,
+            )
+            self._draw_brain_behavior_notice(
+                notice_bounds,
+                1,
+                status_title,
+                status_lines,
+                is_error=status_is_error,
+            )
+            cursor_top = notice_bounds.bottom - self.BRAIN_WHY_CARD_GAP
+
+            for behavior_index, behavior in enumerate(BehaviorKind):
+                expanded = behavior is expanded_behavior
+                card_height = (
+                    self.BRAIN_WHY_CARD_HEIGHT
+                    + (
+                        self._brain_why_detail_height(behavior)
+                        if expanded
+                        else 0.0
+                    )
+                )
+                card_bounds = arcade.LBWH(
+                    content.left,
+                    cursor_top - card_height,
+                    drawing_width,
+                    card_height,
+                )
+                self._draw_brain_why_card(
+                    card_bounds,
+                    behavior,
+                    states_by_behavior.get(behavior),
+                    snapshot_by_behavior.get(behavior),
+                    expanded=expanded,
+                )
+                visible_bottom = max(card_bounds.bottom, content.bottom)
+                visible_top = min(card_bounds.top, content.top)
+                if visible_top > visible_bottom:
+                    self._control_hitboxes[
+                        self._brain_why_card_hitbox_key(behavior)
+                    ] = arcade.LBWH(
+                        card_bounds.left,
+                        visible_bottom,
+                        card_bounds.width,
+                        visible_top - visible_bottom,
+                    )
+                cursor_top = card_bounds.bottom
+                if behavior_index < len(BehaviorKind) - 1:
+                    cursor_top -= self.BRAIN_WHY_CARD_GAP
+
+            if diagnostics_visible:
+                cursor_top -= self.BRAIN_WHY_CARD_GAP
+                self._draw_brain_why_diagnostics(
+                    arcade.LBWH(
+                        content.left,
+                        cursor_top - diagnostics_height,
+                        drawing_width,
+                        diagnostics_height,
+                    ),
+                    diagnostics,
+                )
+        if scroll_limit > 0.0:
+            self._draw_scrollbar(content, scroll_offset, scroll_limit)
+
+    def _brain_why_status(
+        self,
+        world: World,
+        why_config: object | None,
+        behavior_snapshot: object | None,
+        states_by_behavior: dict[BehaviorKind, BehaviorStateSnapshot],
+        snapshots: tuple[WhySnapshot, ...],
+        diagnostics: CounterfactualDiagnostics,
+    ) -> tuple[str, str, bool]:
+        """Return the stable notice shown above the WHY behavior cards."""
+        if why_config is not None and not getattr(
+            why_config,
+            "enabled",
+            False,
+        ):
+            return (
+                "WHY disabled",
+                "Enable counterfactual WHY in simulation configuration.",
+                False,
+            )
+        if diagnostics.last_error:
+            return ("WHY worker unavailable", diagnostics.last_error, True)
+        if behavior_snapshot is None:
+            return (
+                "Collecting temporal evidence",
+                "Cards remain fixed while the behavior observer initializes.",
+                False,
+            )
+        mapped_states = tuple(
+            behavior
+            for behavior, state in states_by_behavior.items()
+            if (
+                behavior in BEHAVIOR_EXPLANATION_SPECS
+                and (
+                    behavior
+                    not in {
+                        BehaviorKind.FOOD_ORIENTATION,
+                        BehaviorKind.FOOD_APPROACH,
+                    }
+                    or state.target_id is not None
+                )
+            )
+        )
+        if not mapped_states:
+            return (
+                "Waiting for a neural WHY bout",
+                (
+                    "No mapped emerging or active behavior currently requires "
+                    "a counterfactual probe."
+                ),
+                False,
+            )
+        if not snapshots:
+            return (
+                "Calculating explanations",
+                "Showing stable cards while the latest WHY probe completes.",
+                False,
+            )
+        delayed = (
+            not bool(getattr(world, "is_paused", False))
+            and diagnostics.latest_result_age_ms is not None
+            and diagnostics.latest_result_age_ms > 500.0
+        )
+        if delayed:
+            return (
+                "WHY updating",
+                "Values are from the latest completed probe and may briefly lag.",
+                False,
+            )
+        return (
+            "Live counterfactual explanations",
+            (
+                f"{len(snapshots)} current behavior explanation"
+                f"{'' if len(snapshots) == 1 else 's'}. "
+                "Click a card to inspect fixed-position details."
+            ),
+            False,
+        )
+
+    def _draw_brain_why_calculation_section(
+        self,
+        bounds: arcade.Rect,
+        lines: tuple[str, ...],
+    ) -> None:
+        """Explain the displayed counterfactual values and thresholds."""
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.panel_background,
+            self._brain_blend_color(
+                self.theme.panel_border,
+                self.theme.accent,
+                0.42,
+            ),
+            self.config.layout.card_radius,
+            1.0,
+        )
+        self._draw_text(
+            "brain_why_calculation_title",
+            "HOW THE VALUES ARE CALCULATED",
+            bounds.left + 14.0,
+            bounds.top - 22.0,
+            self.theme.accent,
+            10.0,
+            bold=True,
+            anchor_y="center",
+        )
+        for line_index, line in enumerate(lines):
+            self._draw_text(
+                f"brain_why_calculation_{line_index}",
+                line,
+                bounds.left + 14.0,
+                (
+                    bounds.top
+                    - 48.0
+                    - line_index * self.BRAIN_WHY_CALCULATION_LINE_HEIGHT
+                ),
+                self.theme.text_muted,
+                9.0,
+                anchor_y="center",
+            )
+
+    def _brain_why_calculation_lines(
+        self,
+        width: float,
+    ) -> tuple[str, ...]:
+        """Return wrapped, scientifically explicit WHY calculation copy."""
+        target_dead_zone = (
+            self.config.counterfactual_why.target_center_dead_zone_radians
+        )
+        paragraphs = (
+            (
+                "Actual is the centered output from the completed live NEAT "
+                "decision. Counterfactual uses the same frozen brain with one "
+                "semantic sensor group replaced."
+            ),
+            (
+                "Output influence = |actual − counterfactual| ÷ its natural "
+                "output span. Behavior influence is the mean across scored "
+                "outputs only; it is not a percentage allocation."
+            ),
+            (
+                "For food orientation and approach, rotate influence still "
+                "uses that raw delta, but its direction compares steering "
+                "toward the same factual food heading. Within "
+                f"{target_dead_zone:.2f} "
+                "rad, a smaller turn "
+                "is the better stabilizing response. Without a matching "
+                "visible target, food WHY waits instead of using magnitude."
+            ),
+            (
+                f"Labels: <{MINIMAL_INFLUENCE_THRESHOLD:.2f} minimal, "
+                f"<{WEAK_INFLUENCE_THRESHOLD:.2f} weak, "
+                f"<{MODERATE_INFLUENCE_THRESHOLD:.2f} moderate, otherwise "
+                "strong."
+            ),
+            (
+                "Supportive means the factual response weakens; suppressive "
+                "means it strengthens; reversing crosses zero; mixed means "
+                "scored outputs disagree."
+            ),
+            (
+                "These are local mechanistic influences, not definitive "
+                "biological causation, and they do not sum to 100%."
+            ),
+        )
+        lines: list[str] = []
+        for paragraph in paragraphs:
+            lines.extend(
+                self._wrap_line(
+                    paragraph,
+                    max(24.0, width - 28.0),
+                    font_size=9.0,
+                )
+            )
+        return tuple(lines)
+
+    def _draw_brain_why_card(
+        self,
+        bounds: arcade.Rect,
+        behavior: BehaviorKind,
+        state: BehaviorStateSnapshot | None,
+        snapshot: WhySnapshot | None,
+        *,
+        expanded: bool,
+    ) -> None:
+        """Draw one stable WHY card and its optional detail area."""
+        accent = self.BRAIN_BEHAVIOR_ACCENTS[behavior]
+        intensity = self._behavior_display_intensity(state)
+        fill = self._brain_blend_color(
+            self.theme.card_background,
+            accent,
+            0.04 + 0.18 * intensity,
+        )
+        border = self._brain_blend_color(
+            self.theme.panel_border,
+            accent,
+            0.24 + 0.70 * intensity,
+        )
+        title_color = self._brain_blend_color(
+            self.theme.text_muted,
+            accent,
+            0.38 + 0.62 * intensity,
+        )
+        self._draw_rounded_rect(
+            bounds,
+            fill,
+            border,
+            self.config.layout.card_radius,
+            1.0 + intensity,
+        )
+        arcade.draw_circle_filled(
+            bounds.left + 16.0,
+            bounds.top - 21.0,
+            6.0,
+            self._brain_blend_color(
+                self.theme.card_background,
+                accent,
+                0.28 + 0.72 * intensity,
+            ),
+        )
+        self._draw_text(
+            f"brain_why_{behavior.value}_name",
+            self._behavior_display_name(behavior),
+            bounds.left + 31.0,
+            bounds.top - 21.0,
+            title_color,
+            13.0,
+            bold=True,
+            anchor_y="center",
+        )
+        self._draw_text(
+            f"brain_why_{behavior.value}_expand",
+            "−" if expanded else "+",
+            bounds.right - 15.0,
+            bounds.top - 21.0,
+            title_color,
+            15.0,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+        state_text = "INACTIVE"
+        if state is not None:
+            state_text = (
+                f"{state.status.value.upper()} · "
+                f"{state.duration_seconds:.1f} s"
+            )
+        self._draw_text(
+            f"brain_why_{behavior.value}_state",
+            state_text,
+            bounds.left + 16.0,
+            bounds.top - 50.0,
+            title_color,
+            10.0,
+            bold=state is not None,
+            anchor_y="center",
+        )
+        strongest = (
+            max(snapshot.effects, key=lambda effect: effect.influence_score)
+            if snapshot is not None and snapshot.effects
+            else None
+        )
+        summary = "NO DIRECT NEURAL WHY" if (
+            behavior is BehaviorKind.RESTING
+        ) else "WAITING"
+        score = 0.0
+        if strongest is not None:
+            score = max(0.0, min(1.0, strongest.influence_score))
+            summary = f"INFLUENCE {score:.2f}"
+        elif (
+            state is not None
+            and behavior
+            in {
+                BehaviorKind.FOOD_ORIENTATION,
+                BehaviorKind.FOOD_APPROACH,
+            }
+            and state.target_id is None
+        ):
+            summary = "WAITING FOR TARGET"
+        elif state is not None and behavior in BEHAVIOR_EXPLANATION_SPECS:
+            summary = "CALCULATING"
+        self._draw_text(
+            f"brain_why_{behavior.value}_summary",
+            summary,
+            bounds.right - 16.0,
+            bounds.top - 50.0,
+            title_color,
+            9.0,
+            bold=True,
+            anchor_x="right",
+            anchor_y="center",
+        )
+        track = arcade.LBWH(
+            bounds.left + 16.0,
+            bounds.top - self.BRAIN_WHY_CARD_HEIGHT + 11.0,
+            max(1.0, bounds.width - 32.0),
+            6.0,
+        )
+        self._draw_rounded_rect_fill(
+            track,
+            self._brain_blend_color(
+                self.theme.card_background,
+                self.theme.panel_border,
+                0.72,
+            ),
+            3.0,
+        )
+        if score > 0.0:
+            self._draw_rounded_rect_fill(
+                arcade.LBWH(
+                    track.left,
+                    track.bottom,
+                    max(1.0, track.width * score),
+                    track.height,
+                ),
+                self._brain_blend_color(
+                    self.theme.panel_border,
+                    accent,
+                    0.35 + 0.65 * intensity,
+                ),
+                3.0,
+            )
+        if expanded:
+            detail_top = bounds.top - self.BRAIN_WHY_CARD_HEIGHT
+            arcade.draw_line(
+                bounds.left + 12.0,
+                detail_top,
+                bounds.right - 12.0,
+                detail_top,
+                self._brain_blend_color(
+                    self.theme.panel_border,
+                    accent,
+                    0.34 + 0.46 * intensity,
+                ),
+                1.0,
+            )
+            self._draw_brain_why_details(
+                arcade.LBWH(
+                    bounds.left,
+                    bounds.bottom,
+                    bounds.width,
+                    detail_top - bounds.bottom,
+                ),
+                behavior,
+                snapshot,
+                accent,
+            )
+
+    def _draw_brain_why_details(
+        self,
+        bounds: arcade.Rect,
+        behavior: BehaviorKind,
+        snapshot: WhySnapshot | None,
+        accent: tuple[int, int, int],
+    ) -> None:
+        """Draw fixed-order intervention details inside an expanded card."""
+        self._draw_text(
+            f"brain_why_{behavior.value}_detail_title",
+            "COUNTERFACTUAL DETAILS",
+            bounds.left + 16.0,
+            bounds.top - 22.0,
+            accent,
+            10.0,
+            bold=True,
+            anchor_y="center",
+        )
+        if behavior is BehaviorKind.RESTING:
+            lines = self._wrap_line(
+                (
+                    "No direct neural WHY available. Resting is defined from "
+                    "realized locomotion and has no dedicated neural action "
+                    "output."
+                ),
+                max(24.0, bounds.width - 32.0),
+                font_size=10.0,
+            )
+            for line_index, line in enumerate(lines[:4]):
+                self._draw_text(
+                    f"brain_why_resting_detail_{line_index}",
+                    line,
+                    bounds.left + 16.0,
+                    bounds.top - 49.0 - line_index * 16.0,
+                    self.theme.text_muted,
+                    10.0,
+                )
+            return
+
+        spec = BEHAVIOR_EXPLANATION_SPECS[behavior]
+        effect_by_intervention = (
+            {}
+            if snapshot is None
+            else {
+                effect.intervention: effect
+                for effect in snapshot.effects
+            }
+        )
+        cursor_top = bounds.top - 43.0
+        for effect_index, intervention in enumerate(spec.interventions):
+            if effect_index:
+                cursor_top -= self.BRAIN_WHY_EFFECT_GAP
+            height = self._brain_why_effect_height(behavior, intervention)
+            card = arcade.LBWH(
+                bounds.left + 10.0,
+                cursor_top - height,
+                bounds.width - 20.0,
+                height,
+            )
+            self._draw_brain_why_effect_card(
+                card,
+                behavior,
+                effect_index,
+                intervention,
+                effect_by_intervention.get(intervention),
+                spec.displayed_outputs,
+                accent,
+            )
+            cursor_top = card.bottom
+
+    def _draw_brain_why_effect_card(
+        self,
+        bounds: arcade.Rect,
+        behavior: BehaviorKind,
+        effect_index: int,
+        intervention: SemanticIntervention,
+        effect: SemanticEffectSnapshot | None,
+        output_names: tuple[str, ...],
+        accent: tuple[int, int, int],
+    ) -> None:
+        """Draw one fixed-position semantic intervention result."""
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            max(4.0, self.config.layout.card_radius - 2.0),
+            1.0,
+        )
+        key_prefix = f"brain_why_{behavior.value}_effect_{effect_index}"
+        self._draw_text(
+            key_prefix,
+            self._why_intervention_label(intervention),
+            bounds.left + 10.0,
+            bounds.top - 18.0,
+            self.theme.text_primary,
+            10.0,
+            bold=True,
+        )
+        meta = "WAITING FOR CURRENT BOUT"
+        if effect is not None:
+            meta = (
+                f"INFLUENCE {effect.influence_score:.2f} · "
+                f"{effect.influence_label.value.upper()} · "
+                f"{effect.effect_direction.value.upper()} · "
+                f"n={effect.sample_count}"
+            )
+        self._draw_text(
+            f"{key_prefix}_meta",
+            meta,
+            bounds.left + 10.0,
+            bounds.top - 38.0,
+            accent,
+            8.5,
+            bold=True,
+        )
+        output_top_offset = 58.0
+        if intervention is SemanticIntervention.SATIATED_STATE:
+            self._draw_text(
+                f"{key_prefix}_satiated",
+                "If this creature were satiated",
+                bounds.left + 10.0,
+                bounds.top - 56.0,
+                self.theme.text_muted,
+                8.5,
+            )
+            output_top_offset = 74.0
+        outputs_by_name = (
+            {}
+            if effect is None
+            else {
+                output.output_name: output
+                for output in effect.output_effects
+            }
+        )
+        for output_index, output_name in enumerate(output_names):
+            output = outputs_by_name.get(output_name)
+            secondary = (
+                " · SECONDARY CONTEXT"
+                if output is not None and output.secondary_context
+                else ""
+            )
+            label_y = (
+                bounds.top - output_top_offset - output_index * 34.0
+            )
+            self._draw_text(
+                f"{key_prefix}_output_{output_index}_name",
+                f"{output_name}{secondary}",
+                bounds.left + 10.0,
+                label_y,
+                self.theme.text_muted,
+                8.5,
+                bold=True,
+            )
+            values = "actual —  →  counterfactual —"
+            if output is not None:
+                values = (
+                    f"actual {output.actual:+.2f}  →  "
+                    f"counterfactual {output.counterfactual:+.2f}  · "
+                    f"{output.direction.value.upper()}"
+                )
+            self._draw_text(
+                f"{key_prefix}_output_{output_index}_values",
+                values,
+                bounds.left + 18.0,
+                label_y - 16.0,
+                self.theme.text_muted,
+                8.5,
+            )
+
+    @classmethod
+    def _brain_why_effect_height(
+        cls,
+        behavior: BehaviorKind,
+        intervention: SemanticIntervention,
+    ) -> float:
+        """Return stable height for one semantic-effect detail card."""
+        output_count = len(
+            BEHAVIOR_EXPLANATION_SPECS[behavior].displayed_outputs
+        )
+        satiated_extra = (
+            16.0
+            if intervention is SemanticIntervention.SATIATED_STATE
+            else 0.0
+        )
+        return 54.0 + 34.0 * output_count + satiated_extra
+
+    @classmethod
+    def _brain_why_detail_height(cls, behavior: BehaviorKind) -> float:
+        """Return data-independent expanded height for one WHY card."""
+        if behavior is BehaviorKind.RESTING:
+            return 112.0
+        spec = BEHAVIOR_EXPLANATION_SPECS[behavior]
+        effects_height = sum(
+            cls._brain_why_effect_height(behavior, intervention)
+            for intervention in spec.interventions
+        )
+        gaps_height = (
+            max(0, len(spec.interventions) - 1)
+            * cls.BRAIN_WHY_EFFECT_GAP
+        )
+        return (
+            43.0
+            + effects_height
+            + gaps_height
+            + cls.BRAIN_WHY_DETAIL_PADDING
+        )
+
+    @staticmethod
+    def _brain_why_card_hitbox_key(behavior: BehaviorKind) -> str:
+        """Return the stable interaction key for one WHY behavior card."""
+        return f"brain_why_card_{behavior.value}"
+
+    @staticmethod
+    def _why_intervention_label(
+        intervention: SemanticIntervention,
+    ) -> str:
+        """Return the concise scientific UI label for an intervention."""
+        return {
+            SemanticIntervention.VISIBLE_FOOD_CUES: "Visible food cues",
+            SemanticIntervention.RESOURCE_GRADIENT_CUES: "Resource gradient",
+            SemanticIntervention.SATIATED_STATE: "Satiated state",
+            SemanticIntervention.SOCIAL_CUES: "Social cues",
+            SemanticIntervention.OFFSPRING_CUES: "Offspring cues",
+            SemanticIntervention.ACOUSTIC_CUES: "Acoustic cues",
+            SemanticIntervention.TRAIL_PHEROMONE_CUES: "Trail pheromone cues",
+            SemanticIntervention.ALARM_PHEROMONE_CUES: "Alarm pheromone cues",
+            SemanticIntervention.WALL_CUES: "Wall cues",
+        }[intervention]
+
+    def _draw_brain_why_diagnostics(
+        self,
+        bounds: arcade.Rect,
+        diagnostics: CounterfactualDiagnostics,
+    ) -> None:
+        """Draw debug-only counterfactual queue and worker diagnostics."""
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.panel_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        queue_size = (
+            diagnostics.probe_queue_size
+            if diagnostics.probe_queue_size is not None
+            else "n/a"
+        )
+        lines = (
+            "WHY DIAGNOSTICS",
+            (
+                f"Requests {diagnostics.probe_requests} · dropped "
+                f"{diagnostics.probe_requests_dropped}"
+            ),
+            f"Superseded {diagnostics.probes_superseded}",
+            f"Evaluations {diagnostics.evaluations_performed}",
+            f"Results dropped {diagnostics.result_drops}",
+            (
+                "Latency unavailable"
+                if diagnostics.result_latency_ms is None
+                else f"Latency {diagnostics.result_latency_ms:.1f} ms"
+            ),
+            (
+                "Result age unavailable"
+                if diagnostics.latest_result_age_ms is None
+                else f"Result age {diagnostics.latest_result_age_ms:.1f} ms"
+            ),
+            (
+                f"Worker {diagnostics.worker_health} · queue {queue_size} · "
+                f"{diagnostics.evaluations_per_second:.1f} eval/s"
+            ),
+        )
+        for index, line in enumerate(lines):
+            self._draw_text(
+                f"brain_why_diagnostics_{index}",
+                line,
+                bounds.left + 12.0,
+                bounds.top - 20.0 - index * 21.0,
+                (
+                    self.theme.text_primary
+                    if index == 0
+                    else self.theme.text_muted
+                ),
+                9.5 if index == 0 else 8.5,
+                bold=index == 0,
             )
 
     def _draw_brain_inspector_tab(

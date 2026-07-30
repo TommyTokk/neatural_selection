@@ -273,8 +273,11 @@ class BrainWindowComponent:
         self._brain_node_bounds.clear()
         self._scroll_offsets["brain_node_inspector"] = 0.0
         self._scroll_offsets["brain_behavior_inspector"] = 0.0
+        self._scroll_offsets["brain_why_inspector"] = 0.0
         self._brain_behavior_scroll_offset = 0.0
+        self._brain_why_scroll_offset = 0.0
         self._brain_expanded_behavior = None
+        self._brain_expanded_why_behavior = None
         self._clear_brain_render_caches()
     def _clear_brain_selection_caches(self) -> None:
         """Release cached data derived from the selected graph node."""

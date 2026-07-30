@@ -492,6 +492,7 @@ class NeatBrainController:
         self._next_genome_id_value = (
             max(self.population.population, default=0) + 1
         )
+        self._next_brain_revision_value = 1
         self.brains: dict[int, NeatBrain] = {}
         self.species_manager = ContinuousSpeciesManager(
             compatibility_threshold,
@@ -673,6 +674,12 @@ class NeatBrainController:
             return None
         return brain.genome_id
 
+    def brain_revision_for(self, creature_id: int) -> int | None:
+        brain = self.brains.get(creature_id)
+        if brain is None:
+            return None
+        return brain.brain_revision
+
     def brain_for(self, creature_id: int) -> NeatBrain | None:
         return self.brains.get(creature_id)
 
@@ -749,6 +756,9 @@ class NeatBrainController:
     def _brain_from_genome(self, genome_id: int, genome: Any) -> NeatBrain:
         """Build a brain already labelled with the selected sensor contract."""
         brain = NeatBrain.from_genome(genome_id, genome, self.config)
+        next_revision = getattr(self, "_next_brain_revision_value", 1)
+        brain.brain_revision = next_revision
+        self._next_brain_revision_value = next_revision + 1
         brain.herding_decay_rate = getattr(
             self,
             "herding_decay_rate",

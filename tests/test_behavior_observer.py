@@ -104,6 +104,10 @@ class TemporalBehaviorAnalyzerTest(unittest.TestCase):
 
         self.assertIn(BoutStatus.EMERGING, statuses)
         self.assertEqual(statuses[-1], BoutStatus.ACTIVE)
+        self.assertEqual(
+            state_for(snapshot, BehaviorKind.FOOD_APPROACH).target_id,
+            7,
+        )
 
     def test_noisy_food_distance_never_becomes_stable_approach(self) -> None:
         distances = [100, 94, 101, 95, 103, 98, 104, 99]
@@ -143,6 +147,34 @@ class TemporalBehaviorAnalyzerTest(unittest.TestCase):
 
         self.assertIsNotNone(final)
         self.assertEqual(final.status, BoutStatus.ACTIVE)
+        self.assertEqual(final.target_id, 9)
+
+    def test_food_grace_state_does_not_retain_stale_target_id(self) -> None:
+        snapshot = None
+        for index, distance in enumerate(
+            [150, 140, 129, 117, 105, 92, 80, 68]
+        ):
+            snapshot = self.analyzer.process(
+                observation(
+                    index * 0.1,
+                    food_id=7,
+                    food_distance=distance,
+                    food_angle=0.0,
+                )
+            )
+        active = state_for(snapshot, BehaviorKind.FOOD_APPROACH)
+        self.assertIsNotNone(active)
+        self.assertEqual(active.target_id, 7)
+
+        grace_snapshot = self.analyzer.process(observation(0.8))
+        grace = state_for(
+            grace_snapshot,
+            BehaviorKind.FOOD_APPROACH,
+        )
+
+        self.assertIsNotNone(grace)
+        self.assertIs(grace.status, BoutStatus.ACTIVE)
+        self.assertIsNone(grace.target_id)
 
     def test_fluctuating_angle_does_not_activate_orientation(self) -> None:
         angles = [0.6, 0.45, 0.62, 0.40, 0.58, 0.39, 0.55, 0.41]

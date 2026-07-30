@@ -664,6 +664,56 @@ class BehaviorObserverConfig:
 
 
 @dataclass(slots=True)
+class CounterfactualWhyConfig:
+    """Configuration for focal counterfactual NEAT explanations."""
+
+    enabled: bool = True
+    probe_hz: float = 5.0
+    history_capacity: int = 64
+    control_queue_capacity: int = 1
+    probe_queue_capacity: int = 2
+    result_queue_capacity: int = 4
+    target_center_dead_zone_radians: float = 0.05
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ValueError("counterfactual_why.enabled must be a boolean.")
+        if (
+            isinstance(self.probe_hz, bool)
+            or not isinstance(self.probe_hz, (int, float))
+            or not isfinite(self.probe_hz)
+            or self.probe_hz <= 0.0
+        ):
+            raise ValueError(
+                "counterfactual_why.probe_hz must be finite and positive."
+            )
+        if (
+            isinstance(self.target_center_dead_zone_radians, bool)
+            or not isinstance(
+                self.target_center_dead_zone_radians,
+                (int, float),
+            )
+            or not isfinite(self.target_center_dead_zone_radians)
+            or not 0.0 <= self.target_center_dead_zone_radians < pi
+        ):
+            raise ValueError(
+                "counterfactual_why.target_center_dead_zone_radians "
+                "must be finite and within [0, pi)."
+            )
+        for name in (
+            "history_capacity",
+            "control_queue_capacity",
+            "probe_queue_capacity",
+            "result_queue_capacity",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise ValueError(
+                    f"counterfactual_why.{name} must be a positive integer."
+                )
+
+
+@dataclass(slots=True)
 class SimConfig:
     random_seed: int = 7
     display: DisplayConfig = field(default_factory=DisplayConfig)
@@ -693,6 +743,9 @@ class SimConfig:
     # Focal temporal behaviour observer
     behavior: BehaviorObserverConfig = field(
         default_factory=BehaviorObserverConfig
+    )
+    counterfactual_why: CounterfactualWhyConfig = field(
+        default_factory=CounterfactualWhyConfig
     )
 
     # Trait config
