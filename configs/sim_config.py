@@ -52,7 +52,7 @@ class FlockingTelemetryConfig:
 
 @dataclass(slots=True)
 class FlockingBenchmarkConfig:
-    enabled: bool = False
+    enabled: bool = True
     reward_rate: float = 0.01
     target_group_size: int = 4
     target_spacing: float = 60.0
@@ -66,7 +66,9 @@ class FlockingConfig:
     minimum_social_engagement: float = 0.25
     panic_suppression_strength: float = 0.5
     max_social_influence: float = 0.35
+    herding_decay_rate: float = 0.15
     target_group_size: int = 4
+    perception_radius: float = 150.0
     preferred_personal_space: float = 60.0
     long_range: LongRangeSocialConfig = field(
         default_factory=LongRangeSocialConfig
@@ -113,7 +115,18 @@ class FlockingConfig:
             ):
                 raise ValueError(f"{name} must be finite and within [0, 1].")
 
+        if (
+            isinstance(self.herding_decay_rate, bool)
+            or not isinstance(self.herding_decay_rate, (int, float))
+            or not isfinite(self.herding_decay_rate)
+            or not 0.0 < self.herding_decay_rate <= 1.0
+        ):
+            raise ValueError(
+                "herding_decay_rate must be finite and within (0, 1]."
+            )
+
         positive = {
+            "perception_radius": self.perception_radius,
             "preferred_personal_space": self.preferred_personal_space,
             "long_range.range": self.long_range.range,
             "cohort_spawn.radius": self.cohort_spawn.radius,
@@ -211,6 +224,7 @@ class ThemeConfig:
     selected_outline: Color = (186, 26, 26)
     food_fill: Color = (142, 219, 114)
     vision_fill: Color = (142, 203, 161, 42)
+    flock_perception_outline: Color = (255, 165, 0, 210)
     card_background: Color = (244, 242, 255)
 
 
@@ -443,6 +457,7 @@ class FitnessConfig:
     trait_energy_cost_penalty_weight: float = (
         2.0  # Lowered so big creatures can still evolve
     )
+    flocking_benchmark_weight: float = 2.0
 
 
 @dataclass(slots=True)

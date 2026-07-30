@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from math import pi
+from math import hypot, pi
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -61,9 +62,10 @@ if not hasattr(arcade, "draw_polygon_filled"):
 if not hasattr(arcade, "draw_polygon_outline"):
     arcade.draw_polygon_outline = lambda *args, **kwargs: None
 
-for optional_module in ("neat",):
-    if optional_module not in sys.modules:
-        sys.modules[optional_module] = ModuleType(optional_module)
+try:
+    import neat  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["neat"] = ModuleType("neat")
 
 try:
     import opensimplex  # noqa: F401
@@ -98,6 +100,7 @@ if not hasattr(pymunk, "Shape"):
     pymunk.Shape = object
 
 from configs.sim_config import build_sim_config
+from src.persistence import SimulationPaths
 from src.ui.layouts.screen import build_screen_layout
 from src.ui.renderers.environment import EnvironmentRenderer
 import src.world as world_module
@@ -305,6 +308,7 @@ class WorldCameraTest(unittest.TestCase):
         config = build_sim_config()
         config.population.initial_creatures = 0
         config.food.initial_food_items = 0
+        config.persistence.enable_telemetry = False
         original_rebuild_boundaries = World._rebuild_boundaries
         original_food_spawner = world_module.FoodSpawner
         original_neat_controller = world_module.NeatBrainController
@@ -315,7 +319,10 @@ class WorldCameraTest(unittest.TestCase):
         world_module.NeatBrainController = FakeNeatBrainController
 
         try:
-            World(config)
+            World(
+                config,
+                simulation_paths=SimulationPaths(Path(".").resolve()),
+            )
         finally:
             World._rebuild_boundaries = original_rebuild_boundaries
             world_module.FoodSpawner = original_food_spawner
@@ -882,7 +889,10 @@ class WorldCameraTest(unittest.TestCase):
             radius=10.0,
         )
         world._last_flock_steering_debug = {
-            1: SimpleNamespace(force=(30.0, 40.0), max_force=100.0)
+            1: SimpleNamespace(
+                accepted_counterfactual_delta=(30.0, 40.0),
+                max_force=100.0,
+            )
         }
         renderer = EnvironmentRenderer(world.config)
         lines: list[tuple[object, ...]] = []
@@ -903,10 +913,76 @@ class WorldCameraTest(unittest.TestCase):
         center_x, center_y = world.environment_to_screen(*creature.position)
         self.assertAlmostEqual(shaft[0], center_x + 0.6 * 24.0)
         self.assertAlmostEqual(shaft[1], center_y + 0.8 * 24.0)
-        self.assertAlmostEqual(shaft[2], shaft[0] + 0.6 * 38.0)
-        self.assertAlmostEqual(shaft[3], shaft[1] + 0.8 * 38.0)
+        self.assertAlmostEqual(shaft[2], shaft[0] + 0.6 * 26.0)
+        self.assertAlmostEqual(shaft[3], shaft[1] + 0.8 * 26.0)
         self.assertEqual(shaft[4], (255, 170, 70, 177))
         self.assertAlmostEqual(shaft[5], 2.25)
+
+    def test_flock_debug_arrow_scales_tiny_and_full_forces(self) -> None:
+        world = self.make_world_shell()
+        creature = FakeCreature(creature_id=1, position=(0.0, 0.0))
+        renderer = EnvironmentRenderer(world.config)
+        lines: list[tuple[object, ...]] = []
+        original_draw_line = arcade.draw_line
+        arcade.draw_line = lambda *args, **kwargs: lines.append(args)
+
+        try:
+            world._last_flock_steering_debug = {
+                1: SimpleNamespace(
+                    accepted_counterfactual_delta=(0.001, 0.0),
+                    max_force=100.0,
+                )
+            }
+            renderer._draw_flock_steering_debug(
+                creature,
+                world.layout.environment,
+                world,
+            )
+            tiny_lines = list(lines)
+            lines.clear()
+
+            world._last_flock_steering_debug = {
+                1: SimpleNamespace(
+                    accepted_counterfactual_delta=(100.0, 0.0),
+                    max_force=100.0,
+                )
+            }
+            renderer._draw_flock_steering_debug(
+                creature,
+                world.layout.environment,
+                world,
+            )
+            full_lines = list(lines)
+        finally:
+            arcade.draw_line = original_draw_line
+
+        self.assertEqual(len(tiny_lines), 3)
+        tiny_shaft = tiny_lines[0]
+        self.assertAlmostEqual(
+            hypot(
+                tiny_shaft[2] - tiny_shaft[0],
+                tiny_shaft[3] - tiny_shaft[1],
+            ),
+            52.0 * 0.001 / 100.0,
+        )
+        for arrowhead in tiny_lines[1:]:
+            self.assertLess(
+                hypot(
+                    arrowhead[2] - arrowhead[0],
+                    arrowhead[3] - arrowhead[1],
+                ),
+                0.001,
+            )
+
+        self.assertEqual(len(full_lines), 3)
+        full_shaft = full_lines[0]
+        self.assertAlmostEqual(
+            hypot(
+                full_shaft[2] - full_shaft[0],
+                full_shaft[3] - full_shaft[1],
+            ),
+            52.0,
+        )
 
     def test_flock_debug_arrow_skips_missing_or_zero_force(self) -> None:
         world = self.make_world_shell()
@@ -923,7 +999,10 @@ class WorldCameraTest(unittest.TestCase):
                 world,
             )
             world._last_flock_steering_debug = {
-                1: SimpleNamespace(force=(0.0, 0.0), max_force=100.0)
+                1: SimpleNamespace(
+                    accepted_counterfactual_delta=(0.0, 0.0),
+                    max_force=100.0,
+                )
             }
             renderer._draw_flock_steering_debug(
                 creature,
@@ -946,6 +1025,9 @@ class WorldCameraTest(unittest.TestCase):
         renderer._draw_flock_steering_debug = (
             lambda active_creature, bounds, active_world: calls.append("flock")
         )
+        renderer._draw_flock_perception_radius = (
+            lambda active_creature, bounds, active_world: calls.append("radius")
+        )
 
         renderer._draw_selected_overlay(world, world.layout.environment)
         world.debug_vision_enabled = True
@@ -953,6 +1035,22 @@ class WorldCameraTest(unittest.TestCase):
         renderer._draw_selected_overlay(world, world.layout.environment)
 
         self.assertEqual(calls, [])
+
+        renderer._draw_vision_cone = lambda *args: None
+        renderer._draw_biome_sensor_markers = lambda *args: None
+        renderer._draw_acoustic_debug = lambda *args: None
+        renderer._draw_pheromone_debug = lambda *args: None
+        renderer._draw_flocking_velocity_debug = lambda *args: None
+        renderer._draw_visible_food_highlights = lambda *args: None
+        renderer._draw_visible_creature_highlights = lambda *args: None
+        world.visible_foods_for = lambda _creature: []
+        world.visible_creatures_for = lambda _creature: []
+        world.selected_creature_id = creature.creature_id
+        world.debug_vision_enabled = True
+
+        renderer._draw_selected_overlay(world, world.layout.environment)
+
+        self.assertEqual(calls, ["radius", "flock"])
 
     def test_creature_sprite_cache_prunes_dead_creatures(self) -> None:
         world = self.make_world_shell()
@@ -1225,6 +1323,41 @@ class WorldCameraTest(unittest.TestCase):
 
         self.assertEqual(len(fills), 1)
         self.assertEqual(fills[0][1], world.config.theme.vision_fill)
+
+    def test_debug_boid_radius_is_orange_and_uses_world_scale(self) -> None:
+        world = self.make_world_shell()
+        world.environment_zoom = 1.4
+        renderer = EnvironmentRenderer(world.config)
+        creature = FakeCreature(creature_id=1, position=(25.0, -40.0))
+        outlines: list[tuple[object, ...]] = []
+        original_draw_circle_outline = arcade.draw_circle_outline
+        arcade.draw_circle_outline = (
+            lambda *args, **kwargs: outlines.append(args)
+        )
+
+        try:
+            renderer._draw_flock_perception_radius(
+                creature,
+                world.layout.environment,
+                world,
+            )
+        finally:
+            arcade.draw_circle_outline = original_draw_circle_outline
+
+        self.assertEqual(len(outlines), 1)
+        center_x, center_y = world.environment_to_screen(*creature.position)
+        self.assertAlmostEqual(outlines[0][0], center_x)
+        self.assertAlmostEqual(outlines[0][1], center_y)
+        self.assertAlmostEqual(
+            outlines[0][2],
+            world.config.flocking.perception_radius
+            * world.environment_zoom,
+        )
+        self.assertEqual(
+            outlines[0][3],
+            world.config.theme.flock_perception_outline,
+        )
+        self.assertEqual(outlines[0][4], 2)
 
     def test_renderer_reuses_biome_texture_across_view_changes(self) -> None:
         world = self.make_world_shell()

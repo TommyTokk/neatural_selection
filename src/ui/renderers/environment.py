@@ -1265,6 +1265,7 @@ class EnvironmentRenderer:
 
         if world.debug_vision_enabled:
             self._draw_vision_cone(selected, bounds, world)
+            self._draw_flock_perception_radius(selected, bounds, world)
             self._draw_biome_sensor_markers(selected, bounds, world)
             self._draw_acoustic_debug(selected, bounds, world)
             self._draw_pheromone_debug(selected, bounds, world)
@@ -1304,7 +1305,7 @@ class EnvironmentRenderer:
         if debug is None:
             return
 
-        force_x, force_y = debug.force
+        force_x, force_y = debug.accepted_counterfactual_delta
         magnitude = hypot(force_x, force_y)
         max_force = float(debug.max_force)
         if magnitude <= 1e-9 or max_force <= 0.0:
@@ -1317,15 +1318,15 @@ class EnvironmentRenderer:
         start_offset = creature.radius * world.environment_zoom + 4.0
         start_x = center_x + unit_x * start_offset
         start_y = center_y + unit_y * start_offset
-        shaft_length = 12.0 + 52.0 * strength
+        shaft_length = 52.0 * strength
         end_x = start_x + unit_x * shaft_length
         end_y = start_y + unit_y * shaft_length
         color = (255, 170, 70, int(100 + 155 * strength))
         line_width = 1.5 + 1.5 * strength
 
         arcade.draw_line(start_x, start_y, end_x, end_y, color, line_width)
-        arrowhead_length = 8.0
-        arrowhead_half_width = 4.5
+        arrowhead_length = min(8.0, shaft_length * 0.4)
+        arrowhead_half_width = min(4.5, shaft_length * 0.225)
         base_x = end_x - unit_x * arrowhead_length
         base_y = end_y - unit_y * arrowhead_length
         perpendicular_x = -unit_y * arrowhead_half_width
@@ -1517,6 +1518,29 @@ class EnvironmentRenderer:
 
         arcade.draw_polygon_filled(eye_cone_points, self.theme.vision_fill)
         arcade.draw_polygon_outline(eye_cone_points, (111, 220, 128, 132), 1)
+
+    def _draw_flock_perception_radius(
+        self,
+        creature: Creature,
+        bounds: arcade.Rect,
+        world: World,
+    ) -> None:
+        """Draw the selected creature's omnidirectional Boid radius."""
+        del bounds
+        radius = (
+            self.config.flocking.perception_radius
+            * world.environment_zoom
+        )
+        if radius <= 0.0:
+            return
+        center_x, center_y = world.environment_to_screen(*creature.position)
+        arcade.draw_circle_outline(
+            center_x,
+            center_y,
+            radius,
+            self.theme.flock_perception_outline,
+            2,
+        )
 
     def _draw_biome_sensor_markers(
         self,

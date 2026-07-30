@@ -122,7 +122,7 @@ class MotionCommand:
 
 @dataclass(slots=True)
 class _FlockSteeringDebug:
-    force: tuple[float, float]
+    accepted_counterfactual_delta: tuple[float, float]
     max_force: float
 
 
@@ -306,6 +306,10 @@ class World:
             controller_kwargs["sensor_contract"] = sensor_contract
         if "random_seed" in controller_parameters:
             controller_kwargs["random_seed"] = self.brain_initialization_seed
+        if "herding_decay_rate" in controller_parameters:
+            controller_kwargs["herding_decay_rate"] = (
+                config.flocking.herding_decay_rate
+            )
         self.neat_controller = NeatBrainController(
             sensor_contract.neat_config_path,
             **controller_kwargs,
@@ -1117,9 +1121,18 @@ class World:
             and long_range_config.enabled
             else 0.0
         )
+        flocking_perception_radius = (
+            flocking_config.perception_radius
+            if flocking_config is not None
+            else 0.0
+        )
         nearby_creatures = self._nearby_creatures_for(
             creature,
-            max(creature.vision.range, social_query_range)
+            max(
+                creature.vision.range,
+                flocking_perception_radius,
+                social_query_range,
+            )
             + self.config.trait.max_radius,
         )
 
@@ -2284,7 +2297,7 @@ class World:
         (
             voluntary_force,
             _counterfactual_neural_force,
-            social_flock_force,
+            accepted_counterfactual_delta,
         ) = accepted_counterfactual_contribution(
             blended_request=blended_request,
             neural_request=neural_request,
@@ -2296,9 +2309,27 @@ class World:
             blended_request[1] - neural_request[1],
         )
         turn_steering_force = (
-            mandatory_avoidance_force[0] + social_flock_force[0],
-            mandatory_avoidance_force[1] + social_flock_force[1],
+            mandatory_avoidance_force[0] + accepted_counterfactual_delta[0],
+            mandatory_avoidance_force[1] + accepted_counterfactual_delta[1],
         )
+        effective_herding = self._clamp(
+            getattr(action, "herding", 0.0),
+            0.0,
+            1.0,
+        )
+        raw_neural_herding = effective_herding
+        brain_for = getattr(
+            getattr(self, "neat_controller", None),
+            "brain_for",
+            None,
+        )
+        if callable(brain_for):
+            brain = brain_for(creature.creature_id)
+            raw_neural_herding = self._clamp(
+                getattr(brain, "last_raw_herding", effective_herding),
+                0.0,
+                1.0,
+            )
         self._last_flocking_runtime[creature.creature_id] = (
             FlockingRuntimeSnapshot(
                 observation=social_observation,
@@ -2307,9 +2338,10 @@ class World:
                 blended_desired_velocity=blended_desired_velocity,
                 mandatory_avoidance=mandatory_avoidance_force,
                 requested_social_contribution=requested_social_contribution,
-                accepted_social_contribution=social_flock_force,
+                accepted_counterfactual_delta=accepted_counterfactual_delta,
                 social_influence=social_influence,
-                neural_herding=getattr(action, "herding", 0.0),
+                raw_neural_herding=raw_neural_herding,
+                effective_herding=effective_herding,
                 panic=panic,
             )
         )
@@ -2318,7 +2350,7 @@ class World:
             self._last_flock_steering_debug = {}
         self._last_flock_steering_debug[creature.creature_id] = (
             _FlockSteeringDebug(
-                social_flock_force,
+                accepted_counterfactual_delta,
                 current_max_forward_force,
             )
         )
@@ -2691,24 +2723,21 @@ class World:
     def _flock_turn_bias(
         self,
         creature: Creature,
-        flock_force: tuple[float, float],
+        steering_force: tuple[float, float],
         max_force: float,
     ) -> float:
-        magnitude = hypot(*flock_force)
-        if magnitude <= 1e-12 or max_force <= 0.0:
+        if max_force <= 0.0:
             return 0.0
 
-        relative_angle = self._signed_angle(
-            atan2(flock_force[1], flock_force[0]) - creature.heading
+        left_x = -sin(creature.heading)
+        left_y = cos(creature.heading)
+        lateral_force = steering_force[0] * left_x + steering_force[1] * left_y
+        lateral_ratio = self._clamp(
+            lateral_force / max_force,
+            -1.0,
+            1.0,
         )
-        magnitude_ratio = self._clamp(magnitude / max_force, 0.0, 1.0)
-        return self._clamp(
-            (relative_angle / pi)
-            * magnitude_ratio
-            * self.config.action.max_flock_turn_bias,
-            -self.config.action.max_flock_turn_bias,
-            self.config.action.max_flock_turn_bias,
-        )
+        return lateral_ratio * self.config.action.max_flock_turn_bias
 
     def _allocate_force_budget(
         self,

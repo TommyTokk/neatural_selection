@@ -69,6 +69,90 @@ class WorldFlockingMotionTest(unittest.TestCase):
             flocking_traits=FlockingTraits(),
         )
 
+    def test_flock_turn_bias_uses_signed_lateral_projection(self) -> None:
+        self.creature.heading = pi / 2.0
+        max_force = 100.0
+
+        forward = self.world._flock_turn_bias(
+            self.creature,
+            (0.0, 25.0),
+            max_force,
+        )
+        backward = self.world._flock_turn_bias(
+            self.creature,
+            (0.0, -25.0),
+            max_force,
+        )
+        left = self.world._flock_turn_bias(
+            self.creature,
+            (-25.0, 0.0),
+            max_force,
+        )
+        right = self.world._flock_turn_bias(
+            self.creature,
+            (25.0, 0.0),
+            max_force,
+        )
+
+        self.assertAlmostEqual(forward, 0.0, places=12)
+        self.assertAlmostEqual(backward, 0.0, places=12)
+        self.assertGreater(left, 0.0)
+        self.assertLess(right, 0.0)
+
+    def test_noisy_backward_force_cannot_create_large_turn_flip(self) -> None:
+        self.creature.heading = pi / 2.0
+        max_force = 100.0
+
+        biases = (
+            self.world._flock_turn_bias(
+                self.creature,
+                (0.0001, -25.0),
+                max_force,
+            ),
+            self.world._flock_turn_bias(
+                self.creature,
+                (-0.0001, -25.0),
+                max_force,
+            ),
+        )
+
+        for bias in biases:
+            self.assertLess(abs(bias), 1e-6)
+
+    def test_flock_turn_bias_clamps_excessive_lateral_force(self) -> None:
+        self.creature.heading = pi / 2.0
+
+        left = self.world._flock_turn_bias(
+            self.creature,
+            (-1_000.0, 0.0),
+            100.0,
+        )
+        right = self.world._flock_turn_bias(
+            self.creature,
+            (1_000.0, 0.0),
+            100.0,
+        )
+
+        self.assertEqual(left, self.world.config.action.max_flock_turn_bias)
+        self.assertEqual(right, -self.world.config.action.max_flock_turn_bias)
+
+    def test_mandatory_avoidance_retains_lateral_turn_bias(self) -> None:
+        self.creature.heading = pi / 2.0
+        self.world._collision_avoidance_force = (
+            lambda _creature, _max_force: (-25.0, 0.0)
+        )
+
+        self.world._apply_action(
+            self.creature,
+            action(),
+            snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
+        )
+
+        self.assertGreater(
+            self.world._motion_commands[self.creature.creature_id].effective_rotate,
+            0.0,
+        )
+
     def test_motion_limit_bounds_accumulated_body_angle(self) -> None:
         body = pymunk.Body(1.0, 1.0)
         body.angle = 10_000 * 2.0 * pi + pi / 4.0
@@ -249,9 +333,28 @@ class WorldFlockingMotionTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            self.world._last_flock_steering_debug[1].force,
+            self.world._last_flock_steering_debug[
+                1
+            ].accepted_counterfactual_delta,
             (0.0, 0.0),
         )
+
+    def test_runtime_distinguishes_raw_and_effective_herding(self) -> None:
+        self.world.neat_controller = SimpleNamespace(
+            brain_for=lambda _creature_id: SimpleNamespace(
+                last_raw_herding=0.9,
+            )
+        )
+
+        self.world._apply_action(
+            self.creature,
+            action(herding=0.3),
+            snapshot=None,
+        )
+
+        runtime = self.world._last_flocking_runtime[1]
+        self.assertEqual(runtime.raw_neural_herding, 0.9)
+        self.assertEqual(runtime.effective_herding, 0.3)
 
     def test_minimum_engagement_can_act_when_neural_herding_is_zero(self) -> None:
         snapshot = SimpleNamespace(
@@ -269,7 +372,9 @@ class WorldFlockingMotionTest(unittest.TestCase):
         )
 
         self.assertNotEqual(
-            self.world._last_flock_steering_debug[1].force,
+            self.world._last_flock_steering_debug[
+                1
+            ].accepted_counterfactual_delta,
             (0.0, 0.0),
         )
 

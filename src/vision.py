@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from math import atan2, cos, hypot, pi, sin
+from math import atan2, cos, hypot, pi, sin, sqrt
 
 from configs.sim_config import (
     FlockingConfig,
@@ -73,7 +73,7 @@ class SensorContract:
 
 
 SENSOR_CONTRACT = SensorContract(
-    4,
+    5,
     SENSOR_INPUT_NAMES,
     "configs/neat_herbivore.ini",
 )
@@ -214,7 +214,7 @@ class SensorSnapshot:
             self.own_infants.proximity,
             self.own_infants.angle,
         ]
-        if self.sensor_contract.schema_version == 4:
+        if self.sensor_contract.schema_version >= 4:
             social = [
                 self._clamp01(self.flock.social_presence),
                 self._target_scaled_flockmate_count(
@@ -465,32 +465,122 @@ class VisionSystem:
         nearby_creatures: list[Creature] | None = None,
         max_speed: float = 1.0,
     ) -> FlockSensorSnapshot:
-        visible_creatures = [
-            target
-            for target in visible_targets
-            if target.kind == "creature" and target.source is not None
-        ]
-        # Crowd separation is deliberately species-independent. It is a local
-        # personal-space response, not a same-species flocking response.
+        del visible_targets
+        flocking_config = self.flocking_config
+        perception_radius = max(0.0, flocking_config.perception_radius)
+        perception_radius_squared = perception_radius * perception_radius
+        personal_space = max(0.0, flocking_config.preferred_personal_space)
+        personal_space_squared = personal_space * personal_space
+        long_range_config = flocking_config.long_range
+        long_range_enabled = (
+            long_range_config.enabled and long_range_config.range > 0.0
+        )
+        long_range_squared = (
+            long_range_config.range * long_range_config.range
+            if long_range_enabled
+            else 0.0
+        )
+        creature_x, creature_y = creature.position
+        creature_heading = creature.heading
+
         separation_x = 0.0
         separation_y = 0.0
         personal_space_count = 0
-        vision_range = creature.vision.range
-        personal_space = max(
-            0.0,
-            self.flocking_config.preferred_personal_space,
-        )
-        for target in visible_creatures:
-            neighbor = target.source
-            away_x = creature.position[0] - neighbor.position[0]
-            away_y = creature.position[1] - neighbor.position[1]
-            distance = hypot(away_x, away_y)
-            if distance <= 1e-12 or distance >= personal_space:
+        compatible_neighbor_count = 0
+        effective_flockmate_count = 0.0
+        weighted_dx = 0.0
+        weighted_dy = 0.0
+        weighted_velocity_x = 0.0
+        weighted_velocity_y = 0.0
+        weighted_proximity = 0.0
+        weighted_neighbor_distance = 0.0
+        moving_heading_weight = 0.0
+        weighted_heading_error = 0.0
+        long_range_x = 0.0
+        long_range_y = 0.0
+        long_range_total = 0.0
+
+        for neighbor in [] if nearby_creatures is None else nearby_creatures:
+            if neighbor.creature_id == creature.creature_id:
                 continue
-            personal_space_count += 1
-            proximity = self._clamp01(1.0 - distance / personal_space)
-            separation_x += (away_x / distance) * proximity
-            separation_y += (away_y / distance) * proximity
+            neighbor_x, neighbor_y = neighbor.position
+            dx = neighbor_x - creature_x
+            dy = neighbor_y - creature_y
+            distance_squared = dx * dx + dy * dy
+            within_boid_range = (
+                perception_radius > 0.0
+                and distance_squared <= perception_radius_squared
+            )
+            within_long_range = (
+                long_range_enabled
+                and 0.0 < distance_squared <= long_range_squared
+            )
+            if not within_boid_range and not within_long_range:
+                continue
+
+            compatibility = self._flock_compatibility(creature, neighbor)
+            if compatibility <= 0.0:
+                continue
+
+            distance = self._linear_distance(distance_squared)
+            if within_long_range and distance > 1e-12:
+                long_range_weight = (
+                    compatibility
+                    * self._clamp01(
+                        1.0 - distance / long_range_config.range
+                    )
+                    * long_range_config.strength
+                )
+                if long_range_weight > 0.0:
+                    long_range_x += (dx / distance) * long_range_weight
+                    long_range_y += (dy / distance) * long_range_weight
+                    long_range_total += long_range_weight
+
+            if not within_boid_range:
+                continue
+
+            compatible_neighbor_count += 1
+            effective_flockmate_count += compatibility
+            weighted_dx += dx * compatibility
+            weighted_dy += dy * compatibility
+            velocity_x = neighbor.body.velocity.x
+            velocity_y = neighbor.body.velocity.y
+            weighted_velocity_x += velocity_x * compatibility
+            weighted_velocity_y += velocity_y * compatibility
+            weighted_neighbor_distance += distance * compatibility
+            weighted_proximity += compatibility * self._clamp01(
+                1.0 - distance / perception_radius
+            )
+
+            velocity_squared = (
+                velocity_x * velocity_x + velocity_y * velocity_y
+            )
+            if velocity_squared > 1e-24:
+                moving_heading_weight += compatibility
+                weighted_heading_error += (
+                    abs(
+                        self._signed_angle(
+                            atan2(velocity_y, velocity_x)
+                            - creature_heading
+                        )
+                    )
+                    * compatibility
+                )
+
+            if (
+                0.0 < distance_squared < personal_space_squared
+                and distance > 1e-12
+            ):
+                personal_space_count += 1
+                proximity = self._clamp01(
+                    1.0 - distance / personal_space
+                )
+                separation_x -= (
+                    dx / distance
+                ) * proximity * compatibility
+                separation_y -= (
+                    dy / distance
+                ) * proximity * compatibility
 
         crowd_separation_strength = self._clamp01(
             hypot(separation_x, separation_y)
@@ -500,94 +590,42 @@ class VisionSystem:
             if crowd_separation_strength <= 1e-12
             else atan2(separation_y, separation_x)
         )
-        long_range = self._long_range_social_observation(
+        long_range = self._long_range_social_observation_from_totals(
             creature,
-            [] if nearby_creatures is None else nearby_creatures,
+            long_range_x,
+            long_range_y,
+            long_range_total,
         )
-
-        compatible_flockmates: list[tuple[Creature, float]] = []
-        for target in visible_creatures:
-            neighbor = target.source
-            compatibility = self._flock_compatibility(creature, neighbor)
-            if compatibility > 1e-12:
-                compatible_flockmates.append((neighbor, compatibility))
-
-        effective_flockmate_count = sum(
-            compatibility for _, compatibility in compatible_flockmates
-        )
-        if effective_flockmate_count <= 1e-12:
+        if effective_flockmate_count <= 0.0:
             return FlockSensorSnapshot(
                 crowd_separation_absolute_angle=(
                     crowd_separation_absolute_angle
                 ),
                 crowd_separation_strength=crowd_separation_strength,
-                visible_creature_count=len(visible_creatures),
+                visible_creature_count=0,
                 compatible_visible_count=0,
                 visible_personal_space_count=personal_space_count,
                 long_range=long_range,
             )
 
         average_flockmate_proximity = (
-            0.0
-            if vision_range <= 0.0
-            else sum(
-                compatibility
-                * self._clamp01(
-                    1.0
-                    - (
-                        hypot(
-                            flockmate.position[0] - creature.position[0],
-                            flockmate.position[1] - creature.position[1],
-                        )
-                        / vision_range
-                    )
-                )
-                for flockmate, compatibility in compatible_flockmates
-            )
-            / effective_flockmate_count
+            weighted_proximity / effective_flockmate_count
         )
-
-        center_x = (
-            sum(
-                flockmate.position[0] * compatibility
-                for flockmate, compatibility in compatible_flockmates
-            )
-            / effective_flockmate_count
-        )
-        center_y = (
-            sum(
-                flockmate.position[1] * compatibility
-                for flockmate, compatibility in compatible_flockmates
-            )
-            / effective_flockmate_count
-        )
-        dx = center_x - creature.position[0]
-        dy = center_y - creature.position[1]
+        dx = weighted_dx / effective_flockmate_count
+        dy = weighted_dy / effective_flockmate_count
         center_distance = hypot(dx, dy)
         center_proximity = (
             0.0
-            if creature.vision.range <= 0.0
-            else self._clamp01(1.0 - center_distance / creature.vision.range)
+            if perception_radius <= 0.0
+            else self._clamp01(1.0 - center_distance / perception_radius)
         )
         cohesion_absolute_angle = atan2(dy, dx)
         center_relative_angle = self._signed_angle(
-            cohesion_absolute_angle - creature.heading
+            cohesion_absolute_angle - creature_heading
         )
 
-        average_velocity_x = (
-            sum(
-                flockmate.body.velocity.x * compatibility
-                for flockmate, compatibility in compatible_flockmates
-            )
-            / effective_flockmate_count
-        )
-        average_velocity_y = (
-            sum(
-                flockmate.body.velocity.y * compatibility
-                for flockmate, compatibility in compatible_flockmates
-            )
-            / effective_flockmate_count
-        )
+        average_velocity_x = weighted_velocity_x / effective_flockmate_count
+        average_velocity_y = weighted_velocity_y / effective_flockmate_count
         actual_average_velocity_x = average_velocity_x
         actual_average_velocity_y = average_velocity_y
         if (
@@ -597,7 +635,7 @@ class VisionSystem:
             average_velocity_x = creature.body.velocity.x
             average_velocity_y = creature.body.velocity.y
 
-        alignment_absolute_angle = creature.heading
+        alignment_absolute_angle = creature_heading
         if (
             abs(average_velocity_x) > 1e-12
             or abs(average_velocity_y) > 1e-12
@@ -607,13 +645,13 @@ class VisionSystem:
                 average_velocity_x,
             )
         relative_heading = self._signed_angle(
-            alignment_absolute_angle - creature.heading
+            alignment_absolute_angle - creature_heading
         )
-        forward_x = cos(creature.heading)
-        forward_y = sin(creature.heading)
+        forward_x = cos(creature_heading)
+        forward_y = sin(creature_heading)
         right_x = forward_y
         right_y = -forward_x
-        position_scale = max(1e-12, creature.vision.range)
+        position_scale = max(1e-12, perception_radius)
         relative_velocity_x = (
             actual_average_velocity_x - creature.body.velocity.x
         )
@@ -622,54 +660,19 @@ class VisionSystem:
         )
         velocity_scale = max(1e-12, 2.0 * max_speed)
         mean_neighbor_distance = (
-            sum(
-                hypot(
-                    flockmate.position[0] - creature.position[0],
-                    flockmate.position[1] - creature.position[1],
-                )
-                * compatibility
-                for flockmate, compatibility in compatible_flockmates
-            )
-            / effective_flockmate_count
-        )
-        moving_heading_weight = sum(
-            compatibility
-            for flockmate, compatibility in compatible_flockmates
-            if hypot(
-                flockmate.body.velocity.x,
-                flockmate.body.velocity.y,
-            )
-            > 1e-12
+            weighted_neighbor_distance / effective_flockmate_count
         )
         mean_heading_error = (
             0.0
             if moving_heading_weight <= 1e-12
-            else sum(
-                abs(
-                    self._signed_angle(
-                        atan2(
-                            flockmate.body.velocity.y,
-                            flockmate.body.velocity.x,
-                        )
-                        - creature.heading
-                    )
-                )
-                * compatibility
-                for flockmate, compatibility in compatible_flockmates
-                if hypot(
-                    flockmate.body.velocity.x,
-                    flockmate.body.velocity.y,
-                )
-                > 1e-12
-            )
-            / moving_heading_weight
+            else weighted_heading_error / moving_heading_weight
         )
 
         return FlockSensorSnapshot(
             center_proximity=center_proximity,
             center_angle=self._normalized_view_angle(
                 center_relative_angle,
-                creature.vision.angle,
+                2.0 * pi,
             ),
             average_relative_heading=self._clamp(relative_heading / pi, -1.0, 1.0),
             flockmate_count=effective_flockmate_count,
@@ -687,8 +690,8 @@ class VisionSystem:
                 actual_average_velocity_x,
                 actual_average_velocity_y,
             ),
-            visible_creature_count=len(visible_creatures),
-            compatible_visible_count=len(compatible_flockmates),
+            visible_creature_count=compatible_neighbor_count,
+            compatible_visible_count=compatible_neighbor_count,
             visible_personal_space_count=personal_space_count,
             social_presence=self._clamp01(effective_flockmate_count),
             center_forward=self._clamp(
@@ -725,37 +728,15 @@ class VisionSystem:
             long_range=long_range,
         )
 
-    def _long_range_social_observation(
+    def _long_range_social_observation_from_totals(
         self,
         creature: Creature,
-        nearby_creatures: list[Creature],
+        weighted_x: float,
+        weighted_y: float,
+        total: float,
     ) -> LongRangeSocialObservation:
-        config = self.flocking_config.long_range
-        if not config.enabled or config.range <= 0.0:
-            return LongRangeSocialObservation()
-        weighted_x = 0.0
-        weighted_y = 0.0
-        total = 0.0
-        for neighbor in nearby_creatures:
-            if neighbor.creature_id == creature.creature_id:
-                continue
-            dx = neighbor.position[0] - creature.position[0]
-            dy = neighbor.position[1] - creature.position[1]
-            distance = hypot(dx, dy)
-            if distance <= 1e-12 or distance > config.range:
-                continue
-            weight = (
-                self._flock_compatibility(creature, neighbor)
-                * self._clamp01(1.0 - distance / config.range)
-                * config.strength
-            )
-            if weight <= 1e-12:
-                continue
-            weighted_x += (dx / distance) * weight
-            weighted_y += (dy / distance) * weight
-            total += weight
         magnitude = hypot(weighted_x, weighted_y)
-        if total <= 1e-12 or magnitude <= 1e-12:
+        if total <= 0.0 or magnitude <= 1e-12:
             return LongRangeSocialObservation(
                 intensity=self._clamp01(total),
             )
@@ -778,6 +759,10 @@ class VisionSystem:
                 1.0,
             ),
         )
+
+    @staticmethod
+    def _linear_distance(distance_squared: float) -> float:
+        return sqrt(distance_squared)
 
     def _flock_compatibility(
         self,

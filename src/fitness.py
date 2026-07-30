@@ -127,5 +127,8 @@ class CreatureFitness:
             + len(self.matured_offspring_ids) * config.matured_offspring_weight
             - self.movement_effort * config.movement_effort_penalty
             - self.trait_energy_cost * config.trait_energy_cost_penalty_weight
-            + self.flocking_benchmark_reward
+            + (
+                self.flocking_benchmark_reward
+                * config.flocking_benchmark_weight
+            )
         )

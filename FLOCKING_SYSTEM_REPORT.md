@@ -1,8 +1,8 @@
 # Creature Flocking System: Implementation and Influence Report
 
-> **Historical boundary.** Sections 1–19 preserve the diagnosis of the removed
-> schema-3 system, including the 81.25-hour run. Sections 20 onward document
-> the sole current evolutionary-flocking architecture.
+> **Historical boundary.** Sections 1–19 retain the 81.25-hour diagnosis while
+> their implementation descriptions reflect the current behavior. Sections 20
+> onward document the sole current evolutionary-flocking architecture.
 
 ## 1. Executive summary
 
@@ -10,23 +10,25 @@ The flocking system is a hybrid of evolved decision-making and hard-coded boid-s
 
 - A creature's NEAT brain decides **whether and how strongly to herd** at the current moment through one `herding` output.
 - Three inherited biological genes decide the creature's fixed preference for **separation**, **alignment**, and **cohesion**.
-- A continuous genetic/phenotypic compatibility score decides how much every visible neighbor counts as a flockmate.
-- The vision system turns visible compatible neighbors into four neural inputs and several internal steering measurements.
+- A continuous compatibility score decides how much every positive-compatible
+  neighbor inside a 150 px omnidirectional radius counts as a flockmate.
+- The sensing system turns those neighbors into social neural inputs and
+  internal steering measurements independently of detailed visual occlusion.
 - The movement system combines separation, alignment, and cohesion forces, but gives mandatory collision avoidance higher priority and direct neural acceleration lower priority.
-- Panic suppresses alignment and cohesion, preserves separation, and increases the available movement and turning limits.
+- Panic attenuates alignment and cohesion, preserves separation, and increases the available movement and turning limits.
 
 The most important distinction is that the brain does **not** choose separation, alignment, and cohesion independently on every tick. It chooses a single herding drive. The three inherited genes then split that drive into the three flocking components.
 
-There is also no direct fitness reward for forming a flock. Flocking evolves only when it indirectly improves survival, food acquisition, energy efficiency, reproduction, or offspring survival.
+The default fitness now includes the bounded flocking benchmark at a `2.0`
+score weight, alongside survival, food, energy, reproduction, and offspring
+survival.
 
-The 81.25-hour saved simulation confirms that the current design does not
-reliably evolve flocking. The coded steering vectors pass focused tests, but
-the evolved brains receive very little social evidence and do not functionally
-respond to the flock inputs. The main failure is therefore a conflict in
-evolutionary credit assignment and control ownership, compounded by sparse
-encounters, panic suppression, and a fitness function with no social
-selection pressure. The evidence and severity-ranked problems are detailed
-in the next section.
+The historical 81.25-hour saved simulation confirmed that its configuration
+did not reliably evolve flocking. Its evolved brains received very little
+social evidence and did not functionally respond to the flock inputs. The
+evidence and severity-ranked problems from that run are detailed next; the
+current implementation changes that sensing, steering, attenuation, and
+fitness context.
 
 ## 2. Long-run failure analysis: why flocking did not emerge
 
@@ -382,14 +384,14 @@ systems.
 
 #### Medium problem 9: social separation has weak evolutionary meaning
 
-The separation gene is:
+In the analyzed historical system, the separation gene was:
 
 - gated by herding;
 - applied to every visible species;
 - duplicated at shorter range by mandatory collision avoidance;
 - not directly rewarded.
 
-If herding is off, the gene does nothing. If a body is dangerously close,
+If herding was off, the gene did nothing. If a body was dangerously close,
 mandatory avoidance already responds with higher priority. The remaining
 selective role of the separation gene is narrow, making its evolution hard to
 interpret. Its high final value does not demonstrate flock formation.
@@ -404,7 +406,7 @@ not:
 - effective flock size;
 - alignment error;
 - distance to flock center;
-- component and accepted social-force magnitudes;
+- component and accepted counterfactual-delta magnitudes;
 - group persistence or fragmentation.
 
 Without these metrics, a long run can evolve for days while the primary
@@ -552,21 +554,20 @@ policies are actually evaluated.
 
 ```mermaid
 flowchart LR
-    A["Nearby creatures from spatial query"] --> B["Vision range, field of view, and occlusion"]
-    B --> C["Species-independent close-range separation field"]
+    A["Nearby creatures from one spatial query"] --> B["Squared-distance 150 px Boid filter"]
+    A --> C["Vision range, field of view, and occlusion"]
     B --> D["Continuous pairwise flock compatibility"]
-    D --> E["Compatibility-weighted flock center, velocity, proximity, and count"]
-    E --> F["Four flock inputs among 38 NEAT inputs"]
-    F --> G["NEAT outputs: herding, panic, rotate, accelerate, etc."]
-    C --> H["Hard-coded separation force"]
-    E --> I["Hard-coded alignment and cohesion forces"]
-    G --> J["Genes × herding × calmness weights"]
-    H --> J
+    D --> E["Compatibility-weighted separation, center, velocity, proximity, and count"]
+    C --> F["Detailed food, creature, infant, and wall sensors"]
+    E --> G["Social inputs among 43 NEAT inputs"]
+    G --> H["NEAT outputs: herding, panic, rotate, accelerate, etc."]
+    E --> I["Hard-coded separation, alignment, and cohesion forces"]
+    H --> J["Genes × herding × calmness weights"]
     I --> J
     J --> K["Social flock force"]
     L["Mandatory collision avoidance"] --> M["Priority force budget"]
     K --> M
-    G --> M
+    H --> M
     M --> N["Force, turn bias, smoothing, drag, and speed limits"]
 ```
 
@@ -585,19 +586,21 @@ The main implementation is distributed across:
 
 ### 4.1 Candidate-neighbor query
 
-Before detailed vision checks, the world uses Pymunk's spatial query to collect creatures within:
+Before detailed sensing, the world uses one Pymunk spatial query whose logical range is:
 
 ```text
-creature vision range + maximum possible creature radius
+max(creature vision range, 150 px Boid radius, enabled long-range radius)
++ maximum possible creature radius
 ```
 
-With the current defaults, initial vision ranges are sampled from 100 to 200 pixels and the maximum creature radius is 22 pixels.
+The query is only a performance filter shared by visual, Boid, and optional
+long-range sensing. Boid membership then uses the squared center distance
+directly: `dx² + dy² <= 150²`. Rejected candidates require neither a square
+root nor a compatibility calculation.
 
-This spatial query is only a performance filter. A candidate must still pass the actual vision rules.
+### 4.2 Detailed vision rules
 
-### 4.2 Vision rules
-
-A creature can contribute to flock sensing only if it is visible. Visibility depends on:
+Detailed food, creature, infant, and wall sensing remains visual. Visibility depends on:
 
 1. A positive vision range and field-of-view angle.
 2. The target circle intersecting the observer's view cone.
@@ -608,18 +611,18 @@ The vision origin is shifted forward from the creature's center by `0.35 × obse
 
 Candidates are processed nearest-first. Visible creatures block angular intervals behind them. A partly visible target remains included; only a fully blocked angular interval is removed. Food does not create an occlusion interval, while creatures do.
 
-Consequences:
-
-- Social flocking is vision-dependent. A creature behind the observer normally does not affect flock sensors.
-- A nearer creature can hide a farther flockmate.
-- Narrower vision can fragment a flock even when creatures are spatially close.
-- Mandatory physical collision avoidance, described later, does not require vision.
+These rules do not gate Boid sensing. A compatible creature inside the 150 px
+social radius contributes from any direction and through visual occlusion.
+Vision angle, vision range, and occlusion continue to affect only the detailed
+visual inputs.
 
 ## 5. How a neighbor becomes a flockmate
 
 ### 5.1 Continuous compatibility
 
-In the normal running world, flock membership is not a binary same-species check. Every visible pair receives a continuous compatibility value:
+In the normal running world, flock membership is not a binary same-species
+check. Every pair inside the omnidirectional Boid radius receives a continuous
+compatibility value:
 
 ```text
 compatibility = clamp(1 - composite_distance / threshold, 0, 1)
@@ -651,7 +654,10 @@ The flocking-trait distance is:
 
 where `S`, `A`, and `C` are the separation, alignment, and cohesion genes.
 
-A neighbor contributes to the flock whenever compatibility is greater than a very small numerical tolerance. Its contribution is weighted by that compatibility.
+A neighbor contributes whenever compatibility is strictly greater than zero.
+Compatibility less than or equal to zero is rejected before every Boid
+accumulator, count, separation term, and telemetry value. Positive
+compatibility weights all retained contributions.
 
 ### 5.2 Species labels versus flock compatibility
 
@@ -689,10 +695,10 @@ This creates a population-level influence on individual social perception. The c
 
 ## 6. Flock sensor calculations
 
-The vision system creates two related but distinct social datasets:
-
-1. a close-range separation field using every visible creature;
-2. compatibility-weighted flock statistics using compatible visible creatures.
+The sensing system creates one compatibility-filtered, omnidirectional Boid
+neighborhood. Alignment and cohesion use all positive-compatible neighbors
+within 150 px. Separation uses the subset that is also inside the configured
+60 px personal-space radius.
 
 ### 6.1 Effective flockmate count
 
@@ -730,8 +736,9 @@ center = Σ(position_i × compatibility_i) / N_effective
 
 The brain receives:
 
-- `flock_center_proximity`: `clamp(1 - center_distance / vision_range, 0, 1)`;
-- `flock_center_angle`: the relative center angle divided by half the field of view, clamped to `[-1, 1]`.
+- `flock_center_proximity`: `clamp(1 - center_distance / 150, 0, 1)`;
+- `flock_center_angle`: the full-circle relative center angle divided by π,
+  clamped to `[-1, 1]`.
 
 The physical cohesion system also keeps the absolute world-space angle toward this center.
 
@@ -755,36 +762,43 @@ If compatible velocities cancel to exactly zero, the system substitutes the obse
 The internal alignment strength uses the compatibility-weighted mean of:
 
 ```text
-clamp(1 - center_to_center_distance_i / vision_range, 0, 1)
+clamp(1 - center_to_center_distance_i / 150, 0, 1)
 ```
 
-Alignment is consequently weak for distant visible flockmates and strong for nearby flockmates.
+Alignment is consequently weak near the edge of the Boid radius and strong
+for nearby compatible flockmates.
 
 ### 6.5 Crowd separation field
 
-Separation is deliberately not restricted to compatible creatures. Every visible creature within the observer's personal-space radius contributes:
+Separation uses the same positive-compatible Boid neighbors as alignment and
+cohesion, restricted to the personal-space radius:
 
 ```text
-personal_space = 4 × observer_radius
+personal_space = 60 px
 neighbor_strength = 1 - distance / personal_space
-separation_vector += unit_vector_away_from_neighbor × neighbor_strength
+separation_vector += unit_vector_away_from_neighbor
+                     × neighbor_strength
+                     × compatibility
 ```
 
-Only distances strictly less than personal space contribute. The final vector magnitude is clamped to `[0, 1]`, while its angle points away from the net local crowd.
+The range check uses `distance_squared < personal_space_squared`; linear
+distance is calculated only after a candidate has passed the radius and
+positive-compatibility gates. The final vector magnitude is clamped to
+`[0, 1]`, while its angle points away from the net compatible crowd.
 
 Important properties:
 
-- other species still cause separation;
-- the observer's radius determines the range, not the neighbor's radius;
+- compatibility weights separation as well as alignment and cohesion;
+- zero-compatible creatures do not produce soft separation;
 - several neighbors on one side accumulate into a stronger response;
 - symmetric neighbors can cancel the separation vector;
-- only visible neighbors contribute to this social separation field.
+- heading and visual occlusion do not affect the separation field.
 
 ## 7. The neural flocking choice
 
 ### 7.1 Flock-related neural inputs
 
-The NEAT brain has 38 inputs. Four are dedicated flock inputs:
+The NEAT brain has 43 inputs. Four are dedicated flock inputs:
 
 1. flock-center proximity;
 2. flock-center angle;
@@ -795,7 +809,19 @@ The network also receives energy, feeding drive, speed, food, general creature v
 
 ### 7.2 The herding output
 
-One of the 14 action outputs is `herding`. After activation normalization it is clipped to `[0, 1]`.
+One of the 14 action outputs is `herding`. The raw activation is normalized,
+clipped to `[0, 1]`, and retained as `last_raw_herding`. The value delivered
+to the action is a per-brain leaky integrator:
+
+```text
+effective = previous_effective × (1 - decay_rate)
+          + raw_herding × decay_rate
+```
+
+The production decay rate is `0.15`, while `1.0` exactly reproduces the
+instantaneous legacy behavior. Both terms and the resulting state are bounded
+to `[0, 1]`. This low-pass filter prevents sensor jitter from switching the
+social blend fully on and off at neural-update frequency.
 
 There is no rule requiring the herding output to depend on the four flock sensors. NEAT can evolve an enabled path from any input, hidden node, or bias to herding. For example, evolution could make a creature:
 
@@ -824,6 +850,13 @@ The final trajectory is therefore a compromise between neural intent, social ste
 ### 7.4 Decision frequency and caching
 
 Physics runs at 60 fixed steps per second. After initialization, creatures update their sensors and brain action on alternating physics steps, giving each creature an effective thinking rate of about 30 Hz. The action and sensor snapshot are reused on the intervening step.
+
+The herding integrator advances only during those neural decisions. Cached
+physics ticks reuse the same effective herding action and do not apply the
+decay formula a second time. Integrator state is transient neural runtime
+state: new, child, restored, and contract-reset brains begin at zero. It is
+not inherited or serialized, and therefore requires no action, sensing,
+checkpoint, or genome-topology schema change.
 
 The flock snapshot stores absolute separation/cohesion directions and an absolute average velocity, so reusing it does not make those targets rotate with the observer. It can still be up to one physics step out of date.
 
@@ -860,25 +893,30 @@ Let:
 - `H` = neural herding output;
 - `P` = neural panic output;
 - `S`, `A`, `C` = inherited separation, alignment, and cohesion genes;
-- `calm = 1 - P`.
+- `E` = social presence times the configured minimum-to-neural engagement;
+- `panic_attenuation = 1 - panic_suppression_strength × P`.
 
 The component weights are:
 
 ```text
-separation_weight = S × H
-alignment_weight  = A × H × (1 - P)
-cohesion_weight   = C × H × (1 - P)
+engagement        = social_presence
+                    × (minimum_social_engagement
+                       + (1 - minimum_social_engagement) × H)
+separation_weight = personal_space_presence × S
+alignment_weight  = engagement × A × panic_attenuation
+cohesion_weight   = engagement × C × panic_attenuation
 ```
 
 This produces the following behavior:
 
 | Condition | Separation | Alignment | Cohesion |
 |---|---:|---:|---:|
-| Herding = 0 | Off | Off | Off |
+| Herding = 0 | Gene-led when personal space is occupied | Minimum configured engagement | Minimum configured engagement |
 | Herding = 1, panic = 0 | Full gene weight | Full gene weight | Full gene weight |
-| Herding = 1, panic = 1 | Full gene weight | Off | Off |
+| Herding = 1, panic = 1 | Full gene weight | Configured attenuated weight | Configured attenuated weight |
 
-Panic therefore dissolves cooperative alignment and attraction while preserving personal-space separation.
+Panic attenuates cooperative alignment and attraction while preserving
+personal-space separation.
 
 Panic also increases maximum forward force, speed, and turning limits:
 
@@ -953,10 +991,10 @@ There are two different mechanisms that may look like separation:
 
 ### Social separation
 
-- requires vision;
-- requires a positive herding output and separation gene;
-- operates inside `4 × observer radius`;
-- uses every visible species;
+- uses positive-compatible neighbors in the omnidirectional Boid radius;
+- requires personal-space occupancy and a positive separation gene;
+- operates inside the configured 60 px personal-space radius;
+- is compatibility-weighted;
 - is part of the flock force.
 
 ### Mandatory collision avoidance
@@ -990,16 +1028,20 @@ Implications:
 
 ## 12. How flocking influences turning
 
-The system calculates a turn bias from the combined social and mandatory-avoidance steering direction:
+The system calculates a turn bias from the signed lateral projection of the
+combined accepted counterfactual delta and mandatory-avoidance steering:
 
 ```text
-turn_bias
-    = (relative_steering_angle / π)
-    × clamp(steering_magnitude / max_force, 0, 1)
-    × max_flock_turn_bias
+left_unit    = (-sin(heading), cos(heading))
+lateral      = dot(combined_steering, left_unit)
+turn_bias    = clamp(lateral / max_force, -1, 1)
+               × max_flock_turn_bias
 ```
 
 The default `max_flock_turn_bias` is `0.65`.
+Forward acceleration and backward deceleration therefore add no turn.
+Leftward force produces positive turn and rightward force produces negative
+turn without a 180-degree discontinuity.
 
 The result is added to the direct neural rotate output and clamped:
 
@@ -1011,16 +1053,18 @@ Both acceleration and rotation are smoothed with a default alpha of `0.8`. Turni
 
 Although the code calls this a flock turn bias, mandatory collision avoidance is included in the steering vector. It is more accurately a combined steering turn bias.
 
-The selected-creature debug view draws the accepted social flock force as an orange arrow. It does not include mandatory avoidance in that arrow.
+The selected-creature debug view draws the accepted counterfactual delta as
+an orange arrow. It does not include mandatory avoidance in that arrow.
 
 ## 13. Complete influence map
 
 | Influence | Immediate effect on flocking choice or motion |
 |---|---|
-| Vision range | Determines which neighbors can be sensed; scales proximity and cohesion distance |
-| Vision angle | Determines which directions are socially visible; normalizes flock-center angle |
-| Occlusion | Removes fully hidden neighbors from both social statistics and social separation |
-| Neighbor distance | Affects visibility, separation falloff, average proximity, and cohesion strength |
+| Boid perception radius | Admits compatible neighbors within a fixed 150 px circle and scales social position/proximity |
+| Vision range | Affects detailed visual inputs but does not gate Boid neighbors |
+| Vision angle | Affects detailed visual inputs but does not gate Boid neighbors |
+| Occlusion | Hides detailed visual targets but does not remove Boid neighbors |
+| Neighbor distance | Affects the Boid radius test, separation falloff, average proximity, and cohesion strength |
 | Neighbor distribution | Determines flock center and whether separation vectors reinforce or cancel |
 | Neighbor velocity | Determines alignment target and relative-heading neural input |
 | NEAT genome similarity | Raises or lowers pairwise compatibility |
@@ -1032,7 +1076,7 @@ The selected-creature debug view draws the accepted social flock force as an ora
 | Output-node biases and network topology | Can create baseline or context-dependent herding even without direct flock-sensor links |
 | Herding output | Gates all three social flock forces |
 | Panic output | Removes alignment/cohesion, preserves separation, and raises motion limits |
-| Separation gene | Scales visible crowd repulsion |
+| Separation gene | Scales compatible personal-space repulsion |
 | Alignment gene | Scales velocity matching |
 | Cohesion gene | Scales attraction to the compatible center |
 | Collision avoidance | Has higher priority and cannot be cancelled by lower-priority motion |
@@ -1102,8 +1146,8 @@ The hard-coded forces naturally divide by distance:
 
 - very close: separation becomes strong;
 - moderately close: alignment becomes strong;
-- farther but visible: cohesion becomes strong;
-- outside vision or fully occluded: no social force.
+- farther but inside 150 px: cohesion becomes strong;
+- outside the Boid radius or compatibility at most zero: no social force.
 
 The evolved genes determine the relative importance of those zones.
 
@@ -1117,11 +1161,17 @@ The brain may learn to rotate based on flock inputs while the hard-coded flock f
 
 ## 16. Implementation caveats
 
-1. **Social separation is not omnidirectional.** It uses only visible creatures. Mandatory collision avoidance is the only guaranteed response to a close creature outside the field of view.
+1. **Boid sensing is omnidirectional.** Separation, alignment, and cohesion
+   ignore the detailed visual cone and occlusion while retaining a fixed
+   150 px range.
 
-2. **Personal-space range can be asymmetric.** It is `4 × observer radius`; the neighbor's radius is not included.
+2. **Personal-space range is fixed.** Soft separation uses the configured
+   60 px center-distance radius; physical radii are handled separately by
+   mandatory collision avoidance.
 
-3. **Partial visibility gives full inclusion.** A target whose circle is only partly unoccluded is kept as a complete candidate rather than weighted by visible fraction.
+3. **Visual visibility does not weight Boid membership.** A compatible
+   candidate contributes according to social compatibility, including when
+   visually occluded.
 
 4. **Species is not a hard flock boundary.** With live brains, direct continuous distance—not the stored species ID—sets compatibility.
 
@@ -1135,7 +1185,9 @@ The brain may learn to rotate based on flock inputs while the hard-coded flock f
 
 9. **There is no explicit formation objective.** Stable flocking is an emergent evolutionary outcome, not a guaranteed behavior.
 
-10. **Decisions use a short cache.** Social inputs and actions are refreshed at roughly 30 Hz while physics runs at 60 Hz.
+10. **Decisions use a short cache.** Social inputs and actions are refreshed
+at roughly 30 Hz while physics runs at 60 Hz. Herding integration occurs only
+on the refreshed decisions; cached ticks reuse the effective result.
 
 ## 17. Observability
 
@@ -1143,14 +1195,15 @@ The selected-creature inspector exposes:
 
 - effective and normalized flockmate count;
 - inherited separation/alignment/cohesion genes;
-- current herding action through the action display;
+- raw neural and effective integrated herding values;
 - brain sensor values and reachable action paths;
-- an orange accepted-social-force arrow when debug vision is enabled.
+- an orange 150 px Boid-perception circle when debug vision is enabled;
+- an orange accepted-counterfactual-delta arrow when debug vision is enabled.
 
 For interpreting a creature, the most useful values to inspect together are:
 
 1. the four flock sensor inputs;
-2. current herding and panic outputs;
+2. raw/effective herding and panic outputs;
 3. the three inherited flocking genes;
 4. effective flockmate count;
 5. the accepted flock-force arrow;
@@ -1223,7 +1276,7 @@ pure calculations for:
 - neural/social desired-velocity blending;
 - removal of components that oppose mandatory avoidance;
 - finite force-budget allocation;
-- counterfactual accepted social contribution.
+- accepted counterfactual delta.
 
 `src/world.py` owns physics and sequencing. It always uses inherited
 separation/alignment/cohesion genes, compatible social observations, and the
@@ -1232,20 +1285,20 @@ runtime flocking-mode switch or priority-based alternative.
 
 ## 21. Three distinct spatial behaviours
 
-The current system deliberately keeps three different neighbor sets:
+The current system deliberately keeps three spatial behaviours:
 
 1. **Mandatory collision avoidance** applies to every nearby physical
    creature. It does not require vision, compatibility, herding, or a flocking
    gene and is allocated first.
-2. **Soft personal-space separation** applies to every nearby *visible*
-   creature. It is not filtered by social compatibility. Its magnitude is
-   controlled by personal-space presence and the separation gene, not by
-   herding.
-3. **Alignment and cohesion** use only socially compatible creatures.
+2. **Soft personal-space separation** applies to positive-compatible
+   creatures inside 60 px, independent of vision and weighted by
+   compatibility.
+3. **Alignment and cohesion** use the same positive-compatible creatures out
+   to the 150 px omnidirectional Boid radius.
 
 This distinction prevents a creature from colliding with an unseen or
-incompatible body, prevents an incompatible visible body from occupying its
-personal space, and still permits selective social grouping.
+incompatible body while keeping every soft Boid rule on one selective social
+neighborhood.
 
 The neural acceleration path is represented without changing its semantics:
 
@@ -1254,13 +1307,19 @@ neural_desired_velocity
     = current_velocity + historical_acceleration_force_vector
 ```
 
-Social component targets produce a social desired velocity. The configured
-social influence blends the two desired velocities before the same avoidance
-and force constraints are applied. The zero-influence branch uses the exact
-neural request. Accepted social contribution is measured counterfactually:
+Social component targets produce a social desired velocity. Intent confidence
+contains the effective Boid weights and group-size scaling exactly once:
 
 ```text
-accepted_social
+social_influence = max_social_influence × intent_confidence
+```
+
+That influence blends the two desired velocities before the same avoidance
+and force constraints are applied. The zero-influence branch uses the exact
+neural request. The accepted delta is measured counterfactually:
+
+```text
+accepted_counterfactual_delta
     = accepted(blended_request | same avoidance and budget)
     - accepted(neural_request | same avoidance and budget)
 ```
@@ -1271,7 +1330,7 @@ the unconstrained requested steering.
 
 ## 22. Sensing contracts and one-query processing
 
-`src/vision.py` defines one `SensorContract`: schema 4 with 43 inputs.
+`src/vision.py` defines one `SensorContract`: schema 5 with 43 inputs.
 `configs/neat_herbivore.ini` is the single NEAT configuration. The 14-output
 action schema remains version 1.
 
@@ -1284,7 +1343,7 @@ The social sensor fields are:
 - long-range intensity;
 - long-range direction forward/right.
 
-Center position is normalized by detailed visual range. Relative velocity is
+Center position is normalized by the 150 px Boid radius. Relative velocity is
 the actual compatible-neighbor mean minus own velocity, normalized by twice
 the base maximum speed and clamped. A stationary compatible group remains
 stationary in this calculation; heading is not substituted for missing
@@ -1295,15 +1354,16 @@ Each behavior sensing pass performs one expanded spatial-index query. Its
 logical range is:
 
 ```text
-max(detailed_visual_range, enabled_long_range_social_range)
+max(detailed_visual_range, 150 px Boid radius, enabled_long_range_social_range)
 ```
 
 plus only the existing circle-shape padding. Detailed observations then apply
-range, field of view, and occlusion. Long-range social aggregation applies
-range and compatibility, but deliberately ignores field of view and
-occlusion. It uses compatibility-weighted distance falloff, clamps intensity
-to `[0, 1]`, and reports a normalized body-relative direction. Disabled
-long-range fields are exactly zero.
+range, field of view, and occlusion. Boid aggregation uses squared
+center-distance filtering, resolves compatibility once per geometrically
+eligible candidate, rejects compatibility at most zero, and updates all
+social accumulators in one pass. Long-range social aggregation shares that
+pass while retaining its own range and distance falloff. Disabled long-range
+fields are exactly zero.
 
 ## 23. Social recognition and inherited tags
 
@@ -1343,7 +1403,7 @@ reports the outcome through `brain_contract_reset_occurred`, and a warning is
 logged. Normal UI loading does not opt in.
 
 Older sensor contracts are rejected by default. With explicit reset opt-in,
-their biological/world state can be recovered into a fresh schema-4
+their biological/world state can be recovered into a fresh schema-5
 neural/species epoch. Missing historical social tags receive neutral bounded
 defaults. Same-contract round trips preserve evolved brain state.
 
@@ -1359,12 +1419,18 @@ group tracker. The new non-destructive SQLite table
 
 - personal-space and compatible exposure;
 - raw visible/compatible counts and effective compatible counts;
-- mean neural herding output;
+- mean raw neural and effective integrated herding output;
 - engagement, actual panic, panic attenuation, and effective S/A/C weights;
-- requested and counterfactually accepted social force;
+- requested social contribution and accepted counterfactual-delta magnitude;
 - blend fraction, heading error, and center distance;
 - fraction in groups of at least three, largest group, group lifetime,
-  fragmentation, mergers, and benchmark contribution.
+fragmentation, mergers, and benchmark contribution.
+
+The historical SQLite key `mean_neural_herding` remains the raw-output
+series. `mean_effective_herding` stores the integrated action delivered to
+flocking. Additive migration backfills the new column from
+`mean_neural_herding`, because runs predating the filter used identical raw
+and effective values.
 
 Group detection runs only at telemetry sampling time. It uses local
 spatial-index candidates, processes each candidate pair once, applies range
@@ -1374,17 +1440,19 @@ continuity includes centroid, velocity, displacement, creation time, splits,
 and merges. When telemetry is disabled, group detection and database writes do
 not run.
 
-The optional flocking benchmark is deliberately separate from observational
-groups. Every fixed simulation update computes quality from the creature's
-already cached local compatible observation:
+The flocking benchmark is enabled by default and remains deliberately
+separate from observational groups. Every fixed simulation update computes
+quality from the creature's already cached local compatible observation:
 
 - compatible group presence;
 - mean heading alignment;
 - compatibility-weighted spacing;
 - compatibility-weighted group movement.
 
-The reward is `rate × quality × fixed_dt`, capped per evaluation and exposed
-separately in `CreatureFitness`. Tests accumulate identical reward to
+The raw reward is `rate × quality × fixed_dt`, capped at one per evaluation
+and exposed separately in `CreatureFitness`. Its default fitness contribution
+is multiplied by `FitnessConfig.flocking_benchmark_weight = 2.0`. Tests
+accumulate identical raw reward to
 `1e-12` when the same observation is partitioned into 600 fixed steps or ten
 one-second intervals. It does not call telemetry, read group IDs, or depend on
 whether telemetry is enabled.
@@ -1404,10 +1472,11 @@ seconds.
 The inspector and environment renderer consume only cached transient data.
 They show the two presence channels, compatibility/tag, inherited and
 effective weights, engagement, panic attenuation, desired velocities,
-counterfactual force contribution, group ID/size, and benchmark reward. Debug
+raw/effective herding, counterfactual delta, group ID/size, and benchmark
+reward. Debug
 colors are:
 
-- orange: accepted social contribution;
+- orange: accepted counterfactual delta;
 - blue: neural desired velocity;
 - purple: social desired velocity;
 - green: blended desired velocity;
@@ -1425,13 +1494,15 @@ The validated `FlockingConfig` hierarchy has these research defaults:
 | Minimum social engagement | 0.25 |
 | Panic suppression | 0.5 |
 | Maximum social influence | 0.35 |
+| Herding decay rate per neural decision | 0.15 |
 | Target group size | 4 |
+| Omnidirectional Boid perception | 150 px |
 | Preferred personal space | 60 px |
 | Long range | disabled, 400 px, strength 1 |
 | Cohort spawning | disabled, size 6, radius 150 px |
 | Compatibility | `social_tag`; tag sigma 0.35 |
 | Telemetry | 1 s; range 150; compatibility 0.5; Jaccard 0.5 |
-| Benchmark | disabled; rate 0.01; target 4; spacing 60 ± 30; reference speed 50; cap 1 |
+| Benchmark | enabled; rate 0.01; target 4; spacing 60 ± 30; reference speed 50; raw cap 1; fitness weight 2 |
 
 Finite values, fractions, positive ranges/sigma, group sizes, and a minimum
 safe telemetry interval are revalidated when a world starts, including after
@@ -1443,26 +1514,32 @@ The requested `python -m pytest -q` entry point is not available in the
 project environment (`No module named pytest`), so the repository's
 `unittest` suite was used directly.
 
-The complete repository `unittest` discovery passed:
+The complete repository `unittest` discovery passed in the `cmcs` environment:
 
 ```text
-Ran 687 tests in 4.349s
+Ran 750 tests
 OK
 ```
 
-This includes the schema-4 checkpoint round trip, old-contract rejection,
-explicit reset acceptance, transient-state exclusion, telemetry migration,
-and persistent group-tracker continuity.
+This includes the schema-5 checkpoint round trip, schema-4 rejection,
+explicit reset acceptance, squared-radius boundary behavior, strict
+compatibility gating, single-pass aggregation, compatibility-weighted
+separation, signed-lateral turn projection, single social attenuation,
+weighted benchmark fitness, proportional counterfactual-delta rendering, and
+the selected-creature debug radius. It also covers herding-filter pulses,
+convergence, geometric decay, legacy-rate behavior, decision caching,
+zero-state brain rebuilds, raw/effective telemetry migration, and inspector
+diagnostics.
 
 `benchmarks/benchmark_flocking.py`, at the largest valid fully controlled
 physical population cap of 55, measured:
 
 | Operation | Result |
 |---|---:|
-| Expanded sensing + intent + counterfactual allocation | 7.243 ms/fixed step |
-| Counterfactual allocator | 0.553 µs/call |
-| Connected-component group detection | 0.343 ms/sample |
-| Telemetry aggregation | 24.250 µs/sample |
+| Expanded sensing + intent + counterfactual allocation | 7.717 ms/fixed step |
+| Counterfactual allocator | 0.547 µs/call |
+| Connected-component group detection | 0.302 ms/sample |
+| Telemetry aggregation | 25.981 µs/sample |
 
 The production path contains no population-wide all-pairs per-frame scan:
 sensing uses one spatial query per creature behavior pass; group pair

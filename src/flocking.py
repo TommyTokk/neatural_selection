@@ -133,9 +133,10 @@ class FlockingRuntimeSnapshot:
     blended_desired_velocity: Vector = ZERO_VECTOR
     mandatory_avoidance: Vector = ZERO_VECTOR
     requested_social_contribution: Vector = ZERO_VECTOR
-    accepted_social_contribution: Vector = ZERO_VECTOR
+    accepted_counterfactual_delta: Vector = ZERO_VECTOR
     social_influence: float = 0.0
-    neural_herding: float = 0.0
+    raw_neural_herding: float = 0.0
+    effective_herding: float = 0.0
     panic: float = 0.0
     local_group_id: int | None = None
     local_group_size: int = 0
@@ -244,14 +245,8 @@ def configured_social_influence(
     config: FlockingConfig,
     intent: SocialIntent,
 ) -> float:
-    movement_engagement = max(
-        intent.weights.engagement,
-        intent.weights.separation,
-    )
     return _clamp(
-        config.max_social_influence
-        * movement_engagement
-        * intent.confidence,
+        config.max_social_influence * intent.confidence,
         0.0,
         config.max_social_influence,
     )

@@ -160,7 +160,8 @@ class PersistentGroupTrackerTest(unittest.TestCase):
                 intent=SocialIntent(
                     weights=FlockingWeights(engagement=0.25)
                 ),
-                neural_herding=0.75,
+                raw_neural_herding=0.75,
+                effective_herding=0.30,
             )
         }
         metrics = FlockingTelemetryAggregator.aggregate(
@@ -173,6 +174,25 @@ class PersistentGroupTrackerTest(unittest.TestCase):
         self.assertEqual(metrics["seeing_compatible_percent"], 0.0)
         self.assertEqual(metrics["mean_center_distance"], 42.0)
         self.assertEqual(metrics["mean_neural_herding"], 0.75)
+        self.assertEqual(metrics["mean_effective_herding"], 0.30)
+
+    def test_stable_telemetry_key_uses_counterfactual_delta(self) -> None:
+        metrics = FlockingTelemetryAggregator.aggregate(
+            sim_time=2.0,
+            population_size=1,
+            runtime={
+                1: FlockingRuntimeSnapshot(
+                    accepted_counterfactual_delta=(3.0, 4.0),
+                )
+            },
+            groups=GroupSample(),
+        )
+
+        self.assertEqual(metrics["mean_accepted_social_force"], 5.0)
+        self.assertNotIn(
+            "mean_accepted_counterfactual_delta",
+            metrics,
+        )
 
 
 class BenchmarkFitnessTest(unittest.TestCase):
@@ -226,8 +246,8 @@ class BenchmarkFitnessTest(unittest.TestCase):
             ideal.flocking_benchmark_reward * 0.02,
         )
 
-    def test_benchmark_is_disabled_by_default(self) -> None:
-        self.assertFalse(FlockingBenchmarkConfig().enabled)
+    def test_benchmark_is_enabled_by_default(self) -> None:
+        self.assertTrue(FlockingBenchmarkConfig().enabled)
 
     def test_moving_aligned_group_is_positive_and_capped(self) -> None:
         fitness = CreatureFitness()
@@ -304,6 +324,7 @@ class FlockingTelemetryDatabaseTest(unittest.TestCase):
             }
             self.assertIn("mean_panic", columns)
             self.assertIn("mean_neural_herding", columns)
+            self.assertIn("mean_effective_herding", columns)
             self.assertIn("benchmark_reward_contribution", columns)
             database.log_flocking_metrics(
                 {
@@ -346,6 +367,7 @@ class FlockingTelemetryDatabaseTest(unittest.TestCase):
                 )
             }
             self.assertIn("mean_neural_herding", columns)
+            self.assertIn("mean_effective_herding", columns)
             self.assertIn("mean_panic", columns)
             self.assertIn("benchmark_reward_contribution", columns)
             self.assertEqual(
@@ -355,6 +377,33 @@ class FlockingTelemetryDatabaseTest(unittest.TestCase):
                 ).fetchone(),
                 (7,),
             )
+        finally:
+            database.close()
+
+    def test_existing_raw_herding_is_backfilled_as_effective_herding(
+        self,
+    ) -> None:
+        database = TelemetryDatabase(":memory:")
+        try:
+            database.connection.execute(
+                "ALTER TABLE flocking_population_metrics "
+                "RENAME TO current_flocking_population_metrics"
+            )
+            database.connection.execute(
+                "CREATE TABLE flocking_population_metrics "
+                "(sim_time REAL PRIMARY KEY, mean_neural_herding REAL)"
+            )
+            database.connection.execute(
+                "INSERT INTO flocking_population_metrics VALUES (1.0, 0.65)"
+            )
+
+            database._ensure_flocking_population_metrics_columns()
+
+            row = database.connection.execute(
+                "SELECT mean_neural_herding, mean_effective_herding "
+                "FROM flocking_population_metrics WHERE sim_time = 1.0"
+            ).fetchone()
+            self.assertEqual(row, (0.65, 0.65))
         finally:
             database.close()
 

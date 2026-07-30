@@ -34,7 +34,7 @@ from src.world import World
 from tests.test_vision import creature_at
 
 
-class SchemaFourSensingTest(unittest.TestCase):
+class SchemaFiveSensingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.config = build_sim_config()
         self.config.flocking.long_range.enabled = True
@@ -45,7 +45,7 @@ class SchemaFourSensingTest(unittest.TestCase):
 
     def test_contract_has_exact_count(self) -> None:
         self.assertEqual(SENSOR_CONTRACT.input_count, 43)
-        self.assertEqual(SENSOR_CONTRACT.schema_version, 4)
+        self.assertEqual(SENSOR_CONTRACT.schema_version, 5)
 
     def test_presence_distinguishes_centered_flock_from_absence(self) -> None:
         observer = creature_at(
@@ -100,7 +100,7 @@ class SchemaFourSensingTest(unittest.TestCase):
         self.assertAlmostEqual(inputs[27], -0.05, places=12)
         self.assertAlmostEqual(inputs[28], 0.0, places=12)
 
-    def test_personal_space_uses_configured_range(self) -> None:
+    def test_incompatible_neighbor_does_not_enter_personal_space(self) -> None:
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -119,7 +119,134 @@ class SchemaFourSensingTest(unittest.TestCase):
             100.0,
         )
         self.assertEqual(snapshot.flock.social_presence, 0.0)
-        self.assertEqual(snapshot.flock.visible_personal_space_count, 1)
+        self.assertEqual(snapshot.flock.visible_personal_space_count, 0)
+        self.assertEqual(snapshot.flock.crowd_separation_strength, 0.0)
+
+    def test_boid_perception_is_omnidirectional(self) -> None:
+        observer = creature_at(
+            (0.0, 0.0),
+            radius=10.0,
+            vision_range=100.0,
+            vision_angle=0.4,
+        )
+        behind = creature_at(
+            (-100.0, 0.0),
+            creature_id=2,
+            species_id=1,
+        )
+        snapshot = self.vision.sense(
+            observer,
+            [],
+            [observer, behind],
+            (-200.0, -200.0, 200.0, 200.0),
+            100.0,
+        )
+        self.assertEqual(snapshot.visible_creature_count, 0)
+        self.assertEqual(snapshot.flock.flockmate_count, 1.0)
+        self.assertLess(snapshot.flock.center_forward, 0.0)
+
+    def test_boid_radius_uses_squared_center_distance(self) -> None:
+        self.config.flocking.long_range.enabled = False
+        compatibility_calls: list[int] = []
+
+        def compatibility(_observer, neighbor):
+            compatibility_calls.append(neighbor.creature_id)
+            return 1.0
+
+        self.vision.flock_compatibility_resolver = compatibility
+        observer = creature_at((0.0, 0.0), creature_id=1)
+        at_boundary = creature_at((150.0, 0.0), creature_id=2)
+        outside = creature_at((150.001, 0.0), creature_id=3)
+
+        snapshot = self.vision.sense(
+            observer,
+            [],
+            [observer, at_boundary, outside],
+            (-200.0, -200.0, 200.0, 200.0),
+            100.0,
+        )
+
+        self.assertEqual(compatibility_calls, [2])
+        self.assertEqual(snapshot.flock.flockmate_count, 1.0)
+        self.assertEqual(snapshot.flock.visible_creature_count, 1)
+        self.assertEqual(snapshot.flock.average_flockmate_proximity, 0.0)
+
+    def test_boid_aggregation_is_single_pass_with_strict_compatibility_gate(
+        self,
+    ) -> None:
+        self.config.flocking.long_range.enabled = False
+        observer = creature_at((0.0, 0.0), creature_id=1)
+        accepted = creature_at((10.0, 0.0), creature_id=2)
+        incompatible = creature_at((20.0, 0.0), creature_id=3)
+        negative = creature_at((30.0, 0.0), creature_id=4)
+        outside = creature_at((151.0, 0.0), creature_id=5)
+        compatibility_calls: list[int] = []
+
+        def compatibility(_observer, neighbor):
+            compatibility_calls.append(neighbor.creature_id)
+            return {2: 0.5, 3: 0.0, 4: -0.5}[neighbor.creature_id]
+
+        self.vision.flock_compatibility_resolver = compatibility
+        distance_calls: list[float] = []
+        linear_distance = self.vision._linear_distance
+
+        def counted_distance(distance_squared: float) -> float:
+            distance_calls.append(distance_squared)
+            return linear_distance(distance_squared)
+
+        self.vision._linear_distance = counted_distance
+
+        class SinglePassNeighbors:
+            def __init__(self, values) -> None:
+                self.values = values
+                self.iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                if self.iterations > 1:
+                    raise AssertionError("Boid candidates were rescanned.")
+                return iter(self.values)
+
+        neighbors = SinglePassNeighbors(
+            [observer, accepted, incompatible, negative, outside]
+        )
+        snapshot = self.vision._flock_snapshot(
+            observer,
+            [],
+            neighbors,
+            100.0,
+        )
+
+        self.assertEqual(neighbors.iterations, 1)
+        self.assertEqual(compatibility_calls, [2, 3, 4])
+        self.assertEqual(distance_calls, [100.0])
+        self.assertEqual(snapshot.flockmate_count, 0.5)
+        self.assertEqual(snapshot.visible_creature_count, 1)
+        self.assertEqual(snapshot.compatible_visible_count, 1)
+        self.assertEqual(snapshot.visible_personal_space_count, 1)
+        self.assertAlmostEqual(
+            snapshot.crowd_separation_strength,
+            0.5 * (1.0 - 10.0 / 60.0),
+        )
+
+    def test_any_positive_compatibility_enters_boid_accumulators(self) -> None:
+        self.config.flocking.long_range.enabled = False
+        self.vision.flock_compatibility_resolver = (
+            lambda _observer, _neighbor: 1e-15
+        )
+        observer = creature_at((0.0, 0.0), creature_id=1)
+        neighbor = creature_at((20.0, 0.0), creature_id=2)
+
+        snapshot = self.vision.sense(
+            observer,
+            [],
+            [observer, neighbor],
+            (-200.0, -200.0, 200.0, 200.0),
+            100.0,
+        )
+
+        self.assertEqual(snapshot.flock.flockmate_count, 1e-15)
+        self.assertEqual(snapshot.flock.visible_creature_count, 1)
         self.assertGreater(snapshot.flock.crowd_separation_strength, 0.0)
 
     def test_left_and_right_centres_have_opposite_local_signs(self) -> None:
@@ -229,9 +356,25 @@ class SchemaFourSensingTest(unittest.TestCase):
                 calls[0],
                 max(
                     observer.vision.range,
+                    self.config.flocking.perception_radius,
                     self.config.flocking.long_range.range,
                 )
                 + self.config.trait.max_radius,
+            )
+
+            calls.clear()
+            self.config.flocking.long_range.enabled = False
+            observer.vision.range = 100.0
+            world._sensor_snapshot_for(
+                observer,
+                record_food_discoveries=False,
+            )
+            self.assertEqual(
+                calls,
+                [
+                    self.config.flocking.perception_radius
+                    + self.config.trait.max_radius
+                ],
             )
         finally:
             world.close()
@@ -405,8 +548,8 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 world,
                 world.neat_controller,
             )
-            state["brain_contract"]["sensor_schema"] = 3
-            state["brain_contract"]["inputs"] = 38
+            state["brain_contract"]["sensor_schema"] = 4
+            state["brain_contract"]["inputs"] = 43
             current = build_sim_config()
             current.persistence.enable_telemetry = False
             current.population.initial_creatures = 2
@@ -424,12 +567,18 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 43,
             )
             self.assertTrue(restored.brain_contract_reset_occurred)
+            for creature in restored.creatures:
+                brain = restored.neat_controller.brain_for(
+                    creature.creature_id
+                )
+                self.assertEqual(brain.herding_state, 0.0)
+                self.assertEqual(brain.last_raw_herding, 0.0)
         finally:
             world.close()
             if restored is not None:
                 restored.close()
 
-    def test_schema_four_round_trip_preserves_contract_not_transient_vectors(
+    def test_schema_five_round_trip_preserves_contract_not_transient_vectors(
         self,
     ) -> None:
         config = build_sim_config()
@@ -449,7 +598,7 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 world.neat_controller,
             )
             self.assertEqual(state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(state["brain_contract"]["sensor_schema"], 4)
+            self.assertEqual(state["brain_contract"]["sensor_schema"], 5)
             self.assertEqual(state["brain_contract"]["inputs"], 43)
             serialized_keys: set[str] = set()
 
@@ -465,7 +614,12 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             collect_keys(state)
             self.assertNotIn("_last_flocking_runtime", serialized_keys)
             self.assertNotIn("neural_desired_velocity", serialized_keys)
-            self.assertNotIn("accepted_social_contribution", serialized_keys)
+            self.assertNotIn(
+                "accepted_counterfactual_delta",
+                serialized_keys,
+            )
+            self.assertNotIn("herding_state", serialized_keys)
+            self.assertNotIn("last_raw_herding", serialized_keys)
 
             tags = [
                 (
@@ -481,6 +635,12 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             )
             self.assertFalse(restored.brain_contract_reset_occurred)
             self.assertEqual(restored._last_flocking_runtime, {})
+            for creature in restored.creatures:
+                brain = restored.neat_controller.brain_for(
+                    creature.creature_id
+                )
+                self.assertEqual(brain.herding_state, 0.0)
+                self.assertEqual(brain.last_raw_herding, 0.0)
             self.assertEqual(
                 [
                     (

@@ -419,7 +419,7 @@ class PersistenceManagerTest(unittest.TestCase):
             state["creatures"][0]["biome_fertility_ema_updated_at"],
             8.5,
         )
-        self.assertEqual(state["brain_contract"]["sensor_schema"], 4)
+        self.assertEqual(state["brain_contract"]["sensor_schema"], 5)
         self.assertEqual(state["brain_contract"]["inputs"], 43)
         self.assertNotIn("previous_biome", state["world"])
         self.assertEqual(state["world"]["physics_accumulator"], 0.0)
@@ -505,6 +505,9 @@ class PersistenceManagerTest(unittest.TestCase):
             original_brain = world.neat_controller.brain_for(
                 world.creatures[0].creature_id
             )
+            self.assertEqual(original_brain.herding_decay_rate, 0.15)
+            original_brain.herding_state = 0.8
+            original_brain.last_raw_herding = 0.9
             saved_member_color = (77, 88, 199)
             world.creatures[0].color = saved_member_color
             world.creatures[0].biome_fertility_ema = 0.37
@@ -555,6 +558,20 @@ class PersistenceManagerTest(unittest.TestCase):
                 world,
                 world.neat_controller,
             )
+            serialized_keys: set[str] = set()
+
+            def collect_keys(value) -> None:
+                if isinstance(value, dict):
+                    serialized_keys.update(str(key) for key in value)
+                    for child in value.values():
+                        collect_keys(child)
+                elif isinstance(value, (list, tuple)):
+                    for child in value:
+                        collect_keys(child)
+
+            collect_keys(captured)
+            self.assertNotIn("herding_state", serialized_keys)
+            self.assertNotIn("last_raw_herding", serialized_keys)
             metadata = captured["communication"]["pheromone_metadata"]
             self.assertEqual(metadata, world.pheromones.state_metadata())
             self.assertEqual(captured["version"], CHECKPOINT_VERSION)
@@ -658,6 +675,9 @@ class PersistenceManagerTest(unittest.TestCase):
                 saved_food_original_radius,
             )
             self.assertIsNot(restored_brain, original_brain)
+            self.assertEqual(restored_brain.herding_decay_rate, 0.15)
+            self.assertEqual(restored_brain.herding_state, 0.0)
+            self.assertEqual(restored_brain.last_raw_herding, 0.0)
             self.assertEqual(restored.live_brain_count(), 1)
             self.assertEqual(restored.simulation_paths, world.simulation_paths)
             self.assertFalse(world.simulation_paths.telemetry_database.exists())
@@ -853,7 +873,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.neat_controller,
             )
             self.assertEqual(current_state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 4)
+            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 5)
             self.assertEqual(current_state["brain_contract"]["inputs"], 43)
             self.assertEqual(current_state["brain_contract"]["outputs"], 14)
             self.assertEqual(current_state["brain_contract"]["action_schema"], 1)

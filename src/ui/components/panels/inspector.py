@@ -266,7 +266,7 @@ class InspectorPanelComponent:
         )
         flocking_traits = getattr(selected, "flocking_traits", None)
         current_action = getattr(selected, "last_action", None)
-        herding = float(getattr(current_action, "herding", 0.0))
+        effective_herding = float(getattr(current_action, "herding", 0.0))
         panic = float(
             getattr(current_action, "flee_panic_intensity", 0.0)
         )
@@ -275,6 +275,20 @@ class InspectorPanelComponent:
             "_last_flocking_runtime",
             {},
         ).get(selected.creature_id)
+        raw_neural_herding = float(
+            getattr(
+                flock_runtime,
+                "raw_neural_herding",
+                effective_herding,
+            )
+        )
+        effective_herding = float(
+            getattr(
+                flock_runtime,
+                "effective_herding",
+                effective_herding,
+            )
+        )
         parent_id = getattr(lineage, "parent_id", None)
         generation = getattr(lineage, "generation", 0)
         fitness_score = (
@@ -581,8 +595,8 @@ class InspectorPanelComponent:
         y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_herding",
-            "Herding (current)",
-            f"{herding:.2f}",
+            "Herding raw / effective",
+            f"{raw_neural_herding:.2f} / {effective_herding:.2f}",
             left,
             y,
             width,
@@ -659,7 +673,7 @@ class InspectorPanelComponent:
             "inspector_social_engagement",
             "Engagement / panic attenuation",
             (
-                f"{herding:.2f} / {1.0 - panic:.2f}"
+                f"{effective_herding:.2f} / {1.0 - panic:.2f}"
                 if weights is None
                 else (
                     f"{weights.engagement:.2f} / "
@@ -690,13 +704,13 @@ class InspectorPanelComponent:
         y -= self._draw_metric_row_in_viewport(
             viewport,
             "inspector_social_force_contribution",
-            "Social requested / accepted",
+            "Counterfactual Δ requested / accepted",
             (
                 "Recomputing"
                 if flock_runtime is None
                 else (
                     f"{hypot(*flock_runtime.requested_social_contribution):.2f} / "
-                    f"{hypot(*flock_runtime.accepted_social_contribution):.2f}"
+                    f"{hypot(*flock_runtime.accepted_counterfactual_delta):.2f}"
                 )
             ),
             left,

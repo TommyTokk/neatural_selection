@@ -141,6 +141,7 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.creatures.count, 1)
+        self.assertEqual(snapshot.flock.flockmate_count, 2)
         self.assertGreater(snapshot.creatures.proximity, 0.0)
         self.assertAlmostEqual(snapshot.creatures.angle, 0.0)
         self.assertEqual(
@@ -245,7 +246,7 @@ class VisionVisibilityTest(unittest.TestCase):
 
         self.assertEqual(snapshot.creatures.count, 1)
         self.assertEqual(snapshot.own_infants.count, 0)
-        self.assertEqual(snapshot.flock.flockmate_count, 1)
+        self.assertEqual(snapshot.flock.flockmate_count, 2)
 
     def test_visible_own_infant_is_not_occluded_by_its_creature_entry(self) -> None:
         observer = creature_at((0.0, 0.0), radius=5.0)
@@ -828,13 +829,13 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.visible_creature_count, 2)
         self.assertAlmostEqual(
             snapshot.flock.center_proximity,
-            1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 100.0),
+            1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 150.0),
         )
         self.assertGreater(snapshot.flock.center_angle, 0.0)
         self.assertAlmostEqual(snapshot.flock.average_relative_heading, 0.5)
         self.assertAlmostEqual(
             snapshot.flock.average_flockmate_proximity,
-            1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 100.0),
+            1.0 - ((40.0**2 + 10.0**2) ** 0.5 / 150.0),
         )
         self.assertGreater(snapshot.flock.crowd_separation_strength, 0.0)
         self.assertLess(snapshot.flock.crowd_separation_absolute_angle, 0.0)
@@ -1047,7 +1048,7 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.flock.average_flockmate_velocity, (1.0, 6.0))
         self.assertAlmostEqual(
             snapshot.flock.average_flockmate_proximity,
-            1.0 - ((20.0**2 + 10.0**2) ** 0.5 / 100.0),
+            1.0 - ((20.0**2 + 10.0**2) ** 0.5 / 150.0),
         )
         self.assertAlmostEqual(snapshot.flock.cohesion_absolute_angle, atan2(5.0, 20.0))
 
@@ -1077,7 +1078,7 @@ class VisionWallSensorTest(unittest.TestCase):
             atan2(4.0, 3.0) / pi,
         )
 
-    def test_close_other_species_creature_contributes_only_to_separation(
+    def test_close_other_species_creature_does_not_contribute_soft_force(
         self,
     ) -> None:
         observer = creature_at(
@@ -1101,11 +1102,8 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.flock.flockmate_count, 0)
-        self.assertAlmostEqual(
-            snapshot.flock.crowd_separation_strength,
-            1.0 - 20.0 / 60.0,
-        )
-        self.assertAlmostEqual(snapshot.flock.crowd_separation_absolute_angle, pi)
+        self.assertEqual(snapshot.flock.crowd_separation_strength, 0.0)
+        self.assertEqual(snapshot.flock.visible_personal_space_count, 0)
         self.assertEqual(snapshot.flock.center_proximity, 0.0)
         self.assertEqual(snapshot.flock.average_flockmate_velocity, (0.0, 0.0))
 
@@ -1157,11 +1155,11 @@ class VisionWallSensorTest(unittest.TestCase):
 
         self.assertAlmostEqual(
             far_snapshot.flock.average_flockmate_proximity,
-            0.01,
+            1.0 - 99.0 / 150.0,
         )
         self.assertAlmostEqual(
             near_snapshot.flock.average_flockmate_proximity,
-            0.90,
+            1.0 - 10.0 / 150.0,
         )
 
     def test_flock_inputs_are_zero_without_same_species_flockmates(self) -> None:
@@ -1182,10 +1180,7 @@ class VisionWallSensorTest(unittest.TestCase):
 
         self.assertEqual(snapshot.as_inputs()[23:32], [0.0] * 9)
         self.assertEqual(snapshot.flock.flockmate_count, 0)
-        self.assertAlmostEqual(
-            snapshot.flock.crowd_separation_strength,
-            1.0 - 20.0 / 60.0,
-        )
+        self.assertEqual(snapshot.flock.crowd_separation_strength, 0.0)
         self.assertEqual(snapshot.flock.average_flockmate_proximity, 0.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:

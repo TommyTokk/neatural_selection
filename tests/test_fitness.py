@@ -113,6 +113,22 @@ class CreatureFitnessScoreTest(unittest.TestCase):
         self.assertAlmostEqual(fitness.trait_energy_cost, 2.5)
         self.assertAlmostEqual(fitness.score(config), -10.0)
 
+    def test_flocking_benchmark_reward_uses_configured_weight(self) -> None:
+        config = FitnessConfig(
+            age_weight=0.0,
+            food_discovery_weight=0.0,
+            energy_gained_weight=0.0,
+            energy_efficiency_weight=0.0,
+            movement_effort_penalty=0.0,
+            offspring_weight=0.0,
+            matured_offspring_weight=0.0,
+            trait_energy_cost_penalty_weight=0.0,
+            flocking_benchmark_weight=2.0,
+        )
+        fitness = CreatureFitness(flocking_benchmark_reward=0.75)
+
+        self.assertAlmostEqual(fitness.score(config), 1.5)
+
     def test_evaluation_epoch_excludes_preserved_biological_age(self) -> None:
         config = FitnessConfig(
             age_weight=1.0,

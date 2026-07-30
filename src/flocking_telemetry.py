@@ -243,7 +243,10 @@ class FlockingTelemetryAggregator:
                 item.intent.weights.engagement for item in snapshots
             ),
             "mean_neural_herding": mean(
-                item.neural_herding for item in snapshots
+                item.raw_neural_herding for item in snapshots
+            ),
+            "mean_effective_herding": mean(
+                item.effective_herding for item in snapshots
             ),
             "mean_panic": mean(item.panic for item in snapshots),
             "mean_panic_attenuation": mean(
@@ -263,7 +266,7 @@ class FlockingTelemetryAggregator:
                 for item in snapshots
             ),
             "mean_accepted_social_force": mean(
-                hypot(*item.accepted_social_contribution)
+                hypot(*item.accepted_counterfactual_delta)
                 for item in snapshots
             ),
             "mean_social_blend": mean(

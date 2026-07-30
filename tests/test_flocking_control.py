@@ -14,6 +14,7 @@ from src.flocking import (
     accepted_counterfactual_contribution,
     blend_desired_velocity,
     calculate_flocking_weights,
+    calculate_social_intent,
     configured_social_influence,
 )
 
@@ -89,9 +90,11 @@ class FlockingConfigurationTest(unittest.TestCase):
     def test_defaults_have_no_flocking_mode_switch(self) -> None:
         config = FlockingConfig()
         self.assertFalse(hasattr(config, "mode"))
+        self.assertEqual(config.perception_radius, 150.0)
+        self.assertEqual(config.herding_decay_rate, 0.15)
         self.assertFalse(config.long_range.enabled)
         self.assertFalse(config.cohort_spawn.enabled)
-        self.assertFalse(config.benchmark.enabled)
+        self.assertTrue(config.benchmark.enabled)
 
     def test_string_compatibility_mode_is_normalized(self) -> None:
         config = FlockingConfig(
@@ -103,6 +106,12 @@ class FlockingConfigurationTest(unittest.TestCase):
         invalid_factories = (
             lambda: FlockingConfig(max_social_influence=1.01),
             lambda: FlockingConfig(minimum_social_engagement=math.nan),
+            lambda: FlockingConfig(herding_decay_rate=0.0),
+            lambda: FlockingConfig(herding_decay_rate=-0.1),
+            lambda: FlockingConfig(herding_decay_rate=math.nan),
+            lambda: FlockingConfig(herding_decay_rate=math.inf),
+            lambda: FlockingConfig(herding_decay_rate=1.01),
+            lambda: FlockingConfig(perception_radius=0.0),
             lambda: FlockingConfig(preferred_personal_space=0.0),
             lambda: FlockingConfig(target_group_size=1),
             lambda: FlockingConfig(
@@ -121,9 +130,13 @@ class FlockingConfigurationTest(unittest.TestCase):
 
     def test_validate_rechecks_mutated_values(self) -> None:
         config = FlockingConfig()
-        config.long_range.range = math.inf
+        config.herding_decay_rate = math.inf
         with self.assertRaises(ValueError):
             config.validate()
+
+    def test_legacy_herding_decay_rate_is_valid(self) -> None:
+        config = FlockingConfig(herding_decay_rate=1.0)
+        self.assertEqual(config.herding_decay_rate, 1.0)
 
 
 class DesiredVelocityBlendingTest(unittest.TestCase):
@@ -146,6 +159,69 @@ class DesiredVelocityBlendingTest(unittest.TestCase):
             ),
         )
         self.assertEqual(configured_social_influence(config, intent), 0.35)
+
+    def test_zero_confidence_disables_configured_influence(self) -> None:
+        config = FlockingConfig(max_social_influence=0.35)
+        intent = SocialIntent(
+            confidence=0.0,
+            weights=FlockingWeights(engagement=1.0),
+        )
+
+        self.assertEqual(configured_social_influence(config, intent), 0.0)
+
+    def test_engagement_is_not_applied_twice(self) -> None:
+        config = FlockingConfig(max_social_influence=0.35)
+        low_engagement = SocialIntent(
+            confidence=0.4,
+            weights=FlockingWeights(engagement=0.1),
+        )
+        full_engagement = SocialIntent(
+            confidence=0.4,
+            weights=FlockingWeights(engagement=1.0),
+        )
+
+        expected = 0.35 * 0.4
+        self.assertAlmostEqual(
+            configured_social_influence(config, low_engagement),
+            expected,
+        )
+        self.assertAlmostEqual(
+            configured_social_influence(config, full_engagement),
+            expected,
+        )
+
+    def test_default_one_neighbor_social_influence_is_functional(self) -> None:
+        config = FlockingConfig()
+        weights = calculate_flocking_weights(
+            herding=0.5,
+            panic=0.0,
+            separation_gene=0.5,
+            alignment_gene=0.5,
+            cohesion_gene=0.5,
+            personal_space_presence=0.0,
+            social_presence=1.0,
+            minimum_social_engagement=config.minimum_social_engagement,
+            panic_suppression_strength=config.panic_suppression_strength,
+        )
+        intent = calculate_social_intent(
+            current_velocity=(0.0, 0.0),
+            separation_velocity=(0.0, 0.0),
+            alignment_velocity=(10.0, 0.0),
+            cohesion_velocity=(0.0, 10.0),
+            weights=weights,
+            effective_count=1.0,
+            target_group_size=config.target_group_size,
+            max_speed=170.0,
+        )
+
+        self.assertAlmostEqual(
+            configured_social_influence(config, intent),
+            0.068359375,
+        )
+        self.assertGreater(
+            configured_social_influence(config, intent),
+            0.05,
+        )
 
     def test_full_configured_influence_produces_expected_blend(self) -> None:
         self.assertEqual(

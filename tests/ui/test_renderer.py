@@ -94,6 +94,7 @@ for optional_module in ("neat", "pymunk"):
 
 from configs.sim_config import build_sim_config
 from src.analysis import generate_inspector_report
+from src.flocking import FlockingRuntimeSnapshot
 from src.ui.layouts.brain_graph import (
     BrainEdgeKind,
     BrainGraphEdge,
@@ -1980,6 +1981,12 @@ class FloatingSimulationUiTest(unittest.TestCase):
             ),
         )
         world = self.make_inspector_world(selected=selected)
+        world._last_flocking_runtime = {
+            selected.creature_id: FlockingRuntimeSnapshot(
+                raw_neural_herding=0.90,
+                effective_herding=0.70,
+            )
+        }
         rows: dict[str, tuple[str, str]] = {}
         original_metric_row = self.renderer._draw_metric_row_in_viewport
 
@@ -2016,7 +2023,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
         )
         self.assertEqual(
             rows["inspector_herding"],
-            ("Herding (current)", "0.70"),
+            ("Herding raw / effective", "0.90 / 0.70"),
         )
         self.assertEqual(
             rows["inspector_collision_avoidance"],
