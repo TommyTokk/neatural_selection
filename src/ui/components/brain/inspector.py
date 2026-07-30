@@ -43,7 +43,12 @@ from src.ui.layouts.species_tree import (
 )
 from src.vision import SENSOR_INPUT_NAMES
 from src.world import World
-from src.behavior_observer import BehaviorKind, BoutStatus
+from src.behavior_observer import (
+    BehaviorKind,
+    BehaviorObserverDiagnostics,
+    BehaviorStateSnapshot,
+    BoutStatus,
+)
 
 _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 
@@ -53,6 +58,47 @@ class BrainInspectorComponent:
     BRAIN_NODE_SUMMARY_MIN_HEIGHT = 56.0
     BRAIN_NODE_SUMMARY_LINE_HEIGHT = 17.0
     BRAIN_NODE_SUMMARY_VERTICAL_PADDING = 20.0
+    BRAIN_BEHAVIOR_CARD_HEIGHT = 88.0
+    BRAIN_BEHAVIOR_CARD_GAP = 10.0
+    BRAIN_BEHAVIOR_HEADER_HEIGHT = 56.0
+    BRAIN_BEHAVIOR_NOTICE_HEIGHT = 82.0
+    BRAIN_BEHAVIOR_NOTICE_LINE_HEIGHT = 15.0
+    BRAIN_BEHAVIOR_DIAGNOSTICS_HEIGHT = 138.0
+    BRAIN_BEHAVIOR_DETAIL_LINE_HEIGHT = 17.0
+    BRAIN_BEHAVIOR_ACCENTS = {
+        BehaviorKind.FOOD_ORIENTATION: (58, 125, 225),
+        BehaviorKind.FOOD_APPROACH: (17, 158, 145),
+        BehaviorKind.FEEDING: (35, 168, 89),
+        BehaviorKind.RESTING: (132, 91, 205),
+        BehaviorKind.COHESION: (215, 72, 128),
+        BehaviorKind.ALARM_RETREAT: (228, 91, 49),
+    }
+    BRAIN_BEHAVIOR_ACTIVATION_COPY = {
+        BehaviorKind.FOOD_ORIENTATION: (
+            "The same visible food target persists, heading error decreases, "
+            "and the creature turns toward it."
+        ),
+        BehaviorKind.FOOD_APPROACH: (
+            "The same visible food target gets consistently closer while "
+            "realized movement points toward it."
+        ),
+        BehaviorKind.FEEDING: (
+            "An explicit food-consumption event occurs and swallowed energy "
+            "increases. Proximity or intent alone is not enough."
+        ),
+        BehaviorKind.RESTING: (
+            "Current realized speed is low and most recent samples remain "
+            "below the configured rest-speed threshold."
+        ),
+        BehaviorKind.COHESION: (
+            "A compatible group remains visible outside separation range, "
+            "then the creature approaches its center or aligns its velocity."
+        ),
+        BehaviorKind.ALARM_RETREAT: (
+            "Local alarm is present and falls ahead and over time while the "
+            "creature moves forward down the alarm gradient."
+        ),
+    }
 
     def _draw_brain_side_inspector(
         self,
@@ -161,7 +207,7 @@ class BrainInspectorComponent:
         world: World,
         bounds: arcade.Rect,
     ) -> None:
-        """Draw focal temporal bouts and optional observer diagnostics."""
+        """Draw persistent focal-behaviour cards and observer diagnostics."""
         self._draw_rounded_rect(
             bounds,
             self.theme.card_background,
@@ -169,11 +215,6 @@ class BrainInspectorComponent:
             self.config.layout.card_radius,
             1.0,
         )
-        lines = [
-            "OBSERVED BEHAVIOURS",
-            "World/action history, not neural intent",
-            "",
-        ]
         behavior_config = getattr(
             getattr(world, "config", None),
             "behavior",
@@ -185,26 +226,24 @@ class BrainInspectorComponent:
             "behavior_observer_diagnostics",
             None,
         )
+        states_by_behavior: dict[BehaviorKind, BehaviorStateSnapshot] = {}
         if behavior_config is not None and not behavior_config.enabled:
-            lines.extend(
-                [
-                    "Observer disabled",
-                    "Enable the behaviour observer in simulation configuration.",
-                ]
+            status = (
+                "Observer disabled",
+                "Enable the behaviour observer in simulation configuration.",
+                False,
             )
         elif diagnostics is not None and diagnostics.last_error:
-            lines.extend(
-                [
-                    "Observer unavailable",
-                    diagnostics.last_error,
-                ]
+            status = (
+                "Observer unavailable",
+                diagnostics.last_error,
+                True,
             )
         elif snapshot is None:
-            lines.extend(
-                [
-                    "Collecting temporal evidence",
-                    "A bout appears after its start persistence is satisfied.",
-                ]
+            status = (
+                "Collecting temporal evidence",
+                "Cards brighten after their start persistence is satisfied.",
+                False,
             )
         else:
             delayed = (
@@ -214,98 +253,538 @@ class BrainInspectorComponent:
                 - snapshot.simulation_time
                 > max(0.5, 3.0 / behavior_config.sample_hz)
             )
+            states_by_behavior = {
+                state.behavior: state
+                for state in snapshot.behaviors
+            }
             if delayed:
-                lines.extend(["Observer updating", "Latest result is delayed.", ""])
-            behaviors = sorted(
-                snapshot.behaviors,
-                key=lambda state: (
-                    0 if state.status is BoutStatus.ACTIVE else 1,
-                    -state.evidence_score,
-                    list(BehaviorKind).index(state.behavior),
-                ),
-            )
-            if not behaviors:
-                lines.extend(
-                    [
-                        "No sustained bout detected",
-                        "Current motion does not satisfy an operational rule.",
-                    ]
+                status = (
+                    "Observer updating",
+                    "Showing the latest Evidence while results catch up.",
+                    False,
                 )
-            for index, state in enumerate(behaviors):
-                if index:
-                    lines.append("")
-                lines.extend(
-                    [
-                        self._behavior_display_name(state.behavior),
-                        (
-                            f"{state.status.value.upper()} · "
-                            f"{state.duration_seconds:.1f} s"
-                        ),
-                        f"Evidence {state.evidence_score:.2f}",
-                    ]
+            elif not states_by_behavior:
+                status = (
+                    "No sustained bout detected",
+                    "Current motion does not satisfy an operational rule.",
+                    False,
                 )
-                for item in state.evidence:
-                    marker = "+" if item.passed else "-"
-                    value = self._format_behavior_evidence_value(
-                        item.value,
-                        item.unit,
-                    )
-                    lines.append(f"[{marker}] {item.label}: {value}")
+            else:
+                active_count = sum(
+                    state.status is BoutStatus.ACTIVE
+                    for state in states_by_behavior.values()
+                )
+                emerging_count = len(states_by_behavior) - active_count
+                status = (
+                    "Live bouts detected",
+                    (
+                        f"{active_count} active · {emerging_count} emerging. "
+                        "Click a card to inspect its activation conditions."
+                    ),
+                    False,
+                )
 
-        if (
+        diagnostics_visible = (
             bool(getattr(world, "debug_vision_enabled", False))
             and diagnostics is not None
-        ):
-            lines.extend(
-                [
-                    "",
-                    "OBSERVER DIAGNOSTICS",
-                    (
-                        f"Samples {diagnostics.samples_produced} · "
-                        f"dropped {diagnostics.samples_dropped}"
-                    ),
-                    (
-                        f"Processed {diagnostics.observations_processed} · "
-                        f"results dropped {diagnostics.results_dropped}"
-                    ),
-                    (
-                        "Result latency unavailable"
-                        if diagnostics.result_latency_ms is None
-                        else (
-                            f"Result latency "
-                            f"{diagnostics.result_latency_ms:.1f} ms"
-                        )
-                    ),
-                    (
-                        f"Worker {diagnostics.worker_health} · "
-                        f"queue "
-                        f"{diagnostics.input_queue_size if diagnostics.input_queue_size is not None else 'n/a'}"
-                    ),
-                ]
-            )
+        )
         content = arcade.LBWH(
             bounds.left + 14.0,
             bounds.bottom + 14.0,
             bounds.width - 28.0,
             bounds.height - 28.0,
         )
-        self._scroll_offsets["brain_behavior_inspector"] = (
-            self._brain_behavior_scroll_offset
+        drawing_width = max(1.0, content.width - 12.0)
+        for behavior in BehaviorKind:
+            self._control_hitboxes.pop(
+                self._brain_behavior_card_hitbox_key(behavior),
+                None,
+            )
+        expanded_behavior = next(
+            (
+                behavior
+                for behavior in BehaviorKind
+                if behavior.value == self._brain_expanded_behavior
+            ),
+            None,
         )
-        self._draw_scrollable_lines_in_bounds(
-            "brain_behavior_inspector",
-            content,
-            lines,
-            line_spacing=20,
-            first_line_color=self.theme.text_primary,
-            body_color=self.theme.text_muted,
-            first_line_bold=True,
-            wrap_lines=True,
+        expanded_detail_lines = (
+            tuple(
+                self._wrap_line(
+                    self.BRAIN_BEHAVIOR_ACTIVATION_COPY[expanded_behavior],
+                    max(24.0, drawing_width - 28.0),
+                    font_size=10.5,
+                )
+            )
+            if expanded_behavior is not None
+            else ()
         )
-        self._brain_behavior_scroll_offset = self._scroll_offsets.get(
-            "brain_behavior_inspector",
+        expanded_detail_height = (
+            self._brain_behavior_detail_height(expanded_detail_lines)
+            if expanded_behavior is not None
+            else 0.0
+        )
+        status_title, status_message, status_is_error = status
+        status_lines = tuple(
+            self._wrap_line(
+                status_message,
+                max(24.0, drawing_width - 24.0),
+                font_size=10.0,
+            )
+        )
+        if len(status_lines) > 2:
+            status_lines = (
+                status_lines[0],
+                self._fit_line(f"{status_lines[1]}…", drawing_width - 24.0),
+            )
+        cards_height = (
+            len(BehaviorKind) * self.BRAIN_BEHAVIOR_CARD_HEIGHT
+            + (len(BehaviorKind) - 1) * self.BRAIN_BEHAVIOR_CARD_GAP
+            + expanded_detail_height
+        )
+        diagnostics_height = (
+            self.BRAIN_BEHAVIOR_CARD_GAP
+            + self.BRAIN_BEHAVIOR_DIAGNOSTICS_HEIGHT
+            if diagnostics_visible
+            else 0.0
+        )
+        total_height = (
+            self.BRAIN_BEHAVIOR_HEADER_HEIGHT
+            + self.BRAIN_BEHAVIOR_NOTICE_HEIGHT
+            + self.BRAIN_BEHAVIOR_CARD_GAP
+            + cards_height
+            + diagnostics_height
+        )
+        scroll_key = "brain_behavior_inspector"
+        self._scroll_offsets[scroll_key] = self._brain_behavior_scroll_offset
+        scroll_limit = max(0.0, total_height - content.height)
+        scroll_offset = max(
             0.0,
+            min(scroll_limit, self._scroll_offsets.get(scroll_key, 0.0)),
         )
+        self._scroll_offsets[scroll_key] = scroll_offset
+        self._scroll_limits[scroll_key] = scroll_limit
+        self._scroll_regions[scroll_key] = content
+        self._brain_behavior_scroll_offset = scroll_offset
+
+        cursor_top = content.top + scroll_offset
+        with self._ui_clip(content):
+            self._draw_text(
+                "brain_behavior_title",
+                "OBSERVED BEHAVIOURS",
+                content.left,
+                cursor_top - 16.0,
+                self.theme.text_primary,
+                11.5,
+                bold=True,
+            )
+            self._draw_text(
+                "brain_behavior_subtitle",
+                "World/action history, not neural intent",
+                content.left,
+                cursor_top - 41.0,
+                self.theme.text_muted,
+                10,
+            )
+            cursor_top -= self.BRAIN_BEHAVIOR_HEADER_HEIGHT
+
+            notice_bounds = arcade.LBWH(
+                content.left,
+                cursor_top - self.BRAIN_BEHAVIOR_NOTICE_HEIGHT,
+                drawing_width,
+                self.BRAIN_BEHAVIOR_NOTICE_HEIGHT,
+            )
+            self._draw_brain_behavior_notice(
+                notice_bounds,
+                0,
+                status_title,
+                status_lines,
+                is_error=status_is_error,
+            )
+            cursor_top = notice_bounds.bottom - self.BRAIN_BEHAVIOR_CARD_GAP
+
+            for behavior_index, behavior in enumerate(BehaviorKind):
+                detail_lines = (
+                    expanded_detail_lines
+                    if behavior is expanded_behavior
+                    else ()
+                )
+                card_height = (
+                    self.BRAIN_BEHAVIOR_CARD_HEIGHT
+                    + (
+                        expanded_detail_height
+                        if behavior is expanded_behavior
+                        else 0.0
+                    )
+                )
+                card_bounds = arcade.LBWH(
+                    content.left,
+                    cursor_top - card_height,
+                    drawing_width,
+                    card_height,
+                )
+                if detail_lines:
+                    self._draw_brain_behavior_card(
+                        card_bounds,
+                        behavior,
+                        states_by_behavior.get(behavior),
+                        detail_lines=detail_lines,
+                    )
+                else:
+                    self._draw_brain_behavior_card(
+                        card_bounds,
+                        behavior,
+                        states_by_behavior.get(behavior),
+                    )
+                visible_bottom = max(card_bounds.bottom, content.bottom)
+                visible_top = min(card_bounds.top, content.top)
+                if visible_top > visible_bottom:
+                    self._control_hitboxes[
+                        self._brain_behavior_card_hitbox_key(behavior)
+                    ] = arcade.LBWH(
+                        card_bounds.left,
+                        visible_bottom,
+                        card_bounds.width,
+                        visible_top - visible_bottom,
+                    )
+                cursor_top = card_bounds.bottom
+                if behavior_index < len(BehaviorKind) - 1:
+                    cursor_top -= self.BRAIN_BEHAVIOR_CARD_GAP
+
+            if diagnostics_visible:
+                cursor_top -= self.BRAIN_BEHAVIOR_CARD_GAP
+                diagnostic_bounds = arcade.LBWH(
+                    content.left,
+                    cursor_top - self.BRAIN_BEHAVIOR_DIAGNOSTICS_HEIGHT,
+                    drawing_width,
+                    self.BRAIN_BEHAVIOR_DIAGNOSTICS_HEIGHT,
+                )
+                self._draw_brain_behavior_diagnostics(
+                    diagnostic_bounds,
+                    diagnostics,
+                )
+
+        if scroll_limit > 0.0:
+            self._draw_scrollbar(content, scroll_offset, scroll_limit)
+
+    def _draw_brain_behavior_card(
+        self,
+        bounds: arcade.Rect,
+        behavior: BehaviorKind,
+        state: BehaviorStateSnapshot | None,
+        *,
+        detail_lines: tuple[str, ...] = (),
+    ) -> None:
+        """Draw one behaviour card with optional activation details."""
+        accent = self.BRAIN_BEHAVIOR_ACCENTS[behavior]
+        intensity = self._behavior_display_intensity(state)
+        expanded = bool(detail_lines)
+        score = (
+            self._clamped_behavior_evidence(state.evidence_score)
+            if state is not None
+            else None
+        )
+        fill = self._brain_blend_color(
+            self.theme.card_background,
+            accent,
+            0.04 + 0.18 * intensity,
+        )
+        border = self._brain_blend_color(
+            self.theme.panel_border,
+            accent,
+            0.24 + 0.70 * intensity,
+        )
+        title_color = self._brain_blend_color(
+            self.theme.text_muted,
+            accent,
+            0.38 + 0.62 * intensity,
+        )
+        self._draw_rounded_rect(
+            bounds,
+            fill,
+            border,
+            self.config.layout.card_radius,
+            1.0 + intensity,
+        )
+        arcade.draw_circle_filled(
+            bounds.left + 16.0,
+            bounds.top - 21.0,
+            6.0,
+            self._brain_blend_color(
+                self.theme.card_background,
+                accent,
+                0.28 + 0.72 * intensity,
+            ),
+        )
+        self._draw_text(
+            f"brain_behavior_{behavior.value}_name",
+            self._behavior_display_name(behavior),
+            bounds.left + 31.0,
+            bounds.top - 21.0,
+            title_color,
+            13,
+            bold=True,
+            anchor_y="center",
+        )
+        evidence_text = "—" if score is None else f"{score:.2f}"
+        narrow_card = bounds.width < 230.0
+        evidence_right = bounds.right - (14.0 if narrow_card else 36.0)
+        self._draw_text(
+            f"brain_behavior_{behavior.value}_evidence",
+            f"EVIDENCE {evidence_text}",
+            evidence_right,
+            bounds.top - (65.0 if narrow_card else 21.0),
+            title_color,
+            10.5,
+            bold=True,
+            anchor_x="right",
+            anchor_y="center",
+        )
+        self._draw_text(
+            f"brain_behavior_{behavior.value}_expand",
+            "−" if expanded else "+",
+            bounds.right - 15.0,
+            bounds.top - 21.0,
+            title_color,
+            15,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+        state_text = "INACTIVE"
+        if state is not None:
+            state_text = (
+                f"{state.status.value.upper()} · "
+                f"{state.duration_seconds:.1f} s"
+            )
+        self._draw_text(
+            f"brain_behavior_{behavior.value}_state",
+            state_text,
+            bounds.left + 16.0,
+            bounds.top - (43.0 if narrow_card else 50.0),
+            self._brain_blend_color(
+                self.theme.text_muted,
+                accent,
+                0.12 + 0.68 * intensity,
+            ),
+            10.5,
+            bold=state is not None,
+            anchor_y="center",
+        )
+        track = arcade.LBWH(
+            bounds.left + 16.0,
+            bounds.top - self.BRAIN_BEHAVIOR_CARD_HEIGHT + 11.0,
+            max(1.0, bounds.width - 32.0),
+            6.0,
+        )
+        self._draw_rounded_rect_fill(
+            track,
+            self._brain_blend_color(
+                self.theme.card_background,
+                self.theme.panel_border,
+                0.72,
+            ),
+            3.0,
+        )
+        if score is not None and score > 0.0:
+            fill_bounds = arcade.LBWH(
+                track.left,
+                track.bottom,
+                max(1.0, track.width * score),
+                track.height,
+            )
+            self._draw_rounded_rect_fill(
+                fill_bounds,
+                self._brain_blend_color(
+                    self.theme.panel_border,
+                    accent,
+                    0.35 + 0.65 * intensity,
+                ),
+                3.0,
+            )
+        if expanded:
+            detail_top = bounds.top - self.BRAIN_BEHAVIOR_CARD_HEIGHT
+            arcade.draw_line(
+                bounds.left + 12.0,
+                detail_top,
+                bounds.right - 12.0,
+                detail_top,
+                self._brain_blend_color(
+                    self.theme.panel_border,
+                    accent,
+                    0.34 + 0.46 * intensity,
+                ),
+                1.0,
+            )
+            self._draw_text(
+                f"brain_behavior_{behavior.value}_detail_title",
+                "ACTIVATES WHEN",
+                bounds.left + 16.0,
+                detail_top - 22.0,
+                title_color,
+                10,
+                bold=True,
+                anchor_y="center",
+            )
+            for line_index, line in enumerate(detail_lines):
+                self._draw_text(
+                    (
+                        f"brain_behavior_{behavior.value}_detail_"
+                        f"{line_index}"
+                    ),
+                    line,
+                    bounds.left + 16.0,
+                    (
+                        detail_top
+                        - 48.0
+                        - line_index
+                        * self.BRAIN_BEHAVIOR_DETAIL_LINE_HEIGHT
+                    ),
+                    self.theme.text_muted,
+                    10.5,
+                    anchor_y="center",
+                )
+
+    def _draw_brain_behavior_notice(
+        self,
+        bounds: arcade.Rect,
+        index: int,
+        title: str,
+        message_lines: tuple[str, ...],
+        *,
+        is_error: bool,
+    ) -> None:
+        """Draw one compact observer-state notice."""
+        accent = self.theme.selected_outline if is_error else self.theme.accent
+        self._draw_rounded_rect(
+            bounds,
+            self._brain_blend_color(
+                self.theme.card_background,
+                accent,
+                0.08,
+            ),
+            self._brain_blend_color(
+                self.theme.panel_border,
+                accent,
+                0.42,
+            ),
+            self.config.layout.card_radius,
+            1.0,
+        )
+        self._draw_text(
+            f"brain_behavior_notice_{index}_title",
+            title,
+            bounds.left + 14.0,
+            bounds.top - 22.0,
+            accent,
+            11,
+            bold=True,
+            anchor_y="center",
+        )
+        for line_index, line in enumerate(message_lines):
+            self._draw_text(
+                f"brain_behavior_notice_{index}_message_{line_index}",
+                line,
+                bounds.left + 14.0,
+                (
+                    bounds.top
+                    - 50.0
+                    - line_index * self.BRAIN_BEHAVIOR_NOTICE_LINE_HEIGHT
+                ),
+                self.theme.text_muted,
+                10,
+                anchor_y="center",
+            )
+
+    @classmethod
+    def _brain_behavior_detail_height(
+        cls,
+        detail_lines: tuple[str, ...],
+    ) -> float:
+        """Return the extra height required by expanded activation details."""
+        line_count = max(1, len(detail_lines))
+        return (
+            65.0
+            + (line_count - 1) * cls.BRAIN_BEHAVIOR_DETAIL_LINE_HEIGHT
+        )
+
+    @staticmethod
+    def _brain_behavior_card_hitbox_key(behavior: BehaviorKind) -> str:
+        """Return the stable interaction key for one behaviour card."""
+        return f"brain_behavior_card_{behavior.value}"
+
+    def _draw_brain_behavior_diagnostics(
+        self,
+        bounds: arcade.Rect,
+        diagnostics: BehaviorObserverDiagnostics,
+    ) -> None:
+        """Draw debug-only behavior-observer diagnostics."""
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.panel_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        queue_size = (
+            diagnostics.input_queue_size
+            if diagnostics.input_queue_size is not None
+            else "n/a"
+        )
+        lines = (
+            "OBSERVER DIAGNOSTICS",
+            (
+                f"Samples {diagnostics.samples_produced} · "
+                f"dropped {diagnostics.samples_dropped}"
+            ),
+            (
+                f"Processed {diagnostics.observations_processed} · "
+                f"results dropped {diagnostics.results_dropped}"
+            ),
+            (
+                "Result latency unavailable"
+                if diagnostics.result_latency_ms is None
+                else f"Result latency {diagnostics.result_latency_ms:.1f} ms"
+            ),
+            (
+                f"Worker {diagnostics.worker_health} · queue "
+                f"{queue_size}"
+            ),
+        )
+        for line_index, line in enumerate(lines):
+            self._draw_text(
+                f"brain_behavior_diagnostics_{line_index}",
+                line,
+                bounds.left + 14.0,
+                bounds.top - 21.0 - line_index * 24.0,
+                (
+                    self.theme.text_primary
+                    if line_index == 0
+                    else self.theme.text_muted
+                ),
+                10.5 if line_index == 0 else 9.5,
+                bold=line_index == 0,
+            )
+
+    @staticmethod
+    def _clamped_behavior_evidence(value: float) -> float:
+        """Clamp an Evidence value for presentation."""
+        if not isfinite(value):
+            return 0.0
+        return max(0.0, min(1.0, value))
+
+    @classmethod
+    def _behavior_display_intensity(
+        cls,
+        state: BehaviorStateSnapshot | None,
+    ) -> float:
+        """Map an existing bout state and Evidence score to UI intensity."""
+        if state is None:
+            return 0.0
+        score = cls._clamped_behavior_evidence(state.evidence_score)
+        if state.status is BoutStatus.ACTIVE:
+            return 0.55 + 0.45 * score
+        return 0.35 + 0.45 * score
 
     @staticmethod
     def _behavior_display_name(behavior: BehaviorKind) -> str:
@@ -319,18 +798,6 @@ class BrainInspectorComponent:
             BehaviorKind.ALARM_RETREAT: "Alarm retreat",
         }
         return labels[behavior]
-
-    @staticmethod
-    def _format_behavior_evidence_value(
-        value: float,
-        unit: str | None,
-    ) -> str:
-        """Format one compact rule-derived Evidence value."""
-        if unit in {"samples", "events"}:
-            number = str(int(round(value)))
-        else:
-            number = f"{value:.2f}"
-        return number if unit is None else f"{number} {unit}"
 
     def _draw_brain_node_inspector(
         self,

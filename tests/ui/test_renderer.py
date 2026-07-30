@@ -95,7 +95,6 @@ for optional_module in ("neat", "pymunk"):
 from configs.sim_config import build_sim_config
 from src.analysis import generate_inspector_report
 from src.behavior_observer import (
-    BehaviorEvidence,
     BehaviorKind,
     BehaviorObserverDiagnostics,
     BehaviorSnapshot,
@@ -179,11 +178,65 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertEqual(self.renderer._brain_selected_node_key, 7)
         self.assertEqual(self.renderer._brain_inspector_page, "node")
 
-    def test_behavior_page_uses_evidence_copy_and_active_first(self) -> None:
+    def test_behavior_card_click_toggles_one_expanded_card(self) -> None:
+        self.renderer._brain_inspector_page = "behaviors"
+        food_key = self.renderer._brain_behavior_card_hitbox_key(
+            BehaviorKind.FOOD_APPROACH
+        )
+        rest_key = self.renderer._brain_behavior_card_hitbox_key(
+            BehaviorKind.RESTING
+        )
+        self.renderer._control_hitboxes[food_key] = arcade.LBWH(
+            310,
+            180,
+            100,
+            50,
+        )
+        self.renderer._control_hitboxes[rest_key] = arcade.LBWH(
+            310,
+            240,
+            100,
+            50,
+        )
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                SimpleNamespace(),
+                350,
+                200,
+            )
+        )
+        self.assertEqual(
+            self.renderer._brain_expanded_behavior,
+            BehaviorKind.FOOD_APPROACH.value,
+        )
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                SimpleNamespace(),
+                350,
+                260,
+            )
+        )
+        self.assertEqual(
+            self.renderer._brain_expanded_behavior,
+            BehaviorKind.RESTING.value,
+        )
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                SimpleNamespace(),
+                350,
+                260,
+            )
+        )
+        self.assertIsNone(self.renderer._brain_expanded_behavior)
+
+    def test_behavior_page_renders_all_cards_in_stable_enum_order(self) -> None:
         captured = []
-        original = self.renderer._draw_scrollable_lines_in_bounds
-        self.renderer._draw_scrollable_lines_in_bounds = (
-            lambda key, bounds, lines, **kwargs: captured.extend(lines)
+        original = self.renderer._draw_brain_behavior_card
+        self.renderer._draw_brain_behavior_card = (
+            lambda bounds, behavior, state: captured.append((behavior, state))
         )
         snapshot = BehaviorSnapshot(
             creature_id=1,
@@ -202,15 +255,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
                     status=BoutStatus.ACTIVE,
                     evidence_score=0.84,
                     duration_seconds=1.8,
-                    evidence=(
-                        BehaviorEvidence(
-                            "closing_speed",
-                            "Food closing speed",
-                            24.0,
-                            "px/s",
-                            True,
-                        ),
-                    ),
+                    evidence=(),
                 ),
             ),
             observations_processed=20,
@@ -233,22 +278,284 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
                 arcade.LBWH(100, 100, 280, 500),
             )
         finally:
-            self.renderer._draw_scrollable_lines_in_bounds = original
+            self.renderer._draw_brain_behavior_card = original
 
-        self.assertLess(
-            captured.index("Food approach"),
-            captured.index("Resting"),
+        self.assertEqual(
+            [behavior for behavior, _state in captured],
+            list(BehaviorKind),
         )
-        self.assertIn("ACTIVE · 1.8 s", captured)
-        self.assertIn("Evidence 0.84", captured)
+        states = {
+            behavior: state
+            for behavior, state in captured
+        }
+        self.assertIs(states[BehaviorKind.FOOD_APPROACH].status, BoutStatus.ACTIVE)
+        self.assertIs(states[BehaviorKind.RESTING].status, BoutStatus.EMERGING)
+        self.assertIsNone(states[BehaviorKind.FEEDING])
+        self.assertEqual(
+            set(self.renderer.BRAIN_BEHAVIOR_ACCENTS),
+            set(BehaviorKind),
+        )
+        self.assertEqual(
+            len(set(self.renderer.BRAIN_BEHAVIOR_ACCENTS.values())),
+            len(BehaviorKind),
+        )
+        self.assertEqual(
+            set(self.renderer.BRAIN_BEHAVIOR_ACTIVATION_COPY),
+            set(BehaviorKind),
+        )
+        self.assertGreater(
+            self.renderer._scroll_limits["brain_behavior_inspector"],
+            0.0,
+        )
+        self.assertIn(
+            "brain_behavior_inspector",
+            self.renderer._scroll_regions,
+        )
+
+    def test_behavior_page_expands_one_card_with_activation_copy(self) -> None:
+        captured = []
+        wrap_calls = []
+        original = self.renderer._draw_brain_behavior_card
+        original_wrap = self.renderer._wrap_line
+
+        def capture_card(bounds, behavior, state, **kwargs):
+            captured.append(
+                (
+                    bounds,
+                    behavior,
+                    kwargs.get("detail_lines", ()),
+                )
+            )
+
+        def capture_wrap(text, width, **kwargs):
+            wrap_calls.append(text)
+            return original_wrap(text, width, **kwargs)
+
+        self.renderer._draw_brain_behavior_card = capture_card
+        self.renderer._wrap_line = capture_wrap
+        snapshot = BehaviorSnapshot(
+            creature_id=1,
+            selection_generation=1,
+            simulation_time=2.0,
+            behaviors=(
+                BehaviorStateSnapshot(
+                    behavior=BehaviorKind.FEEDING,
+                    status=BoutStatus.ACTIVE,
+                    evidence_score=1.0,
+                    duration_seconds=0.5,
+                    evidence=(),
+                ),
+            ),
+            observations_processed=20,
+            produced_monotonic=0.0,
+        )
+        world = SimpleNamespace(
+            config=build_sim_config(),
+            selected_behavior_snapshot=snapshot,
+            behavior_observer_diagnostics=BehaviorObserverDiagnostics(
+                worker_health="running"
+            ),
+            debug_vision_enabled=False,
+            elapsed_time=2.0,
+            is_paused=False,
+        )
+        bounds = arcade.LBWH(100, 100, 280, 500)
+        try:
+            self.renderer._brain_expanded_behavior = None
+            self.renderer._draw_brain_behavior_inspector(world, bounds)
+            collapsed_limit = self.renderer._scroll_limits[
+                "brain_behavior_inspector"
+            ]
+
+            captured.clear()
+            self.renderer._brain_expanded_behavior = (
+                BehaviorKind.FEEDING.value
+            )
+            self.renderer._draw_brain_behavior_inspector(world, bounds)
+            expanded_limit = self.renderer._scroll_limits[
+                "brain_behavior_inspector"
+            ]
+        finally:
+            self.renderer._draw_brain_behavior_card = original
+            self.renderer._wrap_line = original_wrap
+
+        detailed = [
+            (card_bounds, behavior, detail_lines)
+            for card_bounds, behavior, detail_lines in captured
+            if detail_lines
+        ]
+        self.assertEqual(len(detailed), 1)
+        card_bounds, behavior, detail_lines = detailed[0]
+        self.assertIs(behavior, BehaviorKind.FEEDING)
+        self.assertIn("consumption", " ".join(detail_lines).lower())
+        detail_wraps = [
+            text
+            for text in wrap_calls
+            if text in self.renderer.BRAIN_BEHAVIOR_ACTIVATION_COPY.values()
+        ]
+        self.assertEqual(
+            detail_wraps,
+            [
+                self.renderer.BRAIN_BEHAVIOR_ACTIVATION_COPY[
+                    BehaviorKind.FEEDING
+                ],
+            ],
+        )
+        detail_height = self.renderer._brain_behavior_detail_height(
+            detail_lines
+        )
+        self.assertAlmostEqual(
+            card_bounds.height,
+            self.renderer.BRAIN_BEHAVIOR_CARD_HEIGHT + detail_height,
+        )
+        self.assertAlmostEqual(
+            expanded_limit,
+            collapsed_limit + detail_height,
+        )
+        self.assertIn(
+            self.renderer._brain_behavior_card_hitbox_key(
+                BehaviorKind.FEEDING
+            ),
+            self.renderer._control_hitboxes,
+        )
+
+    def test_behavior_card_uses_state_intensity_and_clamped_evidence(self) -> None:
+        active = BehaviorStateSnapshot(
+            behavior=BehaviorKind.FEEDING,
+            status=BoutStatus.ACTIVE,
+            evidence_score=1.4,
+            duration_seconds=2.25,
+            evidence=(),
+        )
+        emerging = replace(
+            active,
+            status=BoutStatus.EMERGING,
+            evidence_score=0.5,
+        )
+
+        self.assertEqual(self.renderer._behavior_display_intensity(None), 0.0)
+        self.assertAlmostEqual(
+            self.renderer._behavior_display_intensity(emerging),
+            0.575,
+        )
+        self.assertAlmostEqual(
+            self.renderer._behavior_display_intensity(active),
+            1.0,
+        )
+        self.assertEqual(
+            self.renderer._clamped_behavior_evidence(float("nan")),
+            0.0,
+        )
+
+        texts = []
+        text_sizes = {}
+        fills = []
+        original_text = self.renderer._draw_text
+        original_fill = self.renderer._draw_rounded_rect_fill
+
+        def capture_text(key, text, *args, **kwargs):
+            texts.append(text)
+            text_sizes[key] = args[3]
+
+        self.renderer._draw_text = capture_text
+        self.renderer._draw_rounded_rect_fill = (
+            lambda bounds, color, radius: fills.append(bounds)
+        )
+        bounds = arcade.LBWH(
+            100,
+            100,
+            300,
+            self.renderer.BRAIN_BEHAVIOR_CARD_HEIGHT,
+        )
+        try:
+            self.renderer._draw_brain_behavior_card(
+                bounds,
+                BehaviorKind.FEEDING,
+                active,
+            )
+            self.assertIn("EVIDENCE 1.00", texts)
+            self.assertIn("ACTIVE · 2.2 s", texts)
+            self.assertEqual(len(fills), 2)
+            self.assertAlmostEqual(fills[0].width, fills[1].width)
+            self.assertGreaterEqual(
+                text_sizes["brain_behavior_feeding_name"],
+                13.0,
+            )
+            self.assertGreaterEqual(
+                text_sizes["brain_behavior_feeding_evidence"],
+                10.0,
+            )
+            self.assertGreaterEqual(
+                text_sizes["brain_behavior_feeding_state"],
+                10.0,
+            )
+            self.assertGreaterEqual(
+                self.renderer.BRAIN_BEHAVIOR_CARD_HEIGHT,
+                88.0,
+            )
+            self.assertGreaterEqual(
+                self.renderer.BRAIN_BEHAVIOR_CARD_GAP,
+                10.0,
+            )
+            self.assertGreaterEqual(
+                self.renderer.BRAIN_INSPECTOR_MIN_WIDTH,
+                320.0,
+            )
+
+            texts.clear()
+            fills.clear()
+            self.renderer._draw_brain_behavior_card(
+                bounds,
+                BehaviorKind.FEEDING,
+                None,
+            )
+            self.assertIn("EVIDENCE —", texts)
+            self.assertIn("INACTIVE", texts)
+            self.assertEqual(len(fills), 1)
+
+            texts.clear()
+            detail_lines = ("Explicit food consumption is recorded.",)
+            expanded_bounds = arcade.LBWH(
+                bounds.left,
+                bounds.bottom,
+                bounds.width,
+                (
+                    self.renderer.BRAIN_BEHAVIOR_CARD_HEIGHT
+                    + self.renderer._brain_behavior_detail_height(
+                        detail_lines
+                    )
+                ),
+            )
+            self.renderer._draw_brain_behavior_card(
+                expanded_bounds,
+                BehaviorKind.FEEDING,
+                active,
+                detail_lines=detail_lines,
+            )
+            self.assertIn("ACTIVATES WHEN", texts)
+            self.assertIn(detail_lines[0], texts)
+            self.assertIn("−", texts)
+        finally:
+            self.renderer._draw_text = original_text
+            self.renderer._draw_rounded_rect_fill = original_fill
 
     def test_behavior_page_renders_empty_error_delayed_and_debug_states(
         self,
     ) -> None:
-        captured = []
-        original = self.renderer._draw_scrollable_lines_in_bounds
-        self.renderer._draw_scrollable_lines_in_bounds = (
-            lambda key, bounds, lines, **kwargs: captured.extend(lines)
+        notices = []
+        cards = []
+        diagnostics_drawn = []
+        original_notice = self.renderer._draw_brain_behavior_notice
+        original_card = self.renderer._draw_brain_behavior_card
+        original_diagnostics = self.renderer._draw_brain_behavior_diagnostics
+        self.renderer._draw_brain_behavior_notice = (
+            lambda bounds, index, title, message, **kwargs: notices.append(title)
+        )
+        self.renderer._draw_brain_behavior_card = (
+            lambda bounds, behavior, state: cards.append((behavior, state))
+        )
+        self.renderer._draw_brain_behavior_diagnostics = (
+            lambda bounds, diagnostics: diagnostics_drawn.append(diagnostics)
         )
         config = build_sim_config()
         bounds = arcade.LBWH(100, 100, 280, 500)
@@ -267,9 +574,27 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
                 collecting,
                 bounds,
             )
-            self.assertIn("Collecting temporal evidence", captured)
+            self.assertIn("Collecting temporal evidence", notices)
+            self.assertEqual(len(cards), len(BehaviorKind))
+            self.assertTrue(all(state is None for _behavior, state in cards))
 
-            captured.clear()
+            notices.clear()
+            cards.clear()
+            disabled = SimpleNamespace(
+                **{
+                    **vars(collecting),
+                    "config": SimpleNamespace(
+                        behavior=SimpleNamespace(enabled=False)
+                    ),
+                }
+            )
+            self.renderer._draw_brain_behavior_inspector(disabled, bounds)
+            self.assertIn("Observer disabled", notices)
+            self.assertEqual(len(cards), len(BehaviorKind))
+            self.assertTrue(all(state is None for _behavior, state in cards))
+
+            notices.clear()
+            cards.clear()
             error = SimpleNamespace(
                 **{
                     **vars(collecting),
@@ -282,10 +607,12 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
                 },
             )
             self.renderer._draw_brain_behavior_inspector(error, bounds)
-            self.assertIn("Observer unavailable", captured)
-            self.assertIn("worker failed", captured)
+            self.assertIn("Observer unavailable", notices)
+            self.assertEqual(len(cards), len(BehaviorKind))
+            self.assertTrue(all(state is None for _behavior, state in cards))
 
-            captured.clear()
+            notices.clear()
+            cards.clear()
             snapshot = BehaviorSnapshot(
                 creature_id=1,
                 selection_generation=1,
@@ -303,11 +630,113 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
                 }
             )
             self.renderer._draw_brain_behavior_inspector(delayed, bounds)
-            self.assertIn("Observer updating", captured)
-            self.assertIn("No sustained bout detected", captured)
-            self.assertIn("OBSERVER DIAGNOSTICS", captured)
+            self.assertIn("Observer updating", notices)
+            self.assertNotIn("No sustained bout detected", notices)
+            self.assertEqual(len(cards), len(BehaviorKind))
+            self.assertEqual(len(diagnostics_drawn), 1)
         finally:
-            self.renderer._draw_scrollable_lines_in_bounds = original
+            self.renderer._draw_brain_behavior_notice = original_notice
+            self.renderer._draw_brain_behavior_card = original_card
+            self.renderer._draw_brain_behavior_diagnostics = original_diagnostics
+
+    def test_behavior_status_slot_keeps_cards_stable_when_bout_appears(
+        self,
+    ) -> None:
+        notices = []
+        cards = []
+        original_notice = self.renderer._draw_brain_behavior_notice
+        original_card = self.renderer._draw_brain_behavior_card
+        self.renderer._draw_brain_behavior_notice = (
+            lambda bounds, index, title, message_lines, **kwargs: notices.append(
+                (bounds, title, message_lines)
+            )
+        )
+        self.renderer._draw_brain_behavior_card = (
+            lambda bounds, behavior, state: cards.append(bounds)
+        )
+        config = build_sim_config()
+        snapshot = BehaviorSnapshot(
+            creature_id=1,
+            selection_generation=1,
+            simulation_time=1.0,
+            behaviors=(),
+            observations_processed=10,
+            produced_monotonic=0.0,
+        )
+        world = SimpleNamespace(
+            config=config,
+            selected_behavior_snapshot=snapshot,
+            behavior_observer_diagnostics=BehaviorObserverDiagnostics(
+                worker_health="running"
+            ),
+            debug_vision_enabled=False,
+            elapsed_time=1.0,
+            is_paused=False,
+        )
+        try:
+            self.renderer._draw_brain_behavior_inspector(
+                world,
+                arcade.LBWH(100, 100, 200, 500),
+            )
+            empty_notice = notices[0]
+            empty_cards = tuple(cards)
+            empty_scroll_limit = self.renderer._scroll_limits[
+                "brain_behavior_inspector"
+            ]
+
+            notices.clear()
+            cards.clear()
+            active_snapshot = replace(
+                snapshot,
+                behaviors=(
+                    BehaviorStateSnapshot(
+                        behavior=BehaviorKind.FEEDING,
+                        status=BoutStatus.ACTIVE,
+                        evidence_score=1.0,
+                        duration_seconds=0.5,
+                        evidence=(),
+                    ),
+                ),
+            )
+            active_world = SimpleNamespace(
+                **{
+                    **vars(world),
+                    "selected_behavior_snapshot": active_snapshot,
+                }
+            )
+            self.renderer._draw_brain_behavior_inspector(
+                active_world,
+                arcade.LBWH(100, 100, 200, 500),
+            )
+            active_notice = notices[0]
+            active_cards = tuple(cards)
+            active_scroll_limit = self.renderer._scroll_limits[
+                "brain_behavior_inspector"
+            ]
+        finally:
+            self.renderer._draw_brain_behavior_notice = original_notice
+            self.renderer._draw_brain_behavior_card = original_card
+
+        empty_bounds, empty_title, empty_lines = empty_notice
+        active_bounds, active_title, active_lines = active_notice
+        self.assertEqual(empty_title, "No sustained bout detected")
+        self.assertEqual(active_title, "Live bouts detected")
+        self.assertLessEqual(len(empty_lines), 2)
+        self.assertLessEqual(len(active_lines), 2)
+        self.assertEqual(
+            empty_bounds.height,
+            self.renderer.BRAIN_BEHAVIOR_NOTICE_HEIGHT,
+        )
+        self.assertEqual(active_bounds.height, empty_bounds.height)
+        self.assertAlmostEqual(
+            empty_bounds.bottom - self.renderer.BRAIN_BEHAVIOR_CARD_GAP,
+            empty_cards[0].top,
+        )
+        self.assertEqual(
+            [(card.top, card.bottom) for card in active_cards],
+            [(card.top, card.bottom) for card in empty_cards],
+        )
+        self.assertEqual(active_scroll_limit, empty_scroll_limit)
 
     def test_behavior_page_has_independent_scroll_offset(self) -> None:
         self.renderer._brain_inspector_page = "behaviors"
@@ -438,6 +867,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.renderer._brain_node_inspector_open = False
         self.renderer._brain_inspector_page = "behaviors"
         self.renderer._brain_behavior_scroll_offset = 48.0
+        self.renderer._brain_expanded_behavior = BehaviorKind.COHESION.value
         self.renderer._control_hitboxes["brain_window_close"] = arcade.LBWH(
             450,
             350,
@@ -454,6 +884,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertFalse(self.renderer._brain_node_inspector_open)
         self.assertEqual(self.renderer._brain_inspector_page, "node")
         self.assertEqual(self.renderer._brain_behavior_scroll_offset, 0.0)
+        self.assertIsNone(self.renderer._brain_expanded_behavior)
 
     def test_scroll_inside_node_inspector_updates_its_offset(self) -> None:
         self.renderer._scroll_regions["brain_node_inspector"] = arcade.LBWH(

@@ -49,6 +49,10 @@ _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 class BrainWindowComponent:
     """Group related behavior extracted from ``UiRenderer``."""
 
+    BRAIN_INSPECTOR_MIN_WIDTH = 320.0
+    BRAIN_INSPECTOR_MAX_WIDTH = 420.0
+    BRAIN_INSPECTOR_WIDTH_RATIO = 0.28
+
     def _draw_brain_window(self, world: World) -> None:
         """Draw brain window.
 
@@ -126,7 +130,13 @@ class BrainWindowComponent:
         inspector_bounds: arcade.Rect | None = None
         gap = 14.0
         if self._brain_node_inspector_open:
-            desired_width = max(280.0, min(360.0, bounds.width * 0.24))
+            desired_width = max(
+                self.BRAIN_INSPECTOR_MIN_WIDTH,
+                min(
+                    self.BRAIN_INSPECTOR_MAX_WIDTH,
+                    bounds.width * self.BRAIN_INSPECTOR_WIDTH_RATIO,
+                ),
+            )
             inspector_width = min(
                 desired_width,
                 max(220.0, body_bounds.width - 360.0),
@@ -264,6 +274,7 @@ class BrainWindowComponent:
         self._scroll_offsets["brain_node_inspector"] = 0.0
         self._scroll_offsets["brain_behavior_inspector"] = 0.0
         self._brain_behavior_scroll_offset = 0.0
+        self._brain_expanded_behavior = None
         self._clear_brain_render_caches()
     def _clear_brain_selection_caches(self) -> None:
         """Release cached data derived from the selected graph node."""

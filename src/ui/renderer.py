@@ -73,6 +73,10 @@ class UiRenderer(
             "_brain_state",
             "behavior_scroll_offset",
         ),
+        "_brain_expanded_behavior": (
+            "_brain_state",
+            "expanded_behavior",
+        ),
         "_brain_selection_identity": ("_brain_state", "selection_identity"),
         "_species_tree_open": ("_species_tree_state", "open"),
         "_species_tree_previous_pause": ("_species_tree_state", "previous_pause"),
@@ -467,6 +471,18 @@ class UiRenderer(
             ):
                 self._brain_inspector_page = "behaviors"
                 return True
+            if self._brain_inspector_page == "behaviors":
+                for behavior in self.BRAIN_BEHAVIOR_ACCENTS:
+                    hitbox_key = self._brain_behavior_card_hitbox_key(
+                        behavior
+                    )
+                    if self._contains_hitbox(hitbox_key, x, y):
+                        self._brain_expanded_behavior = (
+                            None
+                            if self._brain_expanded_behavior == behavior.value
+                            else behavior.value
+                        )
+                        return True
             if self._contains_hitbox("brain_node_inspector_toggle", x, y):
                 self._brain_node_inspector_open = not self._brain_node_inspector_open
                 return True

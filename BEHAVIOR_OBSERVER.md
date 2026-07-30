@@ -64,11 +64,18 @@ after the last consumption event.
 
 The Brain window keeps the neural graph visible and adds a `NODE | BEHAVIOURS`
 selector to its right panel. The behaviour page identifies the source as
-world/action history, displays active bouts before emerging bouts, sorts ties
-by descending Evidence, and shows compact supporting rows. Observer
+world/action history and keeps one fixed card visible for every behaviour in
+the enum's stable order. Inactive cards remain dim; emerging and active cards
+brighten from their existing rule-derived Evidence score and show their status,
+duration, numeric Evidence, and Evidence bar. Clicking a card expands it in
+place with a concise explanation of the realized conditions that activate that
+behaviour; only one card expands at a time. Static explanation text and cached
+wrapping keep this presentation independent from the live behaviour
+calculation. A fixed-height observer-status slot remains above the larger card
+stack, so cards keep the same coordinates when bouts appear or disappear. It
+does not add decay, smoothing, or a second behaviour calculation. Observer
 diagnostics are visible only with vision debugging enabled. Selecting a graph
-node returns the panel to `NODE`; reopening the window also defaults to
-`NODE`.
+node returns the panel to `NODE`; reopening the window also defaults to `NODE`.
 
 ## Configuration, lifecycle, and validation
 
