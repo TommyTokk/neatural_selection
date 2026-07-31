@@ -882,6 +882,10 @@ class CommonUiComponent:
         bold, width, multiline, align, anchor_x, anchor_y
             Arcade text presentation options.
         """
+        if key.startswith("behavior_report_"):
+            size *= float(
+                getattr(self, "_BEHAVIOR_REPORT_FONT_SCALE", 1.0)
+            )
         self._painter.draw_text(
             key,
             text,

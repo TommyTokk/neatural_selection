@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from contextlib import nullcontext
 import unittest
+from unittest.mock import patch
 
 import arcade
 
@@ -19,6 +21,7 @@ from src.behavior_history import (
     CreatureBehaviorSummary,
     CreatureHistoryIndexEntry,
     EffectDirectionCounts,
+    SpeciesBehaviorIndexEntry,
 )
 from src.behavior_observer import BehaviorKind
 from src.counterfactual_neat import (
@@ -145,55 +148,147 @@ class BehaviorReportUiTest(unittest.TestCase):
         self.assertGreaterEqual(action.bottom, panel.bottom)
 
     def test_report_uses_large_window_safe_bounds_and_no_icons(self) -> None:
-        report = self._empty_report()
         entry = self._index_entry()
         world = SimpleNamespace(
             layout=SimpleNamespace(window=arcade.LBWH(0, 0, 1440, 900)),
             behavior_history_index=(entry,),
             selected_creature_id=8,
-            behavior_report_for=lambda _creature_id: report,
+            behavior_report_for=lambda _creature_id: None,
         )
         self.renderer._behavior_report_open = True
         icon_keys: list[str] = []
-        original_icon = self.renderer._draw_icon
-        self.renderer._draw_icon = (
-            lambda _bounds, _name, key: icon_keys.append(key)
+        text_calls: dict[str, SimpleNamespace] = {}
+
+        def record_text(key, text, x, y, _color, _size, **kwargs) -> None:
+            text_calls[key] = SimpleNamespace(
+                text=text,
+                x=x,
+                y=y,
+                width=kwargs.get("width"),
+                multiline=kwargs.get("multiline", False),
+            )
+
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        original_clip = self.renderer._ui_clip
+        original_close = self.renderer._draw_panel_close_button
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = record_text
+        self.renderer._ui_clip = lambda _bounds: nullcontext()
+        self.renderer._draw_panel_close_button = (
+            lambda _bounds, prefix: icon_keys.append(f"{prefix}_close_icon")
         )
         try:
-            self.renderer._draw_behavior_report_window(world)
+            with (
+                patch("arcade.draw_line"),
+                patch("arcade.draw_circle_filled"),
+            ):
+                self.renderer._draw_behavior_report_window(world)
+
+                bounds = self.renderer._behavior_report_bounds
+                self.assertIsNotNone(bounds)
+                self.assertEqual(bounds.width, 1320.0)
+                self.assertEqual(bounds.height, 840.0)
+                self.assertEqual(icon_keys, ["behavior_report_close_icon"])
+                self.assertEqual(
+                    text_calls["behavior_report_subtitle"].text,
+                    "Inspect completed behaviour history for observed creatures",
+                )
+
+                world.layout.window = arcade.LBWH(0, 0, 640, 480)
+                self.renderer._draw_behavior_report_window(world)
         finally:
-            self.renderer._draw_icon = original_icon
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+            self.renderer._ui_clip = original_clip
+            self.renderer._draw_panel_close_button = original_close
 
-        bounds = self.renderer._behavior_report_bounds
-        self.assertIsNotNone(bounds)
-        self.assertEqual(bounds.width, 1320.0)
-        self.assertEqual(bounds.height, 840.0)
-        self.assertEqual(icon_keys, ["behavior_report_close_icon"])
-        self.assertEqual(
-            self.renderer._text_cache["behavior_report_subtitle"].text,
-            "Inspect completed behaviour history for observed creatures",
-        )
-
-        world.layout.window = arcade.LBWH(0, 0, 640, 480)
-        self.renderer._draw_behavior_report_window(world)
         bounds = self.renderer._behavior_report_bounds
         self.assertLessEqual(bounds.right, 640 - 24)
         self.assertLessEqual(bounds.top, 480 - 24)
+        title = text_calls["behavior_report_title"]
+        close = self.renderer._control_hitboxes["behavior_report_close"]
+        self.assertTrue(title.multiline)
+        self.assertLessEqual(title.x + title.width, close.left)
+
+    def test_species_sidebar_header_measures_title_and_paused_badge(
+        self,
+    ) -> None:
+        bounds = arcade.LBWH(0, 0, 180, 420)
+        normal_height = self.renderer._behavior_sidebar_header_height(
+            bounds,
+            paused=False,
+        )
+        paused_height = self.renderer._behavior_sidebar_header_height(
+            bounds,
+            paused=True,
+        )
+
+        self.assertGreater(paused_height, normal_height)
+        self.assertGreaterEqual(
+            self.renderer._behavior_sidebar_header_height(
+                arcade.LBWH(0, 0, 90, 420),
+                paused=True,
+            ),
+            paused_height,
+        )
+
+    def test_every_behavior_report_text_uses_larger_font_scale(self) -> None:
+        with patch.object(self.renderer._painter, "draw_text") as draw_text:
+            self.renderer._draw_text(
+                "behavior_report_test_text",
+                "Report",
+                0.0,
+                0.0,
+                self.renderer.theme.text_primary,
+                10.0,
+            )
+            report_size = draw_text.call_args.args[5]
+            self.renderer._draw_text(
+                "unrelated_test_text",
+                "Other",
+                0.0,
+                0.0,
+                self.renderer.theme.text_primary,
+                10.0,
+            )
+            unrelated_size = draw_text.call_args.args[5]
+
+        self.assertEqual(
+            report_size,
+            10.0 * self.renderer._BEHAVIOR_REPORT_FONT_SCALE,
+        )
+        self.assertEqual(unrelated_size, 10.0)
 
     def test_creature_rows_are_spaced_and_scroll_only_on_overflow(self) -> None:
-        entries = tuple(self._index_entry(index) for index in range(10))
+        entries = tuple(self._index_entry(index) for index in range(9))
         world = SimpleNamespace(
             behavior_history_index=entries,
             selected_creature_id=0,
         )
         bounds = arcade.LBWH(0, 0, 270, 700)
 
-        self.renderer._draw_report_creature_index(world, bounds)
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        original_clip = self.renderer._ui_clip
+        original_scrollbar = self.renderer._draw_scrollbar
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = lambda *_args, **_kwargs: None
+        self.renderer._ui_clip = lambda _bounds: nullcontext()
+        self.renderer._draw_scrollbar = lambda *_args, **_kwargs: None
+        try:
+            with patch("arcade.draw_circle_filled"):
+                self.renderer._draw_report_creature_index(world, bounds)
+        finally:
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+            self.renderer._ui_clip = original_clip
+            self.renderer._draw_scrollbar = original_scrollbar
 
         first = self.renderer._control_hitboxes["behavior_report_creature_0"]
         second = self.renderer._control_hitboxes["behavior_report_creature_1"]
-        self.assertEqual(first.height, 50.0)
-        self.assertEqual(first.bottom - second.top, 4.0)
+        self.assertEqual(first.height, 56.0)
+        self.assertEqual(first.bottom - second.top, 8.0)
         self.assertEqual(
             self.renderer._scroll_limits["behavior_report_creatures"],
             0.0,
@@ -202,11 +297,262 @@ class BehaviorReportUiTest(unittest.TestCase):
         world.behavior_history_index = tuple(
             self._index_entry(index) for index in range(16)
         )
-        self.renderer._draw_report_creature_index(world, bounds)
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = lambda *_args, **_kwargs: None
+        self.renderer._ui_clip = lambda _bounds: nullcontext()
+        self.renderer._draw_scrollbar = lambda *_args, **_kwargs: None
+        try:
+            with patch("arcade.draw_circle_filled"):
+                self.renderer._draw_report_creature_index(world, bounds)
+        finally:
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+            self.renderer._ui_clip = original_clip
+            self.renderer._draw_scrollbar = original_scrollbar
         self.assertGreater(
             self.renderer._scroll_limits["behavior_report_creatures"],
             0.0,
         )
+
+    def test_species_hierarchy_shows_active_and_collapses_historical(self) -> None:
+        active = SpeciesBehaviorIndexEntry(
+            species_id=3,
+            alive_population=8,
+            monitored_count=3,
+            observed_creature_count=1,
+            total_observation_seconds=12.0,
+            completed_bout_count=2,
+            active=True,
+        )
+        historical = SpeciesBehaviorIndexEntry(
+            species_id=4,
+            alive_population=0,
+            monitored_count=0,
+            observed_creature_count=1,
+            total_observation_seconds=8.0,
+            completed_bout_count=1,
+            active=False,
+        )
+        creature = CreatureHistoryIndexEntry(
+            creature_id=8,
+            creature_name="Eight",
+            deceased=False,
+            last_observed_time=12.0,
+            completed_bout_count=2,
+            species_id=3,
+            active=True,
+            last_observation_mode="automatic",
+        )
+        world = SimpleNamespace(
+            species_behavior_index=(active, historical),
+            behavior_history_index=(creature,),
+            selected_creature_id=None,
+            automatic_behavior_cohort_ids=frozenset({8}),
+        )
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        original_clip = self.renderer._ui_clip
+        original_scrollbar = self.renderer._draw_scrollbar
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = lambda *_args, **_kwargs: None
+        self.renderer._ui_clip = lambda _bounds: nullcontext()
+        self.renderer._draw_scrollbar = lambda *_args, **_kwargs: None
+        try:
+            self.renderer._draw_report_creature_index(
+                world,
+                arcade.LBWH(0, 0, 270, 700),
+            )
+        finally:
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+            self.renderer._ui_clip = original_clip
+            self.renderer._draw_scrollbar = original_scrollbar
+
+        self.assertIn(
+            "behavior_report_species_3",
+            self.renderer._control_hitboxes,
+        )
+        self.assertIn(
+            "behavior_report_creature_8",
+            self.renderer._control_hitboxes,
+        )
+        self.assertNotIn(
+            "behavior_report_species_4",
+            self.renderer._control_hitboxes,
+        )
+        species_card = self.renderer._control_hitboxes[
+            "behavior_report_species_3"
+        ]
+        creature_card = self.renderer._control_hitboxes[
+            "behavior_report_creature_8"
+        ]
+        viewport = self.renderer._scroll_regions[
+            "behavior_report_creatures"
+        ]
+        self.assertEqual(species_card.bottom - creature_card.top, 8.0)
+        self.assertEqual(
+            species_card.left - viewport.left,
+            self.renderer._SIDEBAR_CARD_OUTER_X,
+        )
+        self.assertGreaterEqual(
+            viewport.right - species_card.right,
+            self.renderer._REPORT_SCROLLBAR_GUTTER,
+        )
+        self.assertTrue(self.renderer._behavior_report_species_selected)
+
+    def test_sidebar_rows_measure_wrapped_text_and_preserve_status_copy(
+        self,
+    ) -> None:
+        narrow_width = 150.0
+        wide_width = 270.0
+        title = "Creature with an exceptionally long inherited display name"
+        detail = "OBSERVED · NO SUSTAINED BOUTS"
+
+        narrow_height = self.renderer._behavior_sidebar_row_height(
+            "creature",
+            title,
+            detail,
+            narrow_width,
+        )
+        wide_height = self.renderer._behavior_sidebar_row_height(
+            "creature",
+            title,
+            detail,
+            wide_width,
+        )
+
+        self.assertGreater(narrow_height, wide_height)
+        statuses = []
+        cases = (
+            SimpleNamespace(
+                creature_id=1,
+                creature_name="Auto",
+                active=True,
+                last_observation_mode="automatic",
+                deceased=False,
+                completed_bout_count=0,
+            ),
+            SimpleNamespace(
+                creature_id=2,
+                creature_name="Focal",
+                active=True,
+                last_observation_mode="focal",
+                deceased=False,
+                completed_bout_count=0,
+            ),
+            SimpleNamespace(
+                creature_id=3,
+                creature_name="Paused",
+                active=False,
+                last_observation_mode="automatic",
+                deceased=False,
+                completed_bout_count=0,
+            ),
+            SimpleNamespace(
+                creature_id=4,
+                creature_name="Deceased",
+                active=False,
+                last_observation_mode="automatic",
+                deceased=True,
+                completed_bout_count=0,
+            ),
+            SimpleNamespace(
+                creature_id=5,
+                creature_name="Observed",
+                active=False,
+                last_observation_mode="automatic",
+                deceased=False,
+                completed_bout_count=12,
+            ),
+            SimpleNamespace(
+                creature_id=6,
+                creature_name="No bouts",
+                active=False,
+                last_observation_mode="automatic",
+                deceased=False,
+                completed_bout_count=0,
+            ),
+        )
+        for creature in cases:
+            statuses.append(
+                self.renderer._behavior_sidebar_row_text(
+                    "creature",
+                    creature,
+                    {3},
+                )[1]
+            )
+        self.assertEqual(
+            statuses,
+            [
+                "AUTO · RECORDING",
+                "FOCAL · RECORDING",
+                "AUTO PAUSED",
+                "DECEASED",
+                "OBSERVED · 12 BOUTS",
+                "OBSERVED · NO SUSTAINED BOUTS",
+            ],
+        )
+
+    def test_large_species_metrics_and_many_creatures_scroll_safely(
+        self,
+    ) -> None:
+        species = SpeciesBehaviorIndexEntry(
+            species_id=123456,
+            alive_population=12345,
+            monitored_count=3,
+            observed_creature_count=14,
+            total_observation_seconds=500.0,
+            completed_bout_count=987654,
+            active=True,
+        )
+        creatures = tuple(
+            CreatureHistoryIndexEntry(
+                creature_id=index,
+                creature_name=(
+                    f"Creature {index} with a deliberately long display name"
+                ),
+                deceased=False,
+                last_observed_time=12.0,
+                completed_bout_count=index,
+                species_id=123456,
+                active=index < 3,
+                last_observation_mode="automatic",
+            )
+            for index in range(14)
+        )
+        world = SimpleNamespace(
+            species_behavior_index=(species,),
+            behavior_history_index=creatures,
+            selected_creature_id=None,
+            automatic_behavior_cohort_ids=frozenset({0, 1, 2}),
+        )
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        original_clip = self.renderer._ui_clip
+        original_scrollbar = self.renderer._draw_scrollbar
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = lambda *_args, **_kwargs: None
+        self.renderer._ui_clip = lambda _bounds: nullcontext()
+        self.renderer._draw_scrollbar = lambda *_args, **_kwargs: None
+        try:
+            self.renderer._draw_report_creature_index(
+                world,
+                arcade.LBWH(0, 0, 190, 420),
+            )
+        finally:
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+            self.renderer._ui_clip = original_clip
+            self.renderer._draw_scrollbar = original_scrollbar
+
+        self.assertGreater(
+            self.renderer._scroll_limits["behavior_report_creatures"],
+            0.0,
+        )
+        species_card = self.renderer._control_hitboxes[
+            "behavior_report_species_123456"
+        ]
+        self.assertLessEqual(species_card.width, 174.0)
 
     def test_creature_sidebar_scroll_is_independent_from_page_scroll(self) -> None:
         sidebar = arcade.LBWH(0, 0, 270, 300)
@@ -233,6 +579,195 @@ class BehaviorReportUiTest(unittest.TestCase):
         self.assertEqual(
             self.renderer._scroll_offsets["behavior_report"],
             40.0,
+        )
+
+    def test_help_copy_is_complete_and_uses_runtime_thresholds(self) -> None:
+        config = build_sim_config()
+        config.behavior.background_representatives_per_species = 2
+        config.behavior.orientation_min_error_reduction = 0.22
+        config.behavior.approach_min_closing_speed = 9.5
+        config.behavior_history.active_metric_sample_capacity = 640
+
+        sections = self.renderer._behavior_report_help_sections(
+            SimpleNamespace(config=config)
+        )
+        titles = {title for title, _body in sections}
+        copy = " ".join(body for _title, body in sections)
+
+        self.assertTrue(
+            {
+                "Monitoring and coverage",
+                "Food orientation",
+                "Food approach",
+                "Feeding",
+                "Resting",
+                "Cohesion",
+                "Alarm retreat",
+                "Bouts and Evidence",
+                "Counterfactual influence",
+                "Influence labels",
+                "Effect directions",
+                "Median and IQR",
+            }.issubset(titles)
+        )
+        for expected in (
+            "2 stable living representatives",
+            "0.22 rad/s",
+            "9.5 px/s",
+            "MINIMAL is below 0.10",
+            "STRONG is 0.60 or above",
+            "25th percentile (Q1)",
+            "640 retained samples",
+        ):
+            self.assertIn(expected, copy)
+
+    def test_help_button_stays_inside_report_bottom_right(self) -> None:
+        bounds = arcade.LBWH(20, 30, 640, 460)
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = lambda *_args, **_kwargs: None
+        try:
+            self.renderer._draw_behavior_report_help_button(bounds)
+        finally:
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+
+        button = self.renderer._control_hitboxes["behavior_report_help"]
+        self.assertLessEqual(button.right, bounds.right)
+        self.assertGreaterEqual(button.bottom, bounds.bottom)
+        self.assertGreater(button.center_x, bounds.center_x)
+        self.assertLess(button.center_y, bounds.center_y)
+
+    def test_help_overlay_is_responsive_and_scrolls_independently(self) -> None:
+        world = SimpleNamespace(config=build_sim_config())
+        report_bounds = arcade.LBWH(24, 24, 592, 432)
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        original_clip = self.renderer._ui_clip
+        original_close = self.renderer._draw_panel_close_button
+        original_scrollbar = self.renderer._draw_scrollbar
+        text_widths: list[float] = []
+
+        def record_text(key, _text, *_args, **kwargs) -> None:
+            if key.startswith("behavior_report_help_section_"):
+                text_widths.append(kwargs["width"])
+
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = record_text
+        self.renderer._ui_clip = lambda _bounds: nullcontext()
+        self.renderer._draw_panel_close_button = lambda *_args, **_kwargs: None
+        self.renderer._draw_scrollbar = lambda *_args, **_kwargs: None
+        try:
+            with (
+                patch("arcade.draw_lrbt_rectangle_filled"),
+                patch("arcade.draw_line"),
+            ):
+                self.renderer._draw_behavior_report_help_overlay(
+                    world,
+                    report_bounds,
+                )
+                self.renderer._scroll_offsets["behavior_report_help"] = 1e9
+                self.renderer._draw_behavior_report_help_overlay(
+                    world,
+                    report_bounds,
+                )
+        finally:
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+            self.renderer._ui_clip = original_clip
+            self.renderer._draw_panel_close_button = original_close
+            self.renderer._draw_scrollbar = original_scrollbar
+
+        overlay = self.renderer._control_hitboxes[
+            "behavior_report_help_overlay"
+        ]
+        self.assertGreaterEqual(overlay.left, report_bounds.left)
+        self.assertLessEqual(overlay.right, report_bounds.right)
+        self.assertGreaterEqual(overlay.bottom, report_bounds.bottom)
+        self.assertLessEqual(overlay.top, report_bounds.top)
+        self.assertGreater(
+            self.renderer._scroll_limits["behavior_report_help"],
+            0.0,
+        )
+        self.assertEqual(
+            self.renderer._scroll_offsets["behavior_report_help"],
+            self.renderer._scroll_limits["behavior_report_help"],
+        )
+        viewport = self.renderer._scroll_regions["behavior_report_help"]
+        self.assertTrue(text_widths)
+        self.assertTrue(
+            all(
+                width
+                <= viewport.width - self.renderer._REPORT_SCROLLBAR_GUTTER
+                for width in text_widths
+            )
+        )
+        self.renderer._behavior_report_open = True
+        self.renderer._behavior_report_help_open = True
+        self.renderer._behavior_report_bounds = report_bounds
+        self.renderer._scroll_offsets["behavior_report_help"] = 20.0
+        self.renderer._scroll_offsets["behavior_report"] = 35.0
+        self.renderer.handle_mouse_scroll(
+            viewport.center_x,
+            viewport.center_y,
+            -1.0,
+        )
+        self.assertEqual(
+            self.renderer._scroll_offsets["behavior_report_help"],
+            44.0,
+        )
+        self.assertEqual(self.renderer._scroll_offsets["behavior_report"], 35.0)
+
+    def test_help_overlay_blocks_report_actions_and_preserves_selection(
+        self,
+    ) -> None:
+        report = arcade.LBWH(0, 0, 900, 700)
+        help_button = arcade.LBWH(840, 20, 36, 36)
+        underlying = arcade.LBWH(20, 100, 200, 50)
+        help_close = arcade.LBWH(760, 620, 34, 34)
+        self.renderer._behavior_report_open = True
+        self.renderer._behavior_report_bounds = report
+        self.renderer._behavior_report_creature_id = 8
+        self.renderer._behavior_report_page = "summary"
+        self.renderer._control_hitboxes["behavior_report_help"] = help_button
+        self.renderer._control_hitboxes["behavior_report_species_3"] = underlying
+        world = SimpleNamespace(species_behavior_index=())
+
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                world,
+                help_button.center_x,
+                help_button.center_y,
+            )
+        )
+        self.assertTrue(self.renderer._behavior_report_help_open)
+        self.renderer._control_hitboxes[
+            "behavior_report_help_close"
+        ] = help_close
+        self.renderer.handle_mouse_press(
+            world,
+            underlying.center_x,
+            underlying.center_y,
+        )
+        self.assertEqual(self.renderer._behavior_report_creature_id, 8)
+        self.assertEqual(self.renderer._behavior_report_page, "summary")
+
+        self.renderer.handle_mouse_press(
+            world,
+            help_close.center_x,
+            help_close.center_y,
+        )
+        self.assertFalse(self.renderer._behavior_report_help_open)
+        self.assertEqual(self.renderer._behavior_report_creature_id, 8)
+        self.assertEqual(self.renderer._behavior_report_page, "summary")
+        self.renderer._behavior_report_help_open = True
+        self.renderer._scroll_offsets["behavior_report_help"] = 48.0
+        self.renderer._close_behavior_report()
+        self.assertFalse(self.renderer._behavior_report_help_open)
+        self.assertEqual(
+            self.renderer._scroll_offsets["behavior_report_help"],
+            0.0,
         )
 
     def test_global_action_opens_most_recent_retained_creature(self) -> None:
@@ -562,11 +1097,34 @@ class BehaviorReportUiTest(unittest.TestCase):
         )
         card = arcade.LBWH(20, 30, 190, 260)
 
-        self.renderer._draw_summary_card(short, card)
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        text_calls: dict[str, SimpleNamespace] = {}
 
-        title = self.renderer._text_cache["behavior_report_summary_feeding"]
-        outcome = self.renderer._text_cache["behavior_report_outcomes_feeding"]
-        self.assertEqual(title.font_size, 12.0)
+        def record_text(key, text, x, y, _color, size, **kwargs) -> None:
+            text_calls[key] = SimpleNamespace(
+                text=text,
+                x=round(x),
+                y=round(y),
+                font_size=size * self.renderer._BEHAVIOR_REPORT_FONT_SCALE,
+                anchor_y=kwargs.get("anchor_y", "baseline"),
+            )
+
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = record_text
+        try:
+            with patch("arcade.draw_circle_filled"):
+                self.renderer._draw_summary_card(short, card)
+        finally:
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+
+        title = text_calls["behavior_report_summary_feeding"]
+        outcome = text_calls["behavior_report_outcomes_feeding"]
+        self.assertEqual(
+            title.font_size,
+            12.0 * self.renderer._BEHAVIOR_REPORT_FONT_SCALE,
+        )
         self.assertEqual(title.x, round(card.left + 30.0))
         self.assertEqual(title.y, round(card.top - 14.0))
         self.assertEqual(title.anchor_y, "top")
@@ -635,9 +1193,17 @@ class BehaviorReportUiTest(unittest.TestCase):
         )
         cards: list[arcade.Rect] = []
         original_card = self.renderer._draw_summary_card
+        original_identity = self.renderer._draw_report_identity_strip
+        original_clip = self.renderer._ui_clip
+        original_scrollbar = self.renderer._draw_scrollbar
         self.renderer._draw_summary_card = (
             lambda _item, bounds: cards.append(bounds)
         )
+        self.renderer._draw_report_identity_strip = (
+            lambda *_args, **_kwargs: None
+        )
+        self.renderer._ui_clip = lambda _bounds: nullcontext()
+        self.renderer._draw_scrollbar = lambda *_args, **_kwargs: None
         try:
             self.renderer._draw_report_summary(
                 report,
@@ -645,12 +1211,19 @@ class BehaviorReportUiTest(unittest.TestCase):
             )
         finally:
             self.renderer._draw_summary_card = original_card
+            self.renderer._draw_report_identity_strip = original_identity
+            self.renderer._ui_clip = original_clip
+            self.renderer._draw_scrollbar = original_scrollbar
 
         self.assertEqual(len(cards), 4)
         self.assertEqual(cards[0].height, cards[1].height)
         self.assertEqual(cards[2].height, cards[3].height)
         self.assertGreater(cards[0].height, cards[2].height)
         self.assertEqual(cards[0].bottom - cards[2].top, 12.0)
+        self.assertLessEqual(
+            max(card.right for card in cards),
+            700.0 - self.renderer._REPORT_SCROLLBAR_GUTTER,
+        )
 
     def test_why_card_wraps_complete_text_and_expands_for_narrow_width(
         self,
@@ -677,18 +1250,46 @@ class BehaviorReportUiTest(unittest.TestCase):
         wide_height = self.renderer._why_card_height(report, effect, 360.0)
         card = arcade.LBWH(10, 20, 180, narrow_height)
 
-        self.renderer._draw_why_card(report, behavior, effect, card)
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        text_calls: dict[str, SimpleNamespace] = {}
+
+        def record_text(key, text, x, y, _color, size, **kwargs) -> None:
+            text_calls[key] = SimpleNamespace(
+                text=text,
+                x=round(x),
+                font_size=size * self.renderer._BEHAVIOR_REPORT_FONT_SCALE,
+                multiline=kwargs.get("multiline", False),
+                anchor_y=kwargs.get("anchor_y", "baseline"),
+            )
+
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = record_text
+        try:
+            with patch("arcade.draw_circle_filled"):
+                self.renderer._draw_why_card(
+                    report,
+                    behavior,
+                    effect,
+                    card,
+                )
+        finally:
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
 
         prefix = "food_approach_resource_gradient_cues"
-        title = self.renderer._text_cache[
+        title = text_calls[
             f"behavior_report_why_intervention_{prefix}"
         ]
-        pattern = self.renderer._text_cache[
+        pattern = text_calls[
             f"behavior_report_why_pattern_{prefix}"
         ]
         self.assertEqual(title.text, "Resource Gradient Cues")
         self.assertNotIn("...", title.text)
-        self.assertEqual(title.font_size, 12.0)
+        self.assertEqual(
+            title.font_size,
+            12.0 * self.renderer._BEHAVIOR_REPORT_FONT_SCALE,
+        )
         self.assertTrue(title.multiline)
         self.assertEqual(title.anchor_y, "top")
         self.assertEqual(title.x, round(card.left + 30.0))
@@ -754,9 +1355,21 @@ class BehaviorReportUiTest(unittest.TestCase):
         )
         cards: list[arcade.Rect] = []
         original_card = self.renderer._draw_why_card
+        original_identity = self.renderer._draw_report_identity_strip
+        original_rounded = self.renderer._draw_rounded_rect
+        original_text = self.renderer._draw_text
+        original_clip = self.renderer._ui_clip
+        original_scrollbar = self.renderer._draw_scrollbar
         self.renderer._draw_why_card = (
             lambda _report, _behavior, _effect, bounds: cards.append(bounds)
         )
+        self.renderer._draw_report_identity_strip = (
+            lambda *_args, **_kwargs: None
+        )
+        self.renderer._draw_rounded_rect = lambda *_args, **_kwargs: None
+        self.renderer._draw_text = lambda *_args, **_kwargs: None
+        self.renderer._ui_clip = lambda _bounds: nullcontext()
+        self.renderer._draw_scrollbar = lambda *_args, **_kwargs: None
         try:
             self.renderer._draw_report_why(
                 report,
@@ -764,11 +1377,20 @@ class BehaviorReportUiTest(unittest.TestCase):
             )
         finally:
             self.renderer._draw_why_card = original_card
+            self.renderer._draw_report_identity_strip = original_identity
+            self.renderer._draw_rounded_rect = original_rounded
+            self.renderer._draw_text = original_text
+            self.renderer._ui_clip = original_clip
+            self.renderer._draw_scrollbar = original_scrollbar
 
         self.assertEqual(len(cards), 3)
         self.assertEqual(cards[0].height, cards[1].height)
         self.assertGreater(cards[0].height, cards[2].height)
         self.assertEqual(cards[0].bottom - cards[2].top, 12.0)
+        self.assertLessEqual(
+            max(card.right for card in cards),
+            500.0 - self.renderer._REPORT_SCROLLBAR_GUTTER,
+        )
 
     def test_overlapping_timeline_bouts_have_stable_click_targets(self) -> None:
         bouts = (

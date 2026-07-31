@@ -98,6 +98,22 @@ class UiRenderer(
             "_behavior_report_state",
             "creature_id",
         ),
+        "_behavior_report_species_id": (
+            "_behavior_report_state",
+            "species_id",
+        ),
+        "_behavior_report_species_selected": (
+            "_behavior_report_state",
+            "species_selected",
+        ),
+        "_behavior_report_historical_expanded": (
+            "_behavior_report_state",
+            "historical_expanded",
+        ),
+        "_behavior_report_help_open": (
+            "_behavior_report_state",
+            "help_open",
+        ),
         "_behavior_report_page": ("_behavior_report_state", "page"),
         "_behavior_report_selected_bout_id": (
             "_behavior_report_state",
@@ -492,8 +508,29 @@ class UiRenderer(
                 y,
             )
         ):
+            if self._behavior_report_help_open:
+                if (
+                    self._contains_hitbox("behavior_report_help_close", x, y)
+                    or self._contains_hitbox("behavior_report_help", x, y)
+                ):
+                    self._behavior_report_help_open = False
+                    self._scroll_offsets["behavior_report_help"] = 0.0
+                return True
             if self._contains_hitbox("behavior_report_close", x, y):
                 self._close_behavior_report()
+                return True
+            if self._contains_hitbox("behavior_report_help", x, y):
+                self._behavior_report_help_open = True
+                self._scroll_offsets["behavior_report_help"] = 0.0
+                return True
+            if self._contains_hitbox(
+                "behavior_report_species_historical_toggle",
+                x,
+                y,
+            ):
+                self._behavior_report_historical_expanded = not (
+                    self._behavior_report_historical_expanded
+                )
                 return True
             for page in ("timeline", "summary", "why"):
                 if self._contains_hitbox(
@@ -514,6 +551,24 @@ class UiRenderer(
                     self._behavior_report_why_behavior = behavior.value
                     self._scroll_offsets["behavior_report"] = 0.0
                     return True
+            for species in getattr(world, "species_behavior_index", ()):
+                species_key = (
+                    "unknown"
+                    if species.species_id is None
+                    else str(species.species_id)
+                )
+                if self._contains_hitbox(
+                    f"behavior_report_species_{species_key}",
+                    x,
+                    y,
+                ):
+                    self._behavior_report_species_id = species.species_id
+                    self._behavior_report_species_selected = True
+                    self._behavior_report_creature_id = None
+                    self._behavior_report_selected_bout_id = None
+                    self._behavior_report_why_behavior = None
+                    self._scroll_offsets["behavior_report"] = 0.0
+                    return True
             for entry in world.behavior_history_index:
                 if self._contains_hitbox(
                     f"behavior_report_creature_{entry.creature_id}",
@@ -521,6 +576,8 @@ class UiRenderer(
                     y,
                 ):
                     self._behavior_report_creature_id = entry.creature_id
+                    self._behavior_report_species_id = entry.species_id
+                    self._behavior_report_species_selected = False
                     self._behavior_report_selected_bout_id = None
                     self._behavior_report_why_behavior = None
                     self._scroll_offsets["behavior_report"] = 0.0
@@ -652,6 +709,8 @@ class UiRenderer(
             )
         ):
             self._behavior_report_open = True
+            self._behavior_report_help_open = False
+            self._scroll_offsets["behavior_report_help"] = 0.0
             self._behavior_report_why_behavior = None
             selected = getattr(world, "selected_creature_id", None)
             known_ids = {
@@ -659,10 +718,37 @@ class UiRenderer(
             }
             if selected in known_ids:
                 self._behavior_report_creature_id = selected
-            elif world.behavior_history_index:
-                self._behavior_report_creature_id = (
-                    world.behavior_history_index[0].creature_id
+                selected_entry = next(
+                    entry
+                    for entry in world.behavior_history_index
+                    if entry.creature_id == selected
                 )
+                self._behavior_report_species_id = selected_entry.species_id
+                self._behavior_report_species_selected = False
+            elif world.behavior_history_index:
+                active_species = next(
+                    (
+                        entry
+                        for entry in getattr(
+                            world,
+                            "species_behavior_index",
+                            (),
+                        )
+                        if entry.active
+                    ),
+                    None,
+                )
+                if active_species is not None:
+                    self._behavior_report_species_id = (
+                        active_species.species_id
+                    )
+                    self._behavior_report_species_selected = True
+                    self._behavior_report_creature_id = None
+                else:
+                    self._behavior_report_creature_id = (
+                        world.behavior_history_index[0].creature_id
+                    )
+                    self._behavior_report_species_selected = False
             return True
         if self._contains_hitbox("open_brain_window", x, y):
             if world.selected_creature is not None:
@@ -884,6 +970,22 @@ class UiRenderer(
                     self._clamp_species_tree_offsets()
             return True
         if self._behavior_report_open:
+            if self._behavior_report_help_open:
+                region = self._scroll_regions.get("behavior_report_help")
+                if region is not None and self._contains_bounds(region, x, y):
+                    limit = self._scroll_limits.get(
+                        "behavior_report_help",
+                        0.0,
+                    )
+                    current = self._scroll_offsets.get(
+                        "behavior_report_help",
+                        0.0,
+                    )
+                    self._scroll_offsets["behavior_report_help"] = max(
+                        0.0,
+                        min(limit, current - scroll_y * 24.0),
+                    )
+                return True
             for scroll_key in (
                 "behavior_report_creatures",
                 "behavior_report",

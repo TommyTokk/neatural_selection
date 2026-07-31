@@ -569,9 +569,10 @@ class ActionConfig:
 
 @dataclass(slots=True)
 class BehaviorObserverConfig:
-    """Configuration for the focal temporal behaviour observer."""
+    """Configuration for automatic and focal temporal observation."""
 
     enabled: bool = True
+    background_representatives_per_species: int = 3
     sample_hz: float = 10.0
     window_seconds: float = 2.5
     bout_start_seconds: float = 0.5
@@ -596,6 +597,14 @@ class BehaviorObserverConfig:
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
             raise ValueError("behavior.enabled must be a boolean.")
+        if (
+            type(self.background_representatives_per_species) is not int
+            or self.background_representatives_per_species < 0
+        ):
+            raise ValueError(
+                "behavior.background_representatives_per_species must be "
+                "a nonnegative integer."
+            )
         positive = {
             "sample_hz": self.sample_hz,
             "window_seconds": self.window_seconds,
@@ -784,7 +793,7 @@ class SimConfig:
     # Action config
     action: ActionConfig = field(default_factory=ActionConfig)
 
-    # Focal temporal behaviour observer
+    # Automatic and focal temporal behaviour observer
     behavior: BehaviorObserverConfig = field(
         default_factory=BehaviorObserverConfig
     )

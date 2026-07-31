@@ -1,4 +1,4 @@
-"""Measure focal behaviour-observer producer and worker overhead.
+"""Measure hybrid behaviour-observer producer and worker overhead.
 
 Run from the repository root:
 
@@ -152,10 +152,66 @@ def benchmark_long_term_history(completed_bouts: int) -> None:
     )
 
 
+def benchmark_batched_cohort(subject_count: int, batch_count: int) -> None:
+    """Exercise a maximum-population cohort without subject starvation."""
+    config = BehaviorObserverConfig(input_queue_capacity=32)
+    service = BehaviorObserverService(config)
+    subjects = tuple(
+        (creature_id, creature_id)
+        for creature_id in range(1, subject_count + 1)
+    )
+    started = time.perf_counter()
+    try:
+        service.set_subjects(subjects)
+        for tick in range(batch_count):
+            base = sample(tick, config.sample_hz)
+            service.submit_batch(
+                tuple(
+                    replace(
+                        base,
+                        creature_id=creature_id,
+                        selection_generation=creature_id,
+                    )
+                    for creature_id in range(1, subject_count + 1)
+                )
+            )
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            service.poll()
+            if (
+                len(service.latest_snapshots) == subject_count
+                and service.diagnostics.observations_processed
+                + service.diagnostics.samples_dropped
+                >= subject_count * batch_count
+            ):
+                break
+            time.sleep(0.005)
+        missing = subject_count - len(service.latest_snapshots)
+        if missing:
+            raise RuntimeError(
+                f"Batched cohort starved {missing} of {subject_count} subjects."
+            )
+        diagnostics = service.diagnostics
+    finally:
+        service.close()
+    elapsed = time.perf_counter() - started
+    print(
+        "Batched cohort subjects / ticks / throughput: "
+        f"{subject_count} / {batch_count} / "
+        f"{subject_count * batch_count / max(elapsed, 1e-12):,.0f} samples/s"
+    )
+    print(
+        "Batched cohort processed / dropped: "
+        f"{diagnostics.observations_processed} / {diagnostics.samples_dropped}"
+    )
+
+
 def run(
     sample_count: int,
     world_steps: int,
     history_bouts: int,
+    cohort_subjects: int,
+    cohort_batches: int,
 ) -> None:
     config = BehaviorObserverConfig()
     observations = [sample(index, config.sample_hz) for index in range(sample_count)]
@@ -228,6 +284,8 @@ def run(
     )
     if history_bouts:
         benchmark_long_term_history(history_bouts)
+    if cohort_subjects and cohort_batches:
+        benchmark_batched_cohort(cohort_subjects, cohort_batches)
     if world_steps:
         disabled_frames = benchmark_seeded_world(False, world_steps)
         enabled_frames = benchmark_seeded_world(True, world_steps)
@@ -258,6 +316,8 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=5000)
     parser.add_argument("--world-steps", type=int, default=180)
     parser.add_argument("--history-bouts", type=int, default=10000)
+    parser.add_argument("--cohort-subjects", type=int, default=55)
+    parser.add_argument("--cohort-batches", type=int, default=100)
     args = parser.parse_args()
     if args.samples < 1:
         parser.error("--samples must be positive")
@@ -265,7 +325,15 @@ def main() -> None:
         parser.error("--world-steps must be nonnegative")
     if args.history_bouts < 0:
         parser.error("--history-bouts must be nonnegative")
-    run(args.samples, args.world_steps, args.history_bouts)
+    if args.cohort_subjects < 0 or args.cohort_batches < 0:
+        parser.error("cohort benchmark values must be nonnegative")
+    run(
+        args.samples,
+        args.world_steps,
+        args.history_bouts,
+        args.cohort_subjects,
+        args.cohort_batches,
+    )
 
 
 if __name__ == "__main__":

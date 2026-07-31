@@ -19,6 +19,8 @@ class _Observer:
         self.poll_count = 0
         self.latest_snapshot = None
         self.finalized = []
+        self.subjects = []
+        self.latest_snapshots = {}
 
     def set_focus(self, creature_id, generation) -> None:
         self.focuses.append((creature_id, generation))
@@ -27,6 +29,13 @@ class _Observer:
     def submit(self, observation) -> bool:
         self.submitted.append(observation)
         return True
+
+    def submit_batch(self, observations) -> bool:
+        self.submitted.extend(observations)
+        return True
+
+    def set_subjects(self, subjects) -> None:
+        self.subjects.append(tuple(subjects))
 
     def poll(self):
         self.poll_count += 1
@@ -122,7 +131,7 @@ class WorldBehaviorObserverTest(unittest.TestCase):
 
         self.assertEqual(
             world.behavior_observer.finalized,
-            [BehaviorTermination.FOCUS_CHANGED],
+            [BehaviorTermination.MODE_SWITCHED],
         )
         self.assertEqual(world.behavior_observer.focuses, [(None, 3)])
 
@@ -179,6 +188,51 @@ class WorldBehaviorObserverTest(unittest.TestCase):
         world.update(0.0)
 
         self.assertEqual(world.behavior_observer.poll_count, 1)
+
+    def test_automatic_cohort_is_stable_and_bounded_per_species(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.selected_creature_id = None
+        world.elapsed_time = 0.0
+        world.behavior_observer = _Observer()
+        world.behavior_history = CreatureBehaviorHistoryStore(
+            max_completed_bouts_per_creature=4,
+            max_remembered_creatures=4,
+            minimum_stable_bouts=3,
+        )
+        world._behavior_automatic_cohort = {}
+        world._behavior_active_subjects = {}
+        world._behavior_subject_generation_counter = 0
+        world._behavior_consumption_totals = {}
+
+        def creature(creature_id, species_id):
+            return SimpleNamespace(
+                creature_id=creature_id,
+                name=f"Creature {creature_id}",
+                lineage=SimpleNamespace(species_id=species_id),
+            )
+
+        world.creatures = [
+            *(creature(index, 1) for index in range(1, 6)),
+            creature(6, 2),
+            creature(7, 2),
+        ]
+        world._sync_automatic_behavior_cohort()
+        initial = dict(world._behavior_automatic_cohort)
+
+        self.assertEqual(len(initial[1]), 3)
+        self.assertEqual(len(initial[2]), 2)
+        world.creatures.append(creature(8, 1))
+        world._sync_automatic_behavior_cohort()
+        self.assertEqual(world._behavior_automatic_cohort[1], initial[1])
+
+        removed = initial[1][0]
+        world.creatures = [
+            item for item in world.creatures if item.creature_id != removed
+        ]
+        world._sync_automatic_behavior_cohort()
+        self.assertEqual(len(world._behavior_automatic_cohort[1]), 3)
+        self.assertNotIn(removed, world._behavior_automatic_cohort[1])
 
     def test_worker_skip_diagnostics_accumulate_into_permanent_history(
         self,

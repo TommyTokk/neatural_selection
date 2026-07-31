@@ -12,9 +12,11 @@ Behaviour Observer and counterfactual NEAT WHY system.
   is aggregated as one median value per bout, so long bouts do not receive
   extra weight.
 
-Only selected creatures receive detailed observation. Completed records remain
-available after deselection and death, subject to the configured per-creature
-and remembered-creature bounds.
+When no creature is selected, up to three stable representatives from every
+living species receive temporal observation. Selecting a creature pauses those
+automatic cohorts and gives the focal creature exclusive temporal and WHY
+analysis. Completed records remain available after deselection and death,
+subject to the configured per-creature and historical-creature bounds.
 
 ## Bounded collection
 
@@ -51,13 +53,22 @@ keeps the live `NODE | BEHAVIOURS | WHY` inspector unchanged and provides:
   availability denominators, IQR, centralized influence labels, and
   bout-direction counts.
 
+The report is species-first: active species expose coverage and normalized
+aggregate behavior rates, monitored creatures remain available for individual
+timeline and summary inspection, and extinct species are retained in a
+collapsed historical section. Counterfactual WHY remains focal-only.
+The fixed `?` action opens a scrollable in-report guide whose rule thresholds
+come from the active simulation configuration.
+
 Stable wording such as “Typical” is used only after the configured number of
 WHY-contributing completed bouts. An incomplete-history warning remains visible
 after any hard-bound skip, even after the worker has recovered.
 
 ## Persistence
 
-Checkpoint version 16 persists only:
+Checkpoint version 17 also persists species observation coverage and stable
+automatic-cohort membership. As before, it persists only finalized behavior
+history rather than active temporal windows:
 
 - finalized completed bouts and compact WHY summaries;
 - persistent per-creature bout counters;
@@ -66,7 +77,9 @@ Checkpoint version 16 persists only:
 
 Active observation windows, live snapshots, pending IPC/outbox records,
 temporary metric samples, and raw counterfactual probes are never persisted.
-Version 15 and older checkpoints restore with an empty, complete history.
+Version 16 history is retained and species is inferred from living or archived
+lineage where possible. Version 15 and older checkpoints restore with an empty,
+complete history.
 
 ## Benchmark
 

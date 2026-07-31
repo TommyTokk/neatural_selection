@@ -680,6 +680,111 @@ class CreatureBehaviorHistoryStoreTest(unittest.TestCase):
             0,
         )
 
+    def test_species_coverage_progress_and_aggregate_rate(self) -> None:
+        self.store.register_creature(
+            7,
+            "Seven",
+            0.0,
+            species_id=3,
+            observation_mode="automatic",
+            observation_generation=9,
+            active=True,
+        )
+        self.store.record_observation_progress(7, 9, 0.0, 1)
+        self.store.record_observation_progress(7, 9, 10.0, 101)
+        self.store.append_draft(
+            _draft(1, 0.4, 3, EffectDirection.SUPPORTIVE)
+        )
+
+        report = self.store.species_report(3)
+
+        self.assertEqual(report.observed_creature_count, 1)
+        self.assertEqual(report.total_observation_seconds, 10.0)
+        self.assertEqual(report.completed_bout_count, 1)
+        self.assertAlmostEqual(
+            report.behaviors[0].bouts_per_creature_hour,
+            360.0,
+        )
+
+    def test_late_progress_from_paused_session_is_counted_once(self) -> None:
+        self.store.register_creature(
+            7,
+            "Seven",
+            0.0,
+            species_id=3,
+            observation_mode="automatic",
+            observation_generation=9,
+            active=True,
+        )
+        self.store.record_observation_progress(7, 9, 0.0, 1)
+        self.store.set_active_creatures(set())
+        self.store.register_creature(
+            7,
+            "Seven",
+            10.0,
+            species_id=3,
+            observation_mode="focal",
+            observation_generation=10,
+            active=True,
+        )
+        self.store.record_observation_progress(7, 10, 10.0, 1)
+        self.store.record_observation_progress(7, 9, 8.0, 81)
+        self.store.record_observation_progress(7, 9, 8.0, 81)
+        self.store.record_observation_progress(7, 10, 12.0, 21)
+
+        report = self.store.report_for(7)
+
+        assert report is not None
+        self.assertEqual(report.total_observation_seconds, 10.0)
+        self.assertEqual(report.observation_session_count, 2)
+
+    def test_legacy_species_is_inferred_or_stays_under_unknown_species(
+        self,
+    ) -> None:
+        self.store.register_creature(7, "Seven", 0.0)
+        self.store.register_creature(8, "Eight", 1.0)
+        legacy_state = self.store.state_dict()
+        for creature in legacy_state["creatures"]:
+            creature.pop("species_id")
+        restored = CreatureBehaviorHistoryStore(
+            max_completed_bouts_per_creature=4,
+            max_remembered_creatures=2,
+            minimum_stable_bouts=3,
+        )
+
+        restored.restore_state(legacy_state)
+        restored.assign_missing_species({7: 4})
+
+        self.assertEqual(
+            restored.species_report(None).observed_creature_count,
+            1,
+        )
+        self.assertEqual(
+            restored.species_report(4).observed_creature_count,
+            1,
+        )
+
+    def test_active_records_are_protected_from_historical_retention(self) -> None:
+        self.store.register_creature(
+            8,
+            "Eight",
+            1.0,
+            species_id=1,
+            active=True,
+            observation_generation=1,
+        )
+        self.store.register_creature(9, "Nine", 2.0)
+        self.store.register_creature(10, "Ten", 3.0)
+        self.store.register_creature(11, "Eleven", 4.0)
+
+        self.assertIsNotNone(self.store.report_for(8))
+        inactive = [entry for entry in self.store.index if not entry.active]
+        self.assertLessEqual(len(inactive), 2)
+
+    def test_unobserved_death_does_not_create_history_entry(self) -> None:
+        self.store.mark_deceased(99, 4.0)
+        self.assertIsNone(self.store.report_for(99))
+
 
 class CompletionBackpressureTest(unittest.TestCase):
     def _service(self, hard_capacity: int) -> BehaviorObserverService:

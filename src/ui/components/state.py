@@ -72,6 +72,10 @@ class BehaviorReportState:
     open: bool = False
     bounds: arcade.Rect | None = None
     creature_id: int | None = None
+    species_id: int | None = None
+    species_selected: bool = False
+    historical_expanded: bool = False
+    help_open: bool = False
     page: str = "timeline"
     selected_bout_id: int | None = None
     why_behavior: str | None = None

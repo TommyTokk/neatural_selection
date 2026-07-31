@@ -24,9 +24,9 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 16
+CHECKPOINT_VERSION = 17
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -614,6 +614,9 @@ class PersistenceManager:
                     getattr(world, "behavior_history", None).state_dict()
                     if getattr(world, "behavior_history", None) is not None
                     else {}
+                ),
+                "behavior_automatic_cohort": copy.deepcopy(
+                    getattr(world, "_behavior_automatic_cohort", {})
                 ),
                 "flocking_telemetry_accumulator": getattr(
                     world,
@@ -1784,6 +1787,13 @@ class PersistenceManager:
                 behavior_history.restore_state(
                     runtime.get("behavior_history", {})
                 )
+            world._behavior_automatic_cohort = {
+                int(species_id): tuple(int(value) for value in creature_ids)
+                for species_id, creature_ids in runtime.get(
+                    "behavior_automatic_cohort",
+                    {},
+                ).items()
+            }
             world._flocking_telemetry_accumulator = float(
                 runtime.get("flocking_telemetry_accumulator", 0.0)
             )
@@ -2127,6 +2137,45 @@ class PersistenceManager:
                 controller._next_genome_id_value = next_genome_id
             if not reset_brain_epoch:
                 world._reset_behavior_focus(world.selected_creature_id)
+                selected = world.selected_creature
+                if selected is not None:
+                    from src.behavior_observer import ObservationMode
+
+                    world.behavior_history.register_creature(
+                        selected.creature_id,
+                        selected.name,
+                        world.elapsed_time,
+                        species_id=selected.lineage.species_id,
+                        observation_mode=ObservationMode.FOCAL,
+                        observation_generation=(
+                            world._behavior_selection_generation
+                        ),
+                        active=True,
+                    )
+            species_by_creature_id = {
+                creature.creature_id: creature.lineage.species_id
+                for creature in world.creatures
+            }
+            species_by_creature_id.update(
+                {
+                    archived.creature_id: archived.lineage.species_id
+                    for archived in world._trait_archive_by_genome_id.values()
+                }
+            )
+            world.behavior_history.assign_missing_species(
+                species_by_creature_id
+            )
+            living_ids = {creature.creature_id for creature in world.creatures}
+            world._behavior_automatic_cohort = {
+                species_id: tuple(
+                    creature_id
+                    for creature_id in creature_ids
+                    if creature_id in living_ids
+                )
+                for species_id, creature_ids in (
+                    world._behavior_automatic_cohort.items()
+                )
+            }
             world._prune_historical_archives()
             world._refresh_stats()
             return world

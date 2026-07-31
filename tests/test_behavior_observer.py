@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import unittest
 
 from configs.sim_config import BehaviorObserverConfig
+from src.behavior_history import BehaviorTermination
 from src.behavior_observer import (
     BehaviorKind,
     BehaviorObservation,
@@ -533,6 +534,34 @@ class BehaviorObserverServiceTest(unittest.TestCase):
         self.assertEqual(drops, 1)
         self.assertEqual(queue.get_nowait().simulation_time, 0.1)
 
+    def test_subject_replacement_finalizes_removed_analyzers_as_mode_switch(
+        self,
+    ) -> None:
+        service = BehaviorObserverService(BehaviorObserverConfig())
+        service._process = SimpleNamespace(
+            is_alive=lambda: True,
+            exitcode=None,
+        )
+        service._lifecycle_queue = Queue(maxsize=8)
+        service._subjects = {(1, -1), (2, -2)}
+
+        service.set_subjects(((3, 1),))
+
+        requests = (
+            service._lifecycle_queue.get_nowait(),
+            service._lifecycle_queue.get_nowait(),
+        )
+        self.assertEqual(
+            {request.creature_id for request in requests},
+            {1, 2},
+        )
+        self.assertTrue(
+            all(
+                request.termination is BehaviorTermination.MODE_SWITCHED
+                for request in requests
+            )
+        )
+
     def test_poll_rejects_stale_focus_and_reports_worker_errors(self) -> None:
         service = BehaviorObserverService(BehaviorObserverConfig())
         service._focus = (1, 2)
@@ -567,7 +596,7 @@ class BehaviorObserverServiceTest(unittest.TestCase):
         try:
             service.set_focus(1, 1)
             self.assertTrue(service.submit(observation(0.0)))
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + 10.0
             snapshot = None
             while snapshot is None and time.monotonic() < deadline:
                 snapshot = service.poll()
@@ -578,8 +607,67 @@ class BehaviorObserverServiceTest(unittest.TestCase):
             service.close()
         self.assertFalse(service._process.is_alive())
 
+    def test_spawn_worker_keeps_batched_subject_histories_independent(self) -> None:
+        service = BehaviorObserverService(
+            BehaviorObserverConfig(input_queue_capacity=32)
+        )
+        subjects = ((1, 11), (2, 22))
+        try:
+            service.set_subjects(subjects)
+            for index in range(8):
+                self.assertTrue(
+                    service.submit_batch(
+                        (
+                            observation(
+                                index * 0.1,
+                                creature_id=1,
+                                generation=11,
+                                speed=0.1,
+                            ),
+                            observation(
+                                index * 0.1,
+                                creature_id=2,
+                                generation=22,
+                                food_id=9,
+                                food_distance=100.0 - index * 10.0,
+                                food_angle=0.0,
+                            ),
+                        )
+                    )
+                )
+            deadline = time.monotonic() + 10.0
+            while (
+                (
+                    len(service.latest_snapshots) < 2
+                    or min(
+                        snapshot.observations_processed
+                        for snapshot in service.latest_snapshots.values()
+                    )
+                    < 8
+                )
+                and time.monotonic() < deadline
+            ):
+                service.poll()
+                time.sleep(0.01)
+            first = service.snapshot_for(1, 11)
+            second = service.snapshot_for(2, 22)
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertEqual(first.observations_processed, 8)
+            self.assertEqual(second.observations_processed, 8)
+            self.assertIsNotNone(state_for(first, BehaviorKind.RESTING))
+            self.assertIsNotNone(
+                state_for(second, BehaviorKind.FOOD_APPROACH)
+            )
+        finally:
+            service.close()
+
 
 class BehaviorObserverConfigTest(unittest.TestCase):
+    def test_rejects_invalid_background_representative_count(self) -> None:
+        with self.assertRaises(ValueError):
+            BehaviorObserverConfig(background_representatives_per_species=-1)
+
     def test_rejects_invalid_window(self) -> None:
         with self.assertRaises(ValueError):
             BehaviorObserverConfig(

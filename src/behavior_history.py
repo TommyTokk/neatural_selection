@@ -8,7 +8,7 @@ observer worker and never enter the long-term store.
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from math import floor, isfinite
 from statistics import median
@@ -27,6 +27,7 @@ class BehaviorTermination(str, Enum):
     NATURAL = "natural"
     FOCUS_CHANGED = "focus_changed"
     CREATURE_DIED = "creature_died"
+    MODE_SWITCHED = "mode_switched"
 
 
 class BehaviorOutcome(str, Enum):
@@ -184,6 +185,43 @@ class CreatureHistoryIndexEntry:
     deceased: bool
     last_observed_time: float
     completed_bout_count: int
+    species_id: int | None = None
+    total_observation_seconds: float = 0.0
+    observation_session_count: int = 0
+    last_observation_mode: str | None = None
+    active: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SpeciesBehaviorSummary:
+    behavior: BehaviorKind
+    completed_bout_count: int
+    total_duration: float
+    median_duration: float
+    bouts_per_creature_hour: float
+
+
+@dataclass(frozen=True, slots=True)
+class SpeciesBehaviorReport:
+    species_id: int | None
+    observed_creature_count: int
+    total_observation_seconds: float
+    completed_bout_count: int
+    behaviors: tuple[SpeciesBehaviorSummary, ...]
+    creatures: tuple[CreatureHistoryIndexEntry, ...]
+    alive_population: int = 0
+    monitored_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SpeciesBehaviorIndexEntry:
+    species_id: int | None
+    alive_population: int
+    monitored_count: int
+    observed_creature_count: int
+    total_observation_seconds: float
+    completed_bout_count: int
+    active: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +234,10 @@ class CreatureBehaviorReport:
     history_incomplete: bool
     history_completions_not_recorded: int
     detailed_bouts_dropped: int
+    species_id: int | None = None
+    total_observation_seconds: float = 0.0
+    observation_session_count: int = 0
+    last_observation_mode: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,6 +398,15 @@ class _CreatureHistory:
     bouts: deque[CompletedBehaviorBout]
     summary: CreatureBehaviorSummary
     detailed_bouts_dropped: int = 0
+    species_id: int | None = None
+    total_observation_seconds: float = 0.0
+    observation_session_count: int = 0
+    last_observation_mode: str | None = None
+    active: bool = False
+    progress_by_generation: OrderedDict[
+        int,
+        tuple[int, float | None],
+    ] = field(default_factory=OrderedDict)
 
 
 class CreatureBehaviorHistoryStore:
@@ -393,7 +444,17 @@ class CreatureBehaviorHistoryStore:
         creature_id: int,
         creature_name: str,
         simulation_time: float,
+        *,
+        species_id: int | None = None,
+        observation_mode: object | None = None,
+        observation_generation: int | None = None,
+        active: bool = False,
     ) -> None:
+        mode_value = (
+            None
+            if observation_mode is None
+            else str(getattr(observation_mode, "value", observation_mode))
+        )
         record = self._creatures.get(creature_id)
         if record is None:
             record = _CreatureHistory(
@@ -408,22 +469,97 @@ class CreatureBehaviorHistoryStore:
                     (),
                     self.minimum_stable_bouts,
                 ),
+                species_id=species_id,
+                observation_session_count=int(active),
+                last_observation_mode=mode_value,
+                active=active,
             )
+            if observation_generation is not None:
+                record.progress_by_generation[observation_generation] = (
+                    0,
+                    None,
+                )
             self._creatures[creature_id] = record
         else:
             record.creature_name = str(creature_name)
             record.deceased = False
             record.last_observed_time = float(simulation_time)
+            if species_id is not None:
+                record.species_id = int(species_id)
+            if active and (
+                not record.active
+                or observation_generation
+                not in record.progress_by_generation
+            ):
+                record.observation_session_count += 1
+            if mode_value is not None:
+                record.last_observation_mode = mode_value
+            record.active = active
+            if (
+                observation_generation is not None
+                and observation_generation
+                not in record.progress_by_generation
+            ):
+                record.progress_by_generation[observation_generation] = (
+                    0,
+                    None,
+                )
             self._creatures.move_to_end(creature_id)
+        while len(record.progress_by_generation) > 64:
+            record.progress_by_generation.popitem(last=False)
         self._evict_creatures()
+
+    def set_active_creatures(self, creature_ids: set[int]) -> None:
+        for creature_id, record in self._creatures.items():
+            record.active = creature_id in creature_ids
+        self._evict_creatures()
+
+    def record_observation_progress(
+        self,
+        creature_id: int,
+        generation: int,
+        simulation_time: float,
+        observations_processed: int,
+    ) -> None:
+        """Accumulate processed temporal coverage without double counting."""
+        record = self._creatures.get(creature_id)
+        if record is None:
+            return
+        current_time = float(simulation_time)
+        current_count = max(0, int(observations_processed))
+        progress = record.progress_by_generation.get(generation)
+        if progress is None:
+            record.progress_by_generation[generation] = (
+                current_count,
+                current_time,
+            )
+            return
+        previous_count, previous_time = progress
+        if current_count <= previous_count:
+            return
+        if previous_time is not None:
+            record.total_observation_seconds += max(
+                0.0,
+                current_time - previous_time,
+            )
+        record.progress_by_generation[generation] = (
+            current_count,
+            current_time,
+        )
+        record.progress_by_generation.move_to_end(generation)
+        while len(record.progress_by_generation) > 64:
+            record.progress_by_generation.popitem(last=False)
+        record.last_observed_time = max(record.last_observed_time, current_time)
 
     def mark_deceased(self, creature_id: int, simulation_time: float) -> None:
         record = self._creatures.get(creature_id)
         if record is None:
             return
         record.deceased = True
+        record.active = False
         record.last_observed_time = float(simulation_time)
         self._creatures.move_to_end(creature_id)
+        self._evict_creatures()
 
     def append_draft(
         self,
@@ -505,11 +641,20 @@ class CreatureBehaviorHistoryStore:
         self._history_completions_not_recorded += increment
 
     def _evict_creatures(self) -> None:
-        while len(self._creatures) > self.max_remembered_creatures:
+        while sum(not record.active for record in self._creatures.values()) > (
+            self.max_remembered_creatures
+        ):
+            inactive = {
+                creature_id: record
+                for creature_id, record in self._creatures.items()
+                if not record.active
+            }
+            if not inactive:
+                break
             creature_id = min(
-                self._creatures,
+                inactive,
                 key=lambda candidate_id: (
-                    self._creatures[candidate_id].last_observed_time
+                    inactive[candidate_id].last_observed_time
                 ),
             )
             self._creatures.pop(creature_id)
@@ -541,6 +686,11 @@ class CreatureBehaviorHistoryStore:
                 deceased=record.deceased,
                 last_observed_time=record.last_observed_time,
                 completed_bout_count=len(record.bouts),
+                species_id=record.species_id,
+                total_observation_seconds=record.total_observation_seconds,
+                observation_session_count=record.observation_session_count,
+                last_observation_mode=record.last_observation_mode,
+                active=record.active,
             )
             for record in recent_first
         )
@@ -561,7 +711,73 @@ class CreatureBehaviorHistoryStore:
                 self._history_completions_not_recorded
             ),
             detailed_bouts_dropped=record.detailed_bouts_dropped,
+            species_id=record.species_id,
+            total_observation_seconds=record.total_observation_seconds,
+            observation_session_count=record.observation_session_count,
+            last_observation_mode=record.last_observation_mode,
         )
+
+    def species_report(
+        self,
+        species_id: int | None,
+    ) -> SpeciesBehaviorReport:
+        records = tuple(
+            record
+            for record in self._creatures.values()
+            if record.species_id == species_id
+        )
+        entries_by_id = {entry.creature_id: entry for entry in self.index}
+        entries = tuple(
+            entries_by_id[record.creature_id]
+            for record in records
+            if record.creature_id in entries_by_id
+        )
+        bouts = tuple(bout for record in records for bout in record.bouts)
+        observation_seconds = sum(
+            record.total_observation_seconds for record in records
+        )
+        from src.behavior_observer import BehaviorKind
+
+        summaries: list[SpeciesBehaviorSummary] = []
+        for behavior in BehaviorKind:
+            matching = tuple(
+                bout for bout in bouts if bout.behavior is behavior
+            )
+            if not matching:
+                continue
+            durations = sorted(bout.duration for bout in matching)
+            summaries.append(
+                SpeciesBehaviorSummary(
+                    behavior=behavior,
+                    completed_bout_count=len(matching),
+                    total_duration=sum(durations),
+                    median_duration=float(median(durations)),
+                    bouts_per_creature_hour=(
+                        0.0
+                        if observation_seconds <= 0.0
+                        else len(matching) * 3600.0 / observation_seconds
+                    ),
+                )
+            )
+        return SpeciesBehaviorReport(
+            species_id=species_id,
+            observed_creature_count=len(records),
+            total_observation_seconds=observation_seconds,
+            completed_bout_count=len(bouts),
+            behaviors=tuple(summaries),
+            creatures=entries,
+        )
+
+    def assign_missing_species(
+        self,
+        species_by_creature_id: dict[int, int],
+    ) -> None:
+        for creature_id, record in self._creatures.items():
+            if (
+                record.species_id is None
+                and creature_id in species_by_creature_id
+            ):
+                record.species_id = int(species_by_creature_id[creature_id])
 
     @property
     def diagnostics(self) -> BehaviorHistoryDiagnostics:
@@ -606,6 +822,14 @@ class CreatureBehaviorHistoryStore:
                     "last_observed_time": record.last_observed_time,
                     "next_bout_id": record.next_bout_id,
                     "detailed_bouts_dropped": record.detailed_bouts_dropped,
+                    "species_id": record.species_id,
+                    "total_observation_seconds": (
+                        record.total_observation_seconds
+                    ),
+                    "observation_session_count": (
+                        record.observation_session_count
+                    ),
+                    "last_observation_mode": record.last_observation_mode,
                     "bouts": tuple(record.bouts),
                 }
                 for record in self._creatures.values()
@@ -654,6 +878,20 @@ class CreatureBehaviorHistoryStore:
                     int(raw.get("detailed_bouts_dropped", 0)),
                 )
                 + restored_drop_count,
+                species_id=(
+                    None
+                    if raw.get("species_id") is None
+                    else int(raw["species_id"])
+                ),
+                total_observation_seconds=max(
+                    0.0,
+                    float(raw.get("total_observation_seconds", 0.0)),
+                ),
+                observation_session_count=max(
+                    0,
+                    int(raw.get("observation_session_count", 0)),
+                ),
+                last_observation_mode=raw.get("last_observation_mode"),
             )
         self._creatures = restored
         self._seen_sources.clear()

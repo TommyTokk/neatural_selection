@@ -1,26 +1,30 @@
 # Real-Time Temporal Ethogram
 
-The temporal ethogram describes the realized world and action history of the
-currently selected creature. It does not infer neural intent, modify the NEAT
-graph, feed results back into the simulation, or use the genome-derived
+The temporal ethogram describes realized world and action history. With no
+selected creature it follows a stable cohort of up to
+`behavior.background_representatives_per_species` members from every living
+species. Selecting a creature pauses those cohorts and gives that creature
+exclusive temporal and counterfactual WHY analysis. It does not modify the
+NEAT graph, feed results back into the simulation, or use the genome-derived
 ethogram in `src/analysis.py`.
 
 ## Runtime pipeline
 
 After each completed fixed simulation step, `World` may produce one immutable
-observation at the next 10 Hz simulation-time boundary. It uses the latest
+batch at the next 10 Hz simulation-time boundary. It uses the latest
 cached vision and flocking snapshots, so observation creation does not rerun
 vision or rescan the population.
 
 Observations enter a bounded queue without blocking the simulation. If the
 queue is full, the oldest item is discarded and the newest is retried once.
-A lazily started, spawn-safe worker owns exactly one temporal deque and one set
-of bout states. Changing the selected creature or selection generation clears
-that state completely. Results use the same latest-wins queue policy.
+A lazily started, spawn-safe worker owns one isolated temporal analyzer per
+monitored creature. Whole batches use the same latest-wins queue policy, so
+queue pressure cannot preferentially starve one species.
 
 `World.update` drains worker results even while the simulation is paused and
-retains only a result whose creature ID and selection generation match the
-current focus. Pausing stops simulation-time sampling.
+retains only results whose creature IDs and observation generations remain in
+the active subject set. The live brain inspector additionally filters to the
+current focal creature. Pausing stops simulation-time sampling.
 
 ## Behaviours
 

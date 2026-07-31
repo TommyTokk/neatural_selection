@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field, replace
+import hashlib
 import inspect
 import pickle
 from math import atan2, ceil, cos, exp, floor, hypot, isfinite, pi, sin, sqrt
@@ -80,6 +81,7 @@ from src.behavior_observer import (
     BehaviorObserverDiagnostics,
     BehaviorObserverService,
     BehaviorSnapshot,
+    ObservationMode,
 )
 from src.behavior_history import (
     BehaviorHistoryDiagnostics,
@@ -87,6 +89,8 @@ from src.behavior_history import (
     CreatureBehaviorHistoryStore,
     CreatureBehaviorReport,
     CreatureHistoryIndexEntry,
+    SpeciesBehaviorIndexEntry,
+    SpeciesBehaviorReport,
 )
 from src.counterfactual_neat import (
     CounterfactualDiagnostics,
@@ -226,6 +230,10 @@ class World:
         self._why_next_probe_time = 0.0
         self._behavior_food_consumption_count = 0
         self._behavior_food_consumed_energy_total = 0.0
+        self._behavior_automatic_cohort: dict[int, tuple[int, ...]] = {}
+        self._behavior_active_subjects: dict[int, int] = {}
+        self._behavior_subject_generation_counter = 0
+        self._behavior_consumption_totals: dict[int, tuple[int, float]] = {}
         self.brain_contract_reset_occurred = False
         self._flocking_group_tracker = PersistentGroupTracker(
             config.flocking.telemetry.persistence_overlap_threshold
@@ -409,6 +417,7 @@ class World:
         behavior_observer = getattr(self, "behavior_observer", None)
         if behavior_observer is not None:
             behavior_observer.poll()
+            self._record_behavior_observer_progress()
             self._drain_completed_behavior_bouts()
         if delta_time > 0.0:
             instant_fps = 1.0 / delta_time
@@ -1166,6 +1175,88 @@ class World:
         return None if history is None else history.report_for(creature_id)
 
     @property
+    def species_behavior_index(self) -> tuple[SpeciesBehaviorIndexEntry, ...]:
+        history = getattr(self, "behavior_history", None)
+        if history is None:
+            return ()
+        living_counts: dict[int, int] = {}
+        for creature in self.creatures:
+            species_id = creature.lineage.species_id
+            living_counts[species_id] = living_counts.get(species_id, 0) + 1
+        monitored_counts: dict[int, int] = {}
+        creature_by_id = {
+            creature.creature_id: creature for creature in self.creatures
+        }
+        for creature_id in self._behavior_active_subjects:
+            creature = creature_by_id.get(creature_id)
+            if creature is None:
+                continue
+            species_id = creature.lineage.species_id
+            monitored_counts[species_id] = (
+                monitored_counts.get(species_id, 0) + 1
+            )
+        retained_species = {entry.species_id for entry in history.index}
+        species_ids = {*living_counts, *retained_species}
+        entries: list[SpeciesBehaviorIndexEntry] = []
+        for species_id in species_ids:
+            report = history.species_report(species_id)
+            alive = living_counts.get(species_id, 0)
+            entries.append(
+                SpeciesBehaviorIndexEntry(
+                    species_id=species_id,
+                    alive_population=alive,
+                    monitored_count=monitored_counts.get(species_id, 0),
+                    observed_creature_count=report.observed_creature_count,
+                    total_observation_seconds=(
+                        report.total_observation_seconds
+                    ),
+                    completed_bout_count=report.completed_bout_count,
+                    active=alive > 0,
+                )
+            )
+        return tuple(
+            sorted(
+                entries,
+                key=lambda entry: (
+                    not entry.active,
+                    entry.species_id is None,
+                    -1 if entry.species_id is None else entry.species_id,
+                ),
+            )
+        )
+
+    @property
+    def automatic_behavior_cohort_ids(self) -> frozenset[int]:
+        return frozenset(
+            creature_id
+            for cohort in self._behavior_automatic_cohort.values()
+            for creature_id in cohort
+        )
+
+    def species_behavior_report_for(
+        self,
+        species_id: int | None,
+    ) -> SpeciesBehaviorReport:
+        report = self.behavior_history.species_report(species_id)
+        entry = next(
+            (
+                item
+                for item in self.species_behavior_index
+                if item.species_id == species_id
+            ),
+            None,
+        )
+        return (
+            report
+            if entry is None
+            else replace(
+                report,
+                alive_population=entry.alive_population,
+                monitored_count=entry.monitored_count,
+            )
+        )
+
+    @property
     def behavior_history_diagnostics(self) -> BehaviorHistoryDiagnostics:
         history = getattr(self, "behavior_history", None)
         return (
@@ -1207,6 +1298,26 @@ class World:
             self._behavior_history_worker_skipped_seen = max(
                 previously_seen,
                 skipped,
+            )
+
+    def _record_behavior_observer_progress(self) -> None:
+        observer = getattr(self, "behavior_observer", None)
+        history = getattr(self, "behavior_history", None)
+        if observer is None or history is None:
+            return
+        drain = getattr(observer, "drain_progress_snapshots", None)
+        if callable(drain):
+            snapshots = drain()
+        else:
+            snapshots = tuple(
+                getattr(observer, "latest_snapshots", {}).values()
+            )
+        for snapshot in snapshots:
+            history.record_observation_progress(
+                snapshot.creature_id,
+                snapshot.selection_generation,
+                snapshot.simulation_time,
+                snapshot.observations_processed,
             )
 
     @property
@@ -1550,7 +1661,11 @@ class World:
             None,
         )
         if selection_changed and previous_id is not None:
-            self._finalize_behavior_focus(BehaviorTermination.FOCUS_CHANGED)
+            self._finalize_behavior_focus(
+                BehaviorTermination.MODE_SWITCHED
+                if selected_id is None
+                else BehaviorTermination.FOCUS_CHANGED
+            )
         self.selected_creature_id = selected_id
         if selection_changed:
             self._reset_behavior_focus(selected_id)
@@ -1560,7 +1675,14 @@ class World:
                     chosen.creature_id,
                     chosen.name,
                     self.elapsed_time,
+                    species_id=chosen.lineage.species_id,
+                    observation_mode=ObservationMode.FOCAL,
+                    observation_generation=(
+                        self._behavior_selection_generation
+                    ),
+                    active=True,
                 )
+                history.set_active_creatures({chosen.creature_id})
         self._camera_follows_selected_creature = chosen is not None
         self._focus_selected_creature()
 
@@ -1579,6 +1701,7 @@ class World:
         )
         self._behavior_food_consumption_count = 0
         self._behavior_food_consumed_energy_total = 0.0
+        self._behavior_consumption_totals = {}
         now = getattr(self, "elapsed_time", 0.0)
         behavior_config = getattr(
             getattr(self, "config", None),
@@ -1610,6 +1733,18 @@ class World:
                 creature_id,
                 self._behavior_selection_generation,
             )
+            self._behavior_active_subjects = (
+                {}
+                if creature_id is None
+                else {creature_id: self._behavior_selection_generation}
+            )
+            if creature_id is not None:
+                self._behavior_consumption_totals[creature_id] = (0, 0.0)
+            history = getattr(self, "behavior_history", None)
+            if history is not None:
+                history.set_active_creatures(
+                    set(self._behavior_active_subjects)
+                )
             set_focal_brain = getattr(observer, "set_focal_brain", None)
             if callable(set_focal_brain):
                 brain = (
@@ -1643,33 +1778,111 @@ class World:
                     )
                 )
 
-    def _sample_selected_behavior(self) -> None:
-        observer = getattr(self, "behavior_observer", None)
+    def _next_behavior_subject_generation(self) -> int:
+        # Automatic identities live in a negative namespace so switching a
+        # creature to focal mode can never reuse the same worker key.
+        self._behavior_subject_generation_counter -= 1
+        return self._behavior_subject_generation_counter
+
+    def _behavior_representative_rank(
+        self,
+        species_id: int,
+        creature_id: int,
+    ) -> bytes:
+        payload = (
+            f"{self.config.random_seed}:{species_id}:{creature_id}"
+        ).encode("utf-8")
+        return hashlib.blake2b(payload, digest_size=16).digest()
+
+    def _sync_automatic_behavior_cohort(self) -> None:
+        """Maintain stable background representatives for every live species."""
         config = getattr(getattr(self, "config", None), "behavior", None)
+        observer = getattr(self, "behavior_observer", None)
         if (
             observer is None
             or config is None
             or not config.enabled
+            or self.selected_creature is not None
         ):
             return
-        selected = self.selected_creature
-        if selected is None:
-            return
-        now = self.elapsed_time
-        next_sample = getattr(self, "_behavior_next_sample_time", now)
-        if now + 1e-12 < next_sample:
-            return
-        interval = 1.0 / config.sample_hz
-        skipped_intervals = max(
-            1,
-            int((now - next_sample) // interval) + 1,
-        )
-        self._behavior_next_sample_time = (
-            next_sample + skipped_intervals * interval
-        )
-        sensor = self._last_sensor_snapshots.get(selected.creature_id)
+        target = config.background_representatives_per_species
+        by_species: dict[int, list[Creature]] = {}
+        for creature in self.creatures:
+            by_species.setdefault(
+                creature.lineage.species_id,
+                [],
+            ).append(creature)
+
+        next_cohort: dict[int, tuple[int, ...]] = {}
+        creature_by_id = {
+            creature.creature_id: creature for creature in self.creatures
+        }
+        for species_id, members in sorted(by_species.items()):
+            member_ids = {member.creature_id for member in members}
+            retained = [
+                creature_id
+                for creature_id in self._behavior_automatic_cohort.get(
+                    species_id,
+                    (),
+                )
+                if creature_id in member_ids
+            ]
+            vacancies = max(0, min(target, len(members)) - len(retained))
+            candidates = sorted(
+                (
+                    member
+                    for member in members
+                    if member.creature_id not in retained
+                ),
+                key=lambda member: self._behavior_representative_rank(
+                    species_id,
+                    member.creature_id,
+                ),
+            )
+            retained.extend(
+                member.creature_id for member in candidates[:vacancies]
+            )
+            next_cohort[species_id] = tuple(retained)
+        self._behavior_automatic_cohort = next_cohort
+
+        desired_ids = {
+            creature_id
+            for cohort in next_cohort.values()
+            for creature_id in cohort
+        }
+        active = {
+            creature_id: generation
+            for creature_id, generation in self._behavior_active_subjects.items()
+            if creature_id in desired_ids
+        }
+        for creature_id in sorted(desired_ids - set(active)):
+            active[creature_id] = self._next_behavior_subject_generation()
+            self._behavior_consumption_totals[creature_id] = (0, 0.0)
+            creature = creature_by_id[creature_id]
+            self.behavior_history.register_creature(
+                creature_id,
+                creature.name,
+                self.elapsed_time,
+                species_id=creature.lineage.species_id,
+                observation_mode=ObservationMode.AUTOMATIC,
+                observation_generation=active[creature_id],
+                active=True,
+            )
+        removed_ids = set(self._behavior_active_subjects) - set(active)
+        for creature_id in removed_ids:
+            self._behavior_consumption_totals.pop(creature_id, None)
+        self._behavior_active_subjects = active
+        self.behavior_history.set_active_creatures(set(active))
+        observer.set_subjects(tuple(sorted(active.items())))
+
+    def _behavior_observation_for(
+        self,
+        creature: Creature,
+        generation: int,
+    ) -> BehaviorObservation | None:
+        sensor = self._last_sensor_snapshots.get(creature.creature_id)
         if sensor is None:
-            return
+            return None
         food = sensor.food
         flock = sensor.flock
         pheromones = sensor.pheromones
@@ -1682,10 +1895,10 @@ class World:
                     getattr(
                         flock,
                         "cohesion_absolute_angle",
-                        selected.heading,
+                        creature.heading,
                     )
                 )
-                - selected.heading
+                - creature.heading
             )
             if compatible_group_visible
             else None
@@ -1697,21 +1910,32 @@ class World:
                 (0.0, 0.0),
             )
         )
-        observation = BehaviorObservation(
-            creature_id=selected.creature_id,
-            selection_generation=getattr(
-                self,
-                "_behavior_selection_generation",
-                0,
+        consumption_count, consumed_energy = getattr(
+            self,
+            "_behavior_consumption_totals",
+            {},
+        ).get(
+            creature.creature_id,
+            (
+                getattr(self, "_behavior_food_consumption_count", 0)
+                if creature.creature_id == self.selected_creature_id
+                else 0,
+                getattr(self, "_behavior_food_consumed_energy_total", 0.0)
+                if creature.creature_id == self.selected_creature_id
+                else 0.0,
             ),
-            simulation_time=now,
-            x=selected.position[0],
-            y=selected.position[1],
-            heading=selected.heading,
-            angular_velocity=float(selected.body.angular_velocity),
-            velocity_x=float(selected.body.velocity.x),
-            velocity_y=float(selected.body.velocity.y),
-            speed=selected.speed,
+        )
+        return BehaviorObservation(
+            creature_id=creature.creature_id,
+            selection_generation=generation,
+            simulation_time=self.elapsed_time,
+            x=creature.position[0],
+            y=creature.position[1],
+            heading=creature.heading,
+            angular_velocity=float(creature.body.angular_velocity),
+            velocity_x=float(creature.body.velocity.x),
+            velocity_y=float(creature.body.velocity.y),
+            speed=creature.speed,
             nearest_food_id=getattr(food, "nearest_id", None),
             food_visible=bool(getattr(food, "visible", 0.0) > 0.0),
             food_distance=getattr(food, "surface_distance", None),
@@ -1729,14 +1953,7 @@ class World:
             group_velocity_x=float(group_velocity[0]),
             group_velocity_y=float(group_velocity[1]),
             personal_space_occupied=bool(
-                int(
-                    getattr(
-                        flock,
-                        "visible_personal_space_count",
-                        0,
-                    )
-                )
-                > 0
+                int(getattr(flock, "visible_personal_space_count", 0)) > 0
             ),
             alarm_here=float(getattr(pheromones, "alarm_here", 0.0)),
             alarm_forward_left=float(
@@ -1746,21 +1963,74 @@ class World:
                 getattr(pheromones, "alarm_forward_right", 0.0)
             ),
             carrying_food=(
-                selected.creature_id
+                creature.creature_id
                 in getattr(self, "_held_food_by_creature_id", {})
             ),
-            food_consumption_count=getattr(
-                self,
-                "_behavior_food_consumption_count",
-                0,
-            ),
-            food_consumed_energy_total=getattr(
-                self,
-                "_behavior_food_consumed_energy_total",
-                0.0,
-            ),
+            food_consumption_count=consumption_count,
+            food_consumed_energy_total=consumed_energy,
         )
-        observer.submit(observation)
+
+    def _sample_selected_behavior(self) -> None:
+        observer = getattr(self, "behavior_observer", None)
+        config = getattr(getattr(self, "config", None), "behavior", None)
+        if (
+            observer is None
+            or config is None
+            or not config.enabled
+        ):
+            return
+        selected = self.selected_creature
+        if selected is None:
+            self._sync_automatic_behavior_cohort()
+        now = self.elapsed_time
+        next_sample = getattr(self, "_behavior_next_sample_time", now)
+        if now + 1e-12 < next_sample:
+            return
+        interval = 1.0 / config.sample_hz
+        skipped_intervals = max(
+            1,
+            int((now - next_sample) // interval) + 1,
+        )
+        self._behavior_next_sample_time = (
+            next_sample + skipped_intervals * interval
+        )
+        active_subjects = getattr(self, "_behavior_active_subjects", None)
+        if active_subjects is None:
+            active_subjects = (
+                {}
+                if selected is None
+                else {
+                    selected.creature_id: getattr(
+                        self,
+                        "_behavior_selection_generation",
+                        0,
+                    )
+                }
+            )
+            self._behavior_active_subjects = active_subjects
+        creature_by_id = {
+            creature.creature_id: creature for creature in self.creatures
+        }
+        observations = tuple(
+            observation
+            for creature_id, generation in sorted(
+                active_subjects.items()
+            )
+            if (creature := creature_by_id.get(creature_id)) is not None
+            if (
+                observation := self._behavior_observation_for(
+                    creature,
+                    generation,
+                )
+            )
+            is not None
+        )
+        submit_batch = getattr(observer, "submit_batch", None)
+        if callable(submit_batch):
+            submit_batch(observations)
+        else:
+            for observation in observations:
+                observer.submit(observation)
 
     def _sample_selected_why(self) -> None:
         observer = getattr(self, "behavior_observer", None)
@@ -3733,27 +4003,40 @@ class World:
             self._reset_behavior_focus(None)
 
     def _record_behavior_food_consumption(self, consumption: object) -> None:
-        if getattr(consumption, "creature_id", None) != self.selected_creature_id:
+        creature_id = getattr(consumption, "creature_id", None)
+        active_subjects = getattr(self, "_behavior_active_subjects", None)
+        if (
+            active_subjects is not None
+            and creature_id not in active_subjects
+        ) or (
+            active_subjects is None
+            and creature_id != self.selected_creature_id
+        ):
             return
-        self._behavior_food_consumption_count = (
-            getattr(
-                self,
-                "_behavior_food_consumption_count",
-                0,
-            )
-            + 1
+        totals = getattr(self, "_behavior_consumption_totals", {})
+        count, energy = totals.get(
+            creature_id,
+            (
+                getattr(self, "_behavior_food_consumption_count", 0)
+                if creature_id == self.selected_creature_id
+                else 0,
+                getattr(self, "_behavior_food_consumed_energy_total", 0.0)
+                if creature_id == self.selected_creature_id
+                else 0.0,
+            ),
         )
-        self._behavior_food_consumed_energy_total = (
-            getattr(
-                self,
-                "_behavior_food_consumed_energy_total",
-                0.0,
-            )
-            + max(
-                0.0,
-                float(getattr(consumption, "energy_swallowed", 0.0)),
-            )
+        swallowed = max(
+            0.0,
+            float(getattr(consumption, "energy_swallowed", 0.0)),
         )
+        totals[creature_id] = (
+            count + 1,
+            energy + swallowed,
+        )
+        self._behavior_consumption_totals = totals
+        if creature_id == self.selected_creature_id:
+            self._behavior_food_consumption_count = count + 1
+            self._behavior_food_consumed_energy_total = energy + swallowed
 
     def _communication_intensities_for(
         self,
@@ -4059,14 +4342,32 @@ class World:
         was_selected = self.selected_creature_id == creature.creature_id
         if was_selected:
             self._finalize_behavior_focus(BehaviorTermination.CREATURE_DIED)
+        elif creature.creature_id in getattr(
+            self,
+            "_behavior_active_subjects",
+            {},
+        ):
+            observer = getattr(self, "behavior_observer", None)
+            finalize_subject = getattr(observer, "finalize_subject", None)
+            if callable(finalize_subject):
+                finalize_subject(
+                    (
+                        creature.creature_id,
+                        self._behavior_active_subjects[creature.creature_id],
+                    ),
+                    BehaviorTermination.CREATURE_DIED,
+                )
         history = getattr(self, "behavior_history", None)
         if history is not None:
-            history.register_creature(
-                creature.creature_id,
-                creature.name,
-                self.elapsed_time,
-            )
             history.mark_deceased(creature.creature_id, self.elapsed_time)
+        getattr(self, "_behavior_active_subjects", {}).pop(
+            creature.creature_id,
+            None,
+        )
+        getattr(self, "_behavior_consumption_totals", {}).pop(
+            creature.creature_id,
+            None,
+        )
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             telemetry.log_creature_death(

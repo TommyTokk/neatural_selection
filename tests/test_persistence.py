@@ -50,8 +50,8 @@ class PersistenceManagerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_checkpoint_versions_2_through_15_remain_loadable(self) -> None:
-        for version in range(2, 16):
+    def test_checkpoint_versions_2_through_16_remain_loadable(self) -> None:
+        for version in range(2, 17):
             PersistenceManager._validate_state({"version": version})
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
@@ -528,6 +528,9 @@ class PersistenceManagerTest(unittest.TestCase):
                 )
             )
             world.behavior_history.mark_incomplete(2)
+            world._behavior_automatic_cohort = {
+                focal.lineage.species_id: (focal.creature_id,),
+            }
             original_brain = world.neat_controller.brain_for(
                 world.creatures[0].creature_id
             )
@@ -605,6 +608,10 @@ class PersistenceManagerTest(unittest.TestCase):
                 captured["world"]["behavior_history"],
                 world.behavior_history.state_dict(),
             )
+            self.assertEqual(
+                captured["world"]["behavior_automatic_cohort"],
+                world._behavior_automatic_cohort,
+            )
             history_state = captured["world"]["behavior_history"]
             self.assertEqual(
                 set(history_state),
@@ -642,6 +649,10 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertIsNotNone(restored_report)
             self.assertEqual(len(restored_report.completed_bouts), 1)
             self.assertTrue(restored_report.history_incomplete)
+            self.assertEqual(
+                restored._behavior_automatic_cohort,
+                world._behavior_automatic_cohort,
+            )
             self.assertEqual(
                 restored_report.history_completions_not_recorded,
                 2,

@@ -1,4 +1,4 @@
-"""Spawn-safe focal temporal behaviour observation.
+"""Spawn-safe automatic and focal temporal behaviour observation.
 
 The classes in this module deliberately depend only on primitive, picklable
 data.  Behaviour labels are derived from realized world/action history, never
@@ -47,6 +47,11 @@ class BoutStatus(str, Enum):
     ACTIVE = "active"
 
 
+class ObservationMode(str, Enum):
+    AUTOMATIC = "automatic"
+    FOCAL = "focal"
+
+
 @dataclass(frozen=True, slots=True)
 class BehaviorObservation:
     creature_id: int
@@ -79,6 +84,11 @@ class BehaviorObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class BehaviorObservationBatch:
+    observations: tuple[BehaviorObservation, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class BehaviorEvidence:
     key: str
     label: str
@@ -104,6 +114,14 @@ class BehaviorSnapshot:
     selection_generation: int
     simulation_time: float
     behaviors: tuple[BehaviorStateSnapshot, ...]
+    observations_processed: int
+    produced_monotonic: float
+    result_drops: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class BehaviorSnapshotBatch:
+    snapshots: tuple[BehaviorSnapshot, ...]
     observations_processed: int
     produced_monotonic: float
     result_drops: int = 0
@@ -996,8 +1014,14 @@ class BehaviorObserverService:
         )
         self.history_config = history_config or BehaviorHistoryConfig()
         self.latest_snapshot: BehaviorSnapshot | None = None
+        self.latest_snapshots: dict[tuple[int, int], BehaviorSnapshot] = {}
+        self._progress_snapshots: dict[
+            tuple[int, int],
+            BehaviorSnapshot,
+        ] = {}
         self.latest_why_snapshots: tuple[Any, ...] = ()
         self._focus: tuple[int, int] | None = None
+        self._subjects: set[tuple[int, int]] = set()
         self._why_focus: tuple[int, int, int] | None = None
         self._context: Any = None
         self._input_queue: Any = None
@@ -1043,17 +1067,58 @@ class BehaviorObserverService:
             if creature_id is None
             else (creature_id, selection_generation)
         )
-        if focus == self._focus:
+        if (
+            focus == self._focus
+            and self._subjects == ({focus} if focus else set())
+        ):
             return
+        self.set_subjects(() if focus is None else (focus,))
         self._focus = focus
-        self.latest_snapshot = None
+        self.latest_snapshot = (
+            None if focus is None else self.latest_snapshots.get(focus)
+        )
         self.latest_why_snapshots = ()
         self._why_focus = None
-        if (
-            focus is not None
-            and (self.config.enabled or self.why_config.enabled)
-        ):
+
+    def set_subjects(
+        self,
+        subjects: tuple[tuple[int, int], ...] | list[tuple[int, int]],
+    ) -> None:
+        """Replace temporal subjects while preserving independent analyzers."""
+        normalized = {
+            (int(creature_id), int(generation))
+            for creature_id, generation in subjects
+        }
+        if normalized == self._subjects:
+            return
+        removed = self._subjects - normalized
+        for identity in removed:
+            self.finalize_subject(identity, BehaviorTermination.MODE_SWITCHED)
+        self._subjects = normalized
+        self.latest_snapshots = {
+            identity: snapshot
+            for identity, snapshot in self.latest_snapshots.items()
+            if identity in normalized
+        }
+        if self._focus not in normalized:
+            self._focus = None
+            self.latest_snapshot = None
+        if normalized and self.config.enabled:
             self._start()
+
+    def snapshot_for(
+        self,
+        creature_id: int,
+        selection_generation: int,
+    ) -> BehaviorSnapshot | None:
+        return self.latest_snapshots.get(
+            (int(creature_id), int(selection_generation))
+        )
+
+    def drain_progress_snapshots(self) -> tuple[BehaviorSnapshot, ...]:
+        snapshots = tuple(self._progress_snapshots.values())
+        self._progress_snapshots.clear()
+        return snapshots
 
     def set_focal_brain(self, update: Any) -> bool:
         """Send one complete latest-wins focal evaluator update."""
@@ -1102,12 +1167,22 @@ class BehaviorObserverService:
         focus = self._focus
         if focus is None or self._closed:
             return False
+        return self.finalize_subject(focus, termination)
+
+    def finalize_subject(
+        self,
+        identity: tuple[int, int],
+        termination: BehaviorTermination,
+    ) -> bool:
+        if self._closed:
+            return False
+        creature_id, generation = identity
         self._start()
         if self._lifecycle_queue is None:
             return False
         request = FinalizeBehaviorFocus(
-            creature_id=focus[0],
-            selection_generation=focus[1],
+            creature_id=creature_id,
+            selection_generation=generation,
             termination=termination,
         )
         try:
@@ -1166,30 +1241,55 @@ class BehaviorObserverService:
             return False
 
     def submit(self, observation: BehaviorObservation) -> bool:
+        return self._submit_observation_value(observation, 1)
+
+    def submit_batch(
+        self,
+        observations: (
+            tuple[BehaviorObservation, ...] | list[BehaviorObservation]
+        ),
+    ) -> bool:
+        if not self.config.enabled or self._closed:
+            return False
+        batch = BehaviorObservationBatch(tuple(observations))
+        if not batch.observations:
+            return True
+        return self._submit_observation_value(
+            batch,
+            len(batch.observations),
+        )
+
+    def _submit_observation_value(
+        self,
+        value: BehaviorObservation | BehaviorObservationBatch,
+        sample_count: int,
+    ) -> bool:
         if not self.config.enabled or self._closed:
             return False
         self._start()
         if self._input_queue is None:
             return False
-        self._samples_produced += 1
+        self._samples_produced += sample_count
         try:
-            self._input_queue.put_nowait(observation)
+            self._input_queue.put_nowait(value)
             return True
         except Full:
             try:
-                self._input_queue.get_nowait()
-                self._samples_dropped += 1
+                dropped = self._input_queue.get_nowait()
+                self._samples_dropped += len(
+                    getattr(dropped, "observations", (dropped,))
+                )
             except Empty:
                 pass
             try:
-                self._input_queue.put_nowait(observation)
+                self._input_queue.put_nowait(value)
                 return True
             except Full:
-                self._samples_dropped += 1
+                self._samples_dropped += sample_count
                 return False
         except (OSError, ValueError) as error:
             self._record_error(f"Could not enqueue behaviour sample: {error}")
-            self._samples_dropped += 1
+            self._samples_dropped += sample_count
             return False
 
     def poll(self) -> BehaviorSnapshot | None:
@@ -1208,22 +1308,45 @@ class BehaviorObserverService:
                 if isinstance(result, BehaviorWorkerError):
                     self._record_error(result.message)
                     continue
-                if not isinstance(result, BehaviorSnapshot):
+                if isinstance(result, BehaviorSnapshot):
+                    batch = BehaviorSnapshotBatch(
+                        snapshots=(result,),
+                        observations_processed=result.observations_processed,
+                        produced_monotonic=result.produced_monotonic,
+                        result_drops=result.result_drops,
+                    )
+                elif isinstance(result, BehaviorSnapshotBatch):
+                    batch = result
+                else:
                     self._record_error(
                         f"Unexpected behaviour result {type(result).__name__}."
                     )
                     continue
-                self._observations_processed = result.observations_processed
-                self._results_dropped = result.result_drops
+                self._observations_processed = batch.observations_processed
+                self._results_dropped = batch.result_drops
                 self._result_latency_ms = max(
                     0.0,
-                    (monotonic() - result.produced_monotonic) * 1000.0,
+                    (monotonic() - batch.produced_monotonic) * 1000.0,
                 )
-                if self._focus == (
-                    result.creature_id,
-                    result.selection_generation,
-                ):
-                    self.latest_snapshot = result
+                for snapshot in batch.snapshots:
+                    identity = (
+                        snapshot.creature_id,
+                        snapshot.selection_generation,
+                    )
+                    if snapshot.result_drops != batch.result_drops:
+                        snapshot = replace(
+                            snapshot,
+                            result_drops=batch.result_drops,
+                        )
+                    self._progress_snapshots[identity] = snapshot
+                    if (
+                        identity not in self._subjects
+                        and identity != self._focus
+                    ):
+                        continue
+                    self.latest_snapshots[identity] = snapshot
+                    if self._focus == identity:
+                        self.latest_snapshot = snapshot
         self._poll_history_status()
         self._poll_why_results()
         process = self._process
@@ -1304,7 +1427,7 @@ class BehaviorObserverService:
 
     def _poll_why_results(self) -> None:
         queue = self._why_result_queue
-        if queue is None:
+        if queue is None or not self.why_config.enabled:
             return
         from src.counterfactual_neat import (
             CounterfactualWorkerError,
@@ -1480,7 +1603,9 @@ class BehaviorObserverService:
             self._why_result_queue = self._context.Queue(
                 maxsize=self.why_config.result_queue_capacity
             )
-            self._lifecycle_queue = self._context.Queue(maxsize=8)
+            # A mode switch can finalize every creature in a maximally sized
+            # automatic cohort at once.
+            self._lifecycle_queue = self._context.Queue(maxsize=128)
             self._completion_queue = self._context.Queue(
                 maxsize=self.history_config.completion_queue_capacity
             )
@@ -1550,7 +1675,8 @@ def _behavior_worker_main(
         validate_probe,
     )
 
-    analyzer = TemporalBehaviorAnalyzer(config, history_config)
+    analyzers: dict[tuple[int, int], TemporalBehaviorAnalyzer] = {}
+    observations_processed_total = 0
     result_drops = 0
     why_result_drops = 0
     why_evaluations = 0
@@ -1596,7 +1722,7 @@ def _behavior_worker_main(
             0,
         )
 
-    def queue_completed_bouts() -> None:
+    def queue_completed_bouts(analyzer: TemporalBehaviorAnalyzer) -> None:
         nonlocal completion_outbox_high_water
         nonlocal completion_recording_suspended
         nonlocal history_completions_not_recorded
@@ -1682,39 +1808,54 @@ def _behavior_worker_main(
             )
         publish_history_status()
 
-    def process_observation(observation: Any) -> None:
+    def process_observation_batch(value: Any) -> None:
+        nonlocal observations_processed_total
         nonlocal result_drops
-        try:
-            snapshot = analyzer.process(observation)
-            queue_completed_bouts()
-        except Exception as error:  # Worker must report and continue.
-            message = BehaviorWorkerError(
-                creature_id=getattr(observation, "creature_id", None),
-                selection_generation=getattr(
-                    observation,
-                    "selection_generation",
-                    None,
-                ),
-                message=(
-                    "Behaviour analysis failed: "
-                    f"{type(error).__name__}: {error}"
-                ),
+        observations = (
+            value.observations
+            if isinstance(value, BehaviorObservationBatch)
+            else (value,)
+        )
+        snapshots: list[BehaviorSnapshot] = []
+        for observation in observations:
+            identity = (
+                getattr(observation, "creature_id", None),
+                getattr(observation, "selection_generation", None),
             )
-            result_drops = _put_latest(
-                result_queue,
-                message,
-                result_drops,
-            )
+            try:
+                if not isinstance(observation, BehaviorObservation):
+                    raise TypeError(
+                        f"Unexpected observation {type(observation).__name__}."
+                    )
+                analyzer = analyzers.get(identity)
+                if analyzer is None:
+                    analyzer = TemporalBehaviorAnalyzer(config, history_config)
+                    analyzers[identity] = analyzer
+                snapshots.append(analyzer.process(observation))
+                observations_processed_total += 1
+                queue_completed_bouts(analyzer)
+            except Exception as error:  # Worker must report and continue.
+                result_drops = _put_latest(
+                    result_queue,
+                    BehaviorWorkerError(
+                        creature_id=identity[0],
+                        selection_generation=identity[1],
+                        message=(
+                            "Behaviour analysis failed: "
+                            f"{type(error).__name__}: {error}"
+                        ),
+                    ),
+                    result_drops,
+                )
+        if not snapshots:
             return
-        snapshot = replace(
-            snapshot,
+        batch = BehaviorSnapshotBatch(
+            snapshots=tuple(snapshots),
+            observations_processed=observations_processed_total,
+            produced_monotonic=monotonic(),
             result_drops=result_drops,
         )
-        result_drops = _put_latest(
-            result_queue,
-            snapshot,
-            result_drops,
-        )
+        result_drops = _put_latest(result_queue, batch, result_drops)
 
     while not stop_event.is_set():
         # Temporal observations are the primary signal. Process every item
@@ -1726,10 +1867,10 @@ def _behavior_worker_main(
         except (OSError, EOFError, ValueError):
             return
         if observation is not None:
-            process_observation(observation)
+            process_observation_batch(observation)
             while True:
                 try:
-                    process_observation(input_queue.get_nowait())
+                    process_observation_batch(input_queue.get_nowait())
                 except Empty:
                     break
                 except (OSError, EOFError, ValueError):
@@ -1746,13 +1887,14 @@ def _behavior_worker_main(
                 return
             if not isinstance(lifecycle, FinalizeBehaviorFocus):
                 continue
-            if (
-                analyzer.creature_id == lifecycle.creature_id
-                and analyzer.selection_generation
-                == lifecycle.selection_generation
-            ):
+            identity = (
+                lifecycle.creature_id,
+                lifecycle.selection_generation,
+            )
+            analyzer = analyzers.pop(identity, None)
+            if analyzer is not None:
                 analyzer.force_finalize(lifecycle.termination)
-                queue_completed_bouts()
+                queue_completed_bouts(analyzer)
 
         # Completed records are lossless below the hard emergency bound and
         # never block the high-priority temporal analyzer.
