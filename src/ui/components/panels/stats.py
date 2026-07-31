@@ -114,19 +114,55 @@ class StatsPanelComponent:
                 self.theme.text_primary,
             ),
         ]
-        row_spacing = 28.0
+        action_height = 44.0
+        action = arcade.LBWH(
+            content.left + 8.0,
+            content.bottom + 6.0,
+            content.width - 16.0,
+            action_height,
+        )
+        self._control_hitboxes["open_behavior_report"] = action
+        self._draw_rounded_rect(
+            action,
+            self.theme.accent_soft,
+            self.theme.accent,
+            8.0,
+            1.0,
+        )
+        self._draw_text(
+            "stats_open_behavior_report",
+            "View Behaviour History",
+            action.center_x,
+            action.center_y,
+            self.theme.accent,
+            12.0,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+
+        metrics_viewport = arcade.LBWH(
+            content.left,
+            action.top + 12.0,
+            content.width,
+            max(0.0, content.top - action.top - 12.0),
+        )
+        row_spacing = 25.0
         total_height = len(metrics) * row_spacing
-        scroll_limit = max(0.0, total_height - content.height + 10.0)
+        scroll_limit = max(
+            0.0,
+            total_height - metrics_viewport.height + 10.0,
+        )
         scroll_offset = max(
             0.0,
             min(scroll_limit, self._scroll_offsets.get("stats", 0.0)),
         )
         self._scroll_offsets["stats"] = scroll_offset
         self._scroll_limits["stats"] = scroll_limit
-        self._scroll_regions["stats"] = content
+        self._scroll_regions["stats"] = metrics_viewport
         for index, (label, value, color) in enumerate(metrics):
-            y = content.top - 24.0 - index * row_spacing + scroll_offset
-            if y < content.bottom + 4 or y > content.top:
+            y = metrics_viewport.top - 20.0 - index * row_spacing + scroll_offset
+            if y < metrics_viewport.bottom + 4 or y > metrics_viewport.top:
                 continue
             self._draw_metric_row(
                 f"stats_metric_{index}",
@@ -138,7 +174,11 @@ class StatsPanelComponent:
                 value_color=color,
             )
         if scroll_limit > 0.0:
-            self._draw_scrollbar(content, scroll_offset, scroll_limit)
+            self._draw_scrollbar(
+                metrics_viewport,
+                scroll_offset,
+                scroll_limit,
+            )
     def _draw_environment_stats(self, world: World, bounds: arcade.Rect) -> None:
         """Draw environment stats.
 
@@ -191,4 +231,3 @@ class StatsPanelComponent:
             first_line_color=self.theme.text_muted,
             body_color=self.theme.text_muted,
         )
-

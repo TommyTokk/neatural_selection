@@ -818,15 +818,29 @@ class InspectorPanelComponent:
             )
 
         y -= 56.0
-        button_gap = 10
-        button_width = (width - button_gap) / 2.0
-        brain_button = arcade.LBWH(left, y - 36.0, button_width, 36)
+        button_gap = 10.0
+        button_height = 40.0
+        brain_button = arcade.LBWH(
+            left,
+            y - button_height,
+            width,
+            button_height,
+        )
+        report_button = arcade.LBWH(
+            left,
+            brain_button.bottom - button_gap - button_height,
+            width,
+            button_height,
+        )
         kill_button = arcade.LBWH(
-            brain_button.right + button_gap, y - 36.0, button_width, 36
+            left,
+            report_button.bottom - button_gap - button_height,
+            width,
+            button_height,
         )
         measured_content_height = max(
             0.0,
-            content_top - min(brain_button.bottom, kill_button.bottom) + 28.0,
+            content_top - kill_button.bottom + 28.0,
         )
         self._inspector_content_height = measured_content_height
         measured_scroll_limit = max(
@@ -839,6 +853,7 @@ class InspectorPanelComponent:
             measured_scroll_limit,
         )
         self._control_hitboxes.pop("open_brain_window", None)
+        self._control_hitboxes.pop("open_behavior_report_selected", None)
         self._control_hitboxes.pop("kill_selected_creature", None)
         if self._rect_intersects(brain_button, viewport):
             self._control_hitboxes["open_brain_window"] = brain_button
@@ -849,6 +864,18 @@ class InspectorPanelComponent:
                 "open_brain_window",
                 fill_color=self.theme.accent_soft,
                 text_color=self.theme.accent,
+            )
+        if self._rect_intersects(report_button, viewport):
+            self._control_hitboxes[
+                "open_behavior_report_selected"
+            ] = report_button
+            self._draw_action_button(
+                report_button,
+                "Report",
+                "analytics",
+                "open_behavior_report_selected",
+                fill_color=self.theme.panel_background_alt,
+                text_color=self.theme.text_primary,
             )
         if self._rect_intersects(kill_button, viewport):
             self._control_hitboxes["kill_selected_creature"] = kill_button
@@ -942,26 +969,34 @@ class InspectorPanelComponent:
             return
 
         content = self._card_content_bounds(bounds)
-        button_height = 32
-        button_gap = 10
-        button_width = (content.width - button_gap) / 2
-        open_button = arcade.LBWH(
+        button_height = 40.0
+        button_gap = 10.0
+        kill_button = arcade.LBWH(
             content.left,
             content.bottom,
-            button_width,
+            content.width,
             button_height,
         )
-        kill_button = arcade.LBWH(
-            open_button.right + button_gap,
-            content.bottom,
-            button_width,
+        report_button = arcade.LBWH(
+            content.left,
+            kill_button.top + button_gap,
+            content.width,
+            button_height,
+        )
+        open_button = arcade.LBWH(
+            content.left,
+            report_button.top + button_gap,
+            content.width,
             button_height,
         )
         lines_bounds = arcade.LBWH(
             content.left,
-            content.bottom + button_height + button_gap,
+            open_button.top + button_gap,
             content.width,
-            max(0.0, content.height - button_height - button_gap),
+            max(
+                0.0,
+                content.height - button_height * 3.0 - button_gap * 3.0,
+            ),
         )
         self._draw_scrollable_lines_in_bounds(
             "selected",
@@ -973,8 +1008,16 @@ class InspectorPanelComponent:
             first_line_bold=True,
         )
         self._control_hitboxes["open_brain_window"] = open_button
+        self._control_hitboxes["open_behavior_report_selected"] = (
+            report_button
+        )
         self._control_hitboxes["kill_selected_creature"] = kill_button
-        self._draw_button(open_button, "Open Brain", "open_brain_window")
+        self._draw_button(open_button, "Brain", "open_brain_window")
+        self._draw_button(
+            report_button,
+            "Report",
+            "open_behavior_report_selected",
+        )
         self._draw_button(kill_button, "Kill", "kill_selected_creature")
 
     @staticmethod

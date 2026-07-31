@@ -540,6 +540,7 @@ class CommonUiComponent:
             10,
             width=label_bounds.width,
             multiline=True,
+            align="left",
             anchor_y="top",
         )
         self._draw_text(
@@ -572,7 +573,7 @@ class CommonUiComponent:
     ]:
         """Measure a responsive card row and wrap both text columns."""
         available_width = max(1.0, float(width))
-        gap = 12.0
+        gap = 16.0
         if available_width < 180.0:
             label_width = available_width
             value_width = available_width
@@ -604,9 +605,9 @@ class CommonUiComponent:
                 row_height,
             )
 
-        label_width = max(1.0, (available_width - gap) * 0.46)
-        value_width = max(1.0, available_width - gap - label_width)
-        value_left = x + label_width + gap
+        label_width = max(1.0, (available_width - gap) * 0.44)
+        value_left = round(x + label_width + gap)
+        value_width = max(1.0, x + available_width - value_left)
         label_lines = tuple(
             self._wrap_line(label, label_width, font_size=10.0)
         )

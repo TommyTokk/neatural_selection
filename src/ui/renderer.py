@@ -3,7 +3,9 @@ from __future__ import annotations
 import arcade
 
 from configs.sim_config import SimConfig
+from src.behavior_observer import BehaviorKind
 from src.ui.components.state import (
+    BehaviorReportState,
     BrainWindowState,
     PanelState,
     SpeciesTreeState,
@@ -21,6 +23,9 @@ from src.ui.components.panels.settings import SettingsPanelComponent
 from src.ui.components.brain.window import BrainWindowComponent
 from src.ui.components.brain.graph import BrainGraphComponent
 from src.ui.components.brain.inspector import BrainInspectorComponent
+from src.ui.components.behavior_report.window import (
+    BehaviorReportWindowComponent,
+)
 from src.ui.components.species_tree.inspector import SpeciesTreeInspectorComponent
 from src.ui.components.species_tree.canvas import SpeciesTreeCanvasComponent
 from src.ui.common.widgets import CommonUiComponent
@@ -35,6 +40,7 @@ class UiRenderer(
     BrainWindowComponent,
     BrainGraphComponent,
     BrainInspectorComponent,
+    BehaviorReportWindowComponent,
     SpeciesTreeInspectorComponent,
     SpeciesTreeCanvasComponent,
     CommonUiComponent,
@@ -86,6 +92,21 @@ class UiRenderer(
             "expanded_why_behavior",
         ),
         "_brain_selection_identity": ("_brain_state", "selection_identity"),
+        "_behavior_report_open": ("_behavior_report_state", "open"),
+        "_behavior_report_bounds": ("_behavior_report_state", "bounds"),
+        "_behavior_report_creature_id": (
+            "_behavior_report_state",
+            "creature_id",
+        ),
+        "_behavior_report_page": ("_behavior_report_state", "page"),
+        "_behavior_report_selected_bout_id": (
+            "_behavior_report_state",
+            "selected_bout_id",
+        ),
+        "_behavior_report_why_behavior": (
+            "_behavior_report_state",
+            "why_behavior",
+        ),
         "_species_tree_open": ("_species_tree_state", "open"),
         "_species_tree_previous_pause": ("_species_tree_state", "previous_pause"),
         "_species_tree_mouse": ("_species_tree_state", "mouse"),
@@ -265,6 +286,7 @@ class UiRenderer(
         """
         self._panel_state = PanelState()
         self._brain_state = BrainWindowState()
+        self._behavior_report_state = BehaviorReportState()
         self._species_tree_state = SpeciesTreeState(
             TreeLayoutManager(
                 horizontal_gap=92.0,
@@ -301,6 +323,7 @@ class UiRenderer(
         self._draw_icon_rail(world)
         self._draw_floating_panels(world)
         self._draw_brain_window(world)
+        self._draw_behavior_report_window(world)
         self._draw_species_tree_window(world)
 
 
@@ -460,6 +483,68 @@ class UiRenderer(
                 return True
             return True
 
+        if (
+            self._behavior_report_open
+            and self._behavior_report_bounds is not None
+            and self._contains_bounds(
+                self._behavior_report_bounds,
+                x,
+                y,
+            )
+        ):
+            if self._contains_hitbox("behavior_report_close", x, y):
+                self._close_behavior_report()
+                return True
+            for page in ("timeline", "summary", "why"):
+                if self._contains_hitbox(
+                    f"behavior_report_page_{page}",
+                    x,
+                    y,
+                ):
+                    self._behavior_report_page = page
+                    self._behavior_report_selected_bout_id = None
+                    self._scroll_offsets["behavior_report"] = 0.0
+                    return True
+            for behavior in BehaviorKind:
+                if self._contains_hitbox(
+                    f"behavior_report_why_behavior_{behavior.value}",
+                    x,
+                    y,
+                ):
+                    self._behavior_report_why_behavior = behavior.value
+                    self._scroll_offsets["behavior_report"] = 0.0
+                    return True
+            for entry in world.behavior_history_index:
+                if self._contains_hitbox(
+                    f"behavior_report_creature_{entry.creature_id}",
+                    x,
+                    y,
+                ):
+                    self._behavior_report_creature_id = entry.creature_id
+                    self._behavior_report_selected_bout_id = None
+                    self._behavior_report_why_behavior = None
+                    self._scroll_offsets["behavior_report"] = 0.0
+                    return True
+            report = (
+                None
+                if self._behavior_report_creature_id is None
+                else world.behavior_report_for(
+                    self._behavior_report_creature_id
+                )
+            )
+            if report is not None:
+                for bout in report.completed_bouts:
+                    if self._contains_hitbox(
+                        f"behavior_report_bout_{bout.bout_id}",
+                        x,
+                        y,
+                    ):
+                        self._behavior_report_selected_bout_id = bout.bout_id
+                        return True
+            return True
+        if self._behavior_report_open:
+            return True
+
         # The brain window sits above floating panels and the navigation rail.
         if (
             self._brain_window_open
@@ -557,6 +642,27 @@ class UiRenderer(
             return True
         if self._contains_hitbox("open_species_tree", x, y):
             self.open_species_tree(world)
+            return True
+        if (
+            self._contains_hitbox("open_behavior_report", x, y)
+            or self._contains_hitbox(
+                "open_behavior_report_selected",
+                x,
+                y,
+            )
+        ):
+            self._behavior_report_open = True
+            self._behavior_report_why_behavior = None
+            selected = getattr(world, "selected_creature_id", None)
+            known_ids = {
+                entry.creature_id for entry in world.behavior_history_index
+            }
+            if selected in known_ids:
+                self._behavior_report_creature_id = selected
+            elif world.behavior_history_index:
+                self._behavior_report_creature_id = (
+                    world.behavior_history_index[0].creature_id
+                )
             return True
         if self._contains_hitbox("open_brain_window", x, y):
             if world.selected_creature is not None:
@@ -776,6 +882,25 @@ class UiRenderer(
                     ):
                         self._species_tree_vertical_offset -= scroll_y * 36.0
                     self._clamp_species_tree_offsets()
+            return True
+        if self._behavior_report_open:
+            for scroll_key in (
+                "behavior_report_creatures",
+                "behavior_report",
+            ):
+                region = self._scroll_regions.get(scroll_key)
+                if (
+                    region is None
+                    or not self._contains_bounds(region, x, y)
+                ):
+                    continue
+                limit = self._scroll_limits.get(scroll_key, 0.0)
+                current = self._scroll_offsets.get(scroll_key, 0.0)
+                self._scroll_offsets[scroll_key] = max(
+                    0.0,
+                    min(limit, current - scroll_y * 24.0),
+                )
+                break
             return True
         if (
             self._brain_window_open

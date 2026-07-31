@@ -67,6 +67,7 @@ class NavigationComponent:
         )
         self._control_hitboxes["icon_rail"] = bounds
 
+        self._control_hitboxes.pop("open_behavior_report", None)
         button_count = 6
         button_size = self.ICON_BUTTON_SIZE
         button_gap = self.ICON_BUTTON_GAP
@@ -253,4 +254,3 @@ class NavigationComponent:
                 bold=active,
                 anchor_y="center",
             )
-

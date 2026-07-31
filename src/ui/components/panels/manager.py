@@ -76,8 +76,19 @@ class PanelManagerComponent:
         arcade.Rect
             Computed UI rectangle.
         """
-        width = min(330.0, max(270.0, world.layout.window.width - 140.0))
-        height = min(238.0, max(190.0, world.layout.window.height * 0.28))
+        margin = float(self.config.layout.outer_padding)
+        available_width = max(1.0, world.layout.window.width - margin * 2.0)
+        available_height = max(1.0, world.layout.window.height - margin * 2.0)
+        width = min(
+            400.0,
+            max(330.0, world.layout.window.width - 140.0),
+            available_width,
+        )
+        height = min(
+            600.0,
+            max(330.0, world.layout.window.height - 80.0),
+            available_height,
+        )
         default_bounds = arcade.LBWH(
             world.layout.window.right - width - 18.0,
             world.layout.window.top - height - 18.0,
@@ -98,8 +109,19 @@ class PanelManagerComponent:
         arcade.Rect
             Computed UI rectangle.
         """
-        width = min(368.0, max(310.0, world.layout.window.width - 148.0))
-        height = min(414.0, max(330.0, world.layout.window.height * 0.48))
+        margin = float(self.config.layout.outer_padding)
+        available_width = max(1.0, world.layout.window.width - margin * 2.0)
+        available_height = max(1.0, world.layout.window.height - margin * 2.0)
+        width = min(
+            440.0,
+            max(310.0, world.layout.window.width - 148.0),
+            available_width,
+        )
+        height = min(
+            600.0,
+            max(330.0, world.layout.window.height - 80.0),
+            available_height,
+        )
         default_bounds = arcade.LBWH(
             world.layout.window.right - width - 18.0,
             max(18.0, world.layout.window.center_y - height * 0.38),
@@ -179,4 +201,3 @@ class PanelManagerComponent:
             bounds.width,
             bounds.height,
         )
-

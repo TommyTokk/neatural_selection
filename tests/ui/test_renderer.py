@@ -2772,6 +2772,25 @@ class FloatingSimulationUiTest(unittest.TestCase):
             - bounds.height,
         )
 
+    def test_inspector_defaults_to_large_window_safe_bounds(self) -> None:
+        world = self.make_world_shell()
+
+        bounds = self.renderer._inspector_panel_bounds(world)
+
+        self.assertEqual(bounds.width, 440.0)
+        self.assertEqual(bounds.height, 600.0)
+
+        small_world = self.make_world_shell()
+        small_world.layout.window = arcade.LBWH(0, 0, 360, 300)
+        self.renderer._panel_bounds.pop("inspector", None)
+
+        small_bounds = self.renderer._inspector_panel_bounds(small_world)
+        margin = self.renderer.config.layout.outer_padding
+        self.assertGreaterEqual(small_bounds.left, margin)
+        self.assertGreaterEqual(small_bounds.bottom, margin)
+        self.assertLessEqual(small_bounds.right, 360 - margin)
+        self.assertLessEqual(small_bounds.top, 300 - margin)
+
     def test_inspector_energy_ratio_uses_creature_energy_not_vision(self) -> None:
         world = self.make_inspector_world(energy=0.4, max_energy=2.0, vision_range=999.0)
 
@@ -2795,7 +2814,60 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.renderer._scroll_offsets["inspector"] = self.renderer._scroll_limits["inspector"]
         self.renderer._draw_inspector_panel(world)
         self.assertIn("open_brain_window", self.renderer._control_hitboxes)
+        self.assertIn(
+            "open_behavior_report_selected",
+            self.renderer._control_hitboxes,
+        )
         self.assertIn("kill_selected_creature", self.renderer._control_hitboxes)
+
+    def test_inspector_action_buttons_are_full_width_and_stacked(self) -> None:
+        world = self.make_inspector_world()
+        self.renderer._panel_bounds["inspector"] = arcade.LBWH(
+            100,
+            100,
+            440,
+            600,
+        )
+
+        self.renderer._draw_inspector_panel(world)
+        self.renderer._scroll_offsets["inspector"] = (
+            self.renderer._scroll_limits["inspector"]
+        )
+        self.renderer._draw_inspector_panel(world)
+
+        brain = self.renderer._control_hitboxes["open_brain_window"]
+        report = self.renderer._control_hitboxes[
+            "open_behavior_report_selected"
+        ]
+        kill = self.renderer._control_hitboxes["kill_selected_creature"]
+        for button in (brain, report, kill):
+            self.assertEqual(button.height, 40.0)
+            self.assertEqual(button.left, brain.left)
+            self.assertEqual(button.width, brain.width)
+        self.assertEqual(brain.bottom - report.top, 10.0)
+        self.assertEqual(report.bottom - kill.top, 10.0)
+
+    def test_alternative_inspector_actions_use_the_same_stacked_layout(
+        self,
+    ) -> None:
+        world = self.make_inspector_world()
+
+        self.renderer._draw_selected_creature(
+            world,
+            arcade.LBWH(100, 100, 440, 600),
+        )
+
+        brain = self.renderer._control_hitboxes["open_brain_window"]
+        report = self.renderer._control_hitboxes[
+            "open_behavior_report_selected"
+        ]
+        kill = self.renderer._control_hitboxes["kill_selected_creature"]
+        for button in (brain, report, kill):
+            self.assertEqual(button.height, 40.0)
+            self.assertEqual(button.left, brain.left)
+            self.assertEqual(button.width, brain.width)
+        self.assertEqual(brain.bottom - report.top, 10.0)
+        self.assertEqual(report.bottom - kill.top, 10.0)
 
     def test_inspector_snapshot_fallback_does_not_run_production_sensing(
         self,
@@ -2923,6 +2995,10 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.renderer._draw_inspector_panel(world)
 
         self.assertNotIn("open_brain_window", self.renderer._control_hitboxes)
+        self.assertNotIn(
+            "open_behavior_report_selected",
+            self.renderer._control_hitboxes,
+        )
         self.assertNotIn("kill_selected_creature", self.renderer._control_hitboxes)
 
     def test_inspector_progress_bars_use_energy_and_stomach_ratios(self) -> None:
@@ -3137,6 +3213,29 @@ class FloatingSimulationUiTest(unittest.TestCase):
                     rendered.width,
                 )
 
+    def test_shared_metric_rows_align_labels_and_values_to_columns(
+        self,
+    ) -> None:
+        x = 20.0
+        width = 360.0
+
+        self.renderer._draw_metric_row(
+            "aligned_metric",
+            "Persistent local group",
+            "#12 / 8 members",
+            x,
+            240.0,
+            width,
+        )
+
+        label = self.renderer._text_cache["aligned_metric_label"]
+        value = self.renderer._text_cache["aligned_metric_value"]
+        self.assertEqual(label.align, "left")
+        self.assertEqual(value.align, "right")
+        self.assertEqual(label.x, x)
+        self.assertEqual(value.x + value.width, x + width)
+        self.assertEqual(label.y, value.y)
+
     def test_responsive_card_rows_stack_without_overlap_at_all_widths(
         self,
     ) -> None:
@@ -3200,7 +3299,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
         self.renderer._draw_inspector_panel(world)
         self.renderer._scroll_offsets["inspector"] = (
-            self.renderer._scroll_limits["inspector"]
+            max(0.0, self.renderer._scroll_limits["inspector"] - 160.0)
         )
         self.renderer._draw_inspector_panel(world)
 

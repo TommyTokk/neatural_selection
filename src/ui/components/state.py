@@ -66,6 +66,18 @@ class BrainWindowState:
 
 
 @dataclass(slots=True)
+class BehaviorReportState:
+    """Track the separate completed-behaviour report modal."""
+
+    open: bool = False
+    bounds: arcade.Rect | None = None
+    creature_id: int | None = None
+    page: str = "timeline"
+    selected_bout_id: int | None = None
+    why_behavior: str | None = None
+
+
+@dataclass(slots=True)
 class SpeciesTreeState:
     """Track species-tree modal, viewport, selection, and async analysis."""
 
