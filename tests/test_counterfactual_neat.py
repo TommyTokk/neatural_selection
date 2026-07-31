@@ -502,6 +502,92 @@ class CounterfactualAggregationTest(unittest.TestCase):
         )
         self.assertAlmostEqual(rotate.counterfactual, 0.17)
 
+    def test_completed_summary_freezes_and_discards_probe_history(self) -> None:
+        aggregator = CounterfactualBoutAggregator(history_capacity=8)
+        observed = ProbeBehavior(
+            BehaviorKind.FOOD_APPROACH,
+            BoutStatus.ACTIVE,
+            9,
+            1.0,
+            target_id=12,
+        )
+        for index, counterfactual_acceleration in enumerate((0.1, 0.2, 0.3)):
+            probe = CounterfactualProbeInput(
+                creature_id=3,
+                selection_generation=4,
+                brain_revision=5,
+                simulation_time=index / 5.0,
+                sensor_schema_version=SENSOR_CONTRACT.schema_version,
+                behaviors=(observed,),
+                actual_inputs=tuple([0.0] * len(SENSOR_INPUT_NAMES)),
+                actual_outputs=CounterfactualScoringTest.outputs(
+                    accelerate=0.8
+                ),
+                submitted_monotonic=time.monotonic(),
+                target_visible=True,
+                food_target_id=12,
+                food_relative_angle=0.0,
+            )
+            job = CounterfactualProbeJob(
+                probe,
+                PureNeatEvaluator(
+                    FixedNetwork(tuple([0.0] * ACTION_OUTPUT_COUNT)),
+                    tuple(["clamped"] * ACTION_OUTPUT_COUNT),
+                ),
+            )
+            counterfactual = CounterfactualScoringTest.outputs(
+                accelerate=counterfactual_acceleration
+            )
+            job.outputs = {
+                intervention: counterfactual
+                for intervention in job.interventions
+            }
+            job._next_index = len(job.interventions)
+            aggregator.complete_job(job)
+
+        completed = aggregator.finalize_completed_bout(
+            3,
+            4,
+            BehaviorKind.FOOD_APPROACH,
+            9,
+        )
+
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertTrue(completed.effects)
+        self.assertTrue(
+            all(effect.sample_count == 3 for effect in completed.effects)
+        )
+        self.assertTrue(
+            all(
+                effect.direction_counts.total == 3
+                for effect in completed.effects
+            )
+        )
+        self.assertTrue(
+            all(
+                effect.p25 is not None and effect.p75 is not None
+                for effect in completed.effects
+            )
+        )
+        self.assertTrue(
+            all(
+                output.sample_count == 3
+                and output.delta_p25 is not None
+                and output.delta_p75 is not None
+                for effect in completed.effects
+                for output in effect.output_summaries
+            )
+        )
+        self.assertIsNone(
+            aggregator.finalize_completed_bout(
+                3,
+                4,
+                BehaviorKind.FOOD_APPROACH,
+                9,
+            )
+        )
+
     def test_alignment_medians_and_target_ids_isolate_histories(self) -> None:
         aggregator = CounterfactualBoutAggregator(history_capacity=8)
 

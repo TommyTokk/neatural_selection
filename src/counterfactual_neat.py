@@ -7,7 +7,7 @@ substitutions and never feeds explanatory results back into the simulation.
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from enum import Enum
 from math import isfinite, pi
@@ -17,6 +17,13 @@ from typing import Any
 
 from src.action import ACTION_OUTPUT_NAMES, BrainOutputIndex
 from src.behavior_observer import BehaviorKind, BoutStatus
+from src.behavior_history import (
+    BoundedMetricAccumulator,
+    CompletedOutputEffectSummary,
+    CompletedSemanticEffect,
+    CompletedWhyExplanation,
+    EffectDirectionCounts,
+)
 from src.communication import AcousticObservation, PheromoneSnapshot
 from src.neat_brain import NeatBrain
 from src.vision import (
@@ -686,6 +693,137 @@ class CounterfactualProbeJob:
         return self.complete
 
 
+class _CompletedOutputAccumulator:
+    def __init__(self, output_name: str, capacity: int) -> None:
+        self.output_name = output_name
+        self.actual = BoundedMetricAccumulator(capacity)
+        self.counterfactual = BoundedMetricAccumulator(capacity)
+        self.delta = BoundedMetricAccumulator(capacity)
+        self.influence = BoundedMetricAccumulator(capacity)
+        self.actual_alignment = BoundedMetricAccumulator(capacity)
+        self.counterfactual_alignment = BoundedMetricAccumulator(capacity)
+        self.secondary_context = False
+
+    def add(self, effect: OutputEffect) -> None:
+        self.actual.add(effect.actual)
+        self.counterfactual.add(effect.counterfactual)
+        self.delta.add(effect.delta)
+        self.influence.add(effect.influence_score)
+        self.secondary_context = effect.secondary_context
+        if effect.actual_target_alignment is not None:
+            self.actual_alignment.add(effect.actual_target_alignment)
+        if effect.counterfactual_target_alignment is not None:
+            self.counterfactual_alignment.add(
+                effect.counterfactual_target_alignment
+            )
+
+    def median_output_effect(self) -> OutputEffect:
+        actual = self.actual.summary_values()[0]
+        counterfactual = self.counterfactual.summary_values()[0]
+        if self.actual_alignment.total_count <= 0:
+            return output_effect(
+                self.output_name,
+                actual,
+                counterfactual,
+                secondary_context=self.secondary_context,
+            )
+        actual_alignment = self.actual_alignment.summary_values()[0]
+        counterfactual_alignment = (
+            self.counterfactual_alignment.summary_values()[0]
+        )
+        influence = self.influence.summary_values()[0]
+        return OutputEffect(
+            output_name=self.output_name,
+            actual=actual,
+            counterfactual=counterfactual,
+            delta=self.delta.summary_values()[0],
+            influence_score=influence,
+            direction=_target_alignment_direction(
+                influence,
+                actual_alignment,
+                counterfactual_alignment,
+            ),
+            secondary_context=self.secondary_context,
+            actual_target_alignment=actual_alignment,
+            counterfactual_target_alignment=counterfactual_alignment,
+        )
+
+    def completed_summary(self) -> CompletedOutputEffectSummary:
+        delta_median, delta_p25, delta_p75, estimated = (
+            self.delta.summary_values()
+        )
+        return CompletedOutputEffectSummary(
+            output_name=self.output_name,
+            sample_count=self.actual.total_count,
+            median_factual=self.actual.summary_values()[0],
+            median_counterfactual=self.counterfactual.summary_values()[0],
+            median_delta=delta_median,
+            delta_p25=delta_p25,
+            delta_p75=delta_p75,
+            quantiles_estimated=estimated,
+        )
+
+
+class _CompletedSemanticAccumulator:
+    def __init__(
+        self,
+        behavior: BehaviorKind,
+        intervention: SemanticIntervention,
+        capacity: int,
+    ) -> None:
+        self.behavior = behavior
+        self.intervention = intervention
+        self.influence = BoundedMetricAccumulator(capacity)
+        self.directions: Counter[EffectDirection] = Counter()
+        self.outputs: dict[str, _CompletedOutputAccumulator] = {}
+
+    def add(self, sample: SemanticEffectSnapshot) -> None:
+        self.influence.add(sample.influence_score)
+        self.directions[sample.effect_direction] += 1
+        for effect in sample.output_effects:
+            accumulator = self.outputs.get(effect.output_name)
+            if accumulator is None:
+                accumulator = _CompletedOutputAccumulator(
+                    effect.output_name,
+                    self.influence.capacity,
+                )
+                self.outputs[effect.output_name] = accumulator
+            accumulator.add(effect)
+
+    def finalize(self) -> CompletedSemanticEffect:
+        score, p25, p75, estimated = self.influence.summary_values()
+        spec = BEHAVIOR_EXPLANATION_SPECS[self.behavior]
+        median_effects = tuple(
+            output.median_output_effect()
+            for output in self.outputs.values()
+        )
+        return CompletedSemanticEffect(
+            intervention=self.intervention,
+            sample_count=self.influence.total_count,
+            median_influence=score,
+            p25=p25,
+            p75=p75,
+            influence_label=influence_label(score),
+            effect_direction=_aggregate_direction(
+                score,
+                median_effects,
+                spec,
+            ),
+            direction_counts=EffectDirectionCounts(
+                supportive=self.directions[EffectDirection.SUPPORTIVE],
+                suppressive=self.directions[EffectDirection.SUPPRESSIVE],
+                reversing=self.directions[EffectDirection.REVERSING],
+                mixed=self.directions[EffectDirection.MIXED],
+                minimal=self.directions[EffectDirection.MINIMAL],
+            ),
+            output_summaries=tuple(
+                output.completed_summary()
+                for output in self.outputs.values()
+            ),
+            quantiles_estimated=estimated,
+        )
+
+
 class CounterfactualBoutAggregator:
     """Bounded median aggregation, isolated by behavior and bout identity."""
 
@@ -708,9 +846,20 @@ class CounterfactualBoutAggregator:
             ],
             deque[SemanticEffectSnapshot],
         ] = {}
+        self._completion_history: dict[
+            tuple[
+                int,
+                int,
+                BehaviorKind,
+                int,
+                SemanticIntervention,
+            ],
+            _CompletedSemanticAccumulator,
+        ] = {}
 
     def reset(self) -> None:
         self._history.clear()
+        self._completion_history.clear()
 
     def complete_job(
         self,
@@ -728,10 +877,24 @@ class CounterfactualBoutAggregator:
             )
             for observed in probe.behaviors
         }
+        active_completion_prefixes = {
+            (
+                probe.creature_id,
+                probe.selection_generation,
+                observed.behavior,
+                observed.bout_id,
+            )
+            for observed in probe.behaviors
+        }
         self._history = {
             key: history
             for key, history in self._history.items()
             if key[:6] in active_prefixes
+        }
+        self._completion_history = {
+            key: history
+            for key, history in self._completion_history.items()
+            if key[:4] in active_completion_prefixes
         }
         snapshots: list[WhySnapshot] = []
         produced = monotonic()
@@ -762,6 +925,22 @@ class CounterfactualBoutAggregator:
                     deque(maxlen=self.history_capacity),
                 )
                 history.append(sample)
+                completion_key = (
+                    probe.creature_id,
+                    probe.selection_generation,
+                    observed.behavior,
+                    observed.bout_id,
+                    intervention,
+                )
+                completion = self._completion_history.get(completion_key)
+                if completion is None:
+                    completion = _CompletedSemanticAccumulator(
+                        observed.behavior,
+                        intervention,
+                        max(4, self.history_capacity),
+                    )
+                    self._completion_history[completion_key] = completion
+                completion.add(sample)
                 aggregated.append(
                     self._aggregate_samples(observed.behavior, history)
                 )
@@ -787,6 +966,49 @@ class CounterfactualBoutAggregator:
                 )
             )
         return tuple(snapshots)
+
+    def finalize_completed_bout(
+        self,
+        creature_id: int,
+        selection_generation: int,
+        behavior: BehaviorKind,
+        bout_id: int,
+    ) -> CompletedWhyExplanation | None:
+        effects: list[CompletedSemanticEffect] = []
+        for intervention in SemanticIntervention:
+            key = (
+                creature_id,
+                selection_generation,
+                behavior,
+                bout_id,
+                intervention,
+            )
+            accumulator = self._completion_history.pop(key, None)
+            if accumulator is not None:
+                effects.append(accumulator.finalize())
+        self._history = {
+            key: history
+            for key, history in self._history.items()
+            if not (
+                key[0] == creature_id
+                and key[1] == selection_generation
+                and key[3] is behavior
+                and key[4] == bout_id
+            )
+        }
+        if not effects:
+            return None
+        effects.sort(
+            key=lambda effect: (
+                -effect.median_influence,
+                list(SemanticIntervention).index(effect.intervention),
+            )
+        )
+        return CompletedWhyExplanation(
+            behavior=behavior,
+            bout_id=bout_id,
+            effects=tuple(effects),
+        )
 
     @staticmethod
     def _aggregate_samples(

@@ -24,9 +24,9 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 15
+CHECKPOINT_VERSION = 16
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -610,6 +610,11 @@ class PersistenceManager:
                 "simulation_speed": world.simulation_speed,
                 "is_paused": world.is_paused,
                 "selected_creature_id": world.selected_creature_id,
+                "behavior_history": copy.deepcopy(
+                    getattr(world, "behavior_history", None).state_dict()
+                    if getattr(world, "behavior_history", None) is not None
+                    else {}
+                ),
                 "flocking_telemetry_accumulator": getattr(
                     world,
                     "_flocking_telemetry_accumulator",
@@ -1774,6 +1779,11 @@ class PersistenceManager:
             world.simulation_speed = runtime["simulation_speed"]
             world.is_paused = runtime["is_paused"]
             world.selected_creature_id = runtime["selected_creature_id"]
+            behavior_history = getattr(world, "behavior_history", None)
+            if behavior_history is not None:
+                behavior_history.restore_state(
+                    runtime.get("behavior_history", {})
+                )
             world._flocking_telemetry_accumulator = float(
                 runtime.get("flocking_telemetry_accumulator", 0.0)
             )

@@ -81,6 +81,13 @@ from src.behavior_observer import (
     BehaviorObserverService,
     BehaviorSnapshot,
 )
+from src.behavior_history import (
+    BehaviorHistoryDiagnostics,
+    BehaviorTermination,
+    CreatureBehaviorHistoryStore,
+    CreatureBehaviorReport,
+    CreatureHistoryIndexEntry,
+)
 from src.counterfactual_neat import (
     CounterfactualDiagnostics,
     CounterfactualProbeInput,
@@ -201,7 +208,19 @@ class World:
         self.behavior_observer = BehaviorObserverService(
             config.behavior,
             getattr(config, "counterfactual_why", None),
+            getattr(config, "behavior_history", None),
         )
+        history_config = config.behavior_history
+        self.behavior_history = CreatureBehaviorHistoryStore(
+            max_completed_bouts_per_creature=(
+                history_config.max_completed_bouts_per_creature
+            ),
+            max_remembered_creatures=(
+                history_config.max_remembered_creatures
+            ),
+            minimum_stable_bouts=history_config.minimum_stable_bouts,
+        )
+        self._behavior_history_worker_skipped_seen = 0
         self._behavior_selection_generation = 0
         self._behavior_next_sample_time = 0.0
         self._why_next_probe_time = 0.0
@@ -390,6 +409,7 @@ class World:
         behavior_observer = getattr(self, "behavior_observer", None)
         if behavior_observer is not None:
             behavior_observer.poll()
+            self._drain_completed_behavior_bouts()
         if delta_time > 0.0:
             instant_fps = 1.0 / delta_time
             self.fps = (
@@ -1132,6 +1152,64 @@ class World:
         return observer.diagnostics
 
     @property
+    def behavior_history_index(
+        self,
+    ) -> tuple[CreatureHistoryIndexEntry, ...]:
+        history = getattr(self, "behavior_history", None)
+        return () if history is None else history.index
+
+    def behavior_report_for(
+        self,
+        creature_id: int,
+    ) -> CreatureBehaviorReport | None:
+        history = getattr(self, "behavior_history", None)
+        return None if history is None else history.report_for(creature_id)
+
+    @property
+    def behavior_history_diagnostics(self) -> BehaviorHistoryDiagnostics:
+        history = getattr(self, "behavior_history", None)
+        return (
+            BehaviorHistoryDiagnostics()
+            if history is None
+            else history.diagnostics
+        )
+
+    def _drain_completed_behavior_bouts(self) -> None:
+        observer = getattr(self, "behavior_observer", None)
+        history = getattr(self, "behavior_history", None)
+        if observer is None or history is None:
+            return
+        drain = getattr(observer, "drain_completed_bouts", None)
+        if callable(drain):
+            for draft in drain():
+                history.append_draft(draft)
+        diagnostics = getattr(observer, "diagnostics", None)
+        if diagnostics is not None:
+            skipped = max(
+                0,
+                int(
+                    getattr(
+                        diagnostics,
+                        "history_completions_not_recorded",
+                        0,
+                    )
+                ),
+            )
+            previously_seen = getattr(
+                self,
+                "_behavior_history_worker_skipped_seen",
+                0,
+            )
+            if skipped > previously_seen:
+                history.record_skipped_completions(
+                    skipped - previously_seen
+                )
+            self._behavior_history_worker_skipped_seen = max(
+                previously_seen,
+                skipped,
+            )
+
+    @property
     def selected_why_snapshots(self) -> tuple[WhySnapshot, ...]:
         observer = getattr(self, "behavior_observer", None)
         if observer is None:
@@ -1456,6 +1534,7 @@ class World:
 
     def select_creature_by_id(self, creature_id: int | None) -> None:
         """Select a UI-captured target without repeating mutable hit testing."""
+        previous_id = getattr(self, "selected_creature_id", None)
         chosen = next(
             (
                 creature
@@ -1470,11 +1549,29 @@ class World:
             "selected_creature_id",
             None,
         )
+        if selection_changed and previous_id is not None:
+            self._finalize_behavior_focus(BehaviorTermination.FOCUS_CHANGED)
         self.selected_creature_id = selected_id
         if selection_changed:
             self._reset_behavior_focus(selected_id)
+            history = getattr(self, "behavior_history", None)
+            if history is not None and chosen is not None:
+                history.register_creature(
+                    chosen.creature_id,
+                    chosen.name,
+                    self.elapsed_time,
+                )
         self._camera_follows_selected_creature = chosen is not None
         self._focus_selected_creature()
+
+    def _finalize_behavior_focus(
+        self,
+        termination: BehaviorTermination,
+    ) -> None:
+        observer = getattr(self, "behavior_observer", None)
+        finalize = getattr(observer, "finalize_focus", None)
+        if callable(finalize):
+            finalize(termination)
 
     def _reset_behavior_focus(self, creature_id: int | None) -> None:
         self._behavior_selection_generation = (
@@ -3959,6 +4056,17 @@ class World:
         creature: Creature,
         death_reason: str = "unknown",
     ) -> None:
+        was_selected = self.selected_creature_id == creature.creature_id
+        if was_selected:
+            self._finalize_behavior_focus(BehaviorTermination.CREATURE_DIED)
+        history = getattr(self, "behavior_history", None)
+        if history is not None:
+            history.register_creature(
+                creature.creature_id,
+                creature.name,
+                self.elapsed_time,
+            )
+            history.mark_deceased(creature.creature_id, self.elapsed_time)
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             telemetry.log_creature_death(
@@ -4007,7 +4115,7 @@ class World:
         if fitness is not None:
             self.fitness_archive[creature.creature_id] = fitness
 
-        if self.selected_creature_id == creature.creature_id:
+        if was_selected:
             self.selected_creature_id = None
             self._reset_behavior_focus(None)
 

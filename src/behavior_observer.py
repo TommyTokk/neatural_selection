@@ -17,7 +17,17 @@ from queue import Empty, Full
 from time import monotonic
 from typing import Any
 
-from configs.sim_config import BehaviorObserverConfig, CounterfactualWhyConfig
+from configs.sim_config import (
+    BehaviorHistoryConfig,
+    BehaviorObserverConfig,
+    CounterfactualWhyConfig,
+)
+from src.behavior_history import (
+    BehaviorEvidenceAccumulator,
+    BehaviorOutcome,
+    BehaviorTermination,
+    CompletedBehaviorBoutDraft,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -107,6 +117,22 @@ class BehaviorWorkerError:
 
 
 @dataclass(frozen=True, slots=True)
+class FinalizeBehaviorFocus:
+    creature_id: int
+    selection_generation: int
+    termination: BehaviorTermination
+
+
+@dataclass(frozen=True, slots=True)
+class BehaviorHistoryWorkerStatus:
+    completion_outbox_depth: int
+    completion_outbox_high_water: int
+    completion_outbox_warning: bool
+    completion_recording_suspended: bool
+    history_completions_not_recorded: int
+
+
+@dataclass(frozen=True, slots=True)
 class BehaviorObserverDiagnostics:
     samples_produced: int = 0
     samples_dropped: int = 0
@@ -116,6 +142,11 @@ class BehaviorObserverDiagnostics:
     input_queue_size: int | None = None
     worker_health: str = "idle"
     last_error: str | None = None
+    completion_outbox_depth: int = 0
+    completion_outbox_high_water: int = 0
+    completion_outbox_warning: bool = False
+    completion_recording_suspended: bool = False
+    history_completions_not_recorded: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,19 +164,32 @@ class _BoutState:
     active_since: float | None = None
     last_evidence_time: float | None = None
     bout_id: int = 0
+    target_id: int | None = None
+    evidence_accumulator: BehaviorEvidenceAccumulator | None = None
+    start_consumption_count: int = 0
+    start_alarm_level: float = 0.0
 
     def reset(self) -> None:
         self.status = None
         self.candidate_since = None
         self.active_since = None
         self.last_evidence_time = None
+        self.target_id = None
+        self.evidence_accumulator = None
+        self.start_consumption_count = 0
+        self.start_alarm_level = 0.0
 
 
 class TemporalBehaviorAnalyzer:
     """Analyze one focal creature and reset completely when focus changes."""
 
-    def __init__(self, config: BehaviorObserverConfig) -> None:
+    def __init__(
+        self,
+        config: BehaviorObserverConfig,
+        history_config: BehaviorHistoryConfig | None = None,
+    ) -> None:
         self.config = config
+        self.history_config = history_config or BehaviorHistoryConfig()
         self.history: deque[BehaviorObservation] = deque()
         self.creature_id: int | None = None
         self.selection_generation: int | None = None
@@ -159,6 +203,8 @@ class TemporalBehaviorAnalyzer:
         self._last_feeding_rule = _empty_rule()
         self._speed_sum = 0.0
         self._low_speed_count = 0
+        self._last_observation: BehaviorObservation | None = None
+        self._completed_bouts: deque[CompletedBehaviorBoutDraft] = deque()
 
     def reset(
         self,
@@ -173,6 +219,7 @@ class TemporalBehaviorAnalyzer:
         self._last_feeding_rule = _empty_rule()
         self._speed_sum = 0.0
         self._low_speed_count = 0
+        self._last_observation = None
         for bout in self.bouts.values():
             bout.reset()
             bout.bout_id = 0
@@ -183,8 +230,10 @@ class TemporalBehaviorAnalyzer:
             observation.selection_generation,
         )
         if identity != (self.creature_id, self.selection_generation):
+            self.force_finalize(BehaviorTermination.FOCUS_CHANGED)
             self.reset(*identity)
 
+        self._last_observation = observation
         self.history.append(observation)
         self._speed_sum += observation.speed
         if observation.speed <= self.config.rest_speed_threshold:
@@ -218,12 +267,14 @@ class TemporalBehaviorAnalyzer:
                 behavior,
                 rules[behavior],
                 observation.simulation_time,
+                observation,
             )
             if state is not None:
                 states.append(state)
         feeding_state = self._update_feeding(
             feeding,
             observation.simulation_time,
+            observation,
         )
         if feeding_state is not None:
             # Keep the enum's stable display order rather than event timing.
@@ -239,11 +290,32 @@ class TemporalBehaviorAnalyzer:
             produced_monotonic=monotonic(),
         )
 
+    def drain_completed_bouts(self) -> tuple[CompletedBehaviorBoutDraft, ...]:
+        completed = tuple(self._completed_bouts)
+        self._completed_bouts.clear()
+        return completed
+
+    def force_finalize(self, termination: BehaviorTermination) -> None:
+        observation = self._last_observation
+        if observation is None:
+            return
+        for behavior, bout in self.bouts.items():
+            if bout.status is BoutStatus.ACTIVE:
+                self._finalize_bout(
+                    behavior,
+                    bout,
+                    observation.simulation_time,
+                    observation,
+                    termination,
+                )
+            bout.reset()
+
     def _update_bout(
         self,
         behavior: BehaviorKind,
         rule: _RuleEvidence,
         now: float,
+        observation: BehaviorObservation,
     ) -> BehaviorStateSnapshot | None:
         bout = self.bouts[behavior]
         if rule.present:
@@ -252,6 +324,18 @@ class TemporalBehaviorAnalyzer:
                 bout.bout_id += 1
                 bout.status = BoutStatus.EMERGING
                 bout.candidate_since = now
+                bout.target_id = rule.target_id
+                bout.evidence_accumulator = BehaviorEvidenceAccumulator(
+                    self.history_config.active_metric_sample_capacity
+                )
+                bout.start_consumption_count = (
+                    observation.food_consumption_count
+                )
+                bout.start_alarm_level = observation.alarm_here
+            if bout.evidence_accumulator is not None:
+                bout.evidence_accumulator.add(rule.evidence)
+            if rule.target_id is not None:
+                bout.target_id = rule.target_id
             if (
                 bout.status is BoutStatus.EMERGING
                 and bout.candidate_since is not None
@@ -263,11 +347,20 @@ class TemporalBehaviorAnalyzer:
         elif bout.status is BoutStatus.EMERGING:
             bout.reset()
         elif bout.status is BoutStatus.ACTIVE:
+            if bout.evidence_accumulator is not None:
+                bout.evidence_accumulator.add(rule.evidence)
             last = bout.last_evidence_time
             if (
                 last is None
                 or now - last > self.config.bout_end_grace_seconds
             ):
+                self._finalize_bout(
+                    behavior,
+                    bout,
+                    now,
+                    observation,
+                    BehaviorTermination.NATURAL,
+                )
                 bout.reset()
 
         if bout.status is None:
@@ -294,6 +387,7 @@ class TemporalBehaviorAnalyzer:
         self,
         rule: _RuleEvidence,
         now: float,
+        observation: BehaviorObservation,
     ) -> BehaviorStateSnapshot | None:
         bout = self.bouts[BehaviorKind.FEEDING]
         if rule.present:
@@ -301,6 +395,16 @@ class TemporalBehaviorAnalyzer:
             if bout.status is None:
                 bout.bout_id += 1
                 bout.active_since = now
+                bout.candidate_since = now
+                bout.evidence_accumulator = BehaviorEvidenceAccumulator(
+                    self.history_config.active_metric_sample_capacity
+                )
+                bout.start_consumption_count = (
+                    observation.food_consumption_count
+                )
+                bout.start_alarm_level = observation.alarm_here
+            if bout.evidence_accumulator is not None:
+                bout.evidence_accumulator.add(rule.evidence)
             bout.status = BoutStatus.ACTIVE
             bout.last_evidence_time = now
         elif (
@@ -311,6 +415,15 @@ class TemporalBehaviorAnalyzer:
                 > self.config.feeding_display_seconds
             )
         ):
+            if bout.evidence_accumulator is not None:
+                bout.evidence_accumulator.add(rule.evidence)
+            self._finalize_bout(
+                BehaviorKind.FEEDING,
+                bout,
+                now,
+                observation,
+                BehaviorTermination.NATURAL,
+            )
             bout.reset()
         if bout.status is None:
             return None
@@ -331,6 +444,113 @@ class TemporalBehaviorAnalyzer:
             evidence=displayed_rule.evidence,
             bout_id=bout.bout_id,
         )
+
+    def _finalize_bout(
+        self,
+        behavior: BehaviorKind,
+        bout: _BoutState,
+        end_time: float,
+        observation: BehaviorObservation,
+        termination: BehaviorTermination,
+    ) -> None:
+        if (
+            self.creature_id is None
+            or self.selection_generation is None
+            or bout.active_since is None
+        ):
+            return
+        outcome = self._outcome_for(
+            behavior,
+            bout,
+            observation,
+            termination,
+            end_time,
+        )
+        summaries = (
+            ()
+            if bout.evidence_accumulator is None
+            else bout.evidence_accumulator.summaries()
+        )
+        self._completed_bouts.append(
+            CompletedBehaviorBoutDraft(
+                creature_id=self.creature_id,
+                selection_generation=self.selection_generation,
+                behavior=behavior,
+                local_bout_id=bout.bout_id,
+                start_time=bout.active_since,
+                end_time=end_time,
+                duration=max(0.0, end_time - bout.active_since),
+                evidence_summary=summaries,
+                outcome=outcome,
+                termination=termination,
+            )
+        )
+
+    def _outcome_for(
+        self,
+        behavior: BehaviorKind,
+        bout: _BoutState,
+        observation: BehaviorObservation,
+        termination: BehaviorTermination,
+        end_time: float,
+    ) -> BehaviorOutcome | None:
+        if behavior is BehaviorKind.FEEDING:
+            return BehaviorOutcome.CONSUMPTION_EVENT
+        if termination is not BehaviorTermination.NATURAL:
+            if behavior in {
+                BehaviorKind.FOOD_ORIENTATION,
+                BehaviorKind.FOOD_APPROACH,
+                BehaviorKind.ALARM_RETREAT,
+            }:
+                return BehaviorOutcome.INTERRUPTED
+            return None
+        if behavior is BehaviorKind.FOOD_APPROACH:
+            if (
+                observation.food_consumption_count
+                > bout.start_consumption_count
+            ):
+                return BehaviorOutcome.FOOD_CONSUMED
+            if (
+                not observation.food_visible
+                or observation.nearest_food_id is None
+                or (
+                    bout.target_id is not None
+                    and observation.nearest_food_id != bout.target_id
+                )
+            ):
+                return BehaviorOutcome.TARGET_LOST
+            return BehaviorOutcome.ABANDONED
+        if behavior is BehaviorKind.FOOD_ORIENTATION:
+            approach = self.bouts[BehaviorKind.FOOD_APPROACH]
+            if (
+                approach.status is BoutStatus.ACTIVE
+                and (
+                    bout.target_id is None
+                    or approach.target_id == bout.target_id
+                )
+            ):
+                return BehaviorOutcome.APPROACH_STARTED
+            if (
+                not observation.food_visible
+                or observation.nearest_food_id is None
+                or (
+                    bout.target_id is not None
+                    and observation.nearest_food_id != bout.target_id
+                )
+            ):
+                return BehaviorOutcome.TARGET_LOST
+            return BehaviorOutcome.ENDED_WITHOUT_APPROACH
+        if behavior is BehaviorKind.ALARM_RETREAT:
+            start_time = (
+                end_time
+                if bout.active_since is None
+                else bout.active_since
+            )
+            duration = max(0.0, end_time - start_time)
+            required_drop = self.config.alarm_min_temporal_drop * duration
+            if observation.alarm_here <= bout.start_alarm_level - required_drop:
+                return BehaviorOutcome.ALARM_EXPOSURE_REDUCED
+        return None
 
     def _food_segment(self) -> list[BehaviorObservation]:
         if not self.history:
@@ -766,6 +986,7 @@ class BehaviorObserverService:
         self,
         config: BehaviorObserverConfig,
         why_config: CounterfactualWhyConfig | None = None,
+        history_config: BehaviorHistoryConfig | None = None,
     ) -> None:
         self.config = config
         self.why_config = (
@@ -773,6 +994,7 @@ class BehaviorObserverService:
             if why_config is not None
             else CounterfactualWhyConfig(enabled=False)
         )
+        self.history_config = history_config or BehaviorHistoryConfig()
         self.latest_snapshot: BehaviorSnapshot | None = None
         self.latest_why_snapshots: tuple[Any, ...] = ()
         self._focus: tuple[int, int] | None = None
@@ -783,6 +1005,9 @@ class BehaviorObserverService:
         self._why_control_queue: Any = None
         self._why_probe_queue: Any = None
         self._why_result_queue: Any = None
+        self._lifecycle_queue: Any = None
+        self._completion_queue: Any = None
+        self._history_status_queue: Any = None
         self._stop_event: Any = None
         self._process: Any = None
         self._closed = False
@@ -801,6 +1026,12 @@ class BehaviorObserverService:
         self._why_latest_produced_monotonic: float | None = None
         self._why_last_error: str | None = None
         self._why_started_monotonic = monotonic()
+        self._completed_bouts: deque[CompletedBehaviorBoutDraft] = deque()
+        self._completion_outbox_depth = 0
+        self._completion_outbox_high_water = 0
+        self._completion_outbox_warning = False
+        self._completion_recording_suspended = False
+        self._history_completions_not_recorded = 0
 
     def set_focus(
         self,
@@ -866,6 +1097,41 @@ class BehaviorObserverService:
             probe,
             count_probe_drop=True,
         )
+
+    def finalize_focus(self, termination: BehaviorTermination) -> bool:
+        focus = self._focus
+        if focus is None or self._closed:
+            return False
+        self._start()
+        if self._lifecycle_queue is None:
+            return False
+        request = FinalizeBehaviorFocus(
+            creature_id=focus[0],
+            selection_generation=focus[1],
+            termination=termination,
+        )
+        try:
+            self._lifecycle_queue.put_nowait(request)
+            return True
+        except Full:
+            self._record_error(
+                "Behaviour lifecycle queue is full; focal finalization "
+                "could not be scheduled."
+            )
+            return False
+        except (OSError, ValueError) as error:
+            self._record_error(
+                f"Could not enqueue focal finalization: {error}"
+            )
+            return False
+
+    def drain_completed_bouts(
+        self,
+    ) -> tuple[CompletedBehaviorBoutDraft, ...]:
+        self._poll_completed_bouts()
+        completed = tuple(self._completed_bouts)
+        self._completed_bouts.clear()
+        return completed
 
     def _put_main_latest(
         self,
@@ -958,6 +1224,7 @@ class BehaviorObserverService:
                     result.selection_generation,
                 ):
                     self.latest_snapshot = result
+        self._poll_history_status()
         self._poll_why_results()
         process = self._process
         if (
@@ -972,6 +1239,68 @@ class BehaviorObserverService:
                 f"(code {process.exitcode})."
             )
         return self.latest_snapshot
+
+    def _poll_history_status(self) -> None:
+        queue = self._history_status_queue
+        if queue is None:
+            return
+        while True:
+            try:
+                status = queue.get_nowait()
+            except Empty:
+                break
+            except (OSError, ValueError) as error:
+                self._record_error(
+                    f"Could not read behaviour history status: {error}"
+                )
+                break
+            if not isinstance(status, BehaviorHistoryWorkerStatus):
+                self._record_error(
+                    "Unexpected behaviour history status "
+                    f"{type(status).__name__}."
+                )
+                continue
+            self._completion_outbox_depth = status.completion_outbox_depth
+            self._completion_outbox_high_water = max(
+                self._completion_outbox_high_water,
+                status.completion_outbox_high_water,
+            )
+            self._completion_outbox_warning = (
+                status.completion_outbox_warning
+            )
+            self._completion_recording_suspended = (
+                status.completion_recording_suspended
+            )
+            self._history_completions_not_recorded = max(
+                self._history_completions_not_recorded,
+                status.history_completions_not_recorded,
+            )
+
+    def _poll_completed_bouts(self) -> None:
+        queue = self._completion_queue
+        if queue is None:
+            return
+        max_batch = (
+            self.history_config.completion_outbox_hard_capacity
+            + self.history_config.completion_queue_capacity
+        )
+        for _index in range(max_batch):
+            try:
+                result = queue.get_nowait()
+            except Empty:
+                break
+            except (OSError, ValueError) as error:
+                self._record_error(
+                    f"Could not read completed behaviour bout: {error}"
+                )
+                break
+            if isinstance(result, CompletedBehaviorBoutDraft):
+                self._completed_bouts.append(result)
+            else:
+                self._record_error(
+                    "Unexpected completed behaviour result "
+                    f"{type(result).__name__}."
+                )
 
     def _poll_why_results(self) -> None:
         queue = self._why_result_queue
@@ -1036,6 +1365,17 @@ class BehaviorObserverService:
             input_queue_size=_safe_qsize(self._input_queue),
             worker_health=health,
             last_error=self._last_error,
+            completion_outbox_depth=self._completion_outbox_depth,
+            completion_outbox_high_water=(
+                self._completion_outbox_high_water
+            ),
+            completion_outbox_warning=self._completion_outbox_warning,
+            completion_recording_suspended=(
+                self._completion_recording_suspended
+            ),
+            history_completions_not_recorded=(
+                self._history_completions_not_recorded
+            ),
         )
 
     @property
@@ -1099,6 +1439,9 @@ class BehaviorObserverService:
             self._why_control_queue,
             self._why_probe_queue,
             self._why_result_queue,
+            self._lifecycle_queue,
+            self._completion_queue,
+            self._history_status_queue,
         ):
             if queue is None:
                 continue
@@ -1137,17 +1480,26 @@ class BehaviorObserverService:
             self._why_result_queue = self._context.Queue(
                 maxsize=self.why_config.result_queue_capacity
             )
+            self._lifecycle_queue = self._context.Queue(maxsize=8)
+            self._completion_queue = self._context.Queue(
+                maxsize=self.history_config.completion_queue_capacity
+            )
+            self._history_status_queue = self._context.Queue(maxsize=1)
             self._stop_event = self._context.Event()
             self._process = self._context.Process(
                 target=_behavior_worker_main,
                 args=(
                     self.config,
                     self.why_config,
+                    self.history_config,
                     self._input_queue,
                     self._result_queue,
                     self._why_control_queue,
                     self._why_probe_queue,
                     self._why_result_queue,
+                    self._lifecycle_queue,
+                    self._completion_queue,
+                    self._history_status_queue,
                     self._stop_event,
                 ),
                 name="behavior-observer",
@@ -1174,11 +1526,15 @@ class BehaviorObserverService:
 def _behavior_worker_main(
     config: BehaviorObserverConfig,
     why_config: CounterfactualWhyConfig,
+    history_config: BehaviorHistoryConfig,
     input_queue: Any,
     result_queue: Any,
     why_control_queue: Any,
     why_probe_queue: Any,
     why_result_queue: Any,
+    lifecycle_queue: Any,
+    completion_queue: Any,
+    history_status_queue: Any,
     stop_event: Any,
 ) -> None:
     import pickle
@@ -1194,7 +1550,7 @@ def _behavior_worker_main(
         validate_probe,
     )
 
-    analyzer = TemporalBehaviorAnalyzer(config)
+    analyzer = TemporalBehaviorAnalyzer(config, history_config)
     result_drops = 0
     why_result_drops = 0
     why_evaluations = 0
@@ -1206,11 +1562,131 @@ def _behavior_worker_main(
         why_config.history_capacity,
         why_config.target_center_dead_zone_radians,
     )
+    completion_outbox: deque[CompletedBehaviorBoutDraft] = deque()
+    completion_outbox_high_water = 0
+    completion_recording_suspended = False
+    history_completions_not_recorded = 0
+    outbox_warning_latched = False
+    outbox_error_latched = False
+    last_published_history_status: (
+        tuple[int, int, bool, bool, int] | None
+    ) = None
+
+    def publish_history_status() -> None:
+        nonlocal last_published_history_status
+        status_tuple = (
+            len(completion_outbox),
+            completion_outbox_high_water,
+            outbox_warning_latched,
+            completion_recording_suspended,
+            history_completions_not_recorded,
+        )
+        if status_tuple == last_published_history_status:
+            return
+        last_published_history_status = status_tuple
+        _put_latest(
+            history_status_queue,
+            BehaviorHistoryWorkerStatus(
+                completion_outbox_depth=status_tuple[0],
+                completion_outbox_high_water=status_tuple[1],
+                completion_outbox_warning=status_tuple[2],
+                completion_recording_suspended=status_tuple[3],
+                history_completions_not_recorded=status_tuple[4],
+            ),
+            0,
+        )
+
+    def queue_completed_bouts() -> None:
+        nonlocal completion_outbox_high_water
+        nonlocal completion_recording_suspended
+        nonlocal history_completions_not_recorded
+        nonlocal outbox_warning_latched
+        nonlocal outbox_error_latched
+
+        for draft in analyzer.drain_completed_bouts():
+            why_summary = aggregator.finalize_completed_bout(
+                draft.creature_id,
+                draft.selection_generation,
+                draft.behavior,
+                draft.local_bout_id,
+            )
+            completed = replace(draft, why_summary=why_summary)
+            if (
+                completion_recording_suspended
+                or len(completion_outbox)
+                >= history_config.completion_outbox_hard_capacity
+            ):
+                completion_recording_suspended = True
+                history_completions_not_recorded += 1
+                if not outbox_error_latched:
+                    LOGGER.error(
+                        "Completed behaviour history outbox reached its hard "
+                        "capacity; long-term recording is suspended until "
+                        "the history consumer recovers."
+                    )
+                    outbox_error_latched = True
+                continue
+            completion_outbox.append(completed)
+            completion_outbox_high_water = max(
+                completion_outbox_high_water,
+                len(completion_outbox),
+            )
+            if (
+                len(completion_outbox)
+                >= history_config.completion_outbox_soft_capacity
+                and not outbox_warning_latched
+            ):
+                LOGGER.warning(
+                    "Completed behaviour history outbox crossed its soft "
+                    "capacity; records remain queued."
+                )
+                outbox_warning_latched = True
+            if (
+                len(completion_outbox)
+                >= history_config.completion_outbox_hard_capacity
+            ):
+                completion_recording_suspended = True
+                if not outbox_error_latched:
+                    LOGGER.error(
+                        "Completed behaviour history outbox reached its hard "
+                        "capacity; long-term recording is suspended until "
+                        "the history consumer recovers."
+                    )
+                    outbox_error_latched = True
+        publish_history_status()
+
+    def flush_completion_outbox() -> None:
+        nonlocal completion_recording_suspended
+        nonlocal outbox_warning_latched
+        nonlocal outbox_error_latched
+
+        while completion_outbox:
+            try:
+                completion_queue.put_nowait(completion_outbox[0])
+            except Full:
+                break
+            except (OSError, ValueError):
+                break
+            completion_outbox.popleft()
+        if (
+            completion_recording_suspended
+            and len(completion_outbox)
+            <= history_config.completion_outbox_recovery_capacity
+        ):
+            completion_recording_suspended = False
+            outbox_warning_latched = False
+            outbox_error_latched = False
+            LOGGER.info(
+                "Completed behaviour history consumer recovered; "
+                "long-term recording resumed."
+            )
+        publish_history_status()
 
     def process_observation(observation: Any) -> None:
         nonlocal result_drops
         try:
             snapshot = analyzer.process(observation)
+            queue_completed_bouts()
         except Exception as error:  # Worker must report and continue.
             message = BehaviorWorkerError(
                 creature_id=getattr(observation, "creature_id", None),
@@ -1230,7 +1706,10 @@ def _behavior_worker_main(
                 result_drops,
             )
             return
-        snapshot = replace(snapshot, result_drops=result_drops)
+        snapshot = replace(
+            snapshot,
+            result_drops=result_drops,
+        )
         result_drops = _put_latest(
             result_queue,
             snapshot,
@@ -1255,6 +1734,29 @@ def _behavior_worker_main(
                     break
                 except (OSError, EOFError, ValueError):
                     return
+
+        # Forced focus/death finalization is ordered after all pending
+        # observations and before explanatory work.
+        while True:
+            try:
+                lifecycle = lifecycle_queue.get_nowait()
+            except Empty:
+                break
+            except (OSError, EOFError, ValueError):
+                return
+            if not isinstance(lifecycle, FinalizeBehaviorFocus):
+                continue
+            if (
+                analyzer.creature_id == lifecycle.creature_id
+                and analyzer.selection_generation
+                == lifecycle.selection_generation
+            ):
+                analyzer.force_finalize(lifecycle.termination)
+                queue_completed_bouts()
+
+        # Completed records are lossless below the hard emergency bound and
+        # never block the high-priority temporal analyzer.
+        flush_completion_outbox()
 
         # Apply only the newest complete focal evaluator update.
         control, _discarded_controls = _drain_latest(why_control_queue)

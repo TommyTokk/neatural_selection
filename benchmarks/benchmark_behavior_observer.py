@@ -8,6 +8,7 @@ Run from the repository root:
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 import statistics
 import sys
@@ -15,8 +16,9 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from configs.sim_config import BehaviorObserverConfig
+from configs.sim_config import BehaviorHistoryConfig, BehaviorObserverConfig
 from configs.sim_config import build_sim_config
+from src.behavior_history import CreatureBehaviorHistoryStore
 from src.behavior_observer import (
     BehaviorObservation,
     BehaviorObserverService,
@@ -86,7 +88,75 @@ def benchmark_seeded_world(
         world.close()
 
 
-def run(sample_count: int, world_steps: int) -> None:
+def benchmark_long_term_history(completed_bouts: int) -> None:
+    """Exercise finalized-bout throughput and prove configured retention."""
+    observer_config = BehaviorObserverConfig(feeding_display_seconds=0.01)
+    history_config = BehaviorHistoryConfig()
+    analyzer = TemporalBehaviorAnalyzer(
+        observer_config,
+        history_config,
+    )
+    store = CreatureBehaviorHistoryStore(
+        max_completed_bouts_per_creature=(
+            history_config.max_completed_bouts_per_creature
+        ),
+        max_remembered_creatures=(
+            history_config.max_remembered_creatures
+        ),
+        minimum_stable_bouts=history_config.minimum_stable_bouts,
+    )
+    store.register_creature(1, "Benchmark focal", 0.0)
+    started = time.perf_counter()
+    for index in range(completed_bouts):
+        simulation_time = index * 0.1
+        base = sample(index, observer_config.sample_hz)
+        analyzer.process(
+            replace(
+                base,
+                simulation_time=simulation_time,
+                food_consumption_count=index + 1,
+                food_consumed_energy_total=(index + 1) * 0.1,
+            )
+        )
+        analyzer.process(
+            replace(
+                base,
+                simulation_time=simulation_time + 0.02,
+                food_consumption_count=index + 1,
+                food_consumed_energy_total=(index + 1) * 0.1,
+            )
+        )
+        for draft in analyzer.drain_completed_bouts():
+            store.append_draft(draft)
+    elapsed = time.perf_counter() - started
+    diagnostics = store.diagnostics
+    expected_retained = min(
+        completed_bouts,
+        history_config.max_completed_bouts_per_creature,
+    )
+    if diagnostics.completed_bouts_stored != expected_retained:
+        raise RuntimeError(
+            "Long-term history exceeded or failed its configured retention "
+            "bound."
+        )
+    if len(store._seen_sources) > store._seen_source_capacity:
+        raise RuntimeError("Completion deduplication memory exceeded its bound.")
+    print(
+        "Long-term completion throughput: "
+        f"{completed_bouts / max(elapsed, 1e-12):,.0f} bouts/s"
+    )
+    print(
+        "Long-term retained / dropped detail: "
+        f"{diagnostics.completed_bouts_stored} / "
+        f"{diagnostics.detailed_bouts_dropped}"
+    )
+
+
+def run(
+    sample_count: int,
+    world_steps: int,
+    history_bouts: int,
+) -> None:
     config = BehaviorObserverConfig()
     observations = [sample(index, config.sample_hz) for index in range(sample_count)]
 
@@ -156,6 +226,8 @@ def run(sample_count: int, world_steps: int) -> None:
             else f"{diagnostics.result_latency_ms:.2f} ms"
         )
     )
+    if history_bouts:
+        benchmark_long_term_history(history_bouts)
     if world_steps:
         disabled_frames = benchmark_seeded_world(False, world_steps)
         enabled_frames = benchmark_seeded_world(True, world_steps)
@@ -185,12 +257,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", type=int, default=5000)
     parser.add_argument("--world-steps", type=int, default=180)
+    parser.add_argument("--history-bouts", type=int, default=10000)
     args = parser.parse_args()
     if args.samples < 1:
         parser.error("--samples must be positive")
     if args.world_steps < 0:
         parser.error("--world-steps must be nonnegative")
-    run(args.samples, args.world_steps)
+    if args.history_bouts < 0:
+        parser.error("--history-bouts must be nonnegative")
+    run(args.samples, args.world_steps, args.history_bouts)
 
 
 if __name__ == "__main__":

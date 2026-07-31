@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 from configs.sim_config import build_sim_config
+from src.behavior_history import BehaviorTermination
 from src.neat_controller import SpeciationResult
 from src.persistence import CheckpointTarget, SavePriority
 from src.speciation import SpeciesDistanceBreakdown, SpeciesTraitSnapshot
@@ -256,6 +258,7 @@ class WorldPersistenceTimerTest(unittest.TestCase):
     def test_remove_creature_logs_death_reason(self) -> None:
         creature = SimpleNamespace(
             creature_id=7,
+            name="Seven",
             body=object(),
             shape=object(),
         )
@@ -266,11 +269,20 @@ class WorldPersistenceTimerTest(unittest.TestCase):
         self.world.neat_controller = SimpleNamespace()
         self.world.creatures = []
         self.world.rt_neat = SimpleNamespace(record_death=lambda fitness: None)
-        self.world.selected_creature_id = None
+        self.world.selected_creature_id = 7
+        self.world.behavior_observer = Mock()
+        self.world.behavior_history = Mock()
         self.world._chronometers = {}
         self.world._remove_creature(creature, death_reason="manual")
 
         self.assertEqual(self.world.telemetry.deaths, [(7, 25.0, "manual")])
+        self.world.behavior_observer.finalize_focus.assert_called_once_with(
+            BehaviorTermination.CREATURE_DIED
+        )
+        self.world.behavior_history.mark_deceased.assert_called_once_with(
+            7,
+            25.0,
+        )
 
 
 if __name__ == "__main__":

@@ -50,8 +50,8 @@ class PersistenceManagerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_checkpoint_versions_2_through_14_remain_loadable(self) -> None:
-        for version in range(2, 15):
+    def test_checkpoint_versions_2_through_15_remain_loadable(self) -> None:
+        for version in range(2, 16):
             PersistenceManager._validate_state({"version": version})
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
@@ -493,6 +493,11 @@ class PersistenceManagerTest(unittest.TestCase):
             )
 
     def test_real_world_round_trip_reuses_simulation_directory(self) -> None:
+        from src.behavior_history import (
+            BehaviorTermination,
+            CompletedBehaviorBoutDraft,
+        )
+        from src.behavior_observer import BehaviorKind
         from src.communication import AcousticSignal
         from src.world import World
 
@@ -502,6 +507,27 @@ class PersistenceManagerTest(unittest.TestCase):
         world = World(self.config, simulation_paths=self.simulation_paths)
         restored = None
         try:
+            focal = world.creatures[0]
+            world.behavior_history.register_creature(
+                focal.creature_id,
+                focal.name,
+                1.0,
+            )
+            world.behavior_history.append_draft(
+                CompletedBehaviorBoutDraft(
+                    creature_id=focal.creature_id,
+                    selection_generation=1,
+                    behavior=BehaviorKind.RESTING,
+                    local_bout_id=1,
+                    start_time=1.0,
+                    end_time=2.0,
+                    duration=1.0,
+                    evidence_summary=(),
+                    outcome=None,
+                    termination=BehaviorTermination.FOCUS_CHANGED,
+                )
+            )
+            world.behavior_history.mark_incomplete(2)
             original_brain = world.neat_controller.brain_for(
                 world.creatures[0].creature_id
             )
@@ -575,6 +601,26 @@ class PersistenceManagerTest(unittest.TestCase):
             metadata = captured["communication"]["pheromone_metadata"]
             self.assertEqual(metadata, world.pheromones.state_metadata())
             self.assertEqual(captured["version"], CHECKPOINT_VERSION)
+            self.assertEqual(
+                captured["world"]["behavior_history"],
+                world.behavior_history.state_dict(),
+            )
+            history_state = captured["world"]["behavior_history"]
+            self.assertEqual(
+                set(history_state),
+                {
+                    "history_incomplete",
+                    "history_completions_not_recorded",
+                    "creatures_evicted",
+                    "bout_finalizations",
+                    "why_summaries_finalized",
+                    "duplicate_completions_ignored",
+                    "creatures",
+                },
+            )
+            self.assertNotIn("active_windows", serialized_keys)
+            self.assertNotIn("completion_outbox", serialized_keys)
+            self.assertNotIn("raw_probes", serialized_keys)
             world.persistence_manager.save_simulation(
                 world,
                 world.neat_controller,
@@ -590,6 +636,16 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.creatures[0].creature_id
             )
             restored_creature = restored.creatures[0]
+            restored_report = restored.behavior_report_for(
+                restored_creature.creature_id
+            )
+            self.assertIsNotNone(restored_report)
+            self.assertEqual(len(restored_report.completed_bouts), 1)
+            self.assertTrue(restored_report.history_incomplete)
+            self.assertEqual(
+                restored_report.history_completions_not_recorded,
+                2,
+            )
             self.assertIs(
                 restored._creature_by_shape_id[id(restored_creature.shape)],
                 restored_creature,

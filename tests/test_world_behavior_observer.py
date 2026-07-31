@@ -4,6 +4,10 @@ from types import SimpleNamespace
 import unittest
 
 from configs.sim_config import build_sim_config
+from src.behavior_history import (
+    BehaviorTermination,
+    CreatureBehaviorHistoryStore,
+)
 from src.behavior_observer import BehaviorSnapshot
 from src.world import World
 
@@ -14,6 +18,7 @@ class _Observer:
         self.focuses = []
         self.poll_count = 0
         self.latest_snapshot = None
+        self.finalized = []
 
     def set_focus(self, creature_id, generation) -> None:
         self.focuses.append((creature_id, generation))
@@ -26,6 +31,10 @@ class _Observer:
     def poll(self):
         self.poll_count += 1
         return self.latest_snapshot
+
+    def finalize_focus(self, termination) -> bool:
+        self.finalized.append(termination)
+        return True
 
 
 def world_shell() -> World:
@@ -106,6 +115,17 @@ class WorldBehaviorObserverTest(unittest.TestCase):
         self.assertEqual(world.behavior_observer.focuses, [(4, 3)])
         self.assertIsNone(world.behavior_observer.latest_snapshot)
 
+    def test_deselection_forces_old_focus_before_reset(self) -> None:
+        world = world_shell()
+
+        world.select_creature_by_id(None)
+
+        self.assertEqual(
+            world.behavior_observer.finalized,
+            [BehaviorTermination.FOCUS_CHANGED],
+        )
+        self.assertEqual(world.behavior_observer.focuses, [(None, 3)])
+
     def test_selection_starts_at_next_simulation_time_boundary(self) -> None:
         world = world_shell()
         world.elapsed_time = 0.03
@@ -159,6 +179,32 @@ class WorldBehaviorObserverTest(unittest.TestCase):
         world.update(0.0)
 
         self.assertEqual(world.behavior_observer.poll_count, 1)
+
+    def test_worker_skip_diagnostics_accumulate_into_permanent_history(
+        self,
+    ) -> None:
+        world = object.__new__(World)
+        world.behavior_history = CreatureBehaviorHistoryStore(
+            max_completed_bouts_per_creature=4,
+            max_remembered_creatures=2,
+            minimum_stable_bouts=3,
+        )
+        diagnostics = SimpleNamespace(
+            history_completions_not_recorded=2
+        )
+        world.behavior_observer = SimpleNamespace(
+            drain_completed_bouts=lambda: (),
+            diagnostics=diagnostics,
+        )
+        world._behavior_history_worker_skipped_seen = 0
+
+        world._drain_completed_behavior_bouts()
+        diagnostics.history_completions_not_recorded = 5
+        world._drain_completed_behavior_bouts()
+
+        history = world.behavior_history.diagnostics
+        self.assertTrue(history.history_incomplete)
+        self.assertEqual(history.history_completions_not_recorded, 5)
 
 
 if __name__ == "__main__":

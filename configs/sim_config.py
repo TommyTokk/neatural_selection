@@ -714,6 +714,50 @@ class CounterfactualWhyConfig:
 
 
 @dataclass(slots=True)
+class BehaviorHistoryConfig:
+    """Configuration for compact completed focal-behaviour history."""
+
+    max_completed_bouts_per_creature: int = 256
+    max_remembered_creatures: int = 16
+    minimum_stable_bouts: int = 3
+    active_metric_sample_capacity: int = 512
+    completion_queue_capacity: int = 64
+    completion_outbox_soft_capacity: int = 256
+    completion_outbox_hard_capacity: int = 1024
+    completion_outbox_recovery_capacity: int = 128
+
+    def __post_init__(self) -> None:
+        for name in (
+            "max_completed_bouts_per_creature",
+            "max_remembered_creatures",
+            "minimum_stable_bouts",
+            "active_metric_sample_capacity",
+            "completion_queue_capacity",
+            "completion_outbox_soft_capacity",
+            "completion_outbox_hard_capacity",
+            "completion_outbox_recovery_capacity",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise ValueError(
+                    f"behavior_history.{name} must be a positive integer."
+                )
+        if self.active_metric_sample_capacity < 4:
+            raise ValueError(
+                "behavior_history.active_metric_sample_capacity must be "
+                "at least four."
+            )
+        recovery = self.completion_outbox_recovery_capacity
+        soft = self.completion_outbox_soft_capacity
+        hard = self.completion_outbox_hard_capacity
+        if not recovery < soft < hard:
+            raise ValueError(
+                "behavior_history completion outbox capacities must satisfy "
+                "recovery < soft < hard."
+            )
+
+
+@dataclass(slots=True)
 class SimConfig:
     random_seed: int = 7
     display: DisplayConfig = field(default_factory=DisplayConfig)
@@ -746,6 +790,9 @@ class SimConfig:
     )
     counterfactual_why: CounterfactualWhyConfig = field(
         default_factory=CounterfactualWhyConfig
+    )
+    behavior_history: BehaviorHistoryConfig = field(
+        default_factory=BehaviorHistoryConfig
     )
 
     # Trait config
