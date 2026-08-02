@@ -15,6 +15,31 @@ from configs.sim_config import (
 from src.vision import VisionSystem
 
 
+ENERGY_EPSILON = 1e-9
+
+
+def is_energy_depleted(value: float) -> bool:
+    """Return whether energy is unavailable under the shared tolerance."""
+    try:
+        energy = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return True
+    return not isfinite(energy) or energy <= ENERGY_EPSILON
+
+
+def movement_life_penalty_multiplier(
+    life: float,
+    max_life: float,
+    maximum_multiplier: float,
+) -> float:
+    """Return the quadratic multiplier for life-powered movement."""
+    maximum = max(1.0, float(maximum_multiplier))
+    if max_life <= 0.0:
+        return maximum
+    life_ratio = min(1.0, max(0.0, float(life) / float(max_life)))
+    return 1.0 + (maximum - 1.0) * (1.0 - life_ratio) ** 2
+
+
 @dataclass(slots=True)
 class FoodConsumption:
     creature_id: int
@@ -61,10 +86,195 @@ class EnergyCostBreakdown:
 
 @dataclass(frozen=True, slots=True)
 class DigestionResult:
-    raw_digested: float
+    stomach_consumed: float
     gross_energy: float
     processing_cost: float
-    net_energy_gained: float
+    net_energy: float
+
+    @property
+    def raw_digested(self) -> float:
+        """Compatibility alias for the consumed stomach quantity."""
+        return self.stomach_consumed
+
+    @property
+    def net_energy_gained(self) -> float:
+        """Compatibility alias for net digestive energy."""
+        return self.net_energy
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceCandidate:
+    digestion: DigestionResult
+    total_energy_demand: float
+    final_stomach_energy: float
+    final_stomach_difficulty_load: float
+    available_energy: float
+    remaining_energy: float
+    unmet_energy_demand: float
+    life_damage_from_deficit: float
+    direct_life_damage: float
+    final_energy: float
+    final_life: float
+    powered_movement_energy_demand: float = 0.0
+    unmet_other_energy_demand: float = 0.0
+    unmet_powered_movement_demand: float = 0.0
+    movement_life_penalty_multiplier: float = 1.0
+    movement_life_damage: float = 0.0
+
+    @property
+    def survives(self) -> bool:
+        return self.final_life > 0.0
+
+
+def calculate_digestion(
+    *,
+    stomach_contents: float,
+    digestion_rate: float,
+    delta_time: float,
+    trait_efficiency: float,
+    rest_digestion_efficiency_bonus: float,
+    effective_rest: float,
+    processing_fraction: float,
+    total_energy_demand: float,
+    max_energy: float,
+    starting_energy: float,
+    numerical_tolerance: float = 1e-12,
+) -> DigestionResult:
+    """Purely resolve stomach use and gross-to-net digestive conversion."""
+
+    values = (
+        stomach_contents,
+        digestion_rate,
+        delta_time,
+        trait_efficiency,
+        rest_digestion_efficiency_bonus,
+        effective_rest,
+        processing_fraction,
+        total_energy_demand,
+        max_energy,
+        starting_energy,
+    )
+    try:
+        parsed = tuple(float(value) for value in values)
+    except (TypeError, ValueError, OverflowError):
+        return DigestionResult(0.0, 0.0, 0.0, 0.0)
+    if not all(isfinite(value) for value in parsed):
+        return DigestionResult(0.0, 0.0, 0.0, 0.0)
+    (
+        stomach_contents,
+        digestion_rate,
+        delta_time,
+        trait_efficiency,
+        rest_digestion_efficiency_bonus,
+        effective_rest,
+        processing_fraction,
+        total_energy_demand,
+        max_energy,
+        starting_energy,
+    ) = parsed
+    if not 0.0 <= processing_fraction <= 1.0:
+        raise ValueError("processing_fraction must be within [0, 1].")
+
+    maximum_stomach_process = min(
+        max(0.0, stomach_contents),
+        max(0.0, digestion_rate) * max(0.0, delta_time),
+    )
+    effective_efficiency = min(
+        1.0,
+        max(
+            0.0,
+            trait_efficiency
+            + max(0.0, rest_digestion_efficiency_bonus)
+            * min(1.0, max(0.0, effective_rest)),
+        ),
+    )
+    net_per_stomach = effective_efficiency * (1.0 - processing_fraction)
+    usable_net_limit = (
+        max(0.0, total_energy_demand)
+        + max(0.0, max_energy)
+        - min(max(0.0, max_energy), max(0.0, starting_energy))
+    )
+    tolerance = max(0.0, numerical_tolerance)
+    if (
+        net_per_stomach <= tolerance
+        or usable_net_limit <= tolerance
+        or maximum_stomach_process <= tolerance
+    ):
+        stomach_consumed = 0.0
+    else:
+        stomach_consumed = min(
+            maximum_stomach_process,
+            usable_net_limit / net_per_stomach,
+        )
+    gross_energy = stomach_consumed * effective_efficiency
+    processing_cost = gross_energy * processing_fraction
+    net_energy = gross_energy - processing_cost
+    return DigestionResult(
+        stomach_consumed=stomach_consumed,
+        gross_energy=gross_energy,
+        processing_cost=processing_cost,
+        net_energy=net_energy,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityResult:
+    voluntary_motor_effort: float
+    normalized_speed: float
+    turn: float
+    communication: float
+    reproduction: float
+    nursing: float
+    total: float
+
+
+def calculate_weighted_activity(
+    *,
+    voluntary_motor_effort: float,
+    normalized_speed: float,
+    turn_command: float,
+    normalized_angular_speed: float,
+    communication_cost: float,
+    reproduction_selected: bool,
+    nursing_transfer: float,
+) -> ActivityResult:
+    """Return the bounded weighted activity used to inhibit effective rest."""
+
+    def bounded(value: float) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        return 0.0 if not isfinite(numeric) else min(1.0, max(0.0, numeric))
+
+    motor = bounded(voluntary_motor_effort)
+    speed = bounded(normalized_speed)
+    turn = 0.5 * (
+        bounded(abs(turn_command)) + bounded(abs(normalized_angular_speed))
+    )
+    communication = bounded(communication_cost)
+    reproduction = 1.0 if reproduction_selected else 0.0
+    nursing = 1.0 if nursing_transfer > 0.0 else 0.0
+    total = min(
+        1.0,
+        0.40 * motor
+        + 0.10 * speed
+        + 0.15 * turn
+        + 0.15 * communication
+        + 0.10 * reproduction
+        + 0.10 * nursing,
+    )
+    if reproduction > 0.0 or nursing > 0.0:
+        total = 1.0
+    return ActivityResult(
+        voluntary_motor_effort=motor,
+        normalized_speed=speed,
+        turn=turn,
+        communication=communication,
+        reproduction=reproduction,
+        nursing=nursing,
+        total=total,
+    )
 
 
 class Metabolism:
@@ -143,11 +353,14 @@ class Metabolism:
                     ),
                 )
             )
-            digestion = self._digest_with_ledger(
+            candidate = self.evaluate_candidate(
                 creature,
                 delta_time,
-                upkeep_cost=upkeep,
+                total_energy_demand=upkeep,
+                effective_rest=getattr(creature, "effective_rest", 0.0),
             )
+            self.commit_candidate(creature, candidate)
+            digestion = candidate.digestion
             if digestion.net_energy_gained > 0.0:
                 digested_energy_gained[creature.creature_id] = (
                     digestion.net_energy_gained
@@ -209,6 +422,25 @@ class Metabolism:
         *,
         upkeep_cost: float,
     ) -> DigestionResult:
+        candidate = self.evaluate_candidate(
+            creature,
+            delta_time,
+            total_energy_demand=max(0.0, upkeep_cost),
+            effective_rest=getattr(creature, "effective_rest", 0.0),
+        )
+        self.commit_candidate(creature, candidate)
+        return candidate.digestion
+
+    def evaluate_candidate(
+        self,
+        creature: Creature,
+        delta_time: float,
+        *,
+        total_energy_demand: float,
+        powered_movement_energy_demand: float = 0.0,
+        effective_rest: float = 0.0,
+    ) -> ResourceCandidate:
+        """Evaluate one complete resource ledger without mutating the creature."""
         stomach_energy = max(0.0, getattr(creature, "stomach_energy", 0.0))
         stomach_load = self.normalized_stomach_difficulty_load(
             creature,
@@ -225,18 +457,12 @@ class Metabolism:
                 )
             ),
         )
-        digestion_efficiency = min(
-            1.0,
-            max(
-                0.0,
-                float(
-                    getattr(
-                        traits,
-                        "digestion_efficiency",
-                        self.config.digestion_efficiency,
-                    )
-                ),
-            ),
+        digestion_efficiency = float(
+            getattr(
+                traits,
+                "digestion_efficiency",
+                self.config.digestion_efficiency,
+            )
         )
         difficulty = (
             1.0
@@ -247,49 +473,184 @@ class Metabolism:
             digestion_rate,
             difficulty,
         )
-        net_per_raw = digestion_efficiency * (1.0 - processing_fraction)
-        upkeep = max(0.0, upkeep_cost)
-        previous_energy = min(
+        demand = max(0.0, float(total_energy_demand))
+        powered_movement_demand = min(
+            demand,
+            max(0.0, float(powered_movement_energy_demand)),
+        )
+        other_demand = demand - powered_movement_demand
+        starting_energy = min(
             self.config.max_energy,
             max(0.0, creature.energy),
         )
-        needed_net = max(
+        digestion = calculate_digestion(
+            stomach_contents=stomach_energy,
+            digestion_rate=digestion_rate,
+            delta_time=delta_time,
+            trait_efficiency=digestion_efficiency,
+            rest_digestion_efficiency_bonus=(
+                self.config.rest_digestion_efficiency_bonus
+            ),
+            effective_rest=effective_rest,
+            processing_fraction=processing_fraction,
+            total_energy_demand=demand,
+            max_energy=self.config.max_energy,
+            starting_energy=starting_energy,
+        )
+        remaining_stomach = max(
             0.0,
-            self.config.max_energy - previous_energy + upkeep,
+            stomach_energy - digestion.stomach_consumed,
         )
-        raw_limit = min(
-            stomach_energy,
-            digestion_rate * max(0.0, delta_time),
-        )
-        raw_digested = (
-            0.0
-            if net_per_raw <= 0.0
-            else min(raw_limit, needed_net / net_per_raw)
-        )
-        gross_energy = raw_digested * digestion_efficiency
-        processing_cost = gross_energy * processing_fraction
-        net_energy = gross_energy - processing_cost
-
-        remaining_stomach = max(0.0, stomach_energy - raw_digested)
         remaining_load = max(
             0.0,
-            stomach_load - raw_digested * difficulty,
+            stomach_load - digestion.stomach_consumed * difficulty,
         )
         if remaining_stomach <= 1e-12:
             remaining_stomach = 0.0
             remaining_load = 0.0
-        creature.stomach_energy = remaining_stomach
-        creature.stomach_difficulty_load = remaining_load
-        creature.energy = min(
-            self.config.max_energy,
-            max(0.0, previous_energy + net_energy - upkeep),
+        available_energy = starting_energy + digestion.net_energy
+        energy_after_other = max(0.0, available_energy - other_demand)
+        unmet_other_demand = max(0.0, other_demand - available_energy)
+        paid_powered_movement = min(
+            powered_movement_demand,
+            energy_after_other,
         )
-        return DigestionResult(
-            raw_digested=raw_digested,
-            gross_energy=gross_energy,
-            processing_cost=processing_cost,
-            net_energy_gained=net_energy,
+        unmet_powered_movement = max(
+            0.0,
+            powered_movement_demand - paid_powered_movement,
         )
+        remaining_energy = max(
+            0.0,
+            energy_after_other - paid_powered_movement,
+        )
+        unmet_energy_demand = (
+            unmet_other_demand + unmet_powered_movement
+        )
+        life_damage_rate = max(
+            0.0,
+            self.config.life_damage_per_energy_deficit,
+        )
+        ordinary_life_damage = unmet_other_demand * life_damage_rate
+        direct_life_damage = max(
+            0.0,
+            float(getattr(creature, "pending_direct_life_damage", 0.0)),
+        )
+        starting_life = min(
+            self.config.max_life,
+            max(
+                0.0,
+                float(
+                    getattr(
+                        creature,
+                        "life",
+                        self.config.max_life
+                        * self.config.initial_life_fraction,
+                    )
+                ),
+            ),
+        )
+        life_before_movement = max(
+            0.0,
+            starting_life - direct_life_damage - ordinary_life_damage,
+        )
+        movement_multiplier = movement_life_penalty_multiplier(
+            life_before_movement,
+            self.config.max_life,
+            self.config.movement_life_penalty_max_multiplier,
+        )
+        movement_life_damage = (
+            unmet_powered_movement
+            * life_damage_rate
+            * movement_multiplier
+        )
+        life_damage_from_deficit = (
+            ordinary_life_damage + movement_life_damage
+        )
+        final_energy = min(self.config.max_energy, remaining_energy)
+        final_life = min(
+            self.config.max_life,
+            max(
+                0.0,
+                starting_life
+                - life_damage_from_deficit
+                - direct_life_damage,
+            ),
+        )
+        return ResourceCandidate(
+            digestion=digestion,
+            total_energy_demand=demand,
+            final_stomach_energy=remaining_stomach,
+            final_stomach_difficulty_load=remaining_load,
+            available_energy=available_energy,
+            remaining_energy=remaining_energy,
+            unmet_energy_demand=unmet_energy_demand,
+            life_damage_from_deficit=life_damage_from_deficit,
+            direct_life_damage=direct_life_damage,
+            final_energy=final_energy,
+            final_life=final_life,
+            powered_movement_energy_demand=powered_movement_demand,
+            unmet_other_energy_demand=unmet_other_demand,
+            unmet_powered_movement_demand=unmet_powered_movement,
+            movement_life_penalty_multiplier=movement_multiplier,
+            movement_life_damage=movement_life_damage,
+        )
+
+    def commit_candidate(
+        self,
+        creature: Creature,
+        candidate: ResourceCandidate,
+        *,
+        transaction_status: str = "baseline_committed",
+    ) -> None:
+        """Commit a previously evaluated candidate exactly once."""
+        creature.stomach_energy = candidate.final_stomach_energy
+        creature.stomach_difficulty_load = (
+            candidate.final_stomach_difficulty_load
+        )
+        creature.energy = candidate.final_energy
+        try:
+            creature.life = candidate.final_life
+        except AttributeError:
+            pass
+        try:
+            creature.pending_direct_life_damage = 0.0
+        except AttributeError:
+            pass
+        diagnostics = getattr(creature, "ledger_diagnostics", None)
+        if diagnostics is None:
+            return
+        diagnostics.effective_efficiency = (
+            0.0
+            if candidate.digestion.stomach_consumed <= 0.0
+            else candidate.digestion.gross_energy
+            / candidate.digestion.stomach_consumed
+        )
+        diagnostics.stomach_consumed = candidate.digestion.stomach_consumed
+        diagnostics.gross_energy = candidate.digestion.gross_energy
+        diagnostics.processing_cost = candidate.digestion.processing_cost
+        diagnostics.net_energy = candidate.digestion.net_energy
+        diagnostics.total_energy_demand = candidate.total_energy_demand
+        diagnostics.powered_movement_energy_demand = (
+            candidate.powered_movement_energy_demand
+        )
+        diagnostics.unmet_energy_demand = candidate.unmet_energy_demand
+        diagnostics.unmet_other_energy_demand = (
+            candidate.unmet_other_energy_demand
+        )
+        diagnostics.unmet_powered_movement_demand = (
+            candidate.unmet_powered_movement_demand
+        )
+        diagnostics.movement_life_penalty_multiplier = (
+            candidate.movement_life_penalty_multiplier
+        )
+        diagnostics.movement_life_damage = candidate.movement_life_damage
+        diagnostics.life_damage_from_deficit = (
+            candidate.life_damage_from_deficit
+        )
+        diagnostics.direct_life_damage = candidate.direct_life_damage
+        diagnostics.final_energy = candidate.final_energy
+        diagnostics.final_life = candidate.final_life
+        diagnostics.transaction_status = transaction_status
 
     def consume_energy(
         self,
@@ -564,10 +925,23 @@ class Metabolism:
             "max_food_difficulty_multiplier": (
                 metabolism.max_food_difficulty_multiplier
             ),
+            "life_damage_per_energy_deficit": (
+                metabolism.life_damage_per_energy_deficit
+            ),
+            "movement_life_penalty_max_multiplier": (
+                metabolism.movement_life_penalty_max_multiplier
+            ),
+            "rest_digestion_efficiency_bonus": (
+                metabolism.rest_digestion_efficiency_bonus
+            ),
         }
         for name, value in nonnegative.items():
             if require_finite(name, value) < 0.0:
                 raise ValueError(f"{name} cannot be negative.")
+        if metabolism.movement_life_penalty_max_multiplier < 1.0:
+            raise ValueError(
+                "movement_life_penalty_max_multiplier must be at least 1.0."
+            )
         weights = (
             metabolism.digestive_capacity_upkeep_weight,
             metabolism.digestive_rate_upkeep_weight,
@@ -606,6 +980,28 @@ class Metabolism:
         if not 0.0 <= max_processing <= 0.5:
             raise ValueError(
                 "max_digestion_processing_fraction must be in [0, 0.5]."
+            )
+        base_processing = require_finite(
+            "digestion_processing_base_fraction",
+            metabolism.digestion_processing_base_fraction,
+        )
+        if base_processing > max_processing:
+            raise ValueError(
+                "digestion_processing_base_fraction cannot exceed "
+                "max_digestion_processing_fraction."
+            )
+        max_life = require_finite("max_life", metabolism.max_life)
+        if max_life <= 0.0:
+            raise ValueError("max_life must be positive.")
+        initial_life_fraction = require_finite(
+            "initial_life_fraction",
+            metabolism.initial_life_fraction,
+        )
+        if not 0.0 <= initial_life_fraction <= 1.0:
+            raise ValueError("initial_life_fraction must be within [0, 1].")
+        if metabolism.rest_digestion_efficiency_bonus > 1.0:
+            raise ValueError(
+                "rest_digestion_efficiency_bonus must be within [0, 1]."
             )
 
     def brain_upkeep_energy_cost_per_second(
@@ -803,4 +1199,10 @@ class Metabolism:
         return creature.energy < self.config.starvation_energy_threshold
 
     def is_dead(self, creature: Creature) -> bool:
-        return creature.energy <= 0
+        return float(
+            getattr(
+                creature,
+                "life",
+                self.config.max_life * self.config.initial_life_fraction,
+            )
+        ) <= 0.0

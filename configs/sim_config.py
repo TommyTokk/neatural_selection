@@ -374,6 +374,11 @@ class ZoomConfig:
 @dataclass(slots=True)
 class MetabolismConfig:
     max_energy: float = 1
+    max_life: float = 1.0
+    initial_life_fraction: float = 1.0
+    life_damage_per_energy_deficit: float = 0.25
+    movement_life_penalty_max_multiplier: float = 4.0
+    rest_digestion_efficiency_bonus: float = 0.10
     basic_metabolism_rate: float = 0.01
     brain_upkeep_per_node: float = 0.0003
     brain_upkeep_per_connection: float = 0.0001
@@ -565,6 +570,37 @@ class ActionConfig:
     forward_velocity_retention: float = 0.992
     lateral_velocity_retention: float = 0.72
     linear_stop_threshold: float = 0.05
+    rest_response_rate: float = 3.0
+    rest_movement_exponent: float = 2.0
+    rest_rotation_inhibition: float = 0.5
+    rest_braking_strength: float = 2.5
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate rest parameters after construction or runtime mutation."""
+        finite_nonnegative = (
+            "rest_response_rate",
+            "rest_movement_exponent",
+            "rest_rotation_inhibition",
+            "rest_braking_strength",
+        )
+        for name in finite_nonnegative:
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"action.{name} must be finite and nonnegative.")
+        if self.rest_movement_exponent <= 0.0:
+            raise ValueError("action.rest_movement_exponent must be positive.")
+        if self.rest_rotation_inhibition > 1.0:
+            raise ValueError(
+                "action.rest_rotation_inhibition must be within [0, 1]."
+            )
 
 
 @dataclass(slots=True)

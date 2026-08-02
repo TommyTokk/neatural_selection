@@ -24,9 +24,9 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 17
+CHECKPOINT_VERSION = 18
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -426,6 +426,7 @@ class PersistenceManager:
                     "velocity": (body.velocity.x, body.velocity.y),
                     "angular_velocity": body.angular_velocity,
                     "energy": creature.energy,
+                    "life": float(getattr(creature, "life", 1.0)),
                     "stomach_energy": max(
                         0.0,
                         float(getattr(creature, "stomach_energy", 0.0)),
@@ -849,6 +850,43 @@ class PersistenceManager:
                 normalized_flocking(flocking_traits),
             )
         return migrated
+
+    @staticmethod
+    def _is_life_rest_append_migration(
+        sensor_schema: int,
+        action_schema: int,
+        input_count: int,
+        output_count: int,
+    ) -> bool:
+        """Return whether the old 43/14 contract has the append-only upgrade."""
+        return (
+            sensor_schema == 5
+            and action_schema == 1
+            and input_count == 43
+            and output_count == 14
+        )
+
+    @staticmethod
+    def _append_rest_output_node(genomes: object, genome_config: object) -> None:
+        """Add the disconnected zero-bias rest output to legacy genomes."""
+        if isinstance(genomes, dict):
+            candidates = genomes.values()
+        else:
+            candidates = genomes
+        seen: set[int] = set()
+        for genome in candidates:
+            if isinstance(genome, tuple):
+                genome = genome[0]
+            if genome is None or id(genome) in seen:
+                continue
+            seen.add(id(genome))
+            nodes = getattr(genome, "nodes", None)
+            if nodes is None or 14 in nodes:
+                continue
+            node = genome.create_node(genome_config, 14)
+            node.bias = 0.0
+            node.activation = "sigmoid"
+            nodes[14] = node
 
     @staticmethod
     def _reconstruct_species_history(
@@ -1833,13 +1871,24 @@ class PersistenceManager:
             saved_action_schema = int(contract.get("action_schema", 0))
             saved_input_count = int(contract.get("inputs", 23))
             saved_output_count = int(contract.get("outputs", 8))
+            append_contract_migration = (
+                PersistenceManager._is_life_rest_append_migration(
+                    saved_sensor_schema,
+                    saved_action_schema,
+                    saved_input_count,
+                    saved_output_count,
+                )
+            )
             reset_brain_epoch = (
-                saved_sensor_schema
-                != world.vision.sensor_contract.schema_version
-                or saved_action_schema != ACTION_SCHEMA_VERSION
-                or saved_input_count
-                != len(controller.config.genome_config.input_keys)
-                or saved_output_count != ACTION_OUTPUT_COUNT
+                not append_contract_migration
+                and (
+                    saved_sensor_schema
+                    != world.vision.sensor_contract.schema_version
+                    or saved_action_schema != ACTION_SCHEMA_VERSION
+                    or saved_input_count
+                    != len(controller.config.genome_config.input_keys)
+                    or saved_output_count != ACTION_OUTPUT_COUNT
+                )
             )
             world.brain_contract_reset_occurred = reset_brain_epoch
             if reset_brain_epoch:
@@ -1876,6 +1925,11 @@ class PersistenceManager:
                     ACTION_OUTPUT_COUNT,
                 )
             controller.population.population = population_state["genomes"]
+            if append_contract_migration:
+                PersistenceManager._append_rest_output_node(
+                    controller.population.population,
+                    controller.config.genome_config,
+                )
             controller.population.generation = population_state["generation"]
             saved_evolution_rng_state = population_state.get(
                 "evolution_rng_state"
@@ -1914,6 +1968,11 @@ class PersistenceManager:
                     default_flocking_traits,
                 )
             )
+            if append_contract_migration:
+                PersistenceManager._append_rest_output_node(
+                    migrated_representatives.values(),
+                    controller.config.genome_config,
+                )
             controller.species_manager.representatives = {
                 species_id: (
                     genome,
@@ -1945,6 +2004,11 @@ class PersistenceManager:
                     position=creature_state["position"],
                     heading=creature_state["heading"],
                     energy=creature_state["energy"],
+                    life=creature_state.get(
+                        "life",
+                        config.metabolism.max_life
+                        * config.metabolism.initial_life_fraction,
+                    ),
                     color=creature_state["color"],
                     vision=creature_state["vision"],
                     physical_traits=creature_state["physical_traits"],

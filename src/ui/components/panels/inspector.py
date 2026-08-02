@@ -299,6 +299,16 @@ class InspectorPanelComponent:
             selected,
         )
         energy_ratio = self._inspector_energy_ratio(world)
+        max_life = max(
+            1e-12,
+            float(getattr(world.config.metabolism, "max_life", 1.0)),
+        )
+        life_ratio = max(
+            0.0,
+            min(1.0, float(getattr(selected, "life", max_life)) / max_life),
+        )
+        ledger = getattr(selected, "ledger_diagnostics", None)
+        activity_diagnostics = getattr(ledger, "activity", None)
         stomach_ratio = max(
             0.0,
             min(1.0, float(getattr(snapshot, "stomach_fullness", 0.0))),
@@ -805,6 +815,70 @@ class InspectorPanelComponent:
             y,
             width,
         )
+
+        y -= section_gap
+        self._draw_inspector_section_label(
+            viewport, "inspector_ledger_section", "REST & LEDGER", left, y
+        )
+        y -= 22.0
+        for key, label, value in (
+            ("life", "Life reserve", f"{life_ratio:.1%}"),
+            (
+                "rest_stages",
+                "Rest intent / smooth / effective",
+                f"{getattr(selected, 'rest_intent', 0.0):.2f} / "
+                f"{getattr(selected, 'smoothed_rest', 0.0):.2f} / "
+                f"{getattr(selected, 'effective_rest', 0.0):.2f}",
+            ),
+            (
+                "activity_components",
+                "Activity M/S/T/C/R/N",
+                f"{getattr(activity_diagnostics, 'voluntary_motor_effort', 0.0):.2f}/"
+                f"{getattr(activity_diagnostics, 'normalized_speed', 0.0):.2f}/"
+                f"{getattr(activity_diagnostics, 'turn', 0.0):.2f}/"
+                f"{getattr(activity_diagnostics, 'communication', 0.0):.2f}/"
+                f"{getattr(activity_diagnostics, 'reproduction', 0.0):.0f}/"
+                f"{getattr(activity_diagnostics, 'nursing', 0.0):.0f}",
+            ),
+            (
+                "activity_total",
+                "Weighted activity",
+                f"{getattr(selected, 'activity', 0.0):.3f}",
+            ),
+            (
+                "digestion_ledger",
+                "Consumed / gross / net",
+                f"{getattr(ledger, 'stomach_consumed', 0.0):.4f} / "
+                f"{getattr(ledger, 'gross_energy', 0.0):.4f} / "
+                f"{getattr(ledger, 'net_energy', 0.0):.4f}",
+            ),
+            (
+                "energy_ledger",
+                "Demand / deficit",
+                f"{getattr(ledger, 'total_energy_demand', 0.0):.4f} / "
+                f"{getattr(ledger, 'unmet_energy_demand', 0.0):.4f}",
+            ),
+            (
+                "life_damage",
+                "Deficit / direct damage",
+                f"{getattr(ledger, 'life_damage_from_deficit', 0.0):.4f} / "
+                f"{getattr(ledger, 'direct_life_damage', 0.0):.4f}",
+            ),
+            (
+                "transaction_status",
+                "Final transaction",
+                str(getattr(ledger, "transaction_status", "not_evaluated")),
+            ),
+        ):
+            y -= self._draw_metric_row_in_viewport(
+                viewport,
+                f"inspector_{key}",
+                label,
+                value,
+                left,
+                y,
+                width,
+            )
 
         if fitness_score is not None:
             y -= self._draw_metric_row_in_viewport(

@@ -845,8 +845,19 @@ class WorldCameraTest(unittest.TestCase):
             arcade.draw_lrbt_rectangle_filled = original_draw_lrbt
 
         self.assertEqual(len(outline_calls), 1)
-        self.assertEqual(len(bar_calls), 4)
-        energy_background, energy_fill, stomach_background, stomach_fill = bar_calls
+        self.assertEqual(len(bar_calls), 6)
+        (
+            life_background,
+            life_fill,
+            energy_background,
+            energy_fill,
+            stomach_background,
+            stomach_fill,
+        ) = bar_calls
+        self.assertAlmostEqual(
+            life_fill[1] - life_fill[0],
+            life_background[1] - life_background[0],
+        )
         self.assertAlmostEqual(
             energy_fill[1] - energy_fill[0],
             (energy_background[1] - energy_background[0]) * 0.5,
@@ -855,7 +866,8 @@ class WorldCameraTest(unittest.TestCase):
             stomach_fill[1] - stomach_fill[0],
             (stomach_background[1] - stomach_background[0]) * 0.5,
         )
-        self.assertEqual(energy_fill[4], renderer.theme.accent_soft)
+        self.assertEqual(life_fill[4], (226, 74, 74, 230))
+        self.assertEqual(energy_fill[4], (70, 140, 235, 230))
         self.assertEqual(stomach_fill[4], (236, 153, 45, 230))
 
     def test_debug_overlay_draws_before_selected_status_bars(self) -> None:

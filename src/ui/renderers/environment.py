@@ -1191,9 +1191,18 @@ class EnvironmentRenderer:
         gap = max(1.0, 2.0 * zoom)
         left = draw_x - width / 2
         energy_bottom = draw_y + radius + (8.0 * zoom)
+        life_bottom = energy_bottom + height + gap
         stomach_bottom = energy_bottom - height - gap
         max_energy = max(0.0001, self.config.metabolism.max_energy)
         energy_ratio = max(0.0, min(1.0, creature.energy / max_energy))
+        max_life = max(
+            0.0001,
+            float(getattr(self.config.metabolism, "max_life", 1.0)),
+        )
+        life_ratio = max(
+            0.0,
+            min(1.0, float(getattr(creature, "life", max_life)) / max_life),
+        )
         stomach_capacity = max(
             0.0,
             float(
@@ -1221,12 +1230,13 @@ class EnvironmentRenderer:
             left,
             stomach_bottom,
             left + width,
-            energy_bottom + height,
+            life_bottom + height,
         ):
             return
 
         for bottom, ratio, color in (
-            (energy_bottom, energy_ratio, self.theme.accent_soft),
+            (life_bottom, life_ratio, (226, 74, 74, 230)),
+            (energy_bottom, energy_ratio, (70, 140, 235, 230)),
             (stomach_bottom, stomach_ratio, (236, 153, 45, 230)),
         ):
             arcade.draw_lrbt_rectangle_filled(

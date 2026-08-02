@@ -19,9 +19,10 @@ class BrainOutputIndex(IntEnum):
     ACOUSTIC_TONE = 11
     TRAIL_PHEROMONE = 12
     ALARM_PHEROMONE = 13
+    REST = 14
 
 
-ACTION_SCHEMA_VERSION = 1
+ACTION_SCHEMA_VERSION = 2
 _ACTION_OUTPUT_NAME_BY_INDEX = {
     BrainOutputIndex.ACCELERATE: "accelerate",
     BrainOutputIndex.ROTATE: "rotate",
@@ -37,6 +38,7 @@ _ACTION_OUTPUT_NAME_BY_INDEX = {
     BrainOutputIndex.ACOUSTIC_TONE: "sound_tone",
     BrainOutputIndex.TRAIL_PHEROMONE: "emit_trail_pheromone",
     BrainOutputIndex.ALARM_PHEROMONE: "emit_alarm_pheromone",
+    BrainOutputIndex.REST: "rest",
 }
 ACTION_OUTPUT_NAMES = tuple(
     _ACTION_OUTPUT_NAME_BY_INDEX[output] for output in BrainOutputIndex
@@ -66,6 +68,7 @@ class Action:
     sound_tone: float = 0.0
     emit_trail_pheromone: float = 0.0
     emit_alarm_pheromone: float = 0.0
+    rest: float = 0.0
 
     def clamped(self) -> Action:
         return Action(
@@ -92,6 +95,7 @@ class Action:
                 0.0,
                 min(1.0, self.emit_alarm_pheromone),
             ),
+            rest=max(0.0, min(1.0, self.rest)),
         )
 
 

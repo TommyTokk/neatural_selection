@@ -748,7 +748,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
         first_seventeen_inputs = inputs[:17]
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 43)
+        self.assertEqual(SENSOR_INPUT_COUNT, 44)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertEqual(SENSOR_INPUT_NAMES[1], "feeding_drive")
         self.assertEqual(SENSOR_INPUT_NAMES[2], "reproductive_readiness")

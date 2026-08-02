@@ -1407,6 +1407,7 @@ class BrainGraphComponent:
             "alarm_pheromone_here": "alarm_here",
             "alarm_pheromone_forward_left": "alarm_left",
             "alarm_pheromone_forward_right": "alarm_right",
+            "life_normalized": "life",
             "accelerate": "acc",
             "rotate": "rot",
             "want_reproduce": "repr",
@@ -1420,6 +1421,7 @@ class BrainGraphComponent:
             "emit_sound": "sound",
             "emit_trail_pheromone": "trail",
             "emit_alarm_pheromone": "alarm",
+            "rest": "rest",
         }
         return replacements.get(label, label)
     def _brain_value_readout(
@@ -1481,7 +1483,7 @@ class BrainGraphComponent:
             f"{value(19, inputs):.2f}/{value(20, inputs):.2f}  "
             f"FL {value(23, inputs):.2f}/{value(24, inputs):.2f}/"
             f"{value(25, inputs):.2f}/{value(26, inputs):.2f}  "
-            f"E {value(3, inputs):.2f}"
+            f"E {value(3, inputs):.2f}  L {value(43, inputs):.2f}"
         )
     def _brain_output_readout(self, outputs: list[float]) -> str:
         """Return brain output readout.
@@ -1520,5 +1522,6 @@ class BrainGraphComponent:
             f"{value(4, outputs):.2f}  "
             f"Carry: {value(5, outputs):.2f}/{value(6, outputs):.2f}  "
             f"Social: panic {value(8, outputs):.2f} / "
-            f"herding {value(9, outputs):.2f}"
+            f"herding {value(9, outputs):.2f}  "
+            f"Rest {value(14, outputs):.2f}"
         )

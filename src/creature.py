@@ -72,6 +72,39 @@ class LineageInfo:
 
 
 @dataclass(slots=True)
+class ActivityDiagnostics:
+    voluntary_motor_effort: float = 0.0
+    normalized_speed: float = 0.0
+    turn: float = 0.0
+    communication: float = 0.0
+    reproduction: float = 0.0
+    nursing: float = 0.0
+    weighted_total: float = 0.0
+
+
+@dataclass(slots=True)
+class LedgerDiagnostics:
+    activity: ActivityDiagnostics = field(default_factory=ActivityDiagnostics)
+    effective_efficiency: float = 0.0
+    stomach_consumed: float = 0.0
+    gross_energy: float = 0.0
+    processing_cost: float = 0.0
+    net_energy: float = 0.0
+    total_energy_demand: float = 0.0
+    powered_movement_energy_demand: float = 0.0
+    unmet_energy_demand: float = 0.0
+    unmet_other_energy_demand: float = 0.0
+    unmet_powered_movement_demand: float = 0.0
+    movement_life_penalty_multiplier: float = 1.0
+    movement_life_damage: float = 0.0
+    life_damage_from_deficit: float = 0.0
+    direct_life_damage: float = 0.0
+    final_energy: float = 0.0
+    final_life: float = 0.0
+    transaction_status: str = "not_evaluated"
+
+
+@dataclass(slots=True)
 class Creature:
     creature_id: int
     name: str
@@ -91,6 +124,16 @@ class Creature:
     smoothed_acceleration: float = 0.0
     biome_fertility_ema: float = 0.0
     biome_fertility_ema_updated_at: float = 0.0
+    life: float = 1.0
+    rest_intent: float = 0.0
+    smoothed_rest: float = 0.0
+    effective_rest: float = 0.0
+    activity: float = 0.0
+    pending_direct_life_damage: float = 0.0
+    effective_voluntary_motor_effort: float = 0.0
+    ledger_diagnostics: LedgerDiagnostics = field(
+        default_factory=LedgerDiagnostics
+    )
 
     @property
     def position(self) -> tuple[float, float]:

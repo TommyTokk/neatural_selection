@@ -51,7 +51,7 @@ class PersistenceManagerTest(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def test_checkpoint_versions_2_through_16_remain_loadable(self) -> None:
-        for version in range(2, 17):
+        for version in range(2, 18):
             PersistenceManager._validate_state({"version": version})
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
@@ -419,8 +419,8 @@ class PersistenceManagerTest(unittest.TestCase):
             state["creatures"][0]["biome_fertility_ema_updated_at"],
             8.5,
         )
-        self.assertEqual(state["brain_contract"]["sensor_schema"], 5)
-        self.assertEqual(state["brain_contract"]["inputs"], 43)
+        self.assertEqual(state["brain_contract"]["sensor_schema"], 6)
+        self.assertEqual(state["brain_contract"]["inputs"], 44)
         self.assertNotIn("previous_biome", state["world"])
         self.assertEqual(state["world"]["physics_accumulator"], 0.0)
         self.assertEqual(state["world"]["time_since_last_quick_save"], 20.0)
@@ -940,10 +940,10 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.neat_controller,
             )
             self.assertEqual(current_state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 5)
-            self.assertEqual(current_state["brain_contract"]["inputs"], 43)
-            self.assertEqual(current_state["brain_contract"]["outputs"], 14)
-            self.assertEqual(current_state["brain_contract"]["action_schema"], 1)
+            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 6)
+            self.assertEqual(current_state["brain_contract"]["inputs"], 44)
+            self.assertEqual(current_state["brain_contract"]["outputs"], 15)
+            self.assertEqual(current_state["brain_contract"]["action_schema"], 2)
             saved_ema = current_state["creatures"][0]["biome_fertility_ema"]
             round_tripped = PersistenceManager._restore_world(
                 current_state,
@@ -1013,7 +1013,7 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertIsNot(restored_brain.genome, original_brain.genome)
             self.assertEqual(
                 len(restored.neat_controller.config.genome_config.output_keys),
-                14,
+                15,
             )
         finally:
             world.close()

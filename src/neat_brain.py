@@ -138,6 +138,9 @@ class NeatBrain:
             emit_alarm_pheromone=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.ALARM_PHEROMONE]
             ),
+            rest=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.REST]
+            ),
         ).clamped()
         return self.last_action
 

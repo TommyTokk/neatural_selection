@@ -39,6 +39,7 @@ FALLBACK_ACTION = Action(
     want_nurse=0.0,
     flee_panic_intensity=0.0,
     herding=0.0,
+    rest=0.0,
 )
 
 
@@ -604,6 +605,7 @@ class NeatBrainController:
             want_nurse=FALLBACK_ACTION.want_nurse,
             flee_panic_intensity=FALLBACK_ACTION.flee_panic_intensity,
             herding=FALLBACK_ACTION.herding,
+            rest=FALLBACK_ACTION.rest,
         )
 
     def remove_brain(self, creature_id: int) -> None:
@@ -797,6 +799,50 @@ class NeatBrainController:
             "next_node_id": next_node_id,
             "innovation_number": innovation_number,
         }
+
+    def transaction_shadow(self) -> NeatBrainController:
+        """Clone mutable evolution state without advancing live allocators."""
+        shadow = copy.copy(self)
+        shadow.config = copy.copy(self.config)
+        live_genome_config = self.config.genome_config
+        shadow_genome_config = copy.copy(live_genome_config)
+        shadow.config.genome_config = shadow_genome_config
+
+        allocator_state = self.evolution_allocator_state()
+        shadow_genome_config.node_indexer = count(
+            allocator_state["next_node_id"]
+        )
+        live_tracker = getattr(live_genome_config, "innovation_tracker", None)
+        if live_tracker is not None:
+            shadow_tracker = copy.deepcopy(live_tracker)
+            shadow_tracker.global_counter = allocator_state["innovation_number"]
+            shadow_genome_config.innovation_tracker = shadow_tracker
+
+        shadow.population = copy.copy(self.population)
+        shadow.population.population = copy.deepcopy(
+            self.population.population
+        )
+        shadow.brains = {}
+        for creature_id, brain in self.brains.items():
+            shadow_brain = copy.copy(brain)
+            shadow_brain.genome = shadow.population.population.get(
+                brain.genome_id,
+                copy.deepcopy(brain.genome),
+            )
+            shadow.brains[creature_id] = shadow_brain
+
+        shadow.species_manager = copy.copy(self.species_manager)
+        shadow.species_manager.representatives = copy.deepcopy(
+            self.species_manager.representatives
+        )
+        shadow._pairwise_compatibility_distance_cache = dict(
+            getattr(self, "_pairwise_compatibility_distance_cache", {})
+        )
+        shadow._evolution_rng = random.Random()
+        evolution_state = self.evolution_random_state()
+        if evolution_state is not None:
+            shadow._evolution_rng.setstate(evolution_state)
+        return shadow
 
     def restore_evolution_allocators(
         self,

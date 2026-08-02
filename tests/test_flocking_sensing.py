@@ -44,8 +44,8 @@ class SchemaFiveSensingTest(unittest.TestCase):
         )
 
     def test_contract_has_exact_count(self) -> None:
-        self.assertEqual(SENSOR_CONTRACT.input_count, 43)
-        self.assertEqual(SENSOR_CONTRACT.schema_version, 5)
+        self.assertEqual(SENSOR_CONTRACT.input_count, 44)
+        self.assertEqual(SENSOR_CONTRACT.schema_version, 6)
 
     def test_presence_distinguishes_centered_flock_from_absence(self) -> None:
         observer = creature_at(
@@ -66,7 +66,7 @@ class SchemaFiveSensingTest(unittest.TestCase):
             100.0,
         )
         inputs = snapshot.as_inputs()
-        self.assertEqual(len(inputs), 43)
+        self.assertEqual(len(inputs), 44)
         self.assertGreater(inputs[23], 0.0)
         self.assertAlmostEqual(inputs[24], 0.25)
         self.assertAlmostEqual(inputs[26], 0.0)
@@ -564,7 +564,7 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             )
             self.assertEqual(
                 len(restored.neat_controller.config.genome_config.input_keys),
-                43,
+                44,
             )
             self.assertTrue(restored.brain_contract_reset_occurred)
             for creature in restored.creatures:
@@ -598,8 +598,8 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 world.neat_controller,
             )
             self.assertEqual(state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(state["brain_contract"]["sensor_schema"], 5)
-            self.assertEqual(state["brain_contract"]["inputs"], 43)
+            self.assertEqual(state["brain_contract"]["sensor_schema"], 6)
+            self.assertEqual(state["brain_contract"]["inputs"], 44)
             serialized_keys: set[str] = set()
 
             def collect_keys(value) -> None:

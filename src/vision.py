@@ -58,6 +58,7 @@ SENSOR_INPUT_NAMES = (
     "alarm_pheromone_here",
     "alarm_pheromone_forward_left",
     "alarm_pheromone_forward_right",
+    "life_normalized",
 )
 
 
@@ -73,7 +74,7 @@ class SensorContract:
 
 
 SENSOR_CONTRACT = SensorContract(
-    5,
+    6,
     SENSOR_INPUT_NAMES,
     "configs/neat_herbivore.ini",
 )
@@ -170,6 +171,7 @@ class SensorSnapshot:
     clock_time_alive: float
     is_grabbing: float
     stomach_fullness: float = 0.0
+    life_normalized: float = 1.0
     own_infants: VisionTargetSnapshot = field(
         default_factory=lambda: VisionTargetSnapshot(
             visible=0.0,
@@ -268,7 +270,7 @@ class SensorSnapshot:
             self.pheromones.alarm_forward_left,
             self.pheromones.alarm_forward_right,
         ]
-        return [*prefix, *social, *suffix]
+        return [*prefix, *social, *suffix, self._clamp01(self.life_normalized)]
 
     @staticmethod
     def _clamp01(value: float) -> float:
@@ -302,6 +304,7 @@ class VisionSystem:
         stomach_capacity_per_radius: float = (
             MetabolismConfig().stomach_capacity_per_radius
         ),
+        max_life: float = MetabolismConfig().max_life,
         flock_compatibility_resolver: Callable[[Creature, Creature], float]
         | None = None,
         flocking_config: FlockingConfig | None = None,
@@ -309,6 +312,7 @@ class VisionSystem:
         self.config = config
         self.eating_distance = eating_distance
         self.stomach_capacity_per_radius = stomach_capacity_per_radius
+        self.max_life = max(0.0, float(max_life))
         self.flock_compatibility_resolver = flock_compatibility_resolver
         self.flocking_config = flocking_config or FlockingConfig()
         self.sensor_contract = SENSOR_CONTRACT
@@ -439,6 +443,14 @@ class VisionSystem:
             clock_time_alive=clock_time_alive,
             is_grabbing=1.0 if is_grabbing else 0.0,
             stomach_fullness=self.stomach_fullness(creature),
+            life_normalized=(
+                0.0
+                if self.max_life <= 0.0
+                else self._clamp01(
+                    float(getattr(creature, "life", self.max_life))
+                    / self.max_life
+                )
+            ),
             flock=flock_snapshot,
             sensor_contract=self.sensor_contract,
             flock_target_group_size=self.flocking_config.target_group_size,

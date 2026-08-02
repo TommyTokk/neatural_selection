@@ -88,16 +88,35 @@ class NeatBrainActionMappingTest(unittest.TestCase):
     def test_output_schema_is_contiguous_and_named(self) -> None:
         self.assertEqual(
             [int(output) for output in BrainOutputIndex],
-            list(range(14)),
+            list(range(15)),
         )
-        self.assertEqual(ACTION_OUTPUT_COUNT, 14)
+        self.assertEqual(ACTION_OUTPUT_COUNT, 15)
         self.assertEqual(ACTION_OUTPUT_NAMES[9], "herding")
         self.assertEqual(ACTION_OUTPUT_NAMES[10:], (
             "emit_sound",
             "sound_tone",
             "emit_trail_pheromone",
             "emit_alarm_pheromone",
+            "rest",
         ))
+
+    def test_rest_uses_positive_centered_evidence_only(self) -> None:
+        outputs = [0.0] * ACTION_OUTPUT_COUNT
+        outputs[BrainOutputIndex.REST] = 0.75
+
+        action = self.decide_with_outputs(outputs)
+
+        self.assertEqual(action.rest, 0.75)
+
+    def test_transaction_shadow_does_not_advance_live_genome_allocator(self) -> None:
+        controller = NeatBrainController(Path("configs/neat_herbivore.ini"))
+        live_next = controller._next_genome_id_value
+
+        shadow = controller.transaction_shadow()
+        allocated = shadow._next_genome_id()
+
+        self.assertEqual(allocated, live_next)
+        self.assertEqual(controller._next_genome_id_value, live_next)
 
     def test_new_brain_has_legacy_rate_and_zero_transient_herding_state(
         self,

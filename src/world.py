@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field, replace
+import copy
 import hashlib
 import inspect
 import pickle
@@ -46,7 +47,16 @@ from src.flocking import (
 )
 from src.food import Food
 from src.food_spawner import FoodSpawner
-from src.metabolism import Metabolism
+from src.metabolism import (
+    ActivityResult,
+    ENERGY_EPSILON,
+    FoodConsumption,
+    Metabolism,
+    MetabolismReport,
+    ResourceCandidate,
+    calculate_weighted_activity,
+    is_energy_depleted,
+)
 from src.vision import (
     BiomeSensorSnapshot,
     SENSOR_CONTRACT,
@@ -154,6 +164,43 @@ class _FlockSteeringDebug:
     max_force: float
 
 
+@dataclass(frozen=True, slots=True)
+class ReproductionRequest:
+    parent: Creature
+    eligibility_rank: int
+    reserved_energy_cost: float
+
+
+@dataclass(frozen=True, slots=True)
+class NursingRequest:
+    donor: Creature
+    target: Creature
+    requested_transfer: float
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedNursingTransfer:
+    request: NursingRequest
+    allocated_transfer: float
+
+
+@dataclass(frozen=True, slots=True)
+class StagedOffspring:
+    request: ReproductionRequest
+    child_id: int
+    traits: ChildCreatureTraits
+    position: tuple[float, float]
+    speciation_result: SpeciationResult
+
+
+@dataclass(slots=True)
+class TransactionResolution:
+    candidates: dict[int, ResourceCandidate]
+    activities: dict[int, ActivityResult]
+    reproductions: list[ReproductionRequest]
+    nursing_transfers: list[AcceptedNursingTransfer]
+
+
 class World:
     CREATURE_COLOR_PALETTE: tuple[Color, ...] = (
         (86, 156, 214),
@@ -187,6 +234,7 @@ class World:
         brain_initialization_seed: int | None = None,
     ) -> None:
         config.flocking.validate()
+        config.action.validate()
         self.config = config
         self.rng = Random(config.random_seed)
         self.brain_initialization_seed = (
@@ -205,6 +253,7 @@ class World:
         self._flocking_telemetry_accumulator = 0.0
         self.physics_step_count = 0
         self._last_actions: dict[int, Action] = {}
+        self._effective_actions: dict[int, Action] = {}
         self._last_sensor_snapshots: dict[int, SensorSnapshot] = {}
         self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
         self._last_flock_steering_debug: dict[int, _FlockSteeringDebug] = {}
@@ -256,6 +305,7 @@ class World:
             config.vision,
             config.metabolism.eating_distance,
             config.metabolism.stomach_capacity_per_radius,
+            max_life=config.metabolism.max_life,
             flocking_config=config.flocking,
         )
         self.space = pymunk.Space()
@@ -453,10 +503,10 @@ class World:
             self._update_fitness_survival(self.FIXED_TIMESTEP)
             self._update_flocking_benchmark(self.FIXED_TIMESTEP)
             self._update_chronometers(self.FIXED_TIMESTEP)
+            self._update_reproduction(self.FIXED_TIMESTEP)
             self._update_metabolism(self.FIXED_TIMESTEP)
             self.pheromones.accumulate(self.FIXED_TIMESTEP)
             self._spawn_foods(self.FIXED_TIMESTEP)
-            self._update_reproduction(self.FIXED_TIMESTEP)
             self._update_flocking_telemetry(self.FIXED_TIMESTEP)
             self._sample_selected_behavior()
             self._sample_selected_why()
@@ -710,6 +760,7 @@ class World:
         self.fitness_archive = {}
         self._trait_archive_by_genome_id = {}
         self._last_actions = {}
+        self._effective_actions = {}
         self._last_sensor_snapshots = {}
         self._last_acoustic_debug = {}
         self._last_flock_steering_debug = {}
@@ -2237,6 +2288,7 @@ class World:
         position: tuple[float, float] | None = None,
         heading: float | None = None,
         energy: float | None = None,
+        life: float | None = None,
         color: Color | None = None,
         vision: VisionTraits | None = None,
         physical_traits: PhysicalTraits | None = None,
@@ -2298,6 +2350,16 @@ class World:
             body=body,
             shape=shape,
             energy=(self.rng.uniform(0.55, 0.95) if energy is None else energy),
+            life=(
+                self.config.metabolism.max_life
+                * self.config.metabolism.initial_life_fraction
+                if life is None
+                else self._clamp(
+                    life,
+                    0.0,
+                    self.config.metabolism.max_life,
+                )
+            ),
             vision=vision,
             color=(
                 color
@@ -2843,6 +2905,8 @@ class World:
             self._last_sensor_snapshots = {}
         if not hasattr(self, "_last_actions"):
             self._last_actions = {}
+        if not hasattr(self, "_effective_actions"):
+            self._effective_actions = {}
 
         thinking_rows: dict[int, int] = {}
         thinking_creatures: list[Creature] = []
@@ -2898,13 +2962,38 @@ class World:
                 if is_active_intent(action.reset_chronometer):
                     self._chronometers[creature.creature_id] = 0.0
 
-                self._apply_carry_intent(creature, action)
                 self._adapt_creature_biome_memory(creature, snapshot)
 
             if action is None:
                 continue
 
-            self._apply_action(creature, action, snapshot)
+            effective_action = self._effective_action_for(creature, action)
+            self._effective_actions[creature_id] = effective_action
+            if should_think:
+                self._apply_carry_intent(creature, effective_action)
+            self._apply_action(creature, effective_action, snapshot)
+
+    @staticmethod
+    def _effective_action_for(creature: Creature, raw_action: Action) -> Action:
+        """Gate non-locomotion outputs without mutating neural diagnostics."""
+        if not is_energy_depleted(creature.energy):
+            return raw_action
+        return replace(
+            raw_action,
+            want_reproduce=0.0,
+            want_grab=0.0,
+            want_nurse=0.0,
+            emit_sound=0.0,
+            emit_trail_pheromone=0.0,
+            emit_alarm_pheromone=0.0,
+        )
+
+    def _action_for_execution(self, creature_id: int) -> Action | None:
+        """Return effective runtime output, with legacy-test compatibility."""
+        effective_actions = getattr(self, "_effective_actions", None)
+        if effective_actions is None:
+            return getattr(self, "_last_actions", {}).get(creature_id)
+        return effective_actions.get(creature_id)
 
     def _commit_communication_intents(self, delta_time: float) -> None:
         acoustics = getattr(self, "acoustics", None)
@@ -2918,7 +3007,7 @@ class World:
         self._ensure_communication_buffer_capacity(len(self.creatures))
         deposit_count = 0
         for creature in self.creatures:
-            action = self._last_actions.get(creature.creature_id)
+            action = self._action_for_execution(creature.creature_id)
             if action is None:
                 continue
             sound_strength = max(0.0, min(1.0, action.emit_sound))
@@ -2999,6 +3088,22 @@ class World:
         """
         if not hasattr(self, "_last_flocking_runtime"):
             self._last_flocking_runtime = {}
+
+        rest_intent = self._clamp(getattr(action, "rest", 0.0), 0.0, 1.0)
+        response_rate = max(0.0, self.config.action.rest_response_rate)
+        rest_alpha = 1.0 - exp(-response_rate * self.FIXED_TIMESTEP)
+        creature.rest_intent = rest_intent
+        previous_rest = getattr(creature, "smoothed_rest", 0.0)
+        smoothed_rest = self._clamp(
+            previous_rest + (rest_intent - previous_rest) * rest_alpha,
+            0.0,
+            1.0,
+        )
+        creature.smoothed_rest = smoothed_rest
+        movement_scale = 1.0 - smoothed_rest ** max(
+            1e-12,
+            self.config.action.rest_movement_exponent,
+        )
 
         # Calculate the target thrust and panic intensity based on the action's parameters.
         target_thrust = action.accelerate
@@ -3113,6 +3218,15 @@ class World:
             mandatory_avoidance=mandatory_avoidance_force,
             remaining_budget=remaining_force_budget,
         )
+        voluntary_force = (
+            voluntary_force[0] * movement_scale,
+            voluntary_force[1] * movement_scale,
+        )
+        creature.effective_voluntary_motor_effort = self._clamp(
+            hypot(*voluntary_force) / max(1e-12, current_max_forward_force),
+            0.0,
+            1.0,
+        )
         requested_social_contribution = (
             blended_request[0] - neural_request[0],
             blended_request[1] - neural_request[1],
@@ -3180,7 +3294,15 @@ class World:
         )
 
         # Determine the target turn based on desired rotation and flock turn bias, then smooth it before applying angular control.
-        target_turn = self._clamp(action.rotate + flock_turn_bias, -1.0, 1.0)
+        neural_turn_scale = 1.0 - (
+            self.config.action.rest_rotation_inhibition
+            * smoothed_rest
+        )
+        target_turn = self._clamp(
+            action.rotate * neural_turn_scale + flock_turn_bias,
+            -1.0,
+            1.0,
+        )
         previous_rotation = getattr(creature, "smoothed_rotation", 0.0)
         turn = previous_rotation * (1.0 - alpha) + target_turn * alpha
         try:
@@ -3594,11 +3716,15 @@ class World:
         wrapped = (angle + pi) % (2.0 * pi) - pi
         return pi if wrapped == -pi and angle > 0.0 else wrapped
 
-    def _apply_top_down_motion(self) -> None:
+    def _apply_top_down_motion(self, delta_time: float | None = None) -> None:
         for creature in self.creatures:
-            self._apply_planar_drag(creature)
+            self._apply_planar_drag(creature, delta_time)
 
-    def _apply_planar_drag(self, creature: Creature) -> None:
+    def _apply_planar_drag(
+        self,
+        creature: Creature,
+        delta_time: float | None = None,
+    ) -> None:
         velocity = creature.body.velocity
         heading = creature.heading
         forward_x = cos(heading)
@@ -3611,6 +3737,14 @@ class World:
 
         forward_speed *= self.config.action.forward_velocity_retention
         lateral_speed *= self.config.action.lateral_velocity_retention
+        elapsed = self.FIXED_TIMESTEP if delta_time is None else max(0.0, delta_time)
+        rest_braking = exp(
+            -max(0.0, self.config.action.rest_braking_strength)
+            * self._clamp(getattr(creature, "smoothed_rest", 0.0), 0.0, 1.0)
+            * elapsed
+        )
+        forward_speed *= rest_braking
+        lateral_speed *= rest_braking
 
         if abs(forward_speed) < self.config.action.linear_stop_threshold:
             forward_speed = 0.0
@@ -3906,44 +4040,548 @@ class World:
                 return food
         return None
 
-    def _update_metabolism(self, delta_time: float) -> None:
-        self._apply_nursing(delta_time)
+    def _prepare_reproduction_requests(self) -> list[ReproductionRequest]:
+        due = bool(getattr(self, "_reproduction_due_this_step", False))
+        self._reproduction_due_this_step = False
+        if not due or not self._has_reproduction_resources():
+            return []
+        live = {creature.creature_id: creature for creature in self.creatures}
+        requests: list[ReproductionRequest] = []
+        for rank, creature_id in enumerate(self.rt_neat.eligible_parent_ids):
+            parent = live.get(creature_id)
+            if parent is None or creature_id not in self.fitness:
+                continue
+            action = self._action_for_execution(creature_id)
+            if action is None or not is_active_intent(action.want_reproduce):
+                continue
+            requests.append(
+                ReproductionRequest(
+                    parent=parent,
+                    eligibility_rank=rank,
+                    reserved_energy_cost=self._reproduction_cost_for(parent),
+                )
+            )
+        return sorted(
+            requests,
+            key=lambda request: (
+                request.eligibility_rank,
+                request.parent.creature_id,
+            ),
+        )
+
+    def _prepare_nursing_requests(
+        self,
+        delta_time: float,
+    ) -> list[NursingRequest]:
+        transfer = (
+            max(0.0, self.config.population.nursing_energy_transfer_rate)
+            * max(0.0, delta_time)
+        )
+        if transfer <= 0.0:
+            return []
+        requests: list[NursingRequest] = []
+        for donor in self.creatures:
+            action = self._action_for_execution(donor.creature_id)
+            if action is None or not is_active_intent(action.want_nurse):
+                continue
+            target = self._nearest_nursable_infant_for(donor)
+            if target is None:
+                continue
+            requests.append(NursingRequest(donor, target, transfer))
+        return requests
+
+    def _energy_demands_for(
+        self,
+        delta_time: float,
+    ) -> tuple[dict[int, float], dict[int, float]]:
+        demands: dict[int, float] = {}
+        powered_movement_demands: dict[int, float] = {}
         with_infant_penalties = self._apply_infant_movement_penalties()
         try:
-            report = self.metabolism.update(
-                self.creatures,
-                self.foods,
-                delta_time,
-                self.MAX_SPEED,
-                self._eatable_foods_for,
-                self._creature_want_to_eat,
-                {
-                    creature.creature_id: getattr(
-                        action,
-                        "flee_panic_intensity",
+            for creature in self.creatures:
+                action = self._action_for_execution(creature.creature_id)
+                sprint = (
+                    0.0
+                    if action is None
+                    else getattr(action, "flee_panic_intensity", 0.0)
+                )
+                breakdown = self.metabolism.energy_cost_breakdown_per_second(
+                    creature,
+                    self.MAX_SPEED,
+                    sprint_intensity=sprint,
+                    age_seconds=self._creature_age_seconds(creature),
+                    communication_intensities=(
+                        self._communication_intensities_for(
+                            creature.creature_id
+                        )
+                    ),
+                )
+                multiplier = (
+                    max(0.0, delta_time)
+                    * self._senescence_factor_for(creature)
+                )
+                powered_movement_rate = breakdown.sprint
+                if (
+                    getattr(
+                        creature,
+                        "effective_voluntary_motor_effort",
                         0.0,
                     )
-                    for creature in self.creatures
-                    if (action := self._last_actions.get(creature.creature_id))
-                    is not None
-                },
-                energy_cost_multipliers={
-                    creature.creature_id: self._senescence_factor_for(creature)
-                    for creature in self.creatures
-                },
-                creature_age_seconds={
-                    creature.creature_id: self._creature_age_seconds(creature)
-                    for creature in self.creatures
-                },
-                communication_intensities={
-                    creature.creature_id: self._communication_intensities_for(
-                        creature.creature_id
-                    )
-                    for creature in self.creatures
-                },
-            )
+                    > ENERGY_EPSILON
+                ):
+                    powered_movement_rate += breakdown.movement
+                demands[creature.creature_id] = breakdown.total * multiplier
+                powered_movement_demands[creature.creature_id] = (
+                    powered_movement_rate * multiplier
+                )
         finally:
             self._restore_movement_multipliers(with_infant_penalties)
+        return demands, powered_movement_demands
+
+    def _upkeep_demands_for(self, delta_time: float) -> dict[int, float]:
+        """Compatibility view of complete same-step energy demand."""
+        return self._energy_demands_for(delta_time)[0]
+
+    def _resolve_resource_transactions(
+        self,
+        delta_time: float,
+    ) -> TransactionResolution:
+        reproduction_requests = self._prepare_reproduction_requests()
+        nursing_requests = self._prepare_nursing_requests(delta_time)
+        upkeep_demands, powered_movement_demands = self._energy_demands_for(
+            delta_time
+        )
+        baseline_candidates: dict[int, ResourceCandidate] = {}
+        baseline_activities: dict[int, ActivityResult] = {}
+        for creature in self.creatures:
+            activity = self._activity_for(creature)
+            baseline_activities[creature.creature_id] = activity
+            baseline_candidates[creature.creature_id] = (
+                self.metabolism.evaluate_candidate(
+                    creature,
+                    delta_time,
+                    total_energy_demand=upkeep_demands[creature.creature_id],
+                    powered_movement_energy_demand=(
+                        powered_movement_demands[creature.creature_id]
+                    ),
+                    effective_rest=(
+                        creature.smoothed_rest * (1.0 - activity.total)
+                    ),
+                )
+            )
+
+        available_slots = max(
+            0,
+            self.config.population.max_creatures - len(self.creatures),
+        )
+        banned: set[int] = set()
+        selected = reproduction_requests[:available_slots]
+        while True:
+            resolution, failed = self._resolve_transaction_pass(
+                delta_time,
+                selected,
+                nursing_requests,
+                upkeep_demands,
+                baseline_candidates,
+                baseline_activities,
+                powered_movement_demands=powered_movement_demands,
+            )
+            banned.update(failed)
+            survivors = [
+                request
+                for request in selected
+                if request.parent.creature_id not in banned
+            ]
+            promoted = [
+                request
+                for request in reproduction_requests
+                if request.parent.creature_id not in banned
+                and request not in survivors
+            ]
+            next_selected = [
+                *survivors,
+                *promoted[: max(0, available_slots - len(survivors))],
+            ]
+            next_selected.sort(
+                key=lambda request: (
+                    request.eligibility_rank,
+                    request.parent.creature_id,
+                )
+            )
+            if [r.parent.creature_id for r in next_selected] == [
+                r.parent.creature_id for r in selected
+            ]:
+                return resolution
+            selected = next_selected
+
+    def _resolve_transaction_pass(
+        self,
+        delta_time: float,
+        selected_reproductions: list[ReproductionRequest],
+        nursing_requests: list[NursingRequest],
+        upkeep_demands: dict[int, float],
+        baseline_candidates: dict[int, ResourceCandidate],
+        baseline_activities: dict[int, ActivityResult],
+        *,
+        powered_movement_demands: dict[int, float] | None = None,
+    ) -> tuple[TransactionResolution, set[int]]:
+        powered_demands = powered_movement_demands or {
+            creature_id: 0.0 for creature_id in upkeep_demands
+        }
+        selected_by_id = {
+            request.parent.creature_id: request
+            for request in selected_reproductions
+        }
+        failed_reproductions: set[int] = set()
+        chosen_candidates: dict[int, ResourceCandidate] = {}
+        chosen_activities: dict[int, ActivityResult] = {}
+        accepted: list[AcceptedNursingTransfer] = []
+
+        def choose(
+            creature: Creature,
+            nursing_transfer: float = 0.0,
+        ) -> tuple[ResourceCandidate, bool]:
+            creature_id = creature.creature_id
+            reproduction = selected_by_id.get(creature_id)
+            reproduction_cost = (
+                0.0
+                if reproduction is None
+                or creature_id in failed_reproductions
+                else reproduction.reserved_energy_cost
+            )
+            has_action = reproduction_cost > 0.0 or nursing_transfer > 0.0
+            if not has_action:
+                candidate = baseline_candidates[creature_id]
+                activity = baseline_activities[creature_id]
+                chosen_candidates[creature_id] = candidate
+                chosen_activities[creature_id] = activity
+                return candidate, candidate.survives
+            activity = self._activity_for(
+                creature,
+                reproduction_selected=reproduction_cost > 0.0,
+                nursing_transfer=nursing_transfer,
+            )
+            candidate = self.metabolism.evaluate_candidate(
+                creature,
+                delta_time,
+                total_energy_demand=(
+                    upkeep_demands[creature_id]
+                    + reproduction_cost
+                    + nursing_transfer
+                ),
+                powered_movement_energy_demand=powered_demands.get(
+                    creature_id,
+                    0.0,
+                ),
+                effective_rest=(
+                    creature.smoothed_rest * (1.0 - activity.total)
+                ),
+            )
+            if not candidate.survives:
+                if reproduction is not None:
+                    failed_reproductions.add(creature_id)
+                candidate = baseline_candidates[creature_id]
+                activity = baseline_activities[creature_id]
+                chosen_candidates[creature_id] = candidate
+                chosen_activities[creature_id] = activity
+                return candidate, False
+            chosen_candidates[creature_id] = candidate
+            chosen_activities[creature_id] = activity
+            return candidate, True
+
+        grouped: dict[int, list[NursingRequest]] = {}
+        targets: dict[int, Creature] = {}
+        for request in nursing_requests:
+            target_id = request.target.creature_id
+            grouped.setdefault(target_id, []).append(request)
+            targets[target_id] = request.target
+        target_order = sorted(
+            targets.values(),
+            key=lambda target: (
+                -int(getattr(target.lineage, "generation", 0)),
+                target.creature_id,
+            ),
+        )
+        for target in target_order:
+            target_candidate = chosen_candidates.get(target.creature_id)
+            if target_candidate is None:
+                target_candidate, _ = choose(target)
+            if not target_candidate.survives:
+                continue
+            remaining_headroom = max(
+                0.0,
+                self.config.metabolism.max_energy
+                - target_candidate.final_energy,
+            )
+            for request in sorted(
+                grouped[target.creature_id],
+                key=lambda item: item.donor.creature_id,
+            ):
+                allocation = min(
+                    max(0.0, request.requested_transfer),
+                    remaining_headroom,
+                )
+                if allocation <= 1e-12:
+                    continue
+                donor_candidate, action_survives = choose(
+                    request.donor,
+                    allocation,
+                )
+                if not action_survives or not donor_candidate.survives:
+                    continue
+                accepted.append(AcceptedNursingTransfer(request, allocation))
+                remaining_headroom = max(0.0, remaining_headroom - allocation)
+
+        for creature in self.creatures:
+            if creature.creature_id not in chosen_candidates:
+                choose(creature)
+
+        surviving_reproductions = [
+            request
+            for request in selected_reproductions
+            if request.parent.creature_id not in failed_reproductions
+        ]
+        return (
+            TransactionResolution(
+                candidates=chosen_candidates,
+                activities=chosen_activities,
+                reproductions=surviving_reproductions,
+                nursing_transfers=accepted,
+            ),
+            failed_reproductions,
+        )
+
+    def _stage_final_reproductions(
+        self,
+        requests: list[ReproductionRequest],
+    ) -> tuple[list[StagedOffspring], object | None, object | None]:
+        if not requests:
+            return [], None, None
+        shadow_factory = getattr(
+            self.neat_controller,
+            "transaction_shadow",
+            None,
+        )
+        shadow_controller = (
+            shadow_factory()
+            if callable(shadow_factory)
+            else copy.deepcopy(self.neat_controller)
+        )
+        shadow_rng = Random()
+        shadow_rng.setstate(self.rng.getstate())
+        live_rng = self.rng
+        staged: list[StagedOffspring] = []
+        first_child_id = self._next_creature_id_value
+        try:
+            self.rng = shadow_rng
+            for offset, request in enumerate(requests):
+                parent = request.parent
+                child_id = first_child_id + offset
+                traits = self._mutated_child_traits(parent)
+                position = self._child_spawn_position(
+                    parent,
+                    traits.physical_traits.radius,
+                )
+                child_brain, speciation = shadow_controller.create_child_brain(
+                    parent.creature_id,
+                    child_id,
+                    parent.lineage.species_id,
+                    traits.physical_traits,
+                    traits.vision,
+                    traits.flocking_traits,
+                )
+                if child_brain is None or speciation is None:
+                    raise RuntimeError(
+                        "Final reproduction staging lost a parent brain."
+                    )
+                traits.lineage.species_id = speciation.species_id
+                if speciation.is_new_species:
+                    traits.color = self._new_species_color(parent.color)
+                staged.append(
+                    StagedOffspring(
+                        request=request,
+                        child_id=child_id,
+                        traits=traits,
+                        position=position,
+                        speciation_result=speciation,
+                    )
+                )
+        finally:
+            self.rng = live_rng
+        return staged, shadow_controller, shadow_rng.getstate()
+
+    def _commit_staged_reproductions(
+        self,
+        staged: list[StagedOffspring],
+        shadow_controller: object | None,
+        staged_rng_state: object | None,
+    ) -> None:
+        if not staged or shadow_controller is None:
+            return
+        controller = self.neat_controller
+        for name in (
+            "config",
+            "population",
+            "brains",
+            "species_manager",
+            "_next_genome_id_value",
+            "_next_brain_revision_value",
+            "_evolution_rng",
+            "_pairwise_compatibility_distance_cache",
+        ):
+            if hasattr(shadow_controller, name):
+                setattr(controller, name, getattr(shadow_controller, name))
+        if staged_rng_state is not None:
+            self.rng.setstate(staged_rng_state)
+
+        for offspring in staged:
+            parent = offspring.request.parent
+            traits = offspring.traits
+            child = self._spawn_creature(
+                offspring.child_id,
+                position=offspring.position,
+                heading=parent.heading,
+                energy=self.config.population.infant_energy_spawn,
+                color=traits.color,
+                vision=traits.vision,
+                physical_traits=traits.physical_traits,
+                flocking_traits=traits.flocking_traits,
+                lineage=traits.lineage,
+            )
+            self.creatures.append(child)
+            self._initialize_creature_biome_memory(child)
+            self.fitness[child.creature_id] = CreatureFitness()
+            self._chronometers[child.creature_id] = 0.0
+            self._log_creature_birth(child)
+            if offspring.speciation_result.is_new_species:
+                self._record_new_species(
+                    child,
+                    offspring.speciation_result,
+                )
+            parent_fitness = self.fitness.get(parent.creature_id)
+            if parent_fitness is not None:
+                parent_fitness.record_reproduction()
+            self.rt_neat.record_normal_replacement()
+        self._next_creature_id_value = staged[-1].child_id + 1
+
+    def _process_eating_after_transactions(
+        self,
+        delta_time: float,
+    ) -> MetabolismReport:
+        touched_foods: list[Food] = []
+        depleted_foods: list[Food] = []
+        consumptions: list[FoodConsumption] = []
+        for creature in self.creatures:
+            if not self._creature_want_to_eat(creature):
+                continue
+            food = self.metabolism.find_eatable_food(
+                creature,
+                self._eatable_foods_for(creature),
+                touched_foods,
+            )
+            if food is None:
+                continue
+            consumption = self.metabolism.eat(creature, food, delta_time)
+            if consumption.energy_swallowed <= 0.0 and not consumption.depleted:
+                continue
+            touched_foods.append(food)
+            if consumption.depleted:
+                depleted_foods.append(food)
+            consumptions.append(
+                FoodConsumption(
+                    creature_id=creature.creature_id,
+                    food=food,
+                    energy_swallowed=consumption.energy_swallowed,
+                    depleted=consumption.depleted,
+                )
+            )
+        return MetabolismReport(
+            depleted_foods=depleted_foods,
+            touched_foods=touched_foods,
+            food_consumptions=consumptions,
+        )
+
+    def _update_metabolism(self, delta_time: float) -> None:
+        if not hasattr(self.metabolism, "evaluate_candidate"):
+            self._update_metabolism_legacy_adapter(delta_time)
+            return
+        resolution = self._resolve_resource_transactions(delta_time)
+        staged_offspring, shadow_controller, staged_rng_state = (
+            self._stage_final_reproductions(resolution.reproductions)
+        )
+
+        for creature in list(self.creatures):
+            candidate = resolution.candidates[creature.creature_id]
+            reproduction_selected = any(
+                request.parent.creature_id == creature.creature_id
+                for request in resolution.reproductions
+            )
+            nursing_selected = any(
+                transfer.request.donor.creature_id == creature.creature_id
+                and transfer.allocated_transfer > 0.0
+                for transfer in resolution.nursing_transfers
+            )
+            status = (
+                "action_committed"
+                if reproduction_selected or nursing_selected
+                else "baseline_committed"
+            )
+            self.metabolism.commit_candidate(
+                creature,
+                candidate,
+                transaction_status=status,
+            )
+            self._commit_activity_diagnostics(
+                creature,
+                resolution.activities[creature.creature_id],
+            )
+
+        for transfer in resolution.nursing_transfers:
+            target = transfer.request.target
+            if target.life <= 0.0:
+                continue
+            target.energy = min(
+                self.config.metabolism.max_energy,
+                target.energy + transfer.allocated_transfer,
+            )
+
+        if staged_offspring:
+            self._commit_staged_reproductions(
+                staged_offspring,
+                shadow_controller,
+                staged_rng_state,
+            )
+
+        digestion_report = MetabolismReport(
+            digested_energy_gained={
+                creature_id: candidate.digestion.net_energy
+                for creature_id, candidate in resolution.candidates.items()
+                if candidate.digestion.net_energy > 0.0
+            },
+            digestion_processing_costs={
+                creature_id: candidate.digestion.processing_cost
+                for creature_id, candidate in resolution.candidates.items()
+                if candidate.digestion.processing_cost > 0.0
+            },
+        )
+
+        for creature in list(self.creatures):
+            if creature.life <= 0.0:
+                death_reason = (
+                    "old_age" if self._is_senescent(creature) else "metabolic"
+                )
+                self._remove_creature(creature, death_reason=death_reason)
+
+        eating_report = self._process_eating_after_transactions(delta_time)
+        report = MetabolismReport(
+            depleted_foods=eating_report.depleted_foods,
+            touched_foods=eating_report.touched_foods,
+            food_consumptions=eating_report.food_consumptions,
+            digested_energy_gained=digestion_report.digested_energy_gained,
+            digestion_processing_costs=(
+                digestion_report.digestion_processing_costs
+            ),
+        )
 
         for consumption in report.food_consumptions:
             self._record_behavior_food_consumption(consumption)
@@ -4002,6 +4640,93 @@ class World:
             self.selected_creature_id = None
             self._reset_behavior_focus(None)
 
+    def _update_metabolism_legacy_adapter(self, delta_time: float) -> None:
+        """Keep small historical test/extension metabolism doubles usable."""
+        self._apply_nursing(delta_time)
+        with_infant_penalties = self._apply_infant_movement_penalties()
+        try:
+            report = self.metabolism.update(
+                self.creatures,
+                self.foods,
+                delta_time,
+                self.MAX_SPEED,
+                self._eatable_foods_for,
+                self._creature_want_to_eat,
+                {
+                    creature.creature_id: getattr(
+                        action,
+                        "flee_panic_intensity",
+                        0.0,
+                    )
+                    for creature in self.creatures
+                    if (
+                        action := getattr(self, "_effective_actions", {}).get(
+                            creature.creature_id,
+                            self._last_actions.get(creature.creature_id),
+                        )
+                    ) is not None
+                },
+                energy_cost_multipliers={
+                    creature.creature_id: self._senescence_factor_for(creature)
+                    for creature in self.creatures
+                },
+                creature_age_seconds={
+                    creature.creature_id: self._creature_age_seconds(creature)
+                    for creature in self.creatures
+                },
+                communication_intensities={
+                    creature.creature_id: self._communication_intensities_for(
+                        creature.creature_id
+                    )
+                    for creature in self.creatures
+                },
+            )
+        finally:
+            self._restore_movement_multipliers(with_infant_penalties)
+
+        for consumption in report.food_consumptions:
+            self._record_behavior_food_consumption(consumption)
+            fitness = self.fitness.get(consumption.creature_id)
+            if fitness is not None:
+                fitness.record_food(0.0, depleted=consumption.depleted)
+        for creature_id, energy_gained in getattr(
+            report,
+            "digested_energy_gained",
+            {},
+        ).items():
+            fitness = self.fitness.get(creature_id)
+            if fitness is not None:
+                fitness.record_food(energy_gained, depleted=False)
+        processing_costs = getattr(report, "digestion_processing_costs", {})
+        self._last_digestion_processing_costs_per_second = {
+            creature_id: cost / delta_time if delta_time > 0.0 else 0.0
+            for creature_id, cost in processing_costs.items()
+        }
+        for creature_id, processing_cost in processing_costs.items():
+            fitness = self.fitness.get(creature_id)
+            if fitness is not None:
+                fitness.record_trait_cost(processing_cost, 1.0)
+        for food in report.touched_foods:
+            reindex_shape = getattr(self.space, "reindex_shape", None)
+            if reindex_shape is not None and food in self.foods:
+                reindex_shape(food.shape)
+        for food in report.depleted_foods:
+            if food in self.foods:
+                self._clear_food_carry(food)
+                self.foods.remove(food)
+                self._unindex_food(food)
+                self.space.remove(food.body, food.shape)
+        for creature in report.dead_creatures:
+            death_reason = (
+                "old_age" if self._is_senescent(creature) else "starvation"
+            )
+            self._remove_creature(creature, death_reason=death_reason)
+        if not self.creatures:
+            self._recover_extinct_population()
+        if self.selected_creature_id is not None and self.selected_creature is None:
+            self.selected_creature_id = None
+            self._reset_behavior_focus(None)
+
     def _record_behavior_food_consumption(self, consumption: object) -> None:
         creature_id = getattr(consumption, "creature_id", None)
         active_subjects = getattr(self, "_behavior_active_subjects", None)
@@ -4042,7 +4767,7 @@ class World:
         self,
         creature_id: int,
     ) -> tuple[float, float, float]:
-        action = self._last_actions.get(creature_id)
+        action = self._action_for_execution(creature_id)
         if action is None:
             return (0.0, 0.0, 0.0)
         return (
@@ -4050,6 +4775,80 @@ class World:
             max(0.0, min(1.0, action.emit_trail_pheromone)),
             max(0.0, min(1.0, action.emit_alarm_pheromone)),
         )
+
+    def _activity_for(
+        self,
+        creature: Creature,
+        *,
+        reproduction_selected: bool = False,
+        nursing_transfer: float = 0.0,
+    ) -> ActivityResult:
+        """Calculate weighted activity without mutating creature state."""
+        sound, trail, alarm = self._communication_intensities_for(
+            creature.creature_id
+        )
+        communication_config = self.config.communication
+        acoustic_rate = max(
+            0.0,
+            communication_config.acoustic_energy_cost_per_second,
+        )
+        pheromone_rate = max(
+            0.0,
+            communication_config.pheromone_energy_cost_per_second,
+        )
+        maximum_communication_cost = acoustic_rate + 2.0 * pheromone_rate
+        communication_cost = (
+            0.0
+            if maximum_communication_cost <= 0.0
+            else (
+                sound * acoustic_rate
+                + (trail + alarm) * pheromone_rate
+            )
+            / maximum_communication_cost
+        )
+        command = getattr(
+            getattr(self, "_motion_commands", {}).get(creature.creature_id),
+            "effective_rotate",
+            0.0,
+        )
+        return calculate_weighted_activity(
+            voluntary_motor_effort=getattr(
+                creature,
+                "effective_voluntary_motor_effort",
+                0.0,
+            ),
+            normalized_speed=(
+                0.0
+                if self.MAX_SPEED <= 0.0
+                else creature.speed / self.MAX_SPEED
+            ),
+            turn_command=command,
+            normalized_angular_speed=(
+                creature.body.angular_velocity / self.MAX_ANGULAR_SPEED
+                if self.MAX_ANGULAR_SPEED > 0.0
+                else 0.0
+            ),
+            communication_cost=communication_cost,
+            reproduction_selected=reproduction_selected,
+            nursing_transfer=nursing_transfer,
+        )
+
+    @staticmethod
+    def _commit_activity_diagnostics(
+        creature: Creature,
+        activity: ActivityResult,
+    ) -> None:
+        """Update the creature's reusable activity diagnostics in place."""
+        creature.activity = activity.total
+        creature.effective_rest = creature.smoothed_rest * (1.0 - activity.total)
+        diagnostics = creature.ledger_diagnostics.activity
+        diagnostics.voluntary_motor_effort = activity.voluntary_motor_effort
+        diagnostics.normalized_speed = activity.normalized_speed
+        diagnostics.turn = activity.turn
+        diagnostics.communication = activity.communication
+        diagnostics.reproduction = activity.reproduction
+        diagnostics.nursing = activity.nursing
+        diagnostics.weighted_total = activity.total
 
     def _eatable_foods_for(self, creature: Creature) -> list[Food]:
         radius = (
@@ -4154,7 +4953,10 @@ class World:
             return
 
         for parent in list(self.creatures):
-            action = self._last_actions.get(parent.creature_id)
+            action = getattr(self, "_effective_actions", {}).get(
+                parent.creature_id,
+                self._last_actions.get(parent.creature_id),
+            )
             if action is None or not is_active_intent(action.want_nurse):
                 continue
 
@@ -4392,6 +5194,9 @@ class World:
             if social_compatibility is not None:
                 social_compatibility.discard_creature(creature.creature_id)
             self._last_actions.pop(creature.creature_id, None)
+            effective_actions = getattr(self, "_effective_actions", None)
+            if effective_actions is not None:
+                effective_actions.pop(creature.creature_id, None)
             last_snapshots = getattr(self, "_last_sensor_snapshots", None)
             if last_snapshots is not None:
                 last_snapshots.pop(creature.creature_id, None)
@@ -4718,13 +5523,14 @@ class World:
         )
 
     def _update_reproduction(self, delta_time: float) -> None:
+        """Mark whether this fixed step may stage reproduction requests."""
         self._reproduction_accumulator += delta_time
         if self._reproduction_accumulator < self.REPRODUCTION_INTERVAL:
+            self._reproduction_due_this_step = False
             return
 
         self._reproduction_accumulator %= self.REPRODUCTION_INTERVAL
-        self._refresh_stats()
-        self._try_reproduce()
+        self._reproduction_due_this_step = True
 
     def _update_speciation_threshold(self, delta_time: float) -> None:
         speciation_config = self.config.speciation
@@ -4875,7 +5681,10 @@ class World:
             if parent is None or parent.creature_id not in self.fitness:
                 continue
 
-            parent_action = self._last_actions.get(parent.creature_id)
+            parent_action = getattr(self, "_effective_actions", {}).get(
+                parent.creature_id,
+                self._last_actions.get(parent.creature_id),
+            )
             if parent_action is not None and is_active_intent(
                 parent_action.want_reproduce
             ):

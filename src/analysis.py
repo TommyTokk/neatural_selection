@@ -127,6 +127,7 @@ _ACTION_LABELS = {
     "sound_tone": "Acoustic Communication Reflexes",
     "emit_trail_pheromone": "Trail Pheromone Reflexes",
     "emit_alarm_pheromone": "Alarm Pheromone Reflexes",
+    "rest": "Rest / Recovery Reflexes",
 }
 
 _HIDDEN_ACTION = "Sensory Processing (Hidden)"
@@ -181,6 +182,7 @@ _SENSORY_DESCRIPTIONS = {
     "alarm_pheromone_here": "Alarm Pheromone Concentration (Here)",
     "alarm_pheromone_forward_left": "Alarm Pheromone Concentration (Forward Left)",
     "alarm_pheromone_forward_right": "Alarm Pheromone Concentration (Forward Right)",
+    "life_normalized": "Remaining Life Reserve",
 }
 
 if not set(SENSOR_INPUT_NAMES).issubset(_SENSORY_DESCRIPTIONS):
