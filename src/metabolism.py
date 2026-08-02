@@ -601,6 +601,7 @@ class Metabolism:
         candidate: ResourceCandidate,
         *,
         transaction_status: str = "baseline_committed",
+        record_diagnostics: bool = True,
     ) -> None:
         """Commit a previously evaluated candidate exactly once."""
         creature.stomach_energy = candidate.final_stomach_energy
@@ -616,6 +617,8 @@ class Metabolism:
             creature.pending_direct_life_damage = 0.0
         except AttributeError:
             pass
+        if not record_diagnostics:
+            return
         diagnostics = getattr(creature, "ledger_diagnostics", None)
         if diagnostics is None:
             return

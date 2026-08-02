@@ -5,6 +5,7 @@ import unittest
 
 from configs.sim_config import ActionConfig, MetabolismConfig, TraitConfig, VisionConfig
 from src.action import Action
+from src.creature import LedgerDiagnostics
 from src.persistence import PersistenceManager
 from src.metabolism import (
     ActivityResult,
@@ -12,13 +13,20 @@ from src.metabolism import (
     ENERGY_EPSILON,
     EnergyCostBreakdown,
     Metabolism,
+    MetabolismReport,
     ResourceCandidate,
     calculate_digestion,
     calculate_weighted_activity,
     movement_life_penalty_multiplier,
 )
 from src.vision import VisionSystem
-from src.world import NursingRequest, World
+from src.world import (
+    AcceptedNursingTransfer,
+    NursingRequest,
+    ReproductionRequest,
+    TransactionResolution,
+    World,
+)
 
 
 class DigestionLedgerTest(unittest.TestCase):
@@ -340,6 +348,287 @@ class ActivityLedgerTest(unittest.TestCase):
         )
 
         self.assertEqual(result.total, 1.0)
+
+
+class TransactionPerformanceContractTest(unittest.TestCase):
+    @staticmethod
+    def candidate(
+        *,
+        energy: float = 1.0,
+        life: float = 1.0,
+        demand: float = 0.0,
+    ) -> ResourceCandidate:
+        return ResourceCandidate(
+            digestion=DigestionResult(0.0, 0.0, 0.0, 0.0),
+            total_energy_demand=demand,
+            final_stomach_energy=0.0,
+            final_stomach_difficulty_load=0.0,
+            available_energy=energy,
+            remaining_energy=energy,
+            unmet_energy_demand=0.0,
+            life_damage_from_deficit=0.0,
+            direct_life_damage=0.0,
+            final_energy=energy,
+            final_life=life,
+        )
+
+    def make_world(
+        self,
+        reproduction_requests: list[ReproductionRequest],
+    ) -> object:
+        world = object.__new__(World)
+        world.config = SimpleNamespace(
+            population=SimpleNamespace(max_creatures=10),
+            metabolism=SimpleNamespace(max_energy=1.0),
+        )
+        world.creatures = [
+            SimpleNamespace(creature_id=index, smoothed_rest=0.0)
+            for index in (1, 2, 3)
+        ]
+        world._prepare_reproduction_requests = lambda: reproduction_requests
+        world._prepare_nursing_requests = lambda _delta: []
+        world._energy_demands_for = lambda _delta: (
+            {creature.creature_id: 0.0 for creature in world.creatures},
+            {creature.creature_id: 0.0 for creature in world.creatures},
+        )
+        world._activity_for = lambda _creature, **kwargs: ActivityResult(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0 if kwargs else 0.0,
+            0.0,
+            1.0 if kwargs else 0.0,
+        )
+
+        def evaluate(
+            creature: object,
+            _delta: float,
+            **kwargs: float,
+        ) -> ResourceCandidate:
+            demand = kwargs["total_energy_demand"]
+            if creature.creature_id == 1 and demand > 0.0:
+                return self.candidate(energy=0.0, life=0.0, demand=demand)
+            return self.candidate(demand=demand)
+
+        world.metabolism = SimpleNamespace(evaluate_candidate=evaluate)
+        return world
+
+    def test_empty_request_path_returns_baselines_without_resolution_pass(
+        self,
+    ) -> None:
+        world = self.make_world([])
+        world._resolve_transaction_pass = lambda *_args, **_kwargs: self.fail(
+            "idle transaction path must not resolve or copy baselines"
+        )
+
+        resolution = world._resolve_resource_transactions(1.0 / 60.0)
+
+        self.assertEqual(set(resolution.candidates), {1, 2, 3})
+        self.assertEqual(set(resolution.activities), {1, 2, 3})
+        self.assertEqual(resolution.reproductions, [])
+        self.assertEqual(resolution.nursing_transfers, [])
+
+    def test_reproduction_capacity_is_one_and_failed_parent_promotes_next(
+        self,
+    ) -> None:
+        creatures = [
+            SimpleNamespace(creature_id=index, smoothed_rest=0.0)
+            for index in (1, 2, 3)
+        ]
+        requests = [
+            ReproductionRequest(creature, rank, 0.4)
+            for rank, creature in enumerate(creatures)
+        ]
+        world = self.make_world(requests)
+        world.creatures = creatures
+
+        resolution = world._resolve_resource_transactions(1.0 / 60.0)
+
+        self.assertEqual(len(resolution.reproductions), 1)
+        self.assertEqual(
+            resolution.reproductions[0].parent.creature_id,
+            2,
+        )
+        self.assertEqual(
+            resolution.candidates[1].total_energy_demand,
+            0.0,
+        )
+        self.assertAlmostEqual(
+            resolution.candidates[2].total_energy_demand,
+            0.4,
+        )
+
+
+class SelectedDiagnosticsTest(unittest.TestCase):
+    @staticmethod
+    def candidate() -> ResourceCandidate:
+        return ResourceCandidate(
+            digestion=DigestionResult(0.2, 0.18, 0.02, 0.16),
+            total_energy_demand=0.3,
+            final_stomach_energy=0.4,
+            final_stomach_difficulty_load=0.5,
+            available_energy=0.8,
+            remaining_energy=0.5,
+            unmet_energy_demand=0.0,
+            life_damage_from_deficit=0.0,
+            direct_life_damage=0.1,
+            final_energy=0.5,
+            final_life=0.9,
+        )
+
+    def test_core_state_commits_without_detailed_ledger_writes(self) -> None:
+        creature = SimpleNamespace(
+            energy=0.0,
+            life=0.0,
+            stomach_energy=0.0,
+            stomach_difficulty_load=0.0,
+            pending_direct_life_damage=0.1,
+            ledger_diagnostics=LedgerDiagnostics(total_energy_demand=99.0),
+        )
+
+        Metabolism.commit_candidate(
+            object.__new__(Metabolism),
+            creature,
+            self.candidate(),
+            record_diagnostics=False,
+        )
+
+        self.assertEqual(creature.energy, 0.5)
+        self.assertEqual(creature.life, 0.9)
+        self.assertEqual(creature.stomach_energy, 0.4)
+        self.assertEqual(creature.pending_direct_life_damage, 0.0)
+        self.assertEqual(creature.ledger_diagnostics.total_energy_demand, 99.0)
+
+    def test_activity_core_updates_every_tick_but_components_are_selective(
+        self,
+    ) -> None:
+        creature = SimpleNamespace(
+            smoothed_rest=0.5,
+            activity=0.0,
+            effective_rest=0.0,
+            ledger_diagnostics=LedgerDiagnostics(),
+        )
+        creature.ledger_diagnostics.activity.weighted_total = 0.75
+        activity = ActivityResult(0.2, 0.3, 0.4, 0.5, 0.0, 0.0, 0.6)
+
+        World._commit_activity_diagnostics(
+            creature,
+            activity,
+            record_diagnostics=False,
+        )
+
+        self.assertEqual(creature.activity, 0.6)
+        self.assertAlmostEqual(creature.effective_rest, 0.2)
+        self.assertEqual(
+            creature.ledger_diagnostics.activity.weighted_total,
+            0.75,
+        )
+
+        World._commit_activity_diagnostics(creature, activity)
+        self.assertEqual(
+            creature.ledger_diagnostics.activity.weighted_total,
+            0.6,
+        )
+
+    def test_world_commit_marks_actions_and_records_only_selected_details(
+        self,
+    ) -> None:
+        creatures = [
+            SimpleNamespace(
+                creature_id=creature_id,
+                energy=0.5,
+                life=1.0,
+                stomach_energy=0.0,
+                stomach_difficulty_load=0.0,
+                pending_direct_life_damage=0.0,
+                smoothed_rest=0.5,
+                activity=0.0,
+                effective_rest=0.0,
+                ledger_diagnostics=LedgerDiagnostics(
+                    transaction_status="unchanged"
+                ),
+            )
+            for creature_id in (1, 2, 3)
+        ]
+        reproduction = ReproductionRequest(creatures[0], 0, 0.2)
+        nursing = AcceptedNursingTransfer(
+            NursingRequest(creatures[1], creatures[2], 0.1),
+            0.1,
+        )
+        candidate = self.candidate()
+        activity = ActivityResult(0.2, 0.3, 0.4, 0.5, 0.0, 0.0, 0.6)
+        resolution = TransactionResolution(
+            candidates={creature.creature_id: candidate for creature in creatures},
+            activities={creature.creature_id: activity for creature in creatures},
+            reproductions=[reproduction],
+            nursing_transfers=[nursing],
+        )
+        world = object.__new__(World)
+        world.creatures = creatures
+        world.selected_creature_id = 2
+        world.config = SimpleNamespace(
+            metabolism=SimpleNamespace(max_energy=1.0)
+        )
+        world._resolve_resource_transactions = lambda _delta: resolution
+        world._stage_final_reproductions = lambda _requests: ([], None, None)
+        world._process_eating_after_transactions = (
+            lambda _delta: MetabolismReport()
+        )
+        world._last_digestion_processing_costs_per_second = {}
+        world.foods = []
+        world.fitness = {}
+        world._recover_extinct_population = lambda: None
+        world._reset_behavior_focus = lambda _creature_id: None
+        committed: dict[int, tuple[str, bool]] = {}
+        metabolism = object.__new__(Metabolism)
+
+        def commit(
+            creature: object,
+            resource: ResourceCandidate,
+            *,
+            transaction_status: str,
+            record_diagnostics: bool,
+        ) -> None:
+            committed[creature.creature_id] = (
+                transaction_status,
+                record_diagnostics,
+            )
+            Metabolism.commit_candidate(
+                metabolism,
+                creature,
+                resource,
+                transaction_status=transaction_status,
+                record_diagnostics=record_diagnostics,
+            )
+
+        world.metabolism = SimpleNamespace(
+            evaluate_candidate=lambda *_args, **_kwargs: candidate,
+            commit_candidate=commit,
+        )
+
+        world._update_metabolism(1.0)
+
+        self.assertEqual(
+            committed,
+            {
+                1: ("action_committed", False),
+                2: ("action_committed", True),
+                3: ("baseline_committed", False),
+            },
+        )
+        self.assertEqual(
+            creatures[0].ledger_diagnostics.transaction_status,
+            "unchanged",
+        )
+        self.assertEqual(
+            creatures[1].ledger_diagnostics.transaction_status,
+            "action_committed",
+        )
+        self.assertEqual(
+            creatures[2].ledger_diagnostics.transaction_status,
+            "unchanged",
+        )
 
 
 class CompatibilityAndValidationTest(unittest.TestCase):

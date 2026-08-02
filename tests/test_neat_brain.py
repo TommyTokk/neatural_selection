@@ -118,6 +118,51 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(allocated, live_next)
         self.assertEqual(controller._next_genome_id_value, live_next)
 
+    def test_transaction_shadow_reuses_unmodified_live_objects(self) -> None:
+        controller = NeatBrainController(Path("configs/neat_herbivore.ini"))
+
+        shadow = controller.transaction_shadow()
+
+        self.assertIsNot(shadow.population.population, controller.population.population)
+        self.assertIsNot(shadow.brains, controller.brains)
+        self.assertIsNot(
+            shadow.species_manager.representatives,
+            controller.species_manager.representatives,
+        )
+        for genome_id, genome in controller.population.population.items():
+            self.assertIs(shadow.population.population[genome_id], genome)
+        for creature_id, brain in controller.brains.items():
+            self.assertIs(shadow.brains[creature_id], brain)
+        for species_id, representative in (
+            controller.species_manager.representatives.items()
+        ):
+            self.assertIs(
+                shadow.species_manager.representatives[species_id],
+                representative,
+            )
+
+        shadow.population.population[-1] = object()
+        shadow.brains[-1] = object()
+        shadow.species_manager.representatives[-1] = object()
+        self.assertNotIn(-1, controller.population.population)
+        self.assertNotIn(-1, controller.brains)
+        self.assertNotIn(-1, controller.species_manager.representatives)
+
+        live_tracker = getattr(
+            controller.config.genome_config,
+            "innovation_tracker",
+            None,
+        )
+        shadow_tracker = getattr(
+            shadow.config.genome_config,
+            "innovation_tracker",
+            None,
+        )
+        if live_tracker is not None and shadow_tracker is not None:
+            live_counter = live_tracker.global_counter
+            shadow_tracker.global_counter += 1
+            self.assertEqual(live_tracker.global_counter, live_counter)
+
     def test_new_brain_has_legacy_rate_and_zero_transient_herding_state(
         self,
     ) -> None:

@@ -4170,12 +4170,22 @@ class World:
                 )
             )
 
-        available_slots = max(
-            0,
-            self.config.population.max_creatures - len(self.creatures),
+        reproduction_capacity = min(
+            1,
+            max(
+                0,
+                self.config.population.max_creatures - len(self.creatures),
+            ),
         )
         banned: set[int] = set()
-        selected = reproduction_requests[:available_slots]
+        selected = reproduction_requests[:reproduction_capacity]
+        if not selected and not nursing_requests:
+            return TransactionResolution(
+                candidates=baseline_candidates,
+                activities=baseline_activities,
+                reproductions=[],
+                nursing_transfers=[],
+            )
         while True:
             resolution, failed = self._resolve_transaction_pass(
                 delta_time,
@@ -4200,7 +4210,7 @@ class World:
             ]
             next_selected = [
                 *survivors,
-                *promoted[: max(0, available_slots - len(survivors))],
+                *promoted[: max(0, reproduction_capacity - len(survivors))],
             ]
             next_selected.sort(
                 key=lambda request: (
@@ -4510,31 +4520,51 @@ class World:
             self._stage_final_reproductions(resolution.reproductions)
         )
 
+        reproduction_ids = {
+            request.parent.creature_id
+            for request in resolution.reproductions
+        }
+        nursing_donor_ids = {
+            transfer.request.donor.creature_id
+            for transfer in resolution.nursing_transfers
+            if transfer.allocated_transfer > 0.0
+        }
+        action_creature_ids = reproduction_ids | nursing_donor_ids
+        selected_creature_id = getattr(self, "selected_creature_id", None)
+        digested_energy_gained: list[tuple[int, float]] = []
+        processing_costs: dict[int, float] = {}
+        dead_creatures: list[Creature] = []
+
         for creature in list(self.creatures):
+            creature_id = creature.creature_id
             candidate = resolution.candidates[creature.creature_id]
-            reproduction_selected = any(
-                request.parent.creature_id == creature.creature_id
-                for request in resolution.reproductions
-            )
-            nursing_selected = any(
-                transfer.request.donor.creature_id == creature.creature_id
-                and transfer.allocated_transfer > 0.0
-                for transfer in resolution.nursing_transfers
-            )
             status = (
                 "action_committed"
-                if reproduction_selected or nursing_selected
+                if creature_id in action_creature_ids
                 else "baseline_committed"
             )
+            record_diagnostics = creature_id == selected_creature_id
             self.metabolism.commit_candidate(
                 creature,
                 candidate,
                 transaction_status=status,
+                record_diagnostics=record_diagnostics,
             )
             self._commit_activity_diagnostics(
                 creature,
-                resolution.activities[creature.creature_id],
+                resolution.activities[creature_id],
+                record_diagnostics=record_diagnostics,
             )
+            if candidate.digestion.net_energy > 0.0:
+                digested_energy_gained.append(
+                    (creature_id, candidate.digestion.net_energy)
+                )
+            if candidate.digestion.processing_cost > 0.0:
+                processing_costs[creature_id] = (
+                    candidate.digestion.processing_cost
+                )
+            if creature.life <= 0.0:
+                dead_creatures.append(creature)
 
         for transfer in resolution.nursing_transfers:
             target = transfer.request.target
@@ -4552,38 +4582,15 @@ class World:
                 staged_rng_state,
             )
 
-        digestion_report = MetabolismReport(
-            digested_energy_gained={
-                creature_id: candidate.digestion.net_energy
-                for creature_id, candidate in resolution.candidates.items()
-                if candidate.digestion.net_energy > 0.0
-            },
-            digestion_processing_costs={
-                creature_id: candidate.digestion.processing_cost
-                for creature_id, candidate in resolution.candidates.items()
-                if candidate.digestion.processing_cost > 0.0
-            },
-        )
-
-        for creature in list(self.creatures):
-            if creature.life <= 0.0:
-                death_reason = (
-                    "old_age" if self._is_senescent(creature) else "metabolic"
-                )
-                self._remove_creature(creature, death_reason=death_reason)
+        for creature in dead_creatures:
+            death_reason = (
+                "old_age" if self._is_senescent(creature) else "metabolic"
+            )
+            self._remove_creature(creature, death_reason=death_reason)
 
         eating_report = self._process_eating_after_transactions(delta_time)
-        report = MetabolismReport(
-            depleted_foods=eating_report.depleted_foods,
-            touched_foods=eating_report.touched_foods,
-            food_consumptions=eating_report.food_consumptions,
-            digested_energy_gained=digestion_report.digested_energy_gained,
-            digestion_processing_costs=(
-                digestion_report.digestion_processing_costs
-            ),
-        )
 
-        for consumption in report.food_consumptions:
+        for consumption in eating_report.food_consumptions:
             self._record_behavior_food_consumption(consumption)
             fitness = self.fitness.get(consumption.creature_id)
             if fitness is not None:
@@ -4592,20 +4599,11 @@ class World:
                     depleted=consumption.depleted,
                 )
 
-        for creature_id, energy_gained in getattr(
-            report,
-            "digested_energy_gained",
-            {},
-        ).items():
+        for creature_id, energy_gained in digested_energy_gained:
             fitness = self.fitness.get(creature_id)
             if fitness is not None:
                 fitness.record_food(energy_gained, depleted=False)
 
-        processing_costs = getattr(
-            report,
-            "digestion_processing_costs",
-            {},
-        )
         self._last_digestion_processing_costs_per_second = {
             creature_id: (
                 cost / delta_time if delta_time > 0.0 else 0.0
@@ -4617,21 +4615,17 @@ class World:
             if fitness is not None:
                 fitness.record_trait_cost(processing_cost, 1.0)
 
-        for food in report.touched_foods:
+        for food in eating_report.touched_foods:
             reindex_shape = getattr(self.space, "reindex_shape", None)
             if reindex_shape is not None and food in self.foods:
                 reindex_shape(food.shape)
 
-        for food in report.depleted_foods:
+        for food in eating_report.depleted_foods:
             if food in self.foods:
                 self._clear_food_carry(food)
                 self.foods.remove(food)
                 self._unindex_food(food)
                 self.space.remove(food.body, food.shape)
-
-        for creature in report.dead_creatures:
-            death_reason = "old_age" if self._is_senescent(creature) else "starvation"
-            self._remove_creature(creature, death_reason=death_reason)
 
         if not self.creatures:
             self._recover_extinct_population()
@@ -4837,10 +4831,14 @@ class World:
     def _commit_activity_diagnostics(
         creature: Creature,
         activity: ActivityResult,
+        *,
+        record_diagnostics: bool = True,
     ) -> None:
         """Update the creature's reusable activity diagnostics in place."""
         creature.activity = activity.total
         creature.effective_rest = creature.smoothed_rest * (1.0 - activity.total)
+        if not record_diagnostics:
+            return
         diagnostics = creature.ledger_diagnostics.activity
         diagnostics.voluntary_motor_effort = activity.voluntary_motor_effort
         diagnostics.normalized_speed = activity.normalized_speed

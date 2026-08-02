@@ -80,10 +80,12 @@ cleared with the single candidate commit.
 
 Nursing and reproduction preparation is side-effect free. The coordinator
 first reserves reproduction capacity by rtNEAT eligibility rank and creature
-ID. Nursing targets only existing infants and is resolved by descending target
-generation, target ID, then donor ID. Each target's post-ledger, pre-transfer
-headroom is allocated exactly; a donor whose bundled action candidate dies
-falls back to baseline, pays nothing, and releases its allocation.
+ID, with at most one accepted birth per reproduction interval. If that bundle
+fails, the next eligible request is promoted deterministically. Nursing targets
+only existing infants and is resolved by descending target generation, target
+ID, then donor ID. Each target's post-ledger, pre-transfer headroom is allocated
+exactly; a donor whose bundled action candidate dies falls back to baseline,
+pays nothing, and releases its allocation.
 
 Every creature has a baseline candidate and, when globally selected, one exact
 action candidate. Reproduction and nursing by the same creature form one
@@ -93,9 +95,13 @@ promotes the next reproduction request deterministically.
 Accepted resource candidates commit for every creature before nursing.
 Transfers then commit in target/donor order with a clamp after every transfer.
 Final offspring are staged against shadow RNG, allocator, genome, and species
-state. Only the final surviving request set advances live state; creature and
-genome IDs are contiguous in reservation order. Dead creatures are removed
-once, and eating runs afterward.
+state. Shadow staging copies mutable containers and allocator state while
+reusing live genomes and brains that are read-only during the transaction; only
+the selected parent genome is deep-copied for mutation. Only the final surviving
+request advances live state. Dead creatures are removed once, and eating runs
+afterward. Detailed ledger diagnostics are refreshed only for the selected
+creature, while biological activity and resource state commit for every
+creature on every fixed step.
 
 ## Persistence migration
 

@@ -818,21 +818,16 @@ class NeatBrainController:
             shadow_tracker.global_counter = allocator_state["innovation_number"]
             shadow_genome_config.innovation_tracker = shadow_tracker
 
+        # Child mutation already deep-copies the selected parent genome.  The
+        # transaction only adds entries to these mappings, so copying their
+        # containers isolates staging without cloning every live genome and
+        # brain (or eagerly cloning every fallback argument to ``dict.get``).
         shadow.population = copy.copy(self.population)
-        shadow.population.population = copy.deepcopy(
-            self.population.population
-        )
-        shadow.brains = {}
-        for creature_id, brain in self.brains.items():
-            shadow_brain = copy.copy(brain)
-            shadow_brain.genome = shadow.population.population.get(
-                brain.genome_id,
-                copy.deepcopy(brain.genome),
-            )
-            shadow.brains[creature_id] = shadow_brain
+        shadow.population.population = dict(self.population.population)
+        shadow.brains = dict(self.brains)
 
         shadow.species_manager = copy.copy(self.species_manager)
-        shadow.species_manager.representatives = copy.deepcopy(
+        shadow.species_manager.representatives = dict(
             self.species_manager.representatives
         )
         shadow._pairwise_compatibility_distance_cache = dict(
