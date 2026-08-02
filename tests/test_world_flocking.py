@@ -180,6 +180,26 @@ class WorldFlockingMotionTest(unittest.TestCase):
         self.assertAlmostEqual(self.creature.body.applied_force[1], 0.0)
         self.assertAlmostEqual(self.world._motion_commands[1].effective_rotate, 0.8)
 
+    def test_depleted_effective_action_still_applies_locomotion(self) -> None:
+        self.creature.energy = 0.0
+        raw = action(
+            accelerate=1.0,
+            rotate=0.5,
+            flee_panic_intensity=1.0,
+            emit_sound=1.0,
+        )
+        effective = self.world._effective_action_for(self.creature, raw)
+
+        self.world._apply_action(
+            self.creature,
+            effective,
+            snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
+        )
+
+        self.assertGreater(self.creature.body.applied_force[0], 0.0)
+        self.assertGreater(self.world._motion_commands[1].effective_rotate, 0.0)
+        self.assertEqual(effective.emit_sound, 0.0)
+
     def test_action_smoothing_converges_across_cached_action_ticks(self) -> None:
         self.world.config.action.action_smoothing_alpha = 0.3
         cached_action = action(accelerate=1.0, rotate=1.0)
