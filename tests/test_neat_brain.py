@@ -37,7 +37,12 @@ except ModuleNotFoundError:
     sys.modules["neat"] = ModuleType("neat")
     import neat
 
-from src.action import ACTION_OUTPUT_COUNT, ACTION_OUTPUT_NAMES, BrainOutputIndex
+from src.action import (
+    ACTION_OUTPUT_COUNT,
+    ACTION_OUTPUT_NAMES,
+    Action,
+    BrainOutputIndex,
+)
 from src.neat_brain import NeatBrain
 from src.neat_controller import NeatBrainController
 from src.vision import BoundarySnapshot, SensorSnapshot, VisionTargetSnapshot
@@ -47,9 +52,13 @@ class FakeNetwork:
     def __init__(self, outputs: object) -> None:
         self.outputs = outputs
         self.activate_count = 0
+        self.input_references: list[list[float]] = []
+        self.input_values: list[list[float]] = []
 
     def activate(self, inputs: list[float]) -> object:
         self.activate_count += 1
+        self.input_references.append(inputs)
+        self.input_values.append(list(inputs))
         return self.outputs
 
 
@@ -171,6 +180,79 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(brain.herding_decay_rate, 1.0)
         self.assertEqual(brain.herding_state, 0.0)
         self.assertEqual(brain.last_raw_herding, 0.0)
+
+    def test_activation_buffer_is_reused_without_publishing_inspector_state(
+        self,
+    ) -> None:
+        brain = self.make_brain([0.0] * ACTION_OUTPUT_COUNT)
+        snapshot = sensor_snapshot()
+        buffer_id = id(brain._input_buffer)
+
+        brain.decide(snapshot)
+        first_values = snapshot.as_inputs()
+        snapshot.energy = 0.25
+        brain.decide(snapshot)
+
+        self.assertEqual(id(brain._input_buffer), buffer_id)
+        self.assertIs(brain.network.input_references[0], brain._input_buffer)
+        self.assertIs(brain.network.input_references[1], brain._input_buffer)
+        self.assertEqual(brain.network.input_values[0], first_values)
+        self.assertEqual(brain.network.input_values[1], snapshot.as_inputs())
+        self.assertEqual(brain.last_inputs, [])
+
+    def test_captured_inputs_remain_stable_until_intentional_recapture(
+        self,
+    ) -> None:
+        brain = self.make_brain([0.0] * ACTION_OUTPUT_COUNT)
+        snapshot = sensor_snapshot()
+
+        brain.decide(snapshot, capture_inputs=True)
+        captured = brain.last_inputs
+        captured_values = list(captured)
+        snapshot.energy = 0.25
+        brain.decide(snapshot)
+
+        self.assertIs(brain.last_inputs, captured)
+        self.assertEqual(captured, captured_values)
+        brain.capture_input_snapshot()
+        self.assertIsNot(brain.last_inputs, captured)
+        self.assertEqual(brain.last_inputs, snapshot.as_inputs())
+        self.assertEqual(captured, captured_values)
+
+    def test_live_decision_returns_an_already_clamped_action(self) -> None:
+        outputs = [-2.0, 2.0] * 8
+        brain = self.make_brain(outputs)
+
+        with patch.object(
+            Action,
+            "clamped",
+            side_effect=AssertionError("live path called Action.clamped"),
+        ):
+            action = brain.decide(sensor_snapshot())
+
+        centered = brain.last_outputs
+        positive = lambda index: max(0.0, min(1.0, centered[index]))
+        legacy_action = Action(
+            accelerate=centered[BrainOutputIndex.ACCELERATE],
+            rotate=centered[BrainOutputIndex.ROTATE],
+            want_reproduce=positive(BrainOutputIndex.REPRODUCE),
+            want_eat=positive(BrainOutputIndex.EAT),
+            reset_chronometer=positive(BrainOutputIndex.RESET_CHRONOMETER),
+            want_grab=positive(BrainOutputIndex.GRAB_FOOD),
+            want_release=positive(BrainOutputIndex.RELEASE_FOOD),
+            want_nurse=positive(BrainOutputIndex.NURSE),
+            flee_panic_intensity=positive(BrainOutputIndex.PANIC),
+            herding=brain.herding_state,
+            emit_sound=positive(BrainOutputIndex.ACOUSTIC_EMISSION),
+            sound_tone=centered[BrainOutputIndex.ACOUSTIC_TONE],
+            emit_trail_pheromone=positive(BrainOutputIndex.TRAIL_PHEROMONE),
+            emit_alarm_pheromone=positive(BrainOutputIndex.ALARM_PHEROMONE),
+            rest=positive(BrainOutputIndex.REST),
+        ).clamped()
+
+        self.assertIs(brain.last_action, action)
+        self.assertEqual(action, legacy_action)
+        self.assertEqual(action, action.clamped())
 
     def test_invalid_brain_decay_rates_fail(self) -> None:
         for rate in (0.0, -0.1, float("nan"), float("inf"), 1.01):

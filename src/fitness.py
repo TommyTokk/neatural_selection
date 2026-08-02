@@ -7,6 +7,44 @@ from configs.sim_config import FlockingBenchmarkConfig, FitnessConfig
 from src.flocking import SocialObservation
 
 
+def flocking_benchmark_quality(
+    observation: SocialObservation,
+    config: FlockingBenchmarkConfig,
+) -> float:
+    """Calculate the instantaneous benchmark quality without retaining a snapshot."""
+    if not config.enabled or observation.effective_count <= 0.0:
+        return 0.0
+    group_presence = min(
+        max(
+            observation.effective_count
+            / max(1, config.target_group_size - 1),
+            0.0,
+        ),
+        1.0,
+    )
+    alignment_quality = min(
+        max(1.0 - observation.mean_heading_error / pi, 0.0),
+        1.0,
+    )
+    spacing_quality = exp(
+        -(
+            (observation.mean_neighbor_distance - config.target_spacing)
+            / config.spacing_tolerance
+        )
+        ** 2
+    )
+    movement_quality = min(
+        hypot(*observation.mean_group_velocity) / config.reference_speed,
+        1.0,
+    )
+    return (
+        group_presence
+        * alignment_quality
+        * spacing_quality
+        * movement_quality
+    )
+
+
 @dataclass(slots=True)
 class CreatureFitness:
     age_seconds: float = 0.0
@@ -57,41 +95,22 @@ class CreatureFitness:
         delta_time: float,
         config: FlockingBenchmarkConfig,
     ) -> float:
-        if not config.enabled or observation.effective_count <= 0.0:
+        quality = flocking_benchmark_quality(observation, config)
+        return self.record_flocking_benchmark_quality(
+            quality,
+            delta_time,
+            config,
+        )
+
+    def record_flocking_benchmark_quality(
+        self,
+        quality: float,
+        delta_time: float,
+        config: FlockingBenchmarkConfig,
+    ) -> float:
+        """Record a precomputed scalar quality without a diagnostic object."""
+        if not config.enabled or quality <= 0.0:
             return 0.0
-        group_presence = min(
-            max(
-                observation.effective_count
-                / max(1, config.target_group_size - 1),
-                0.0,
-            ),
-            1.0,
-        )
-        alignment_quality = min(
-            max(1.0 - observation.mean_heading_error / pi, 0.0),
-            1.0,
-        )
-        spacing_quality = exp(
-            -(
-                (
-                    observation.mean_neighbor_distance
-                    - config.target_spacing
-                )
-                / config.spacing_tolerance
-            )
-            ** 2
-        )
-        movement_quality = min(
-            hypot(*observation.mean_group_velocity)
-            / config.reference_speed,
-            1.0,
-        )
-        quality = (
-            group_presence
-            * alignment_quality
-            * spacing_quality
-            * movement_quality
-        )
         before = self.flocking_benchmark_reward
         self.flocking_benchmark_reward = min(
             config.max_per_evaluation,

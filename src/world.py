@@ -34,7 +34,7 @@ from src.creature import (
     TraitMutationDelta,
     VisionTraits,
 )
-from src.fitness import CreatureFitness
+from src.fitness import CreatureFitness, flocking_benchmark_quality
 from src.flocking import (
     FlockingRuntimeSnapshot,
     SocialCompatibilityResolver,
@@ -112,6 +112,9 @@ from src.counterfactual_neat import (
 )
 
 from src.ui.layouts.screen import build_screen_layout
+
+
+_EMPTY_LONG_RANGE_SOCIAL_OBSERVATION = SocialObservation().long_range
 
 
 EnvironmentMapMode = Literal["none", "biome", "pheromones"]
@@ -251,6 +254,9 @@ class World:
         self._reproduction_accumulator = 0.0
         self._speciation_adjustment_accumulator = 0.0
         self._flocking_telemetry_accumulator = 0.0
+        self._flocking_capture_origin = 0.0
+        self._flocking_capture_ordinal = 1
+        self._flocking_capture_due_this_step = False
         self.physics_step_count = 0
         self._last_actions: dict[int, Action] = {}
         self._effective_actions: dict[int, Action] = {}
@@ -258,6 +264,7 @@ class World:
         self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
         self._last_flock_steering_debug: dict[int, _FlockSteeringDebug] = {}
         self._last_flocking_runtime: dict[int, FlockingRuntimeSnapshot] = {}
+        self._flocking_benchmark_quality_by_creature_id: dict[int, float] = {}
         self.behavior_observer = BehaviorObserverService(
             config.behavior,
             getattr(config, "counterfactual_why", None),
@@ -280,6 +287,11 @@ class World:
         self._behavior_food_consumption_count = 0
         self._behavior_food_consumed_energy_total = 0.0
         self._behavior_automatic_cohort: dict[int, tuple[int, ...]] = {}
+        self._behavior_cohort_dirty = True
+        self._behavior_cohort_config_signature = (
+            config.behavior.enabled,
+            config.behavior.background_representatives_per_species,
+        )
         self._behavior_active_subjects: dict[int, int] = {}
         self._behavior_subject_generation_counter = 0
         self._behavior_consumption_totals: dict[int, tuple[int, float]] = {}
@@ -598,16 +610,53 @@ class World:
             self.rt_neat.stats.best_fitness,
         )
 
+    def _flocking_capture_deadline(self) -> float:
+        interval = self.config.flocking.telemetry.interval_seconds
+        return self._flocking_capture_origin + (
+            self._flocking_capture_ordinal * interval
+        )
+
+    def _flocking_telemetry_is_due(self) -> bool:
+        if getattr(self, "telemetry", None) is None:
+            return False
+        return self.elapsed_time + 1e-12 >= self._flocking_capture_deadline()
+
+    def _advance_flocking_capture_schedule(self) -> None:
+        interval = self.config.flocking.telemetry.interval_seconds
+        while (
+            self.elapsed_time + 1e-12
+            >= self._flocking_capture_origin
+            + self._flocking_capture_ordinal * interval
+        ):
+            self._flocking_capture_ordinal += 1
+        previous_deadline = self._flocking_capture_origin + (
+            self._flocking_capture_ordinal - 1
+        ) * interval
+        self._flocking_telemetry_accumulator = max(
+            0.0,
+            self.elapsed_time - previous_deadline,
+        )
+
+    def _reset_flocking_capture_schedule(self) -> None:
+        self._flocking_capture_origin = getattr(self, "elapsed_time", 0.0)
+        self._flocking_capture_ordinal = 1
+        self._flocking_capture_due_this_step = False
+        self._flocking_telemetry_accumulator = 0.0
+
     def _update_flocking_benchmark(self, delta_time: float) -> None:
         config = self.config.flocking.benchmark
         if not config.enabled:
             return
-        runtime = getattr(self, "_last_flocking_runtime", {})
-        for creature_id, snapshot in runtime.items():
+        qualities = getattr(
+            self,
+            "_flocking_benchmark_quality_by_creature_id",
+            {},
+        )
+        for creature_id, quality in qualities.items():
             fitness = self.fitness.get(creature_id)
             if fitness is not None:
-                fitness.record_flocking_benchmark(
-                    snapshot.observation,
+                fitness.record_flocking_benchmark_quality(
+                    quality,
                     delta_time,
                     config,
                 )
@@ -616,11 +665,9 @@ class World:
         telemetry = getattr(self, "telemetry", None)
         if telemetry is None:
             return
-        interval = self.config.flocking.telemetry.interval_seconds
-        self._flocking_telemetry_accumulator += max(0.0, delta_time)
-        if self._flocking_telemetry_accumulator < interval:
+        del delta_time
+        if not getattr(self, "_flocking_capture_due_this_step", False):
             return
-        self._flocking_telemetry_accumulator %= interval
         group_config = self.config.flocking.telemetry
         groups = self._flocking_group_tracker.sample(
             self.creatures,
@@ -653,6 +700,8 @@ class World:
             for fitness in self.fitness.values()
         )
         telemetry.log_flocking_metrics(metrics)
+        self._advance_flocking_capture_schedule()
+        self._flocking_capture_due_this_step = False
 
     def _log_initial_telemetry(self) -> None:
         telemetry = self.telemetry
@@ -765,7 +814,10 @@ class World:
         self._last_acoustic_debug = {}
         self._last_flock_steering_debug = {}
         self._last_flocking_runtime = {}
+        self._flocking_benchmark_quality_by_creature_id = {}
         self._motion_commands = {}
+        self._reset_flocking_capture_schedule()
+        self._mark_behavior_cohort_dirty()
         self.rt_neat.stats = type(self.rt_neat.stats)()
         self.rt_neat.eligible_parent_ids = []
         self.rt_neat._lifespan_at_death_total = 0.0
@@ -1747,6 +1799,7 @@ class World:
             finalize(termination)
 
     def _reset_behavior_focus(self, creature_id: int | None) -> None:
+        self._behavior_cohort_dirty = True
         self._behavior_selection_generation = (
             getattr(self, "_behavior_selection_generation", 0) + 1
         )
@@ -1834,6 +1887,9 @@ class World:
         # creature to focal mode can never reuse the same worker key.
         self._behavior_subject_generation_counter -= 1
         return self._behavior_subject_generation_counter
+
+    def _mark_behavior_cohort_dirty(self) -> None:
+        self._behavior_cohort_dirty = True
 
     def _behavior_representative_rank(
         self,
@@ -1925,6 +1981,7 @@ class World:
         self._behavior_active_subjects = active
         self.behavior_history.set_active_creatures(set(active))
         observer.set_subjects(tuple(sorted(active.items())))
+        self._behavior_cohort_dirty = False
 
     def _behavior_observation_for(
         self,
@@ -2024,6 +2081,18 @@ class World:
     def _sample_selected_behavior(self) -> None:
         observer = getattr(self, "behavior_observer", None)
         config = getattr(getattr(self, "config", None), "behavior", None)
+        if config is not None:
+            signature = (
+                config.enabled,
+                config.background_representatives_per_species,
+            )
+            if signature != getattr(
+                self,
+                "_behavior_cohort_config_signature",
+                None,
+            ):
+                self._behavior_cohort_config_signature = signature
+                self._mark_behavior_cohort_dirty()
         if (
             observer is None
             or config is None
@@ -2031,8 +2100,6 @@ class World:
         ):
             return
         selected = self.selected_creature
-        if selected is None:
-            self._sync_automatic_behavior_cohort()
         now = self.elapsed_time
         next_sample = getattr(self, "_behavior_next_sample_time", now)
         if now + 1e-12 < next_sample:
@@ -2045,6 +2112,12 @@ class World:
         self._behavior_next_sample_time = (
             next_sample + skipped_intervals * interval
         )
+        if selected is None and getattr(
+            self,
+            "_behavior_cohort_dirty",
+            True,
+        ):
+            self._sync_automatic_behavior_cohort()
         active_subjects = getattr(self, "_behavior_active_subjects", None)
         if active_subjects is None:
             active_subjects = (
@@ -2889,6 +2962,9 @@ class World:
         self.space.add(*self._boundary_shapes)
 
     def _apply_creature_intents(self) -> None:
+        self._flocking_capture_due_this_step = (
+            self._flocking_telemetry_is_due()
+        )
         self._cache_creature_spatial_state()
         try:
             self._apply_creature_intents_with_spatial_cache()
@@ -2911,6 +2987,12 @@ class World:
         thinking_rows: dict[int, int] = {}
         thinking_creatures: list[Creature] = []
         physics_step_count = getattr(self, "physics_step_count", 0)
+        selected_creature_id = getattr(self, "selected_creature_id", None)
+        capture_global_diagnostics = getattr(
+            self,
+            "_flocking_capture_due_this_step",
+            False,
+        )
         for creature in self.creatures:
             creature_id = creature.creature_id
             if (
@@ -2939,6 +3021,10 @@ class World:
             snapshot = self._last_sensor_snapshots.get(creature_id)
             thinking_row = thinking_rows.get(creature_id)
             should_think = thinking_row is not None
+            capture_inputs = (
+                creature_id == selected_creature_id
+                or capture_global_diagnostics
+            )
 
             if should_think:
                 snapshot = self._sensor_snapshot_for(
@@ -2950,7 +3036,16 @@ class World:
                         else self._pheromone_sensor_values[thinking_row]
                     ),
                 )
-                action = self.neat_controller.decide(creature_id, snapshot)
+                decide_with_capture = getattr(
+                    self.neat_controller,
+                    "decide_with_input_capture",
+                    None,
+                )
+                action = (
+                    decide_with_capture(creature_id, snapshot)
+                    if capture_inputs and callable(decide_with_capture)
+                    else self.neat_controller.decide(creature_id, snapshot)
+                )
 
                 self._last_actions[creature.creature_id] = action
                 self._last_sensor_snapshots[creature.creature_id] = snapshot
@@ -2967,11 +3062,32 @@ class World:
             if action is None:
                 continue
 
+            if capture_inputs and not should_think:
+                capture_snapshot = getattr(
+                    self.neat_controller,
+                    "capture_input_snapshot",
+                    None,
+                )
+                if callable(capture_snapshot):
+                    capture_snapshot(creature_id)
+
             effective_action = self._effective_action_for(creature, action)
             self._effective_actions[creature_id] = effective_action
             if should_think:
                 self._apply_carry_intent(creature, effective_action)
-            self._apply_action(creature, effective_action, snapshot)
+            self._apply_action(
+                creature,
+                effective_action,
+                snapshot,
+                capture_runtime=(
+                    creature_id == selected_creature_id
+                    or capture_global_diagnostics
+                ),
+                capture_steering_debug=(
+                    creature_id == selected_creature_id
+                    and bool(getattr(self, "debug_vision_enabled", False))
+                ),
+            )
 
     @staticmethod
     def _effective_action_for(creature: Creature, raw_action: Action) -> Action:
@@ -3004,7 +3120,6 @@ class World:
         signals: list[AcousticSignal] = []
         deposit_rate = max(0.0, self.config.communication.pheromone_deposit_rate)
         elapsed = max(0.0, delta_time)
-        self._ensure_communication_buffer_capacity(len(self.creatures))
         deposit_count = 0
         for creature in self.creatures:
             action = self._action_for_execution(creature.creature_id)
@@ -3023,17 +3138,23 @@ class World:
                         tone=max(-1.0, min(1.0, action.sound_tone)),
                     )
                 )
-            self._communication_positions[deposit_count] = creature.position
-            self._communication_trail_amounts[deposit_count] = (
+            trail_amount = (
                 deposit_rate
                 * max(0.0, min(1.0, action.emit_trail_pheromone))
                 * elapsed
             )
-            self._communication_alarm_amounts[deposit_count] = (
+            alarm_amount = (
                 deposit_rate
                 * max(0.0, min(1.0, action.emit_alarm_pheromone))
                 * elapsed
             )
+            if trail_amount <= 0.0 and alarm_amount <= 0.0:
+                continue
+            if deposit_count == 0:
+                self._ensure_communication_buffer_capacity(len(self.creatures))
+            self._communication_positions[deposit_count] = creature.position
+            self._communication_trail_amounts[deposit_count] = trail_amount
+            self._communication_alarm_amounts[deposit_count] = alarm_amount
             deposit_count += 1
         if deposit_count:
             pheromones.deposit_many(
@@ -3073,6 +3194,9 @@ class World:
         creature: Creature,
         action: Action,
         snapshot: SensorSnapshot | None = None,
+        *,
+        capture_runtime: bool = True,
+        capture_steering_debug: bool = True,
     ) -> None:
         """
         Apply the specified action to the given creature, considering its current state,
@@ -3086,7 +3210,7 @@ class World:
             action (Action): The action to apply, containing acceleration, rotation, and other parameters.
             snapshot (SensorSnapshot | None): The sensor snapshot of the creature, used for flocking calculations. If None, flocking forces will not be applied.
         """
-        if not hasattr(self, "_last_flocking_runtime"):
+        if capture_runtime and not hasattr(self, "_last_flocking_runtime"):
             self._last_flocking_runtime = {}
 
         rest_intent = self._clamp(getattr(action, "rest", 0.0), 0.0, 1.0)
@@ -3240,21 +3364,36 @@ class World:
             0.0,
             1.0,
         )
-        raw_neural_herding = effective_herding
-        brain_for = getattr(
-            getattr(self, "neat_controller", None),
-            "brain_for",
-            None,
-        )
-        if callable(brain_for):
-            brain = brain_for(creature.creature_id)
-            raw_neural_herding = self._clamp(
-                getattr(brain, "last_raw_herding", effective_herding),
-                0.0,
-                1.0,
+        benchmark_config = self.config.flocking.benchmark
+        if benchmark_config.enabled:
+            qualities = getattr(
+                self,
+                "_flocking_benchmark_quality_by_creature_id",
+                None,
             )
-        self._last_flocking_runtime[creature.creature_id] = (
-            FlockingRuntimeSnapshot(
+            if qualities is None:
+                qualities = {}
+                self._flocking_benchmark_quality_by_creature_id = qualities
+            qualities[creature.creature_id] = flocking_benchmark_quality(
+                social_observation,
+                benchmark_config,
+            )
+
+        if capture_runtime:
+            raw_neural_herding = effective_herding
+            brain_for = getattr(
+                getattr(self, "neat_controller", None),
+                "brain_for",
+                None,
+            )
+            if callable(brain_for):
+                brain = brain_for(creature.creature_id)
+                raw_neural_herding = self._clamp(
+                    getattr(brain, "last_raw_herding", effective_herding),
+                    0.0,
+                    1.0,
+                )
+            self._last_flocking_runtime[creature.creature_id] = FlockingRuntimeSnapshot(
                 observation=social_observation,
                 intent=social_intent,
                 neural_desired_velocity=neural_desired_velocity,
@@ -3267,16 +3406,14 @@ class World:
                 effective_herding=effective_herding,
                 panic=panic,
             )
-        )
 
-        if not hasattr(self, "_last_flock_steering_debug"):
-            self._last_flock_steering_debug = {}
-        self._last_flock_steering_debug[creature.creature_id] = (
-            _FlockSteeringDebug(
+        if capture_steering_debug:
+            if not hasattr(self, "_last_flock_steering_debug"):
+                self._last_flock_steering_debug = {}
+            self._last_flock_steering_debug[creature.creature_id] = _FlockSteeringDebug(
                 accepted_counterfactual_delta,
                 current_max_forward_force,
             )
-        )
         # The blended voluntary request and mandatory avoidance share the
         # finite force budget.
         total_force = (
@@ -3312,11 +3449,18 @@ class World:
 
         if not hasattr(self, "_motion_commands"):
             self._motion_commands = {}
-        self._motion_commands[creature.creature_id] = MotionCommand(
-            effective_rotate=turn,
-            max_speed=current_max_speed,
-            max_angular_speed=current_max_angular_speed,
-        )
+        command = self._motion_commands.get(creature.creature_id)
+        if command is None:
+            command = MotionCommand(
+                effective_rotate=turn,
+                max_speed=current_max_speed,
+                max_angular_speed=current_max_angular_speed,
+            )
+            self._motion_commands[creature.creature_id] = command
+        else:
+            command.effective_rotate = turn
+            command.max_speed = current_max_speed
+            command.max_angular_speed = current_max_angular_speed
 
         # Apply the calculated total force to the creature's body at its current position, influencing its movement in the simulation. The force is applied in world coordinates, ensuring that it affects the creature's velocity and trajectory appropriately.
         creature.body.apply_force_at_world_point(
@@ -3455,7 +3599,7 @@ class World:
             long_range=getattr(
                 flock,
                 "long_range",
-                SocialObservation().long_range,
+                _EMPTY_LONG_RANGE_SOCIAL_OBSERVATION,
             ),
         )
 
@@ -3514,7 +3658,7 @@ class World:
             creature.body.velocity.y,
         )
         observation = self._social_observation(snapshot.flock)
-        traits = getattr(creature, "flocking_traits", FlockingTraits())
+        traits = creature.flocking_traits
         weights = calculate_flocking_weights(
             herding=getattr(action, "herding", 0.0),
             panic=getattr(action, "flee_panic_intensity", 0.0),
@@ -4459,6 +4603,7 @@ class World:
                 lineage=traits.lineage,
             )
             self.creatures.append(child)
+            self._mark_behavior_cohort_dirty()
             self._initialize_creature_biome_memory(child)
             self.fitness[child.creature_id] = CreatureFitness()
             self._chronometers[child.creature_id] = 0.0
@@ -5185,6 +5330,7 @@ class World:
 
         if creature in self.creatures:
             self.creatures.remove(creature)
+            self._mark_behavior_cohort_dirty()
             self._unindex_creature_shape(creature)
             self.space.remove(creature.body, creature.shape)
             self.neat_controller.remove_brain(creature.creature_id)
@@ -5207,6 +5353,13 @@ class World:
             flock_runtime = getattr(self, "_last_flocking_runtime", None)
             if flock_runtime is not None:
                 flock_runtime.pop(creature.creature_id, None)
+            benchmark_qualities = getattr(
+                self,
+                "_flocking_benchmark_quality_by_creature_id",
+                None,
+            )
+            if benchmark_qualities is not None:
+                benchmark_qualities.pop(creature.creature_id, None)
             motion_commands = getattr(self, "_motion_commands", None)
             if motion_commands is not None:
                 motion_commands.pop(creature.creature_id, None)
@@ -5489,6 +5642,7 @@ class World:
                 self._record_new_species(child, speciation_result)
 
             self.creatures.append(child)
+            self._mark_behavior_cohort_dirty()
             self._initialize_creature_biome_memory(child)
             self.fitness[child_id] = CreatureFitness()
             self._chronometers[child_id] = 0.0
@@ -5642,6 +5796,7 @@ class World:
             self._record_new_species(child, speciation_result)
 
         self.creatures.append(child)
+        self._mark_behavior_cohort_dirty()
         self._initialize_creature_biome_memory(child)
         self.fitness[child_id] = CreatureFitness()
         self._chronometers[child_id] = 0.0

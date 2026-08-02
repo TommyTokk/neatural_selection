@@ -654,6 +654,16 @@ class PersistenceManagerTest(unittest.TestCase):
                 world._behavior_automatic_cohort,
             )
             self.assertEqual(
+                restored._flocking_capture_origin,
+                world._flocking_capture_origin,
+            )
+            self.assertEqual(
+                restored._flocking_capture_ordinal,
+                world._flocking_capture_ordinal,
+            )
+            self.assertFalse(restored._flocking_capture_due_this_step)
+            self.assertTrue(restored._behavior_cohort_dirty)
+            self.assertEqual(
                 restored_report.history_completions_not_recorded,
                 2,
             )

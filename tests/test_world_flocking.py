@@ -217,6 +217,41 @@ class WorldFlockingMotionTest(unittest.TestCase):
         self.assertAlmostEqual(self.creature.body.applied_force[0], 82.125)
         self.assertLess(self.world._motion_commands[1].effective_rotate, 1.0)
 
+    def test_motion_command_storage_is_updated_in_place(self) -> None:
+        snapshot = SimpleNamespace(flock=FlockSensorSnapshot())
+        self.world._apply_action(
+            self.creature,
+            action(rotate=0.25),
+            snapshot=snapshot,
+        )
+        command = self.world._motion_commands[1]
+
+        self.world._apply_action(
+            self.creature,
+            action(rotate=-0.5, flee_panic_intensity=1.0),
+            snapshot=snapshot,
+        )
+
+        self.assertIs(self.world._motion_commands[1], command)
+        self.assertAlmostEqual(command.effective_rotate, -0.5)
+        self.assertAlmostEqual(command.max_speed, self.world.MAX_SPEED * 1.5)
+
+    def test_flocking_diagnostic_wrappers_are_optional(self) -> None:
+        self.world._last_flocking_runtime = {}
+        self.world._last_flock_steering_debug = {}
+
+        self.world._apply_action(
+            self.creature,
+            action(herding=0.5),
+            snapshot=SimpleNamespace(flock=FlockSensorSnapshot()),
+            capture_runtime=False,
+            capture_steering_debug=False,
+        )
+
+        self.assertEqual(self.world._last_flocking_runtime, {})
+        self.assertEqual(self.world._last_flock_steering_debug, {})
+        self.assertIn(1, self.world._flocking_benchmark_quality_by_creature_id)
+
     def test_active_angular_velocity_damping_applies_after_turn_control(self) -> None:
         self.world.config.action.turn_response = 1.0
         self.world.config.action.turn_control_gain = 1.0

@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 
-from configs.sim_config import FlockingBenchmarkConfig
-from src.fitness import CreatureFitness
+from configs.sim_config import FlockingBenchmarkConfig, build_sim_config
+from src.fitness import CreatureFitness, flocking_benchmark_quality
 from src.flocking import (
     FlockingRuntimeSnapshot,
     FlockingWeights,
@@ -282,6 +282,7 @@ class BenchmarkFitnessTest(unittest.TestCase):
             )
         self.assertEqual(fitness.flocking_benchmark_reward, 0.0)
 
+
     def test_reward_is_independent_of_observational_sampling_interval(self) -> None:
         config = FlockingBenchmarkConfig(enabled=True)
         observation = SocialObservation(
@@ -309,6 +310,71 @@ class BenchmarkFitnessTest(unittest.TestCase):
             per_fixed_step.flocking_benchmark_reward,
             per_telemetry_second.flocking_benchmark_reward,
             places=12,
+        )
+
+    def test_scalar_quality_path_matches_observation_path(self) -> None:
+        config = FlockingBenchmarkConfig(enabled=True)
+        observation = SocialObservation(
+            social_presence=1.0,
+            effective_count=2.0,
+            mean_neighbor_distance=55.0,
+            mean_heading_error=0.2,
+            mean_group_velocity=(40.0, 5.0),
+        )
+        observation_fitness = CreatureFitness()
+        scalar_fitness = CreatureFitness()
+
+        observation_fitness.record_flocking_benchmark(
+            observation,
+            1.0 / 60.0,
+            config,
+        )
+        scalar_fitness.record_flocking_benchmark_quality(
+            flocking_benchmark_quality(observation, config),
+            1.0 / 60.0,
+            config,
+        )
+
+        self.assertEqual(
+            scalar_fitness.flocking_benchmark_reward,
+            observation_fitness.flocking_benchmark_reward,
+        )
+
+
+class DeterministicCaptureScheduleTest(unittest.TestCase):
+    def test_capture_deadlines_follow_simulated_time_without_drift(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.config.flocking.telemetry.interval_seconds = 1.0
+        world.telemetry = object()
+        world._flocking_capture_origin = 0.0
+        world._flocking_capture_ordinal = 1
+        world._flocking_telemetry_accumulator = 0.0
+
+        world.elapsed_time = 1.0 - 2e-12
+        self.assertFalse(world._flocking_telemetry_is_due())
+        world.elapsed_time = 1.0
+        self.assertTrue(world._flocking_telemetry_is_due())
+        world._advance_flocking_capture_schedule()
+        self.assertEqual(world._flocking_capture_ordinal, 2)
+        self.assertEqual(world._flocking_capture_deadline(), 2.0)
+
+        world.elapsed_time = 2.0
+        self.assertTrue(world._flocking_telemetry_is_due())
+        world._advance_flocking_capture_schedule()
+        self.assertEqual(world._flocking_capture_deadline(), 3.0)
+
+    def test_reset_schedules_first_capture_one_interval_later(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.elapsed_time = 12.5
+
+        world._reset_flocking_capture_schedule()
+
+        self.assertEqual(world._flocking_capture_origin, 12.5)
+        self.assertEqual(
+            world._flocking_capture_deadline(),
+            12.5 + world.config.flocking.telemetry.interval_seconds,
         )
 
 

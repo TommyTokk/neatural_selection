@@ -624,6 +624,16 @@ class PersistenceManager:
                     "_flocking_telemetry_accumulator",
                     0.0,
                 ),
+                "flocking_capture_origin": getattr(
+                    world,
+                    "_flocking_capture_origin",
+                    0.0,
+                ),
+                "flocking_capture_ordinal": getattr(
+                    world,
+                    "_flocking_capture_ordinal",
+                    1,
+                ),
                 "flocking_group_tracker": getattr(
                     world,
                     "_flocking_group_tracker",
@@ -1835,6 +1845,25 @@ class PersistenceManager:
             world._flocking_telemetry_accumulator = float(
                 runtime.get("flocking_telemetry_accumulator", 0.0)
             )
+            if (
+                "flocking_capture_origin" in runtime
+                and "flocking_capture_ordinal" in runtime
+            ):
+                world._flocking_capture_origin = float(
+                    runtime["flocking_capture_origin"]
+                )
+                world._flocking_capture_ordinal = max(
+                    1,
+                    int(runtime["flocking_capture_ordinal"]),
+                )
+            else:
+                world._flocking_capture_origin = (
+                    world.elapsed_time
+                    - world._flocking_telemetry_accumulator
+                )
+                world._flocking_capture_ordinal = 1
+            world._flocking_capture_due_this_step = False
+            world._behavior_cohort_dirty = True
             world._flocking_group_tracker.restore(
                 runtime.get("flocking_group_tracker")
             )

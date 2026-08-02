@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from math import floor
 
@@ -33,6 +33,33 @@ class BiomeMap:
     spawn_weights: dict[Biome, float]
     uniform_spawn_chance: float
     max_spawn_attempts: int
+    _fertility_grid: np.ndarray = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        # Preserve the reference path's Python-float precision: even a float32
+        # change in a continuous sensor can alter an evolved network's action.
+        weights = np.asarray(
+            [
+                max(0.0, float(self.spawn_weights[Biome(index)]))
+                for index in range(len(Biome))
+            ],
+            dtype=np.float64,
+        )
+        minimum = float(weights.min())
+        maximum = float(weights.max())
+        if maximum <= minimum:
+            fertility_grid = np.ones_like(self.biome_ids, dtype=np.float64)
+        else:
+            fertility_grid = (
+                weights[self.biome_ids] - minimum
+            ) / (maximum - minimum)
+            fertility_grid = np.asarray(fertility_grid, dtype=np.float64)
+        fertility_grid.setflags(write=False)
+        object.__setattr__(self, "_fertility_grid", fertility_grid)
 
     @property
     def grid_height(self) -> int:
@@ -50,14 +77,6 @@ class BiomeMap:
         return self.spawn_weights[self.biome_at(x, y)]
 
     def fertility_at(self, x: float, y: float) -> float:
-        weights = [max(0.0, weight) for weight in self.spawn_weights.values()]
-        min_weight = min(weights, default=0.0)
-        max_weight = max(weights, default=0.0)
-        denominator = max_weight - min_weight
-
-        if denominator <= 0.0:
-            return 1.0
-
         left, bottom, right, top = self.world_bounds
         cell_width = max(0.0001, right - left) / self.grid_width
         cell_height = max(0.0001, top - bottom) / self.grid_height
@@ -76,15 +95,10 @@ class BiomeMap:
         row0 = max(0, min(self.grid_height - 1, row0))
         row1 = max(0, min(self.grid_height - 1, row1))
 
-        def normalized_fertility_at(column: int, row: int) -> float:
-            biome = Biome(int(self.biome_ids[row, column]))
-            weight = max(0.0, self.spawn_weights[biome])
-            return (weight - min_weight) / denominator
-
-        c00 = normalized_fertility_at(column0, row0)
-        c10 = normalized_fertility_at(column1, row0)
-        c01 = normalized_fertility_at(column0, row1)
-        c11 = normalized_fertility_at(column1, row1)
+        c00 = float(self._fertility_grid[row0, column0])
+        c10 = float(self._fertility_grid[row0, column1])
+        c01 = float(self._fertility_grid[row1, column0])
+        c11 = float(self._fertility_grid[row1, column1])
         normalized_fertility = (
             c00 * (1.0 - u) * (1.0 - v)
             + c10 * u * (1.0 - v)

@@ -646,6 +646,7 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertNotIn(1, world._last_actions)
         self.assertNotIn(1, world._last_flock_steering_debug)
         self.assertNotIn(1, world._chronometers)
+        self.assertTrue(world._behavior_cohort_dirty)
         self.assertEqual(world.neat_controller.removed, [1])
         self.assertEqual(world.rt_neat.stats.deaths, 1)
         self.assertAlmostEqual(world.rt_neat.stats.average_lifespan_at_death, 10.0)

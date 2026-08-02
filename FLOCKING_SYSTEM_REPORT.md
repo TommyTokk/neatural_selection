@@ -1426,6 +1426,19 @@ group tracker. The new non-destructive SQLite table
 - fraction in groups of at least three, largest group, group lifetime,
 fragmentation, mergers, and benchmark contribution.
 
+Diagnostic capture is scheduled from `World.elapsed_time`, which advances only
+at fixed simulation steps; rendering cadence and wall-clock time do not enter
+the schedule. A new or reset world sets the schedule origin to its reset
+simulation time and makes ordinal 1 due at `origin + interval`. Each later
+deadline is recomputed as `origin + ordinal * interval`, rather than obtained
+by repeatedly adding the interval, and the fixed-step comparison uses the
+simulation's `1e-12` boundary epsilon. Checkpoint loads clear transient
+snapshots while restoring the persisted origin and ordinal. Older checkpoints
+derive the next schedule from their persisted telemetry accumulator. The due
+flag is computed before intent application and shared by NEAT-input, flocking,
+and telemetry capture for that fixed step. Selected-creature diagnostics are
+captured independently on every fixed step.
+
 The historical SQLite key `mean_neural_herding` remains the raw-output
 series. `mean_effective_herding` stores the integrated action delivered to
 flocking. Additive migration backfills the new column from

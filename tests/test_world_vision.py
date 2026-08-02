@@ -203,7 +203,31 @@ class WorldVisionMutationTest(unittest.TestCase):
         rate_per_step = world.config.communication.pheromone_deposit_rate / 60.0
         self.assertAlmostEqual(deposits[0][1], 0.5 * rate_per_step)
         self.assertAlmostEqual(deposits[0][2], 0.25 * rate_per_step)
-        self.assertEqual(deposits[1][1:], (0.0, 0.0))
+        self.assertEqual(len(deposits), 1)
+
+    def test_inactive_pheromone_population_skips_batch_deposition(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        world.creatures = [
+            SimpleNamespace(creature_id=1, position=(10.0, 20.0)),
+            SimpleNamespace(creature_id=2, position=(30.0, 40.0)),
+        ]
+        world._last_actions = {
+            creature.creature_id: Action(
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            )
+            for creature in world.creatures
+        }
+        calls: list[object] = []
+        world.acoustics = SimpleNamespace(replace_signals=lambda signals: None)
+        world.pheromones = SimpleNamespace(
+            deposit_many=lambda *args: calls.append(args)
+        )
+
+        world._commit_communication_intents(1.0 / 60.0)
+
+        self.assertEqual(calls, [])
+        self.assertFalse(hasattr(world, "_communication_positions"))
 
     def make_world_with_mutations(
         self,
@@ -563,6 +587,45 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertEqual(applied[0][1].herding, 0.15)
         self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 0)
         self.assertEqual(creature.biome_fertility_ema, 0.0)
+
+    def test_cached_input_snapshots_are_captured_only_when_requested(self) -> None:
+        world = self.make_world_for_biome_sensors()
+        creature = self.biome_sensor_creature()
+        world.creatures = [creature]
+        world.physics_step_count = 0
+        action = Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        snapshot = world.vision._snapshot()
+        world._last_actions = {creature.creature_id: action}
+        world._last_sensor_snapshots = {creature.creature_id: snapshot}
+        captures: list[int] = []
+        runtime_flags: list[bool] = []
+        world.neat_controller = SimpleNamespace(
+            decide=lambda creature_id, snapshot: self.fail("should not decide"),
+            capture_input_snapshot=lambda creature_id: captures.append(
+                creature_id
+            ),
+        )
+        world._apply_carry_intent = lambda creature, action: None
+        world._apply_action = lambda *args, **kwargs: runtime_flags.append(
+            kwargs["capture_runtime"]
+        )
+
+        world.selected_creature_id = None
+        world._flocking_capture_due_this_step = False
+        world._apply_creature_intents_with_spatial_cache()
+        self.assertEqual(captures, [])
+        self.assertEqual(runtime_flags, [False])
+
+        world.selected_creature_id = creature.creature_id
+        world._apply_creature_intents_with_spatial_cache()
+        self.assertEqual(captures, [creature.creature_id])
+        self.assertEqual(runtime_flags, [False, True])
+
+        world.selected_creature_id = None
+        world._flocking_capture_due_this_step = True
+        world._apply_creature_intents_with_spatial_cache()
+        self.assertEqual(captures, [creature.creature_id, creature.creature_id])
+        self.assertEqual(runtime_flags, [False, True, True])
 
     def test_creature_intents_stagger_new_decisions_by_creature_id(self) -> None:
         world = self.make_world_for_biome_sensors()

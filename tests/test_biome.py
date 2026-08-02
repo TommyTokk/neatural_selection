@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from math import floor
 from random import Random
 import unittest
 
@@ -15,6 +16,50 @@ WORLD_BOUNDS = (-1600.0, -1100.0, 1600.0, 1100.0)
 
 
 class BiomeGenerationHandlerTest(unittest.TestCase):
+    @staticmethod
+    def _reference_fertility(biome_map: BiomeMap, x: float, y: float) -> float:
+        weights = [
+            max(0.0, weight) for weight in biome_map.spawn_weights.values()
+        ]
+        minimum = min(weights, default=0.0)
+        maximum = max(weights, default=0.0)
+        denominator = maximum - minimum
+        if denominator <= 0.0:
+            return 1.0
+        left, bottom, right, top = biome_map.world_bounds
+        cell_width = max(0.0001, right - left) / biome_map.grid_width
+        cell_height = max(0.0001, top - bottom) / biome_map.grid_height
+        grid_x = (x - left) / cell_width - 0.5
+        grid_y = (y - bottom) / cell_height - 0.5
+        column0 = floor(grid_x)
+        row0 = floor(grid_y)
+        column1 = column0 + 1
+        row1 = row0 + 1
+        u = grid_x - column0
+        v = grid_y - row0
+        column0 = max(0, min(biome_map.grid_width - 1, column0))
+        column1 = max(0, min(biome_map.grid_width - 1, column1))
+        row0 = max(0, min(biome_map.grid_height - 1, row0))
+        row1 = max(0, min(biome_map.grid_height - 1, row1))
+
+        def sample(column: int, row: int) -> float:
+            biome = Biome(int(biome_map.biome_ids[row, column]))
+            return (
+                max(0.0, biome_map.spawn_weights[biome]) - minimum
+            ) / denominator
+
+        c00 = sample(column0, row0)
+        c10 = sample(column1, row0)
+        c01 = sample(column0, row1)
+        c11 = sample(column1, row1)
+        result = (
+            c00 * (1.0 - u) * (1.0 - v)
+            + c10 * u * (1.0 - v)
+            + c01 * (1.0 - u) * v
+            + c11 * u * v
+        )
+        return max(0.0, min(1.0, result))
+
     def test_same_seed_generates_same_biome_map(self) -> None:
         config = BiomeConfig(seed=7)
         first = BiomeGenerationHandler(config).generate(WORLD_BOUNDS)
@@ -131,6 +176,40 @@ class BiomeGenerationHandlerTest(unittest.TestCase):
 
         self.assertEqual(biome_map.fertility_at(-100.0, -100.0), 0.0)
         self.assertEqual(biome_map.fertility_at(100.0, 100.0), 1.0)
+
+    def test_cached_fertility_matches_reference_near_boundaries(self) -> None:
+        biome_map = self._three_vertical_biome_map()
+        rng = Random(4421)
+        points = [
+            (-1600.0, -1100.0),
+            (1600.0, 1100.0),
+            (-1066.6666666667, 0.0),
+            (0.0, 0.0),
+            (1066.6666666667, 0.0),
+        ]
+        for boundary in (-533.3333333333, 533.3333333333):
+            points.extend(
+                (boundary + offset, 0.0)
+                for offset in (-1e-9, 0.0, 1e-9)
+            )
+        points.extend(
+            (
+                rng.uniform(WORLD_BOUNDS[0], WORLD_BOUNDS[2]),
+                rng.uniform(WORLD_BOUNDS[1], WORLD_BOUNDS[3]),
+            )
+            for _ in range(100)
+        )
+
+        for x, y in points:
+            with self.subTest(x=x, y=y):
+                expected = self._reference_fertility(biome_map, x, y)
+                actual = biome_map.fertility_at(x, y)
+                self.assertEqual(actual, expected)
+                self.assertEqual(actual <= 0.0, expected <= 0.0)
+                self.assertEqual(actual >= 1.0, expected >= 1.0)
+
+        self.assertEqual(biome_map._fertility_grid.dtype, np.float64)
+        self.assertFalse(biome_map._fertility_grid.flags.writeable)
 
     def _three_vertical_biome_map(self) -> BiomeMap:
         biome_ids = np.array(

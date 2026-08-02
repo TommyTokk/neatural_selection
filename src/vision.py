@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, MutableSequence
 from dataclasses import dataclass, field
 from math import atan2, cos, hypot, pi, sin, sqrt
 
@@ -188,89 +188,101 @@ class SensorSnapshot:
     sensor_contract: SensorContract = SENSOR_CONTRACT
     flock_target_group_size: int = 4
 
-    def as_inputs(self) -> list[float]:
+    def write_inputs(self, output: MutableSequence[float]) -> None:
+        """Write the ordered sensor contract into caller-owned storage."""
+        expected = self.sensor_contract.input_count
+        if len(output) != expected:
+            raise ValueError(
+                f"Expected an input buffer of length {expected}, got {len(output)}."
+            )
+
         stomach_fullness = self._clamp01(self.stomach_fullness)
         energy_percent = self._clamp01(self.energy)
         energy_deficit = max(0.0, 1.0 - energy_percent)
         stomach_emptiness = max(0.0, 1.0 - stomach_fullness)
         feeding_drive = energy_deficit * stomach_emptiness
-        prefix = [
-            1.0,  # constant
-            feeding_drive,
-            self.reproductive_readiness,
-            energy_percent,
-            self.speed,
-            min(self.visible_creature_count / 5.0, 1.0),
-            min(self.visible_food_count / 10.0, 1.0),
-            self.clock_tik_tok,
-            self.clock_chronometer,
-            self.clock_time_alive,
-            self.food.proximity,
-            self.food.angle,
-            self.creatures.proximity,
-            self.creatures.angle,
-            self.walls.proximity,
-            self.walls.angle,
-            self.is_grabbing,
-            self.biome.here,
-            self.biome.left_gradient,
-            self.biome.right_gradient,
-            self.biome.trend,
-            self.own_infants.proximity,
-            self.own_infants.angle,
-        ]
+        output[0] = 1.0
+        output[1] = feeding_drive
+        output[2] = self.reproductive_readiness
+        output[3] = energy_percent
+        output[4] = self.speed
+        output[5] = min(self.visible_creature_count / 5.0, 1.0)
+        output[6] = min(self.visible_food_count / 10.0, 1.0)
+        output[7] = self.clock_tik_tok
+        output[8] = self.clock_chronometer
+        output[9] = self.clock_time_alive
+        output[10] = self.food.proximity
+        output[11] = self.food.angle
+        output[12] = self.creatures.proximity
+        output[13] = self.creatures.angle
+        output[14] = self.walls.proximity
+        output[15] = self.walls.angle
+        output[16] = self.is_grabbing
+        output[17] = self.biome.here
+        output[18] = self.biome.left_gradient
+        output[19] = self.biome.right_gradient
+        output[20] = self.biome.trend
+        output[21] = self.own_infants.proximity
+        output[22] = self.own_infants.angle
+        index = 23
         if self.sensor_contract.schema_version >= 4:
-            social = [
-                self._clamp01(self.flock.social_presence),
-                self._target_scaled_flockmate_count(
-                    self.flock.flockmate_count,
-                    self.flock_target_group_size,
-                ),
-                self._clamp(self.flock.center_forward, -1.0, 1.0),
-                self._clamp(self.flock.center_right, -1.0, 1.0),
-                self._clamp(
-                    self.flock.relative_velocity_forward,
-                    -1.0,
-                    1.0,
-                ),
-                self._clamp(
-                    self.flock.relative_velocity_right,
-                    -1.0,
-                    1.0,
-                ),
-                self._clamp01(self.flock.long_range.intensity),
-                self._clamp(
-                    self.flock.long_range.direction_forward,
-                    -1.0,
-                    1.0,
-                ),
-                self._clamp(
-                    self.flock.long_range.direction_right,
-                    -1.0,
-                    1.0,
-                ),
-            ]
+            output[index] = self._clamp01(self.flock.social_presence)
+            output[index + 1] = self._target_scaled_flockmate_count(
+                self.flock.flockmate_count,
+                self.flock_target_group_size,
+            )
+            output[index + 2] = self._clamp(
+                self.flock.center_forward, -1.0, 1.0
+            )
+            output[index + 3] = self._clamp(
+                self.flock.center_right, -1.0, 1.0
+            )
+            output[index + 4] = self._clamp(
+                self.flock.relative_velocity_forward, -1.0, 1.0
+            )
+            output[index + 5] = self._clamp(
+                self.flock.relative_velocity_right, -1.0, 1.0
+            )
+            output[index + 6] = self._clamp01(
+                self.flock.long_range.intensity
+            )
+            output[index + 7] = self._clamp(
+                self.flock.long_range.direction_forward, -1.0, 1.0
+            )
+            output[index + 8] = self._clamp(
+                self.flock.long_range.direction_right, -1.0, 1.0
+            )
+            index += 9
         else:
-            social = [
-                self.flock.center_proximity,
-                self.flock.center_angle,
-                self.flock.average_relative_heading,
-                self._normalized_flockmate_count(self.flock.flockmate_count),
-            ]
-        suffix = [
-            stomach_fullness,
-            self.acoustic.strength,
-            self.acoustic.direction_sin,
-            self.acoustic.direction_cos,
-            self.acoustic.tone,
-            self.pheromones.trail_here,
-            self.pheromones.trail_forward_left,
-            self.pheromones.trail_forward_right,
-            self.pheromones.alarm_here,
-            self.pheromones.alarm_forward_left,
-            self.pheromones.alarm_forward_right,
-        ]
-        return [*prefix, *social, *suffix, self._clamp01(self.life_normalized)]
+            output[index] = self.flock.center_proximity
+            output[index + 1] = self.flock.center_angle
+            output[index + 2] = self.flock.average_relative_heading
+            output[index + 3] = self._normalized_flockmate_count(
+                self.flock.flockmate_count
+            )
+            index += 4
+
+        output[index] = stomach_fullness
+        output[index + 1] = self.acoustic.strength
+        output[index + 2] = self.acoustic.direction_sin
+        output[index + 3] = self.acoustic.direction_cos
+        output[index + 4] = self.acoustic.tone
+        output[index + 5] = self.pheromones.trail_here
+        output[index + 6] = self.pheromones.trail_forward_left
+        output[index + 7] = self.pheromones.trail_forward_right
+        output[index + 8] = self.pheromones.alarm_here
+        output[index + 9] = self.pheromones.alarm_forward_left
+        output[index + 10] = self.pheromones.alarm_forward_right
+        output[index + 11] = self._clamp01(self.life_normalized)
+        if index + 12 != expected:
+            raise RuntimeError(
+                "Sensor contract input names do not match the written values."
+            )
+
+    def as_inputs(self) -> list[float]:
+        values = [0.0] * self.sensor_contract.input_count
+        self.write_inputs(values)
+        return values
 
     @staticmethod
     def _clamp01(value: float) -> float:

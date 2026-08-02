@@ -112,6 +112,33 @@ class WorldBehaviorObserverTest(unittest.TestCase):
         self.assertEqual(sample.food_consumption_count, 3)
         self.assertEqual(sample.selection_generation, 2)
 
+    def test_automatic_cohort_sync_runs_only_after_gate_and_when_dirty(self) -> None:
+        world = world_shell()
+        world.selected_creature_id = None
+        world._behavior_next_sample_time = 0.10
+        world._behavior_cohort_dirty = True
+        world._behavior_active_subjects = {}
+        sync_times: list[float] = []
+
+        def sync() -> None:
+            sync_times.append(world.elapsed_time)
+            world._behavior_cohort_dirty = False
+
+        world._sync_automatic_behavior_cohort = sync
+        world.elapsed_time = 0.05
+        world._sample_selected_behavior()
+        world.elapsed_time = 0.10
+        world._sample_selected_behavior()
+        world.elapsed_time = 0.20
+        world._sample_selected_behavior()
+
+        self.assertEqual(sync_times, [0.10])
+
+        world._mark_behavior_cohort_dirty()
+        world.elapsed_time = 0.30
+        world._sample_selected_behavior()
+        self.assertEqual(sync_times, [0.10, 0.30])
+
     def test_selection_change_resets_event_totals_and_result(self) -> None:
         world = world_shell()
         world.behavior_observer.latest_snapshot = object()

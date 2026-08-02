@@ -47,6 +47,26 @@ class SchemaFiveSensingTest(unittest.TestCase):
         self.assertEqual(SENSOR_CONTRACT.input_count, 44)
         self.assertEqual(SENSOR_CONTRACT.schema_version, 6)
 
+    def test_write_inputs_matches_allocating_compatibility_api(self) -> None:
+        observer = creature_at((0.0, 0.0), vision_range=100.0)
+        neighbor = creature_at((40.0, 0.0), creature_id=2)
+        snapshot = self.vision.sense(
+            observer,
+            [],
+            [observer, neighbor],
+            (-200.0, -200.0, 200.0, 200.0),
+            100.0,
+        )
+        output = [-99.0] * SENSOR_CONTRACT.input_count
+        identity = id(output)
+
+        snapshot.write_inputs(output)
+
+        self.assertEqual(id(output), identity)
+        self.assertEqual(output, snapshot.as_inputs())
+        with self.assertRaisesRegex(ValueError, "length"):
+            snapshot.write_inputs(output[:-1])
+
     def test_presence_distinguishes_centered_flock_from_absence(self) -> None:
         observer = creature_at(
             (0.0, 0.0),

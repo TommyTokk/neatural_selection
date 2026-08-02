@@ -586,12 +586,32 @@ class NeatBrainController:
                 genome,
             )
 
-    def decide(self, creature_id: int, snapshot: SensorSnapshot) -> Action:
+    def decide(
+        self,
+        creature_id: int,
+        snapshot: SensorSnapshot,
+        *,
+        capture_inputs: bool = False,
+    ) -> Action:
         brain = self.brains.get(creature_id)
         if brain is None:
             return self.fallback_action()
 
-        return brain.decide(snapshot)
+        return brain.decide(snapshot, capture_inputs=capture_inputs)
+
+    def capture_input_snapshot(self, creature_id: int) -> None:
+        """Publish the latest private activation inputs for diagnostics."""
+        brain = self.brains.get(creature_id)
+        if brain is not None:
+            brain.capture_input_snapshot()
+
+    def decide_with_input_capture(
+        self,
+        creature_id: int,
+        snapshot: SensorSnapshot,
+    ) -> Action:
+        """Decide while publishing a stable inspector/telemetry input copy."""
+        return self.decide(creature_id, snapshot, capture_inputs=True)
 
     def fallback_action(self) -> Action:
         return Action(
@@ -703,11 +723,11 @@ class NeatBrainController:
                 first_brain.genome,
                 first.physical_traits,
                 first.vision,
-                getattr(first, "flocking_traits", FlockingTraits()),
+                first.flocking_traits,
                 second_brain.genome,
                 second.physical_traits,
                 second.vision,
-                getattr(second, "flocking_traits", FlockingTraits()),
+                second.flocking_traits,
                 self.config.genome_config,
             ).composite_distance
             self._pairwise_compatibility_distance_cache[pair] = distance

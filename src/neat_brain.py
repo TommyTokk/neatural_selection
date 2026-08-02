@@ -13,7 +13,7 @@ from src.action import (
     Action,
     BrainOutputIndex,
 )
-from src.vision import SENSOR_INPUT_NAMES, SensorSnapshot
+from src.vision import SENSOR_INPUT_COUNT, SENSOR_INPUT_NAMES, SensorSnapshot
 
 DEFAULT_CENTERED_OUTPUTS = [0.0] * ACTION_OUTPUT_COUNT
 
@@ -45,6 +45,12 @@ class NeatBrain:
     last_input_names: tuple[str, ...] = SENSOR_INPUT_NAMES
     herding_state: float = field(default=0.0, init=False)
     last_raw_herding: float = field(default=0.0, init=False)
+    _input_buffer: list[float] = field(
+        default_factory=lambda: [0.0] * SENSOR_INPUT_COUNT,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -75,7 +81,12 @@ class NeatBrain:
             output_activations=output_activations,
         )
 
-    def decide(self, snapshot: SensorSnapshot) -> Action:
+    def decide(
+        self,
+        snapshot: SensorSnapshot,
+        *,
+        capture_inputs: bool = False,
+    ) -> Action:
         """
         Decide on an action based on the current sensor snapshot.
         This method processes the sensor inputs through the neural network and
@@ -88,9 +99,13 @@ class NeatBrain:
             Action: The action decided by the neural network based on the sensor inputs.
         """
 
-        self.last_inputs = snapshot.as_inputs()
+        if len(self._input_buffer) != snapshot.sensor_contract.input_count:
+            self._input_buffer = [0.0] * snapshot.sensor_contract.input_count
+        snapshot.write_inputs(self._input_buffer)
+        if capture_inputs:
+            self.capture_input_snapshot()
         self.last_input_names = snapshot.sensor_contract.input_names
-        raw_outputs = self.network.activate(self.last_inputs)
+        raw_outputs = self.network.activate(self._input_buffer)
         centered_outputs = self._normalize_outputs(raw_outputs)
         self.last_outputs = centered_outputs
         self.last_raw_herding = self._positive_action_output(
@@ -104,8 +119,12 @@ class NeatBrain:
         )
 
         self.last_action = Action(
-            accelerate=centered_outputs[BrainOutputIndex.ACCELERATE],
-            rotate=centered_outputs[BrainOutputIndex.ROTATE],
+            accelerate=self._clamp(
+                centered_outputs[BrainOutputIndex.ACCELERATE], -1.0, 1.0
+            ),
+            rotate=self._clamp(
+                centered_outputs[BrainOutputIndex.ROTATE], -1.0, 1.0
+            ),
             want_reproduce=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.REPRODUCE]
             ),
@@ -131,7 +150,9 @@ class NeatBrain:
             emit_sound=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.ACOUSTIC_EMISSION]
             ),
-            sound_tone=centered_outputs[BrainOutputIndex.ACOUSTIC_TONE],
+            sound_tone=self._clamp(
+                centered_outputs[BrainOutputIndex.ACOUSTIC_TONE], -1.0, 1.0
+            ),
             emit_trail_pheromone=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.TRAIL_PHEROMONE]
             ),
@@ -141,8 +162,12 @@ class NeatBrain:
             rest=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.REST]
             ),
-        ).clamped()
+        )
         return self.last_action
+
+    def capture_input_snapshot(self) -> None:
+        """Publish a stable copy of the latest activation inputs."""
+        self.last_inputs = list(self._input_buffer)
 
     def evaluate_pure(self, inputs: list[float] | tuple[float, ...]) -> tuple[float, ...]:
         """Evaluate this exact network without mutating live/debug state."""
