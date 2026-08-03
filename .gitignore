@@ -228,3 +228,4 @@ saves/
 # Generated benchmark reports (existing tracked baselines remain tracked)
 benchmarks/results/*.json
 benchmarks/results/*.md
+tests/fixtures/*
