@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, MutableSequence
+from collections.abc import Callable, MutableSequence, Sequence
 from dataclasses import dataclass, field
 from math import atan2, cos, hypot, pi, sin, sqrt
 
@@ -150,6 +150,37 @@ class _VisionCandidate:
     signed_angle: float
     closeness: float
     interval: tuple[float, float]
+
+
+class _CandidateView(Sequence[_VisionCandidate]):
+    __slots__ = ("storage", "indices", "count")
+
+    def __init__(
+        self,
+        storage: list[_VisionCandidate],
+        indices: list[int],
+        count: int,
+    ) -> None:
+        self.storage = storage
+        self.indices = indices
+        self.count = count
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            return [self[index] for index in range(*item.indices(self.count))]
+        position = int(item)
+        if position < 0:
+            position += self.count
+        if position < 0 or position >= self.count:
+            raise IndexError(position)
+        return self.storage[self.indices[position]]
+
+    def __iter__(self):
+        for position in range(self.count):
+            yield self.storage[self.indices[position]]
 
 
 @dataclass(slots=True)
@@ -305,7 +336,27 @@ class SensorSnapshot:
 @dataclass(slots=True)
 class VisionSenseResult:
     snapshot: SensorSnapshot
-    visible_food_ids: list[int]
+    visible_food_ids: Sequence[int]
+
+
+class _VisibleFoodIdView(Sequence[int]):
+    __slots__ = ("owner",)
+
+    def __init__(self, owner: VisionSystem) -> None:
+        self.owner = owner
+
+    def __len__(self) -> int:
+        return self.owner._visible_food_id_count
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        position = int(index)
+        if position < 0:
+            position += len(self)
+        if position < 0 or position >= len(self):
+            raise IndexError(position)
+        return self.owner._visible_food_ids[position]
 
 
 class VisionSystem:
@@ -328,6 +379,30 @@ class VisionSystem:
         self.flock_compatibility_resolver = flock_compatibility_resolver
         self.flocking_config = flocking_config or FlockingConfig()
         self.sensor_contract = SENSOR_CONTRACT
+        self._candidate_storage: list[_VisionCandidate] = []
+        self._candidate_count = 0
+        self._visible_indices: list[int] = []
+        self._visible_count = 0
+        self._blocked_starts: list[float] = []
+        self._blocked_ends: list[float] = []
+        self._blocked_count = 0
+        self._visible_food_ids: list[int] = []
+        self._visible_food_id_count = 0
+        self._visible_food_id_view = _VisibleFoodIdView(self)
+        self._scratch_sense_result: VisionSenseResult | None = None
+        self.candidate_buffer_growth = 0
+        self.visible_index_growth = 0
+        self.blocked_interval_growth = 0
+        self.visible_food_id_growth = 0
+        self.sense_result_growth = 0
+        self.stable_sort_count = 0
+        self.failure_injector = None
+
+    def clear_scratch(self) -> None:
+        self._candidate_count = 0
+        self._visible_count = 0
+        self._blocked_count = 0
+        self._visible_food_id_count = 0
 
     def sense(
         self,
@@ -373,8 +448,13 @@ class VisionSystem:
         is_grabbing: bool = False,
         ignored_food_ids: set[int] | None = None,
         own_infants: list[Creature] | None = None,
+        reuse_scratch: bool = False,
     ) -> VisionSenseResult:
-        visible_targets = self._visible_targets(
+        visible_targets = (
+            self._visible_targets_reused
+            if reuse_scratch
+            else self._visible_targets
+        )(
             creature,
             foods,
             creatures,
@@ -393,20 +473,40 @@ class VisionSystem:
             clock_time_alive=clock_time_alive,
             is_grabbing=is_grabbing,
         )
-        visible_food_ids = [
-            target.source.id
-            for target in visible_targets
-            if target.kind == "food" and isinstance(target.source, Food)
-        ]
-        return VisionSenseResult(
-            snapshot=snapshot,
-            visible_food_ids=visible_food_ids,
-        )
+        if not reuse_scratch:
+            visible_food_ids = [
+                target.source.id
+                for target in visible_targets
+                if target.kind == "food" and isinstance(target.source, Food)
+            ]
+            return VisionSenseResult(
+                snapshot=snapshot,
+                visible_food_ids=visible_food_ids,
+            )
+        self._visible_food_id_count = 0
+        for target in visible_targets:
+            if target.kind != "food" or not isinstance(target.source, Food):
+                continue
+            if self._visible_food_id_count == len(self._visible_food_ids):
+                self._visible_food_ids.extend(
+                    [0] * max(8, len(self._visible_food_ids) or 8)
+                )
+                self.visible_food_id_growth += 1
+            self._visible_food_ids[self._visible_food_id_count] = target.source.id
+            self._visible_food_id_count += 1
+        result = self._scratch_sense_result
+        if result is None:
+            result = VisionSenseResult(snapshot, self._visible_food_id_view)
+            self._scratch_sense_result = result
+            self.sense_result_growth += 1
+        else:
+            result.snapshot = snapshot
+        return result
 
     def _sensor_snapshot_from_visible_targets(
         self,
         creature: Creature,
-        visible_targets: list[_VisionCandidate],
+        visible_targets: Sequence[_VisionCandidate],
         nearby_creatures: list[Creature],
         world_bounds: tuple[float, float, float, float],
         max_speed: float,
@@ -526,6 +626,30 @@ class VisionSystem:
         long_range_x = 0.0
         long_range_y = 0.0
         long_range_total = 0.0
+
+        if getattr(self, "_reused_flock_creature", None) is creature:
+            (
+                perception_radius,
+                creature_heading,
+                separation_x,
+                separation_y,
+                personal_space_count,
+                compatible_neighbor_count,
+                effective_flockmate_count,
+                weighted_dx,
+                weighted_dy,
+                weighted_velocity_x,
+                weighted_velocity_y,
+                weighted_proximity,
+                weighted_neighbor_distance,
+                moving_heading_weight,
+                weighted_heading_error,
+                long_range_x,
+                long_range_y,
+                long_range_total,
+            ) = self._reused_flock_totals
+            nearby_creatures = None
+            self._reused_flock_creature = None
 
         for neighbor in [] if nearby_creatures is None else nearby_creatures:
             if neighbor.creature_id == creature.creature_id:
@@ -954,6 +1078,457 @@ class VisionSystem:
         candidates.sort(key=lambda candidate: candidate.surface_distance)
         return self._remove_targets_occluded_by_creatures(candidates)
 
+    def _scratch_candidate(self) -> _VisionCandidate:
+        index = self._candidate_count
+        if index == len(self._candidate_storage):
+            self._candidate_storage.append(
+                _VisionCandidate("", None, 0.0, 0.0, 0.0, (0.0, 0.0))
+            )
+            self.candidate_buffer_growth += 1
+        self._candidate_count += 1
+        return self._candidate_storage[index]
+
+    def _append_visible_index(self, index: int) -> None:
+        if self._visible_count == len(self._visible_indices):
+            self._visible_indices.extend(
+                [0] * max(16, len(self._visible_indices) or 16)
+            )
+            self.visible_index_growth += 1
+        self._visible_indices[self._visible_count] = index
+        self._visible_count += 1
+
+    def _fill_candidate(
+        self,
+        creature: Creature,
+        kind: str,
+        source: Food | Creature,
+        target_position: tuple[float, float],
+        target_radius: float,
+        *,
+        mouth_contact: bool = False,
+    ) -> bool:
+        origin_x, origin_y = self._vision_origin(creature)
+        target_x, target_y = target_position
+        return self._fill_candidate_values(
+            kind,
+            source,
+            float(target_x),
+            float(target_y),
+            target_radius,
+            origin_x,
+            origin_y,
+            creature.vision.range,
+            creature.vision.angle / 2.0,
+            creature.heading,
+            mouth_contact=mouth_contact,
+        )
+
+    def _fill_candidate_values(
+        self,
+        kind: str,
+        source: Food | Creature,
+        target_x: float,
+        target_y: float,
+        target_radius: float,
+        origin_x: float,
+        origin_y: float,
+        vision_range: float,
+        half_cone: float,
+        creature_heading: float,
+        *,
+        mouth_contact: bool = False,
+    ) -> bool:
+        injector = self.failure_injector
+        if callable(injector):
+            injector("vision.filtering")
+        if mouth_contact:
+            candidate = self._scratch_candidate()
+            candidate.kind = kind
+            candidate.source = source
+            candidate.surface_distance = 0.0
+            candidate.signed_angle = 0.0
+            candidate.closeness = 1.0
+            candidate.interval = (-half_cone, half_cone)
+            return True
+        dx = target_x - origin_x
+        dy = target_y - origin_y
+        distance = hypot(dx, dy)
+        surface_distance = max(0.0, distance - target_radius)
+        if surface_distance > vision_range:
+            return False
+        signed_angle = self._signed_angle(
+            atan2(dy, dx) - creature_heading
+        )
+        angular_radius = pi if distance <= 0 else atan2(target_radius, distance)
+        interval_start = max(-half_cone, signed_angle - angular_radius)
+        interval_end = min(half_cone, signed_angle + angular_radius)
+        if interval_start > interval_end:
+            return False
+        candidate = self._scratch_candidate()
+        candidate.kind = kind
+        candidate.source = source
+        candidate.surface_distance = surface_distance
+        candidate.signed_angle = signed_angle
+        candidate.closeness = 1.0 - surface_distance / vision_range
+        candidate.interval = (interval_start, interval_end)
+        return True
+
+    @staticmethod
+    def _candidate_stable_key(candidate: _VisionCandidate):
+        source = candidate.source
+        source_id = getattr(source, "id", getattr(source, "creature_id", -1))
+        return candidate.surface_distance, candidate.kind, source_id
+
+    def _sort_candidate_prefix(self) -> None:
+        for cursor in range(1, self._candidate_count):
+            candidate = self._candidate_storage[cursor]
+            key = self._candidate_stable_key(candidate)
+            insertion = cursor
+            while (
+                insertion > 0
+                and self._candidate_stable_key(
+                    self._candidate_storage[insertion - 1]
+                ) > key
+            ):
+                self._candidate_storage[insertion] = (
+                    self._candidate_storage[insertion - 1]
+                )
+                insertion -= 1
+            self._candidate_storage[insertion] = candidate
+        self.stable_sort_count += 1
+
+    def _interval_blocked_scratch(self, interval: tuple[float, float]) -> bool:
+        epsilon = 1e-9
+        start_value, end_value = interval
+        if end_value - start_value <= epsilon:
+            for index in range(self._blocked_count):
+                if (
+                    self._blocked_starts[index] - epsilon
+                    <= start_value
+                    <= self._blocked_ends[index] + epsilon
+                ):
+                    return True
+            return False
+        cursor = start_value
+        for index in range(self._blocked_count):
+            start = self._blocked_starts[index]
+            end = self._blocked_ends[index]
+            if end <= cursor + epsilon:
+                continue
+            if start > cursor + epsilon:
+                return False
+            cursor = max(cursor, end)
+            if cursor >= end_value - epsilon:
+                return True
+        return cursor >= end_value - epsilon
+
+    def _add_blocked_scratch(self, interval: tuple[float, float]) -> None:
+        start, end = interval
+        insertion = 0
+        while (
+            insertion < self._blocked_count
+            and self._blocked_ends[insertion] < start
+        ):
+            insertion += 1
+        merge_end = insertion
+        while (
+            merge_end < self._blocked_count
+            and self._blocked_starts[merge_end] <= end
+        ):
+            start = min(start, self._blocked_starts[merge_end])
+            end = max(end, self._blocked_ends[merge_end])
+            merge_end += 1
+        removed = merge_end - insertion
+        if removed == 0:
+            if self._blocked_count == len(self._blocked_starts):
+                growth = max(8, len(self._blocked_starts) or 8)
+                self._blocked_starts.extend([0.0] * growth)
+                self._blocked_ends.extend([0.0] * growth)
+                self.blocked_interval_growth += 1
+            for index in range(self._blocked_count, insertion, -1):
+                self._blocked_starts[index] = self._blocked_starts[index - 1]
+                self._blocked_ends[index] = self._blocked_ends[index - 1]
+            self._blocked_count += 1
+        elif removed > 1:
+            shift = removed - 1
+            for index in range(merge_end, self._blocked_count):
+                self._blocked_starts[index - shift] = self._blocked_starts[index]
+                self._blocked_ends[index - shift] = self._blocked_ends[index]
+            self._blocked_count -= shift
+        self._blocked_starts[insertion] = start
+        self._blocked_ends[insertion] = end
+
+    def _visible_targets_reused(
+        self,
+        creature: Creature,
+        foods: list[Food],
+        creatures: Sequence[Creature],
+        ignored_food_ids: set[int] | None = None,
+        own_infants: Sequence[Creature] | None = None,
+    ) -> Sequence[_VisionCandidate]:
+        self.clear_scratch()
+        if creature.vision.range <= 0 or creature.vision.angle <= 0:
+            return _CandidateView(
+                self._candidate_storage,
+                self._visible_indices,
+                0,
+            )
+        ignored = () if ignored_food_ids is None else ignored_food_ids
+        flocking_config = self.flocking_config
+        perception_radius = max(0.0, flocking_config.perception_radius)
+        perception_radius_squared = perception_radius * perception_radius
+        personal_space = max(
+            0.0, flocking_config.preferred_personal_space
+        )
+        personal_space_squared = personal_space * personal_space
+        long_range_config = flocking_config.long_range
+        long_range_enabled = (
+            long_range_config.enabled and long_range_config.range > 0.0
+        )
+        long_range_squared = (
+            long_range_config.range * long_range_config.range
+            if long_range_enabled
+            else 0.0
+        )
+        creature_x, creature_y = creature.position
+        creature_heading = creature.heading
+        observer_radius = creature.radius
+        origin_x = creature_x + cos(creature_heading) * observer_radius * 0.35
+        origin_y = creature_y + sin(creature_heading) * observer_radius * 0.35
+        vision_range = creature.vision.range
+        half_cone = creature.vision.angle / 2.0
+        separation_x = separation_y = 0.0
+        personal_space_count = compatible_neighbor_count = 0
+        effective_flockmate_count = 0.0
+        weighted_dx = weighted_dy = 0.0
+        weighted_velocity_x = weighted_velocity_y = 0.0
+        weighted_proximity = weighted_neighbor_distance = 0.0
+        moving_heading_weight = weighted_heading_error = 0.0
+        long_range_x = long_range_y = long_range_total = 0.0
+        for food in foods:
+            if food.id in ignored:
+                continue
+            food_position = food.position
+            food_x, food_y = food_position
+            contact = self._food_touches_mouth(
+                creature, food_position, food.radius
+            )
+            self._fill_candidate_values(
+                "food",
+                food,
+                food_x,
+                food_y,
+                food.radius,
+                origin_x,
+                origin_y,
+                vision_range,
+                half_cone,
+                creature_heading,
+                mouth_contact=contact,
+            )
+        spatial_index = getattr(creatures, "index", None)
+        spatial_slots = getattr(creatures, "slots", None)
+        spatial_count = getattr(creatures, "count", 0)
+        use_spatial_values = spatial_index is not None and spatial_slots is not None
+        neighbor_count = spatial_count if use_spatial_values else len(creatures)
+        for neighbor_position in range(neighbor_count):
+            if use_spatial_values:
+                slot = spatial_slots[neighbor_position]
+                other = spatial_index.creature_for_slot(slot)
+                neighbor_x = spatial_index.centres_x[slot]
+                neighbor_y = spatial_index.centres_y[slot]
+                neighbor_radius = spatial_index.radii[slot]
+            else:
+                other = creatures[neighbor_position]
+                neighbor_x, neighbor_y = other.position
+                neighbor_radius = other.radius
+            if other is None:
+                continue
+            if other.creature_id != creature.creature_id:
+                injector = self.failure_injector
+                if callable(injector):
+                    injector("flocking.accumulation")
+                dx = neighbor_x - creature_x
+                dy = neighbor_y - creature_y
+                distance_squared = dx * dx + dy * dy
+                within_boid_range = (
+                    perception_radius > 0.0
+                    and distance_squared <= perception_radius_squared
+                )
+                within_long_range = (
+                    long_range_enabled
+                    and 0.0 < distance_squared <= long_range_squared
+                )
+                if within_boid_range or within_long_range:
+                    compatibility = self._flock_compatibility(
+                        creature, other
+                    )
+                    if compatibility > 0.0:
+                        distance = self._linear_distance(distance_squared)
+                        if within_long_range and distance > 1e-12:
+                            long_range_weight = (
+                                compatibility
+                                * self._clamp01(
+                                    1.0
+                                    - distance / long_range_config.range
+                                )
+                                * long_range_config.strength
+                            )
+                            if long_range_weight > 0.0:
+                                long_range_x += (
+                                    dx / distance
+                                ) * long_range_weight
+                                long_range_y += (
+                                    dy / distance
+                                ) * long_range_weight
+                                long_range_total += long_range_weight
+                        if within_boid_range:
+                            compatible_neighbor_count += 1
+                            effective_flockmate_count += compatibility
+                            weighted_dx += dx * compatibility
+                            weighted_dy += dy * compatibility
+                            velocity_x = other.body.velocity.x
+                            velocity_y = other.body.velocity.y
+                            weighted_velocity_x += (
+                                velocity_x * compatibility
+                            )
+                            weighted_velocity_y += (
+                                velocity_y * compatibility
+                            )
+                            weighted_neighbor_distance += (
+                                distance * compatibility
+                            )
+                            weighted_proximity += (
+                                compatibility
+                                * self._clamp01(
+                                    1.0
+                                    - distance / perception_radius
+                                )
+                            )
+                            velocity_squared = (
+                                velocity_x * velocity_x
+                                + velocity_y * velocity_y
+                            )
+                            if velocity_squared > 1e-24:
+                                moving_heading_weight += compatibility
+                                weighted_heading_error += (
+                                    abs(
+                                        self._signed_angle(
+                                            atan2(
+                                                velocity_y,
+                                                velocity_x,
+                                            )
+                                            - creature_heading
+                                        )
+                                    )
+                                    * compatibility
+                                )
+                            if (
+                                0.0
+                                < distance_squared
+                                < personal_space_squared
+                                and distance > 1e-12
+                            ):
+                                personal_space_count += 1
+                                proximity = self._clamp01(
+                                    1.0 - distance / personal_space
+                                )
+                                separation_x -= (
+                                    dx / distance
+                                ) * proximity * compatibility
+                                separation_y -= (
+                                    dy / distance
+                                ) * proximity * compatibility
+                self._fill_candidate_values(
+                    "creature",
+                    other,
+                    neighbor_x,
+                    neighbor_y,
+                    neighbor_radius,
+                    origin_x,
+                    origin_y,
+                    vision_range,
+                    half_cone,
+                    creature_heading,
+                )
+        self._reused_flock_creature = creature
+        self._reused_flock_totals = (
+            perception_radius,
+            creature_heading,
+            separation_x,
+            separation_y,
+            personal_space_count,
+            compatible_neighbor_count,
+            effective_flockmate_count,
+            weighted_dx,
+            weighted_dy,
+            weighted_velocity_x,
+            weighted_velocity_y,
+            weighted_proximity,
+            weighted_neighbor_distance,
+            moving_heading_weight,
+            weighted_heading_error,
+            long_range_x,
+            long_range_y,
+            long_range_total,
+        )
+        for infant in () if own_infants is None else own_infants:
+            if infant.creature_id != creature.creature_id:
+                if spatial_index is not None:
+                    values = spatial_index.values_for(infant)
+                else:
+                    values = None
+                if values is None:
+                    infant_x, infant_y = infant.position
+                    infant_radius = infant.radius
+                else:
+                    infant_x, infant_y, infant_radius = values
+                self._fill_candidate_values(
+                    "own_infant",
+                    infant,
+                    infant_x,
+                    infant_y,
+                    infant_radius,
+                    origin_x,
+                    origin_y,
+                    vision_range,
+                    half_cone,
+                    creature_heading,
+                )
+        self._sort_candidate_prefix()
+        candidate_index = 0
+        epsilon = 1e-9
+        injector = self.failure_injector
+        if callable(injector):
+            injector("vision.occlusion")
+        while candidate_index < self._candidate_count:
+            group_end = candidate_index + 1
+            distance = self._candidate_storage[candidate_index].surface_distance
+            while (
+                group_end < self._candidate_count
+                and self._candidate_storage[group_end].surface_distance
+                <= distance + epsilon
+            ):
+                group_end += 1
+            group_visible_start = self._visible_count
+            for index in range(candidate_index, group_end):
+                if not self._interval_blocked_scratch(
+                    self._candidate_storage[index].interval
+                ):
+                    self._append_visible_index(index)
+            for position in range(group_visible_start, self._visible_count):
+                visible = self._candidate_storage[
+                    self._visible_indices[position]
+                ]
+                if visible.kind in {"creature", "own_infant"}:
+                    self._add_blocked_scratch(visible.interval)
+            candidate_index = group_end
+        return _CandidateView(
+            self._candidate_storage,
+            self._visible_indices,
+            self._visible_count,
+        )
+
     def _remove_targets_occluded_by_creatures(
         self,
         candidates: list[_VisionCandidate],
@@ -1143,20 +1718,24 @@ class VisionSystem:
     def _snapshot_for_kind(
         self,
         creature: Creature,
-        targets: list[_VisionCandidate],
+        targets: Sequence[_VisionCandidate],
         kind: str,
     ) -> VisionTargetSnapshot:
-        visible = [target for target in targets if target.kind == kind]
-        if not visible:
+        nearest = None
+        density = 0.0
+        count = 0
+        for target in targets:
+            if target.kind != kind:
+                continue
+            count += 1
+            density += target.closeness
+            if (
+                nearest is None
+                or target.surface_distance < nearest.surface_distance
+            ):
+                nearest = target
+        if nearest is None:
             return self._empty_target_snapshot()
-
-        proximity, angle = self._nearest_proximity_and_angle(
-            visible, creature.vision.angle
-        )
-        nearest = min(
-            visible,
-            key=lambda candidate: candidate.surface_distance,
-        )
         source = nearest.source
         nearest_id = getattr(
             source,
@@ -1166,10 +1745,14 @@ class VisionSystem:
 
         return VisionTargetSnapshot(
             visible=1.0,
-            proximity=proximity,
-            angle=angle,
-            density=self._clamp01(sum(target.closeness for target in visible)),
-            count=len(visible),
+            proximity=nearest.closeness,
+            angle=self._clamp(
+                nearest.signed_angle / (creature.vision.angle / 2.0),
+                -1.0,
+                1.0,
+            ),
+            density=self._clamp01(density),
+            count=count,
             nearest_id=nearest_id,
             surface_distance=nearest.surface_distance,
             relative_angle=nearest.signed_angle,

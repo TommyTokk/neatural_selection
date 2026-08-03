@@ -61,22 +61,42 @@ class PersistentGroupTracker:
                     first_root, second_root
                 )
 
-        seen_pairs: set[tuple[int, int]] = set()
-        for creature in creatures:
-            for neighbor in nearby(creature, group_range):
-                pair = tuple(
-                    sorted((creature.creature_id, neighbor.creature_id))
-                )
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
-                dx = creature.position[0] - neighbor.position[0]
-                dy = creature.position[1] - neighbor.position[1]
-                if hypot(dx, dy) > group_range:
-                    continue
-                if compatibility(creature, neighbor) < minimum_compatibility:
-                    continue
-                union(*pair)
+        def consider_pair(creature, neighbor) -> None:
+            pair = (creature.creature_id, neighbor.creature_id)
+            if pair[0] > pair[1]:
+                pair = pair[1], pair[0]
+            dx = creature.position[0] - neighbor.position[0]
+            dy = creature.position[1] - neighbor.position[1]
+            if hypot(dx, dy) > group_range:
+                return
+            if compatibility(creature, neighbor) < minimum_compatibility:
+                return
+            union(*pair)
+
+        ordered_creatures = sorted(
+            creatures,
+            key=lambda creature: creature.creature_id,
+        )
+        if nearby is None:
+            # Low-frequency post-physics policy: one stable-ID pairwise scan
+            # over current bodies, with no dependence on the pre-physics grid.
+            for index, creature in enumerate(ordered_creatures):
+                for neighbor_index in range(index + 1, len(ordered_creatures)):
+                    consider_pair(
+                        creature,
+                        ordered_creatures[neighbor_index],
+                    )
+        else:
+            seen_pairs: set[tuple[int, int]] = set()
+            for creature in ordered_creatures:
+                for neighbor in nearby(creature, group_range):
+                    pair = tuple(
+                        sorted((creature.creature_id, neighbor.creature_id))
+                    )
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
+                    consider_pair(creature, neighbor)
 
         components: dict[int, set[int]] = {}
         for creature_id in by_id:

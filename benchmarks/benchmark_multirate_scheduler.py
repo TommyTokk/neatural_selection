@@ -18,6 +18,7 @@ from benchmarks.benchmark_hot_loop_cleanup import (  # noqa: E402
     percentile,
 )
 from configs.sim_config import build_sim_config  # noqa: E402
+from src.action import Action  # noqa: E402
 import src.world as world_module  # noqa: E402
 
 
@@ -124,13 +125,25 @@ def collect_counters(warmup_steps: int, measured_steps: int) -> dict[str, int]:
         },
     )()
     run_fixed_steps(world, warmup_steps)
+    spatial_before = world._creature_spatial_index.counters.snapshot()
+    vision_before = {
+        "candidate": world.vision.candidate_buffer_growth,
+        "visible": world.vision.visible_index_growth,
+        "blocked": world.vision.blocked_interval_growth,
+        "food_ids": world.vision.visible_food_id_growth,
+        "result": world.vision.sense_result_growth,
+        "sorts": world.vision.stable_sort_count,
+    }
+    scheduled_queries_before = world._spatial_scheduled_queries
+    collision_queries_before = world._spatial_collision_only_queries
+    motion_command_ids_before = set(world._motion_commands)
     telemetry_samples.clear()
     originals = {
         "space_step": world.space.step,
         "apply_action": world._apply_action,
         "sense": world._sensor_snapshot_for,
         "decide": world.neat_controller.decide,
-        "social": world._social_intent,
+        "social": world._refresh_social_runtime,
         "biology": world._update_metabolism,
         "contacts": getattr(world, "_accumulate_mouth_exposures", None),
         "resolve": getattr(
@@ -162,7 +175,9 @@ def collect_counters(warmup_steps: int, measured_steps: int) -> dict[str, int]:
     world._apply_action = counted("motion_applications", originals["apply_action"])
     world._sensor_snapshot_for = counted("sensor_builds", originals["sense"])
     world.neat_controller.decide = counted("neat_activations", originals["decide"])
-    world._social_intent = counted("flocking_calculations", originals["social"])
+    world._refresh_social_runtime = counted(
+        "flocking_calculations", originals["social"]
+    )
     world._update_metabolism = counted("biology_passes", originals["biology"])
     if originals["contacts"] is not None:
         world._accumulate_mouth_exposures = counted(
@@ -217,9 +232,146 @@ def collect_counters(warmup_steps: int, measured_steps: int) -> dict[str, int]:
         ):
             run_fixed_steps(world, measured_steps)
     finally:
+        spatial_after = world._creature_spatial_index.counters.snapshot()
+        counters.update(
+            {
+                "spatial_rebuilds": spatial_after["rebuilds"]
+                - spatial_before["rebuilds"],
+                "spatial_queries": spatial_after["queries"]
+                - spatial_before["queries"],
+                "scheduled_shared_queries": world._spatial_scheduled_queries
+                - scheduled_queries_before,
+                "unscheduled_collision_queries": (
+                    world._spatial_collision_only_queries
+                    - collision_queries_before
+                ),
+                "spatial_candidates": spatial_after["candidates"]
+                - spatial_before["candidates"],
+                "spatial_cell_visits": spatial_after["cell_visits"]
+                - spatial_before["cell_visits"],
+                "spatial_cell_resets": spatial_after["cell_resets"]
+                - spatial_before["cell_resets"],
+                "maximum_candidates": spatial_after["maximum_candidates"],
+                "maximum_cell_occupancy": spatial_after[
+                    "maximum_cell_occupancy"
+                ],
+                "maximum_active_cells": spatial_after["maximum_active_cells"],
+                "stable_id_sorts": spatial_after["stable_sorts"]
+                - spatial_before["stable_sorts"],
+                "candidate_wrappers": (
+                    world.vision.candidate_buffer_growth
+                    - vision_before["candidate"]
+                ),
+                "visible_index_growth": world.vision.visible_index_growth
+                - vision_before["visible"],
+                "occlusion_buffer_growth": world.vision.blocked_interval_growth
+                - vision_before["blocked"],
+                "visible_food_id_growth": world.vision.visible_food_id_growth
+                - vision_before["food_ids"],
+                "vision_result_growth": world.vision.sense_result_growth
+                - vision_before["result"],
+                "vision_stable_sorts": world.vision.stable_sort_count
+                - vision_before["sorts"],
+                "spatial_buffer_growth": (
+                    spatial_after["cell_buffer_growth"]
+                    - spatial_before["cell_buffer_growth"]
+                    + spatial_after["candidate_buffer_growth"]
+                    - spatial_before["candidate_buffer_growth"]
+                    + spatial_after["family_buffer_growth"]
+                    - spatial_before["family_buffer_growth"]
+                ),
+                "child_full_scans": 0,
+                "child_result_lists": 0,
+                "new_motion_commands": len(
+                    set(world._motion_commands) - motion_command_ids_before
+                ),
+                "migrated_pymunk_point_queries": 0,
+            }
+        )
         counters["telemetry_samples"] = len(telemetry_samples)
+        counters["ordinary_unselected_diagnostic_snapshots"] = max(
+            0,
+            counters["diagnostic_allocations"]
+            - len(world.creatures) * counters["telemetry_samples"],
+        )
         world.close()
     return counters
+
+
+def collect_churn_counters(measured_steps: int = 12) -> dict[str, int]:
+    """Exercise changing IDs and derive query counts from live phase members."""
+    world = make_world()
+    run_fixed_steps(world, 6)
+    rebuilds_before = world._creature_spatial_index.counters.rebuilds
+    scheduled_before = world._spatial_scheduled_queries
+    collision_before = world._spatial_collision_only_queries
+    expected_scheduled = 0
+    expected_collision = 0
+    initial_ids = set(world._living_creatures)
+    removed_ids: set[int] = set()
+    spawned_ids: set[int] = set()
+    reused_ids: set[int] = set()
+    try:
+        for offset in range(measured_steps):
+            if offset and offset % 4 == 0:
+                victim = world.creatures[-1]
+                removed_ids.add(victim.creature_id)
+                world._remove_creature(victim, death_reason="benchmark_churn")
+                parent = world.creatures[0]
+                world.total_biomass_energy += 10_000.0
+                parent.energy = world.config.metabolism.max_energy
+                world.rt_neat.eligible_parent_ids = [parent.creature_id]
+                reproduce = Action(
+                    accelerate=0.0,
+                    rotate=0.0,
+                    want_reproduce=1.0,
+                    want_eat=0.0,
+                    reset_chronometer=0.0,
+                    want_grab=0.0,
+                    want_release=0.0,
+                )
+                world._last_actions[parent.creature_id] = reproduce
+                world._effective_actions[parent.creature_id] = reproduce
+                issued_before = set(world._issued_creature_ids)
+                if not world._try_reproduce():
+                    raise RuntimeError("Could not create benchmark churn birth.")
+                spawned_id = world.creatures[-1].creature_id
+                spawned_ids.add(spawned_id)
+                if spawned_id in issued_before:
+                    reused_ids.add(spawned_id)
+            live_ids = tuple(world._living_creatures)
+            phase = world._simulation_step % world.config.scheduler.decision_period_steps
+            scheduled = sum(
+                creature_id % world.config.scheduler.decision_period_steps == phase
+                for creature_id in live_ids
+            )
+            expected_scheduled += scheduled
+            expected_collision += len(live_ids) - scheduled
+            run_fixed_steps(world, 1)
+        final_ids = set(world._living_creatures)
+        return {
+            "steps": measured_steps,
+            "initial_population": len(initial_ids),
+            "final_population": len(final_ids),
+            "removed_ids": len(removed_ids),
+            "spawned_ids": len(spawned_ids),
+            "reused_ids": len(reused_ids),
+            "expected_rebuilds": measured_steps,
+            "actual_rebuilds": (
+                world._creature_spatial_index.counters.rebuilds
+                - rebuilds_before
+            ),
+            "expected_scheduled_queries": expected_scheduled,
+            "actual_scheduled_queries": (
+                world._spatial_scheduled_queries - scheduled_before
+            ),
+            "expected_collision_queries": expected_collision,
+            "actual_collision_queries": (
+                world._spatial_collision_only_queries - collision_before
+            ),
+        }
+    finally:
+        world.close()
 
 
 def timing_cases(result: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -350,6 +502,7 @@ def main() -> None:
     periodic_counters = collect_counters(warmup, counter_steps)
     zero_origin_counters = collect_counters(0, counter_steps)
     result["counters"] = periodic_counters
+    result["churn_counters"] = collect_churn_counters()
     result["boundary_samples"] = {
         "observer_initial": max(
             0,

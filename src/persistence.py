@@ -15,8 +15,14 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from configs.sim_config import PersistenceConfig, SimConfig
-from src.action import ACTION_OUTPUT_COUNT, ACTION_SCHEMA_VERSION
+from src.action import (
+    ACTION_OUTPUT_COUNT,
+    ACTION_OUTPUT_NAMES,
+    ACTION_SCHEMA_VERSION,
+    Action,
+)
 from src.creature import FlockingTraits
+from src.flocking import SocialRuntime
 from src.vision import SENSOR_INPUT_COUNT, SENSING_SCHEMA_VERSION
 
 if TYPE_CHECKING:
@@ -24,11 +30,33 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 20
+CHECKPOINT_VERSION = 21
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
 }
 LOGGER = logging.getLogger(__name__)
+
+
+def _action_to_primitive(action: object) -> dict[str, float] | None:
+    if action is None:
+        return None
+    return {
+        name: float(getattr(action, name, 0.0))
+        for name in ACTION_OUTPUT_NAMES
+    }
+
+
+def _action_from_checkpoint(value: object) -> Action | None:
+    if value is None:
+        return None
+    if isinstance(value, Action):
+        return value
+    if not isinstance(value, dict):
+        return None
+    return Action(**{
+        name: float(value.get(name, 0.0))
+        for name in ACTION_OUTPUT_NAMES
+    })
 
 
 def _checkpoint_rgb(value: object) -> tuple[int, int, int] | None:
@@ -483,13 +511,11 @@ class PersistenceManager:
                         creature.biome_fertility_ema_updated_at
                     ),
                     "scheduler_continuation": {
-                        "raw_action": copy.deepcopy(
+                        "raw_action": _action_to_primitive(
                             getattr(world, "_last_actions", {}).get(creature_id)
                         ),
-                        "effective_action": copy.deepcopy(
-                            getattr(world, "_effective_actions", {}).get(
-                                creature_id
-                            )
+                        "effective_action": _action_to_primitive(
+                            getattr(world, "_effective_actions", {}).get(creature_id)
                         ),
                         "effective_action_is_raw": (
                             getattr(world, "_effective_actions", {}).get(
@@ -499,13 +525,13 @@ class PersistenceManager:
                                 creature_id
                             )
                         ),
-                        "social_intention": copy.deepcopy(
+                        "social_runtime": SocialRuntime.from_legacy(
                             getattr(
                                 world,
                                 "_cached_social_intentions",
                                 {},
                             ).get(creature_id)
-                        ),
+                        ).to_primitive(),
                         "flocking_benchmark_quality": copy.deepcopy(
                             getattr(
                                 world,
@@ -2311,6 +2337,7 @@ class PersistenceManager:
                     )
                 )
                 world.creatures.append(creature)
+                world._register_living_creature(creature)
                 world._initialize_creature_runtime_state(creature)
                 fitness = creature_state["fitness"]
                 if fitness is not None:
@@ -2332,9 +2359,11 @@ class PersistenceManager:
                         "scheduler_continuation"
                     )
                     if isinstance(continuation, dict):
-                        raw_action = continuation.get("raw_action")
-                        effective_action = continuation.get(
-                            "effective_action"
+                        raw_action = _action_from_checkpoint(
+                            continuation.get("raw_action")
+                        )
+                        effective_action = _action_from_checkpoint(
+                            continuation.get("effective_action")
                         )
                         if raw_action is not None:
                             world._last_actions[creature.creature_id] = (
@@ -2353,13 +2382,16 @@ class PersistenceManager:
                                 and raw_action is not None
                                 else effective_action
                             )
-                        social_intention = continuation.get(
-                            "social_intention"
+                        social_state = continuation.get("social_runtime")
+                        if social_state is None:
+                            social_state = continuation.get("social_intention")
+                        world._cached_social_intentions[
+                            creature.creature_id
+                        ] = (
+                            SocialRuntime.from_primitive(social_state)
+                            if "social_runtime" in continuation
+                            else SocialRuntime.from_legacy(social_state)
                         )
-                        if social_intention is not None:
-                            world._cached_social_intentions[
-                                creature.creature_id
-                            ] = social_intention
                         benchmark_quality = continuation.get(
                             "flocking_benchmark_quality"
                         )

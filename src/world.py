@@ -38,6 +38,7 @@ from src.creature import (
 from src.fitness import CreatureFitness, flocking_benchmark_quality
 from src.flocking import (
     FlockingRuntimeSnapshot,
+    SocialRuntime,
     SocialCompatibilityResolver,
     SocialIntent,
     SocialObservation,
@@ -80,6 +81,11 @@ from src.flocking_telemetry import (
     PersistentGroupTracker,
 )
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
+from src.spatial import (
+    BroadPhaseGeometry,
+    CandidateBuffer,
+    CreatureSpatialIndex,
+)
 from src.communication import (
     AcousticDebugInfo,
     AcousticSignal,
@@ -390,15 +396,7 @@ class World:
         self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
         self._last_flock_steering_debug: dict[int, _FlockSteeringDebug] = {}
         self._last_flocking_runtime: dict[int, FlockingRuntimeSnapshot] = {}
-        self._cached_social_intentions: dict[
-            int,
-            tuple[
-                SocialIntent,
-                SocialObservation,
-                float,
-                tuple[float, float],
-            ],
-        ] = {}
+        self._cached_social_intentions: dict[int, SocialRuntime] = {}
         self._flocking_benchmark_quality_by_creature_id: dict[int, float] = {}
         self.behavior_observer = BehaviorObserverService(
             config.behavior,
@@ -466,11 +464,12 @@ class World:
             except TypeError:
                 use_spatial_hash(50.0, 1000)
         self._creature_by_shape_id: dict[int, Creature] = {}
+        self._living_creatures: dict[int, Creature] = {}
+        self._issued_creature_ids: set[int] = set()
         self._creature_query_filter = pymunk.ShapeFilter(mask=CREATURE_CATEGORY)
-        self._creature_spatial_state: dict[
-            int,
-            tuple[float, float, float],
-        ] | None = None
+        # Kept as a compatibility sentinel for older diagnostics. Positions
+        # are owned exclusively by the generation-stamped spatial index.
+        self._creature_spatial_state = None
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
         self.creatures = self._spawn_creatures() if bootstrap else []
@@ -482,7 +481,16 @@ class World:
             + 1
         )
         for creature in self.creatures:
+            self._register_living_creature(creature)
             self._initialize_creature_runtime_state(creature)
+        self._creature_spatial_index = CreatureSpatialIndex(
+            cell_size=128.0,
+            living_registry=self._living_creatures,
+        )
+        self._candidate_buffer = CandidateBuffer(self._creature_spatial_index)
+        self._candidate_buffer_leased = False
+        self._spatial_scheduled_queries = 0
+        self._spatial_collision_only_queries = 0
         self._chronometers: dict[int, float] = {
             creature.creature_id: 0.0 for creature in self.creatures
         }
@@ -956,7 +964,7 @@ class World:
                 group_config.minimum_group_compatibility
             ),
             compatibility=self.social_compatibility.compatibility,
-            nearby=self._nearby_creatures_for,
+            nearby=None,
         )
         for creature_id, (group_id, group_size) in (
             groups.group_by_creature.items()
@@ -1390,6 +1398,22 @@ class World:
     ) -> list[Creature]:
         max_distance = max(0.0, radius)
         center_x, center_y, _ = self._creature_spatial_values(creature)
+        # Public/debug use outside a fixed-step lease observes current bodies.
+        # The production decision path passes its retained candidate buffer
+        # directly and never enters this compatibility materialization.
+        if not getattr(self, "_candidate_buffer_leased", False):
+            source = sorted(self.creatures, key=lambda other: other.creature_id)
+            center_x, center_y, _ = self._creature_spatial_values(creature)
+            return [
+                other
+                for other in source
+                if other is not creature
+                and (
+                    (other.position[0] - center_x) ** 2
+                    + (other.position[1] - center_y) ** 2
+                    <= (max_distance + other.radius) ** 2
+                )
+            ]
         candidates = self._query_nearby_creatures(creature, max_distance)
         nearby: list[Creature] = []
         for other in candidates:
@@ -1402,21 +1426,37 @@ class World:
         return nearby
 
     def _cache_creature_spatial_state(self) -> None:
-        """Cache circle centers and radii for the current behavior pass."""
-        state: dict[int, tuple[float, float, float]] = {}
-        for creature in self.creatures:
-            # Creature circles are created without an offset, so body.position
-            # is their world-space geometric center.
-            state[creature.creature_id] = self._creature_spatial_values(creature)
-        self._creature_spatial_state = state
+        """Rebuild from authoritative pre-physics zero-offset circle centres."""
+        self._ensure_spatial_runtime()
+        if hasattr(self, "_scheduler_validation_failure_injector"):
+            self._scheduler_validation_failure_point("grid.rebuild")
+        self._creature_spatial_index.rebuild(self.creatures)
+
+    def _ensure_spatial_runtime(self) -> None:
+        """Install transient Milestone-3 state for legacy tests/loaders."""
+        if not hasattr(self, "_living_creatures"):
+            self._living_creatures = {
+                creature.creature_id: creature for creature in self.creatures
+            }
+        if not hasattr(self, "_creature_spatial_index"):
+            self._creature_spatial_index = CreatureSpatialIndex(
+                cell_size=128.0,
+                living_registry=self._living_creatures,
+            )
+        if not hasattr(self, "_candidate_buffer"):
+            self._candidate_buffer = CandidateBuffer(
+                self._creature_spatial_index
+            )
+        if not hasattr(self, "_candidate_buffer_leased"):
+            self._candidate_buffer_leased = False
 
     def _creature_spatial_values(
         self,
         creature: Creature,
     ) -> tuple[float, float, float]:
-        state = getattr(self, "_creature_spatial_state", None)
-        if state is not None:
-            cached = state.get(creature.creature_id)
+        index = getattr(self, "_creature_spatial_index", None)
+        if index is not None:
+            cached = index.values_for(creature)
             if cached is not None:
                 return cached
         body = getattr(creature, "body", None)
@@ -1446,35 +1486,60 @@ class World:
         creature: Creature,
         query_distance: float,
     ) -> list[Creature]:
-        """Return local creature candidates from Pymunk's spatial hash."""
-        space = getattr(self, "space", None)
-        point_query = getattr(space, "point_query", None)
-        index = getattr(self, "_creature_by_shape_id", None)
-        if point_query is None or index is None:
-            return []
+        """Compatibility API that materializes retained-grid candidates."""
         center_x, center_y, _ = self._creature_spatial_values(creature)
-        shape_filter = getattr(self, "_creature_query_filter", None)
-        if shape_filter is None:
-            shape_filter = pymunk.ShapeFilter(mask=CREATURE_CATEGORY)
-            self._creature_query_filter = shape_filter
-        hits = point_query(
-            (center_x, center_y),
-            max(0.0, query_distance),
-            shape_filter,
+        index = getattr(self, "_creature_spatial_index", None)
+        if index is None:
+            space = getattr(self, "space", None)
+            point_query = getattr(space, "point_query", None)
+            shape_index = getattr(self, "_creature_by_shape_id", None)
+            if point_query is None or shape_index is None:
+                return []
+            hits = point_query(
+                (center_x, center_y),
+                max(0.0, query_distance),
+                getattr(
+                    self,
+                    "_creature_query_filter",
+                    pymunk.ShapeFilter(mask=CREATURE_CATEGORY),
+                ),
+            )
+            nearby = []
+            seen_ids = set()
+            for hit in hits:
+                other = shape_index.get(id(hit.shape))
+                if (
+                    other is not None
+                    and other is not creature
+                    and other.creature_id not in seen_ids
+                ):
+                    seen_ids.add(other.creature_id)
+                    nearby.append(other)
+            return nearby
+        if not index.valid:
+            index.rebuild(self.creatures)
+        output = CandidateBuffer(index)
+        maximum_radius = max(
+            (other.radius for other in self.creatures),
+            default=0.0,
         )
-        nearby: list[Creature] = []
-        seen_ids: set[int] = set()
-        for hit in hits:
-            other = index.get(id(hit.shape))
-            if (
-                other is None
-                or other is creature
-                or other.creature_id in seen_ids
-            ):
-                continue
-            seen_ids.add(other.creature_id)
-            nearby.append(other)
-        return nearby
+        index.query_into(
+            center_x,
+            center_y,
+            max(0.0, query_distance) + maximum_radius,
+            output,
+        )
+        output.sort_by_stable_id()
+        return [
+            other
+            for other in output
+            if other is not creature
+            and (
+                (other.position[0] - center_x) ** 2
+                + (other.position[1] - center_y) ** 2
+                <= (max(0.0, query_distance) + other.radius) ** 2
+            )
+        ]
 
     def _creatures_in_world_bounds(
         self,
@@ -1799,37 +1864,32 @@ class World:
         *,
         record_food_discoveries: bool,
         pheromone_values: np.ndarray | None = None,
+        nearby_creatures=None,
+        own_infants=None,
     ) -> SensorSnapshot:
         nearby_foods = self._nearby_foods_for(
             creature,
             creature.vision.range + self.config.food.max_food_radius,
         )
-        flocking_config = getattr(self.config, "flocking", None)
-        long_range_config = getattr(
-            flocking_config,
-            "long_range",
-            None,
-        )
-        social_query_range = (
-            long_range_config.range
-            if long_range_config is not None
-            and long_range_config.enabled
-            else 0.0
-        )
-        flocking_perception_radius = (
-            flocking_config.perception_radius
-            if flocking_config is not None
-            else 0.0
-        )
-        nearby_creatures = self._nearby_creatures_for(
-            creature,
-            max(
-                creature.vision.range,
-                flocking_perception_radius,
-                social_query_range,
+        if nearby_creatures is None:
+            flocking_config = getattr(self.config, "flocking", None)
+            long_range_config = getattr(flocking_config, "long_range", None)
+            nearby_creatures = self._nearby_creatures_for(
+                creature,
+                max(
+                    creature.vision.range,
+                    getattr(flocking_config, "perception_radius", 0.0),
+                    (
+                        long_range_config.range
+                        if long_range_config is not None
+                        and long_range_config.enabled
+                        else 0.0
+                    ),
+                )
+                + self.config.trait.max_radius,
             )
-            + self.config.trait.max_radius,
-        )
+        if own_infants is None:
+            own_infants = self._own_infant_children_for(creature)
 
         fitness = self.fitness.get(creature.creature_id)
         age_seconds = 0.0 if fitness is None else fitness.age_seconds
@@ -1859,7 +1919,12 @@ class World:
                 clock_time_alive=clock_time_alive,
                 is_grabbing=is_grabbing,
                 ignored_food_ids=ignored_food_ids,
-                own_infants=self._own_infant_children_for(creature),
+                own_infants=own_infants,
+                reuse_scratch=(nearby_creatures is getattr(
+                    self,
+                    "_active_candidate_buffer",
+                    None,
+                )),
             )
             self._record_food_discoveries(creature, result.visible_food_ids)
             snapshot = result.snapshot
@@ -1876,7 +1941,7 @@ class World:
                 clock_time_alive=clock_time_alive,
                 is_grabbing=is_grabbing,
                 ignored_food_ids=ignored_food_ids,
-                own_infants=self._own_infant_children_for(creature),
+                own_infants=own_infants,
             )
 
         snapshot.biome = self._biome_sensor_snapshot_for(creature)
@@ -2651,6 +2716,13 @@ class World:
         lineage: LineageInfo | None = None,
     ) -> Creature:
         left, bottom, right, top = self.environment_world_bounds
+        existing = getattr(self, "_living_creatures", {}).get(creature_id)
+        if existing is not None:
+            raise ValueError(f"Duplicate live creature ID {creature_id}.")
+        if creature_id in getattr(self, "_issued_creature_ids", ()):
+            raise ValueError(
+                f"Creature ID {creature_id} was already issued in this session."
+            )
 
         if physical_traits is None:
             physical_traits = self._initial_physical_traits()
@@ -3247,12 +3319,153 @@ class World:
         self._flocking_capture_due_this_step = (
             self._flocking_telemetry_is_due()
         )
+        vision = getattr(self, "vision", None)
+        if vision is not None:
+            vision.failure_injector = (
+                self._scheduler_validation_failure_point
+                if hasattr(self, "_scheduler_validation_failure_injector")
+                else None
+            )
         self._cache_creature_spatial_state()
+        legacy_spatial_observer = (
+            "_apply_creature_intents_with_spatial_cache" in self.__dict__
+        )
+        if legacy_spatial_observer:
+            self._creature_spatial_state = {
+                creature.creature_id: self._creature_spatial_values(creature)
+                for creature in self.creatures
+            }
         try:
             self._apply_creature_intents_with_spatial_cache()
         finally:
-            # Space.step() moves bodies immediately after this behavior pass.
+            # Space.step() moves bodies immediately after this behavior pass;
+            # the completed generation intentionally remains available only
+            # as pre-physics runtime state and is rebuilt next fixed step.
+            if getattr(self, "_candidate_buffer_leased", False):
+                self._release_candidate_buffer()
             self._creature_spatial_state = None
+
+    def _register_living_creature(self, creature: Creature) -> None:
+        """Register a successful spawn and reject IDs reused in this session."""
+        if not hasattr(self, "_living_creatures"):
+            self._living_creatures = {}
+        creature_id = creature.creature_id
+        if type(creature_id) is not int:
+            raise TypeError("creature_id must be a stable integer.")
+        existing = self._living_creatures.get(creature_id)
+        if existing is not None and existing is not creature:
+            raise ValueError(f"Duplicate live creature ID {creature_id}.")
+        self._living_creatures[creature_id] = creature
+        if not hasattr(self, "_issued_creature_ids"):
+            self._issued_creature_ids = set()
+        self._issued_creature_ids.add(creature_id)
+        if hasattr(self, "_next_creature_id_value"):
+            self._next_creature_id_value = max(
+                self._next_creature_id_value,
+                creature_id + 1,
+            )
+
+    def _unregister_living_creature(self, creature: Creature) -> None:
+        registry = getattr(self, "_living_creatures", None)
+        if registry is not None and registry.get(creature.creature_id) is creature:
+            del registry[creature.creature_id]
+
+    def _acquire_candidate_buffer(self) -> CandidateBuffer:
+        if getattr(self, "_candidate_buffer_leased", False):
+            raise AssertionError("The world candidate buffer is non-reentrant.")
+        self._candidate_buffer_leased = True
+        buffer = self._candidate_buffer
+        buffer.reset(self._creature_spatial_index, self._creature_spatial_index.generation)
+        return buffer
+
+    def _release_candidate_buffer(self) -> None:
+        buffer = getattr(self, "_candidate_buffer", None)
+        if buffer is not None:
+            buffer.invalidate()
+        vision = getattr(self, "vision", None)
+        if vision is not None:
+            vision.clear_scratch()
+        self._active_candidate_buffer = None
+        self._candidate_buffer_leased = False
+
+    def _broad_phase_geometry_for(
+        self,
+        creature: Creature,
+    ) -> BroadPhaseGeometry:
+        self._ensure_spatial_runtime()
+        index = self._creature_spatial_index
+        if not index.valid:
+            index.rebuild(self.creatures)
+        maximum_radius = index.maximum_radius
+        long_range = self.config.flocking.long_range
+        return BroadPhaseGeometry.calculate(
+            observer_radius=creature.radius,
+            maximum_target_radius=maximum_radius,
+            collision_margin=self.config.action.collision_avoidance_margin,
+            vision_range=creature.vision.range,
+            flock_range=self.config.flocking.perception_radius,
+            long_range=long_range.range,
+            long_range_enabled=long_range.enabled,
+        )
+
+    def _query_envelope_for(
+        self,
+        creature: Creature,
+        *,
+        scheduled: bool,
+    ) -> float:
+        index = self._creature_spatial_index
+        observer_radius = creature.radius
+        target_radius = index.maximum_radius
+        collision = (
+            observer_radius
+            + self.config.action.collision_avoidance_margin
+            + target_radius
+        )
+        if not scheduled:
+            return collision
+        vision = (
+            0.35 * observer_radius
+            + creature.vision.range
+            + target_radius
+        )
+        flocking = self.config.flocking
+        long_range = (
+            flocking.long_range.range
+            if flocking.long_range.enabled
+            else 0.0
+        )
+        return max(
+            collision,
+            vision,
+            flocking.perception_radius,
+            long_range,
+        )
+
+    def _query_candidates_for(
+        self,
+        creature: Creature,
+        centre_radius: float,
+        output: CandidateBuffer,
+        *,
+        scheduled: bool,
+    ) -> None:
+        center_x, center_y, _ = self._creature_spatial_values(creature)
+        if hasattr(self, "_scheduler_validation_failure_injector"):
+            self._scheduler_validation_failure_point("grid.query")
+        self._creature_spatial_index.query_into(
+            center_x,
+            center_y,
+            centre_radius,
+            output,
+        )
+        counter_name = (
+            "_spatial_scheduled_queries"
+            if scheduled
+            else "_spatial_collision_only_queries"
+        )
+        setattr(self, counter_name, getattr(self, counter_name, 0) + 1)
+        output.sort_by_stable_id()
 
     @staticmethod
     def _neutral_action() -> Action:
@@ -3284,12 +3497,7 @@ class World:
             creature.last_action = action
         except AttributeError:
             pass
-        self._cached_social_intentions[creature_id] = (
-            SocialIntent(),
-            SocialObservation(),
-            0.0,
-            (0.0, 0.0),
-        )
+        self._cached_social_intentions[creature_id] = SocialRuntime()
         self._motion_commands[creature_id] = MotionCommand(
             effective_rotate=0.0,
             max_speed=self.MAX_SPEED,
@@ -3356,21 +3564,43 @@ class World:
             snapshot = self._last_sensor_snapshots.get(creature_id)
             thinking_row = thinking_rows.get(creature_id)
             should_think = thinking_row is not None
+            use_spatial_candidates = (
+                hasattr(creature, "radius")
+                and hasattr(creature, "vision")
+            )
+            candidates = None
+            if use_spatial_candidates:
+                candidates = self._acquire_candidate_buffer()
+                self._query_candidates_for(
+                    creature,
+                    self._query_envelope_for(
+                        creature,
+                        scheduled=should_think,
+                    ),
+                    candidates,
+                    scheduled=should_think,
+                )
+                self._active_candidate_buffer = candidates
             capture_inputs = (
                 creature_id == selected_creature_id
                 or capture_global_diagnostics
             )
 
             if should_think:
-                snapshot = self._sensor_snapshot_for(
-                    creature,
-                    record_food_discoveries=True,
-                    pheromone_values=(
+                sensing_kwargs = {
+                    "record_food_discoveries": True,
+                    "pheromone_values": (
                         None
                         if pheromones is None
                         else self._pheromone_sensor_values[thinking_row]
                     ),
-                )
+                }
+                if use_spatial_candidates:
+                    sensing_kwargs["nearby_creatures"] = candidates
+                    sensing_kwargs["own_infants"] = self._own_infant_view_for(
+                        creature
+                    )
+                snapshot = self._sensor_snapshot_for(creature, **sensing_kwargs)
                 decide_with_capture = getattr(
                     self.neat_controller,
                     "decide_with_input_capture",
@@ -3400,6 +3630,8 @@ class World:
                 self._adapt_creature_biome_memory(creature, snapshot)
 
             if action is None:
+                if use_spatial_candidates:
+                    self._release_candidate_buffer()
                 continue
 
             if capture_inputs and not should_think and snapshot is not None:
@@ -3444,6 +3676,8 @@ class World:
                 ),
                 refresh_intention=should_think,
             )
+            if use_spatial_candidates:
+                self._release_candidate_buffer()
 
     def _decide_with_duration(
         self,
@@ -3697,54 +3931,43 @@ class World:
             "_cached_social_intentions",
             {},
         ).get(creature.creature_id)
+        if cached_social is not None and not isinstance(
+            cached_social, SocialRuntime
+        ):
+            cached_social = SocialRuntime.from_legacy(cached_social)
+            self._cached_social_intentions[creature.creature_id] = cached_social
         if refresh_intention or cached_social is None:
-            social_intent, social_observation = self._social_intent(
+            if not hasattr(self, "_cached_social_intentions"):
+                self._cached_social_intentions = {}
+            if cached_social is None:
+                cached_social = SocialRuntime()
+                self._cached_social_intentions[creature.creature_id] = (
+                    cached_social
+                )
+            self._refresh_social_runtime(
+                cached_social,
                 creature,
                 action,
                 snapshot,
                 current_max_speed,
                 current_max_forward_force,
-            )
-            social_influence = configured_social_influence(
-                self.config.flocking,
-                social_intent,
-            )
-            blended_desired_velocity = blend_desired_velocity(
+                current_velocity,
                 neural_desired_velocity,
-                social_intent.desired_velocity,
-                social_influence,
+                neural_request,
             )
-            blended_request = (
-                blended_desired_velocity[0] - current_velocity[0],
-                blended_desired_velocity[1] - current_velocity[1],
-            )
-            requested_social_contribution = (
-                blended_request[0] - neural_request[0],
-                blended_request[1] - neural_request[1],
-            )
-            if not hasattr(self, "_cached_social_intentions"):
-                self._cached_social_intentions = {}
-            self._cached_social_intentions[creature.creature_id] = (
-                social_intent,
-                social_observation,
-                social_influence,
-                requested_social_contribution,
-            )
-        else:
-            (
-                social_intent,
-                social_observation,
-                social_influence,
-                requested_social_contribution,
-            ) = cached_social
-            blended_request = (
-                neural_request[0] + requested_social_contribution[0],
-                neural_request[1] + requested_social_contribution[1],
-            )
-            blended_desired_velocity = (
-                current_velocity[0] + blended_request[0],
-                current_velocity[1] + blended_request[1],
-            )
+        social_influence = cached_social.influence
+        requested_social_contribution = (
+            cached_social.requested_contribution_x,
+            cached_social.requested_contribution_y,
+        )
+        blended_request = (
+            neural_request[0] + cached_social.requested_contribution_x,
+            neural_request[1] + cached_social.requested_contribution_y,
+        )
+        blended_desired_velocity = (
+            current_velocity[0] + blended_request[0],
+            current_velocity[1] + blended_request[1],
+        )
         (
             voluntary_force,
             _counterfactual_neural_force,
@@ -3783,10 +4006,45 @@ class World:
             if qualities is None:
                 qualities = {}
                 self._flocking_benchmark_quality_by_creature_id = qualities
-            qualities[creature.creature_id] = flocking_benchmark_quality(
-                social_observation,
-                benchmark_config,
-            )
+            if cached_social.effective_count <= 0.0:
+                quality = 0.0
+            else:
+                group_presence = self._clamp(
+                    cached_social.effective_count
+                    / max(1, benchmark_config.target_group_size - 1),
+                    0.0,
+                    1.0,
+                )
+                alignment_quality = self._clamp(
+                    1.0 - cached_social.mean_heading_error / pi,
+                    0.0,
+                    1.0,
+                )
+                spacing_quality = exp(
+                    -(
+                        (
+                            cached_social.mean_neighbor_distance
+                            - benchmark_config.target_spacing
+                        )
+                        / benchmark_config.spacing_tolerance
+                    )
+                    ** 2
+                )
+                movement_quality = min(
+                    hypot(
+                        cached_social.mean_group_velocity_x,
+                        cached_social.mean_group_velocity_y,
+                    )
+                    / benchmark_config.reference_speed,
+                    1.0,
+                )
+                quality = (
+                    group_presence
+                    * alignment_quality
+                    * spacing_quality
+                    * movement_quality
+                )
+            qualities[creature.creature_id] = quality
 
         if capture_runtime:
             raw_neural_herding = effective_herding
@@ -3803,8 +4061,8 @@ class World:
                     1.0,
                 )
             self._last_flocking_runtime[creature.creature_id] = FlockingRuntimeSnapshot(
-                observation=social_observation,
-                intent=social_intent,
+                observation=cached_social.observation,
+                intent=cached_social.intent,
                 neural_desired_velocity=neural_desired_velocity,
                 blended_desired_velocity=blended_desired_velocity,
                 mandatory_avoidance=mandatory_avoidance_force,
@@ -4012,6 +4270,253 @@ class World:
             ),
         )
 
+    def _refresh_social_runtime(
+        self,
+        runtime: SocialRuntime,
+        creature: Creature,
+        action: Action,
+        snapshot: SensorSnapshot | None,
+        max_speed: float,
+        max_force: float,
+        current_velocity: tuple[float, float],
+        neural_desired_velocity: tuple[float, float],
+        neural_request: tuple[float, float],
+    ) -> None:
+        """Refresh retained scalar social state without immutable hot-path objects."""
+        if snapshot is None:
+            separation_x = separation_y = 0.0
+            alignment_x = alignment_y = 0.0
+            cohesion_x = cohesion_y = 0.0
+            runtime.observation_present = False
+            runtime.visible_creature_count = 0
+            runtime.compatible_visible_count = 0
+            runtime.personal_space_presence = 0.0
+            runtime.social_presence = 0.0
+            runtime.effective_count = 0.0
+            runtime.center_forward = 0.0
+            runtime.center_right = 0.0
+            runtime.relative_velocity_forward = 0.0
+            runtime.relative_velocity_right = 0.0
+            runtime.separation_forward = 0.0
+            runtime.separation_right = 0.0
+            runtime.mean_proximity = 0.0
+            runtime.center_distance = 0.0
+            runtime.mean_neighbor_distance = 0.0
+            runtime.mean_heading_error = 0.0
+            runtime.mean_group_velocity_x = 0.0
+            runtime.mean_group_velocity_y = 0.0
+            runtime.long_range_intensity = 0.0
+            runtime.long_range_direction_forward = 0.0
+            runtime.long_range_direction_right = 0.0
+            separation_weight = alignment_weight = cohesion_weight = 0.0
+            engagement = 0.0
+            panic_attenuation = 1.0
+        else:
+            separation, alignment, cohesion = self._flock_component_forces(
+                creature,
+                snapshot,
+                max_speed,
+                max_force,
+            )
+            separation_x, separation_y = separation
+            alignment_x, alignment_y = alignment
+            cohesion_x, cohesion_y = cohesion
+            flock = snapshot.flock
+            effective_count = max(
+                0.0,
+                float(getattr(flock, "flockmate_count", 0.0)),
+            )
+            personal_space_count = max(
+                0,
+                int(getattr(flock, "visible_personal_space_count", 0)),
+            )
+            separation_strength = self._clamp(
+                float(getattr(flock, "crowd_separation_strength", 0.0)),
+                0.0,
+                1.0,
+            )
+            runtime.observation_present = effective_count > 1e-12
+            runtime.visible_creature_count = max(
+                0,
+                int(getattr(flock, "visible_creature_count", 0)),
+            )
+            runtime.compatible_visible_count = max(
+                0,
+                int(getattr(flock, "compatible_visible_count", 0)),
+            )
+            runtime.personal_space_presence = (
+                1.0
+                if personal_space_count > 0 or separation_strength > 1e-12
+                else 0.0
+            )
+            runtime.social_presence = self._clamp(effective_count, 0.0, 1.0)
+            runtime.effective_count = effective_count
+            runtime.center_forward = float(
+                getattr(flock, "center_forward", 0.0)
+            )
+            runtime.center_right = float(getattr(flock, "center_right", 0.0))
+            runtime.relative_velocity_forward = float(
+                getattr(flock, "relative_velocity_forward", 0.0)
+            )
+            runtime.relative_velocity_right = float(
+                getattr(flock, "relative_velocity_right", 0.0)
+            )
+            runtime.separation_forward = 0.0
+            runtime.separation_right = 0.0
+            runtime.mean_proximity = self._clamp(
+                float(
+                    getattr(flock, "average_flockmate_proximity", 0.0)
+                ),
+                0.0,
+                1.0,
+            )
+            runtime.center_distance = max(
+                0.0,
+                float(getattr(flock, "center_distance", 0.0)),
+            )
+            runtime.mean_neighbor_distance = max(
+                0.0,
+                float(getattr(flock, "mean_neighbor_distance", 0.0)),
+            )
+            runtime.mean_heading_error = max(
+                0.0,
+                float(getattr(flock, "mean_heading_error", 0.0)),
+            )
+            group_velocity = getattr(
+                flock,
+                "actual_average_flockmate_velocity",
+                getattr(flock, "average_flockmate_velocity", (0.0, 0.0)),
+            )
+            runtime.mean_group_velocity_x = float(group_velocity[0])
+            runtime.mean_group_velocity_y = float(group_velocity[1])
+            long_range = getattr(
+                flock,
+                "long_range",
+                _EMPTY_LONG_RANGE_SOCIAL_OBSERVATION,
+            )
+            runtime.long_range_intensity = float(long_range.intensity)
+            runtime.long_range_direction_forward = float(
+                long_range.direction_forward
+            )
+            runtime.long_range_direction_right = float(
+                long_range.direction_right
+            )
+
+            traits = creature.flocking_traits
+            herding = self._clamp(getattr(action, "herding", 0.0), 0.0, 1.0)
+            panic_value = self._clamp(
+                getattr(action, "flee_panic_intensity", 0.0),
+                0.0,
+                1.0,
+            )
+            separation_gene = self._clamp(traits.separation_gene, 0.0, 1.0)
+            alignment_gene = self._clamp(traits.alignment_gene, 0.0, 1.0)
+            cohesion_gene = self._clamp(traits.cohesion_gene, 0.0, 1.0)
+            minimum_engagement = self._clamp(
+                self.config.flocking.minimum_social_engagement,
+                0.0,
+                1.0,
+            )
+            suppression = self._clamp(
+                self.config.flocking.panic_suppression_strength,
+                0.0,
+                1.0,
+            )
+            engagement = runtime.social_presence * (
+                minimum_engagement
+                + (1.0 - minimum_engagement) * herding
+            )
+            panic_attenuation = 1.0 - suppression * panic_value
+            separation_weight = (
+                runtime.personal_space_presence * separation_gene
+            )
+            alignment_weight = (
+                engagement * alignment_gene * panic_attenuation
+            )
+            cohesion_weight = engagement * cohesion_gene * panic_attenuation
+
+        separation_velocity_x = current_velocity[0] + separation_x
+        separation_velocity_y = current_velocity[1] + separation_y
+        alignment_velocity_x = current_velocity[0] + alignment_x
+        alignment_velocity_y = current_velocity[1] + alignment_y
+        cohesion_velocity_x = current_velocity[0] + cohesion_x
+        cohesion_velocity_y = current_velocity[1] + cohesion_y
+        weighted_x = (
+            separation_velocity_x * separation_weight
+            + alignment_velocity_x * alignment_weight
+            + cohesion_velocity_x * cohesion_weight
+        )
+        weighted_y = (
+            separation_velocity_y * separation_weight
+            + alignment_velocity_y * alignment_weight
+            + cohesion_velocity_y * cohesion_weight
+        )
+        weight_sum = separation_weight + alignment_weight + cohesion_weight
+        if weight_sum <= 1e-12:
+            desired_x, desired_y = current_velocity
+        else:
+            desired_x = weighted_x / weight_sum
+            desired_y = weighted_y / weight_sum
+        desired_magnitude = hypot(desired_x, desired_y)
+        maximum = max(0.0, float(max_speed))
+        if desired_magnitude > maximum and desired_magnitude > 1e-12:
+            desired_scale = maximum / desired_magnitude
+            desired_x *= desired_scale
+            desired_y *= desired_scale
+        group_scale = self._clamp(
+            max(0.0, runtime.effective_count)
+            / max(1, int(self.config.flocking.target_group_size)),
+            0.0,
+            1.0,
+        )
+        confidence = self._clamp(
+            max(separation_weight, alignment_weight, cohesion_weight)
+            * (0.5 + 0.5 * group_scale),
+            0.0,
+            1.0,
+        )
+        max_influence = self.config.flocking.max_social_influence
+        influence = self._clamp(
+            max_influence * confidence,
+            0.0,
+            max_influence,
+        )
+        if influence <= 0.0:
+            blended_x, blended_y = neural_desired_velocity
+        else:
+            blended_x = (
+                neural_desired_velocity[0] * (1.0 - influence)
+                + desired_x * influence
+            )
+            blended_y = (
+                neural_desired_velocity[1] * (1.0 - influence)
+                + desired_y * influence
+            )
+
+        runtime.desired_velocity_x = desired_x
+        runtime.desired_velocity_y = desired_y
+        runtime.requested_force_x = desired_x - current_velocity[0]
+        runtime.requested_force_y = desired_y - current_velocity[1]
+        runtime.confidence = confidence
+        runtime.weight_separation = separation_weight
+        runtime.weight_alignment = alignment_weight
+        runtime.weight_cohesion = cohesion_weight
+        runtime.weight_engagement = engagement
+        runtime.weight_panic_attenuation = panic_attenuation
+        runtime.separation_velocity_x = separation_velocity_x
+        runtime.separation_velocity_y = separation_velocity_y
+        runtime.alignment_velocity_x = alignment_velocity_x
+        runtime.alignment_velocity_y = alignment_velocity_y
+        runtime.cohesion_velocity_x = cohesion_velocity_x
+        runtime.cohesion_velocity_y = cohesion_velocity_y
+        runtime.influence = influence
+        runtime.requested_contribution_x = (
+            blended_x - current_velocity[0] - neural_request[0]
+        )
+        runtime.requested_contribution_y = (
+            blended_y - current_velocity[1] - neural_request[1]
+        )
+
     def _social_intent(
         self,
         creature: Creature,
@@ -4134,42 +4639,109 @@ class World:
             return 0.0, 0.0
 
         center_x, center_y, radius = self._creature_spatial_values(creature)
-        # point_query measures from A's center to B's surface, so B's radius
-        # is already included and must not be added to this query distance.
-        neighbors = self._query_nearby_creatures(creature, radius + margin)
+        neighbors = getattr(self, "_active_candidate_buffer", None)
+        if neighbors is None:
+            # Deterministic reference/debug path outside the fixed-step lease.
+            if hasattr(self, "_living_creatures"):
+                neighbors = sorted(
+                    self._living_creatures.values(),
+                    key=lambda other: other.creature_id,
+                )
+            else:
+                neighbors = self._query_nearby_creatures(
+                    creature,
+                    radius + margin,
+                )
         avoidance_x = 0.0
         avoidance_y = 0.0
-        for neighbor in neighbors:
-            neighbor_x, neighbor_y, neighbor_radius = (
-                self._creature_spatial_values(neighbor)
-            )
-            away_x = center_x - neighbor_x
-            away_y = center_y - neighbor_y
-            distance_squared = away_x * away_x + away_y * away_y
-            safe_distance = max(
-                1e-9,
-                radius + neighbor_radius + margin,
-            )
-            if distance_squared >= safe_distance * safe_distance:
-                continue
-            if distance_squared <= 1e-24:
-                direction = (
-                    1.0
-                    if creature.creature_id < neighbor.creature_id
-                    else -1.0
+        spatial_buffer = (
+            neighbors if isinstance(neighbors, CandidateBuffer) else None
+        )
+        if spatial_buffer is not None:
+            index = self._creature_spatial_index
+            for position in range(spatial_buffer.count):
+                slot = spatial_buffer.slots[position]
+                neighbor = index.creatures[slot]
+                stable_id = index.stable_ids[slot]
+                if (
+                    index.slot_generations[slot] != index.generation
+                    or neighbor is None
+                    or neighbor.creature_id != stable_id
+                    or index.living_registry.get(stable_id) is not neighbor
+                ):
+                    index.counters.invalid_slots_skipped += 1
+                    continue
+                if neighbor is creature:
+                    continue
+                if hasattr(self, "_scheduler_validation_failure_injector"):
+                    self._scheduler_validation_failure_point(
+                        "collision.evaluation"
+                    )
+                away_x = center_x - index.centres_x[slot]
+                away_y = center_y - index.centres_y[slot]
+                distance_squared = away_x * away_x + away_y * away_y
+                safe_distance = max(
+                    1e-9,
+                    radius + index.radii[slot] + margin,
                 )
-                unit_x, unit_y = direction, 0.0
-                distance = 0.0
-            else:
-                distance = sqrt(distance_squared)
-                unit_x, unit_y = away_x / distance, away_y / distance
-            strength = self._clamp(
-                (safe_distance - distance) / safe_distance,
-                0.0,
-                1.0,
-            )
-            avoidance_x += unit_x * strength
-            avoidance_y += unit_y * strength
+                if distance_squared >= safe_distance * safe_distance:
+                    continue
+                if distance_squared <= 1e-24:
+                    direction = (
+                        1.0
+                        if creature.creature_id < neighbor.creature_id
+                        else -1.0
+                    )
+                    unit_x, unit_y = direction, 0.0
+                    distance = 0.0
+                else:
+                    distance = sqrt(distance_squared)
+                    unit_x, unit_y = away_x / distance, away_y / distance
+                strength = self._clamp(
+                    (safe_distance - distance) / safe_distance,
+                    0.0,
+                    1.0,
+                )
+                avoidance_x += unit_x * strength
+                avoidance_y += unit_y * strength
+        else:
+            for neighbor in neighbors:
+                if neighbor is creature:
+                    continue
+                if hasattr(self, "_scheduler_validation_failure_injector"):
+                    self._scheduler_validation_failure_point(
+                        "collision.evaluation"
+                    )
+                neighbor_x, neighbor_y, neighbor_radius = (
+                    self._creature_spatial_values(neighbor)
+                )
+                away_x = center_x - neighbor_x
+                away_y = center_y - neighbor_y
+                distance_squared = away_x * away_x + away_y * away_y
+                safe_distance = max(
+                    1e-9,
+                    radius + neighbor_radius + margin,
+                )
+                if distance_squared >= safe_distance * safe_distance:
+                    continue
+                if distance_squared <= 1e-24:
+                    direction = (
+                        1.0
+                        if creature.creature_id < neighbor.creature_id
+                        else -1.0
+                    )
+                    unit_x, unit_y = direction, 0.0
+                    distance = 0.0
+                else:
+                    distance = sqrt(distance_squared)
+                    unit_x, unit_y = away_x / distance, away_y / distance
+                strength = self._clamp(
+                    (safe_distance - distance) / safe_distance,
+                    0.0,
+                    1.0,
+                )
+                avoidance_x += unit_x * strength
+                avoidance_y += unit_y * strength
 
         magnitude = hypot(avoidance_x, avoidance_y)
         if magnitude <= 1e-12:
@@ -4489,7 +5061,7 @@ class World:
     def _record_food_discoveries(
         self,
         creature: Creature,
-        visible_food_ids: list[int],
+        visible_food_ids,
     ) -> None:
         fitness = self.fitness.get(creature.creature_id)
         if fitness is None:
@@ -5035,6 +5607,7 @@ class World:
                 lineage=traits.lineage,
             )
             self.creatures.append(child)
+            self._register_living_creature(child)
             self._initialize_creature_runtime_state(child)
             self._mark_behavior_cohort_dirty()
             self._initialize_creature_biome_memory(child)
@@ -5663,14 +6236,26 @@ class World:
         )
 
     def _own_infant_children_for(self, parent: Creature) -> list[Creature]:
-        parent_id = getattr(parent, "creature_id", None)
-        return [
+        return list(self._own_infant_view_for(parent))
+
+    def _own_infant_view_for(self, parent: Creature):
+        index = getattr(self, "_creature_spatial_index", None)
+        if index is not None and index.valid:
+            return index.family_view(parent.creature_id, self._is_infant)
+        # Current-position debug/load fallback; normal fixed steps always have
+        # a complete family generation before sensing or nursing.
+        living = getattr(self, "_living_creatures", None)
+        source = self.creatures if living is None else living.values()
+        return tuple(
             creature
-            for creature in self.creatures
+            for creature in sorted(
+                source,
+                key=lambda other: other.creature_id,
+            )
             if getattr(getattr(creature, "lineage", None), "parent_id", None)
-            == parent_id
+            == parent.creature_id
             and self._is_infant(creature)
-        ]
+        )
 
     def _record_maturity_if_crossed(
         self,
@@ -5728,20 +6313,19 @@ class World:
     def _nearest_nursable_infant_for(self, parent: Creature) -> Creature | None:
         max_distance = parent.radius * 2.5
         max_distance_squared = max_distance * max_distance
-        candidates: list[tuple[float, Creature]] = []
         parent_x, parent_y = parent.position
-
-        for infant in self._own_infant_children_for(parent):
+        nearest: Creature | None = None
+        nearest_key: tuple[float, int] | None = None
+        for infant in self._own_infant_view_for(parent):
             dx = infant.position[0] - parent_x
             dy = infant.position[1] - parent_y
             distance_squared = dx * dx + dy * dy
             if distance_squared <= max_distance_squared:
-                candidates.append((distance_squared, infant))
-
-        if not candidates:
-            return None
-
-        return min(candidates, key=lambda item: item[0])[1]
+                key = (distance_squared, infant.creature_id)
+                if nearest_key is None or key < nearest_key:
+                    nearest = infant
+                    nearest_key = key
+        return nearest
 
     def _apply_infant_movement_penalties(self) -> dict[int, float]:
         if getattr(getattr(self, "config", None), "population", None) is None:
@@ -5947,6 +6531,9 @@ class World:
             )
 
         if creature in self.creatures:
+            # Slots become invalid through the registry before any remaining
+            # removal side effects can expose the entity to a consumer.
+            self._unregister_living_creature(creature)
             self.creatures.remove(creature)
             self._mark_behavior_cohort_dirty()
             self._unindex_creature_shape(creature)
@@ -6263,6 +6850,7 @@ class World:
                 self._record_new_species(child, speciation_result)
 
             self.creatures.append(child)
+            self._register_living_creature(child)
             self._initialize_creature_runtime_state(child)
             self._mark_behavior_cohort_dirty()
             self._initialize_creature_biome_memory(child)
@@ -6418,6 +7006,7 @@ class World:
             self._record_new_species(child, speciation_result)
 
         self.creatures.append(child)
+        self._register_living_creature(child)
         self._initialize_creature_runtime_state(child)
         self._mark_behavior_cohort_dirty()
         self._initialize_creature_biome_memory(child)
