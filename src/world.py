@@ -8,6 +8,7 @@ import inspect
 import pickle
 from math import atan2, ceil, cos, exp, floor, hypot, isfinite, pi, sin, sqrt
 from random import Random
+from threading import RLock
 from time import monotonic
 from typing import Literal
 
@@ -371,6 +372,9 @@ class World:
         self.environment_map_mode: EnvironmentMapMode = "none"
         self._physics_accumulator = 0.0
         self._simulation_step = 0
+        # State capture copies authoritative data while this lock is held.
+        # Pickle serialization and disk I/O happen later on the writer thread.
+        self._checkpoint_state_lock = RLock()
         self.simulation_lag_metrics = SimulationLagMetrics()
         self._mouth_exposures = _MouthExposureBuffer()
         self._immediate_dead_buffer: list[Creature] = []
@@ -609,6 +613,14 @@ class World:
         self._clamp_environment_pan()
 
     def update(self, delta_time: float) -> None:
+        lock = getattr(self, "_checkpoint_state_lock", None)
+        if lock is None:
+            self._update_unlocked(delta_time)
+            return
+        with lock:
+            self._update_unlocked(delta_time)
+
+    def _update_unlocked(self, delta_time: float) -> None:
         behavior_observer = getattr(self, "behavior_observer", None)
         if behavior_observer is not None:
             behavior_observer.poll()
@@ -715,6 +727,12 @@ class World:
         ):
             self._refresh_stats()
 
+    def _scheduler_validation_failure_point(self, point: str) -> None:
+        """Invoke an optional narrow failure injector used by soak tests."""
+        injector = getattr(self, "_scheduler_validation_failure_injector", None)
+        if callable(injector):
+            injector(point)
+
     def _accumulate_mouth_exposures(self, delta_time: float) -> None:
         """Capture fixed-step eat contacts without mutating food resources."""
         if not hasattr(self.metabolism, "evaluate_candidate"):
@@ -802,6 +820,14 @@ class World:
         return self._simulation_step
 
     def save_now(self) -> None:
+        lock = getattr(self, "_checkpoint_state_lock", None)
+        if lock is None:
+            self._save_now_unlocked()
+            return
+        with lock:
+            self._save_now_unlocked()
+
+    def _save_now_unlocked(self) -> None:
         previous_quick_timer = self.time_since_last_quick_save
         self.time_since_last_quick_save = 0.0
         try:
@@ -4681,7 +4707,16 @@ class World:
         self,
         delta_time: float,
     ) -> TransactionResolution:
+        self._scheduler_validation_failure_point(
+            "biology.resource_candidate_preparation"
+        )
+        self._scheduler_validation_failure_point(
+            "biology.reproduction_preparation"
+        )
         reproduction_requests = self._prepare_reproduction_requests()
+        self._scheduler_validation_failure_point(
+            "biology.nursing_preparation"
+        )
         nursing_requests = self._prepare_nursing_requests(delta_time)
         upkeep_demands, powered_movement_demands = self._energy_demands_for(
             delta_time
@@ -4689,6 +4724,12 @@ class World:
         baseline_candidates: dict[int, ResourceCandidate] = {}
         baseline_activities: dict[int, ActivityResult] = {}
         for creature in self.creatures:
+            self._scheduler_validation_failure_point(
+                "biology.digestion_evaluation"
+            )
+            self._scheduler_validation_failure_point(
+                "biology.metabolism_evaluation"
+            )
             activity = self._activity_for(creature)
             baseline_activities[creature.creature_id] = activity
             baseline_candidates[creature.creature_id] = (
@@ -5116,6 +5157,9 @@ class World:
         claimed_creature_step: set[tuple[int, int]] = set()
         consumptions: list[FoodConsumption] = []
         try:
+            self._scheduler_validation_failure_point(
+                "exposure.before_validation"
+            )
             buffer.sort_order()
             for order_index in range(buffer.count):
                 record_index = buffer.order[order_index]
@@ -5135,10 +5179,19 @@ class World:
                     or creature_step in claimed_creature_step
                 ):
                     continue
+                self._scheduler_validation_failure_point(
+                    "exposure.before_mutation"
+                )
                 consumption = self.metabolism.eat(
                     creature,
                     food,
                     buffer.durations[record_index],
+                )
+                self._scheduler_validation_failure_point(
+                    "exposure.after_stomach_mutation"
+                )
+                self._scheduler_validation_failure_point(
+                    "exposure.after_food_mutation"
                 )
                 if (
                     consumption.energy_swallowed <= 0.0
@@ -5153,6 +5206,12 @@ class World:
                 if consumption.depleted:
                     depleted_ids.add(food_id)
                     depleted_foods.append(food)
+                    clear_carry = getattr(self, "_clear_food_carry", None)
+                    if callable(clear_carry):
+                        clear_carry(food)
+                    self._scheduler_validation_failure_point(
+                        "exposure.after_carried_food_mutation"
+                    )
                 consumptions.append(
                     FoodConsumption(
                         creature_id=creature.creature_id,
@@ -5161,12 +5220,17 @@ class World:
                         depleted=consumption.depleted,
                     )
                 )
+                self._scheduler_validation_failure_point(
+                    "exposure.after_valid_claim"
+                )
+            if clear_on_success:
+                self._scheduler_validation_failure_point(
+                    "exposure.before_buffer_clear"
+                )
+                buffer.clear()
         except BaseException:
             self._restore_mouth_exposure_rollback_state(rollback)
             raise
-
-        if clear_on_success:
-            buffer.clear()
 
         return MetabolismReport(
             depleted_foods=depleted_foods,
@@ -5221,6 +5285,7 @@ class World:
         processing_costs: dict[int, float] = {}
         dead_creatures: list[Creature] = []
 
+        self._scheduler_validation_failure_point("biology.commit_boundary")
         for creature in list(self.creatures):
             creature_id = creature.creature_id
             candidate = resolution.candidates[creature.creature_id]
@@ -5240,6 +5305,9 @@ class World:
                 creature,
                 resolution.activities[creature_id],
                 record_diagnostics=record_diagnostics,
+            )
+            self._scheduler_validation_failure_point(
+                "biology.after_creature_commit"
             )
             if candidate.digestion.net_energy > 0.0:
                 digested_energy_gained.append(
@@ -5268,11 +5336,17 @@ class World:
                 staged_rng_state,
             )
 
+        self._scheduler_validation_failure_point(
+            "biology.post_death_processing"
+        )
         self._remove_dead_creatures(
             dead_creatures,
             default_reason="metabolic",
         )
 
+        self._scheduler_validation_failure_point(
+            "biology.dependent_fitness_bookkeeping"
+        )
         for consumption in eating_report.food_consumptions:
             self._record_behavior_food_consumption(consumption)
             fitness = self.fitness.get(consumption.creature_id)

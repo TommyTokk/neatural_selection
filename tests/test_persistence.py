@@ -50,8 +50,8 @@ class PersistenceManagerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_checkpoint_versions_2_through_18_remain_loadable(self) -> None:
-        for version in range(2, 19):
+    def test_checkpoint_versions_2_through_19_remain_loadable(self) -> None:
+        for version in range(2, 20):
             PersistenceManager._validate_state({"version": version})
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
@@ -780,7 +780,7 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             self.assertIsNot(restored_brain, original_brain)
             self.assertEqual(restored_brain.herding_decay_rate, 0.15)
-            self.assertEqual(restored_brain.herding_state, 0.0)
+            self.assertEqual(restored_brain.herding_state, 0.8)
             self.assertEqual(restored_brain.last_raw_herding, 0.0)
             self.assertEqual(restored.live_brain_count(), 1)
             self.assertEqual(restored.simulation_paths, world.simulation_paths)

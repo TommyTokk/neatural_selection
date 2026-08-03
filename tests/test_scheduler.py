@@ -952,7 +952,11 @@ class SchedulerPersistenceTest(unittest.TestCase):
             )
             self.assertEqual(
                 restored._last_actions[creature.creature_id].accelerate,
-                0.0,
+                0.8,
+            )
+            self.assertIs(
+                restored._last_actions[creature.creature_id],
+                restored._effective_actions[creature.creature_id],
             )
             self.assertEqual(restored._behavior_next_sample_time, 1.3)
             self.assertEqual(restored._why_next_probe_time, 1.4)

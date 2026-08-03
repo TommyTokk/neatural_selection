@@ -806,30 +806,47 @@ class NeatBrainController:
         brain.last_input_names = contract.input_names
         return brain
 
-    def evolution_allocator_state(self) -> dict[str, int]:
+    def evolution_allocator_state(self) -> dict[str, object]:
         """Return allocator positions needed to continue mutating after a load."""
         genome_config = self.config.genome_config
         minimum_next_node_id = self._minimum_next_node_id()
         next_node_id = minimum_next_node_id
+        node_indexer_position = minimum_next_node_id
         node_indexer = getattr(genome_config, "node_indexer", None)
         if node_indexer is not None:
             try:
-                reduce_args = node_indexer.__reduce__()[1]
-                next_node_id = max(next_node_id, int(reduce_args[0]))
-            except (AttributeError, IndexError, TypeError, ValueError):
+                # ``itertools.count`` stopped supporting ``__reduce__`` in
+                # Python 3.14. Consume its next value and immediately replace
+                # it with an equivalent iterator. This preserves the exact
+                # allocator position, including IDs no longer represented by
+                # a living or archived genome.
+                node_indexer_position = int(next(node_indexer))
+                genome_config.node_indexer = count(node_indexer_position)
+                next_node_id = max(next_node_id, node_indexer_position)
+            except (AttributeError, StopIteration, TypeError, ValueError):
                 pass
 
         innovation_number = self._minimum_innovation_number()
         innovation_tracker = getattr(genome_config, "innovation_tracker", None)
+        innovation_history: dict[object, int] = {}
         if innovation_tracker is not None:
             innovation_number = max(
                 innovation_number,
                 int(getattr(innovation_tracker, "global_counter", 0)),
             )
+            innovation_history = copy.deepcopy(
+                getattr(
+                    innovation_tracker,
+                    "generation_innovations",
+                    {},
+                )
+            )
 
         return {
             "next_node_id": next_node_id,
+            "node_indexer_position": node_indexer_position,
             "innovation_number": innovation_number,
+            "innovation_history": innovation_history,
         }
 
     def transaction_shadow(self) -> NeatBrainController:
@@ -875,6 +892,7 @@ class NeatBrainController:
         self,
         next_node_id: int | None = None,
         innovation_number: int | None = None,
+        innovation_history: dict[object, int] | None = None,
     ) -> None:
         """Restore or reconstruct NEAT's process-local structural allocators."""
         genome_config = self.config.genome_config
@@ -902,6 +920,10 @@ class NeatBrainController:
         )
         if generation_innovations is not None:
             generation_innovations.clear()
+            if innovation_history is not None:
+                generation_innovations.update(
+                    copy.deepcopy(innovation_history)
+                )
 
     def _known_genomes(self) -> list[Any]:
         genomes = list(self.population.population.values())

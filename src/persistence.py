@@ -24,9 +24,9 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 19
+CHECKPOINT_VERSION = 20
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -414,12 +414,36 @@ class PersistenceManager:
         world: World,
         neat_controller: NeatBrainController,
     ) -> dict[str, Any]:
+        lock = getattr(world, "_checkpoint_state_lock", None)
+        if lock is None:
+            return PersistenceManager._capture_state_unlocked(
+                world,
+                neat_controller,
+            )
+        with lock:
+            return PersistenceManager._capture_state_unlocked(
+                world,
+                neat_controller,
+            )
+
+    @staticmethod
+    def _capture_state_unlocked(
+        world: World,
+        neat_controller: NeatBrainController,
+    ) -> dict[str, Any]:
         creatures: list[dict[str, Any]] = []
         for creature in world.creatures:
             body = creature.body
+            creature_id = creature.creature_id
+            brain_for = getattr(neat_controller, "brain_for", None)
+            brain = (
+                brain_for(creature_id)
+                if callable(brain_for)
+                else None
+            )
             creatures.append(
                 {
-                    "creature_id": creature.creature_id,
+                    "creature_id": creature_id,
                     "name": creature.name,
                     "position": tuple(creature.position),
                     "heading": creature.heading,
@@ -458,8 +482,75 @@ class PersistenceManager:
                     "biome_fertility_ema_updated_at": (
                         creature.biome_fertility_ema_updated_at
                     ),
+                    "scheduler_continuation": {
+                        "raw_action": copy.deepcopy(
+                            getattr(world, "_last_actions", {}).get(creature_id)
+                        ),
+                        "effective_action": copy.deepcopy(
+                            getattr(world, "_effective_actions", {}).get(
+                                creature_id
+                            )
+                        ),
+                        "effective_action_is_raw": (
+                            getattr(world, "_effective_actions", {}).get(
+                                creature_id
+                            )
+                            is getattr(world, "_last_actions", {}).get(
+                                creature_id
+                            )
+                        ),
+                        "social_intention": copy.deepcopy(
+                            getattr(
+                                world,
+                                "_cached_social_intentions",
+                                {},
+                            ).get(creature_id)
+                        ),
+                        "flocking_benchmark_quality": copy.deepcopy(
+                            getattr(
+                                world,
+                                "_flocking_benchmark_quality_by_creature_id",
+                                {},
+                            ).get(creature_id)
+                        ),
+                        "brain_herding_state": float(
+                            getattr(brain, "herding_state", 0.0)
+                        ),
+                        "smoothed_rotation": float(
+                            getattr(creature, "smoothed_rotation", 0.0)
+                        ),
+                        "smoothed_acceleration": float(
+                            getattr(creature, "smoothed_acceleration", 0.0)
+                        ),
+                        "rest_intent": float(
+                            getattr(creature, "rest_intent", 0.0)
+                        ),
+                        "smoothed_rest": float(
+                            getattr(creature, "smoothed_rest", 0.0)
+                        ),
+                        "effective_rest": float(
+                            getattr(creature, "effective_rest", 0.0)
+                        ),
+                        "activity": float(
+                            getattr(creature, "activity", 0.0)
+                        ),
+                        "pending_direct_life_damage": float(
+                            getattr(
+                                creature,
+                                "pending_direct_life_damage",
+                                0.0,
+                            )
+                        ),
+                        "effective_voluntary_motor_effort": float(
+                            getattr(
+                                creature,
+                                "effective_voluntary_motor_effort",
+                                0.0,
+                            )
+                        ),
+                    },
                     "genome_id": neat_controller.genome_id_for(
-                        creature.creature_id
+                        creature_id
                     ),
                 }
             )
@@ -2147,6 +2238,7 @@ class PersistenceManager:
                 controller.restore_evolution_allocators(
                     population_state.get("next_node_id"),
                     population_state.get("innovation_number"),
+                    population_state.get("innovation_history"),
                 )
 
             world.fitness = {}
@@ -2232,7 +2324,67 @@ class PersistenceManager:
                         f"Creature {creature.creature_id} has no saved genome ID."
                     )
                 if not reset_brain_epoch:
-                    controller.restore_brain(creature.creature_id, genome_id)
+                    brain = controller.restore_brain(
+                        creature.creature_id,
+                        genome_id,
+                    )
+                    continuation = creature_state.get(
+                        "scheduler_continuation"
+                    )
+                    if isinstance(continuation, dict):
+                        raw_action = continuation.get("raw_action")
+                        effective_action = continuation.get(
+                            "effective_action"
+                        )
+                        if raw_action is not None:
+                            world._last_actions[creature.creature_id] = (
+                                raw_action
+                            )
+                            creature.last_action = raw_action
+                        if effective_action is not None:
+                            world._effective_actions[
+                                creature.creature_id
+                            ] = (
+                                raw_action
+                                if continuation.get(
+                                    "effective_action_is_raw",
+                                    False,
+                                )
+                                and raw_action is not None
+                                else effective_action
+                            )
+                        social_intention = continuation.get(
+                            "social_intention"
+                        )
+                        if social_intention is not None:
+                            world._cached_social_intentions[
+                                creature.creature_id
+                            ] = social_intention
+                        benchmark_quality = continuation.get(
+                            "flocking_benchmark_quality"
+                        )
+                        if benchmark_quality is not None:
+                            world._flocking_benchmark_quality_by_creature_id[
+                                creature.creature_id
+                            ] = float(benchmark_quality)
+                        brain.herding_state = float(
+                            continuation.get("brain_herding_state", 0.0)
+                        )
+                        for attribute in (
+                            "smoothed_rotation",
+                            "smoothed_acceleration",
+                            "rest_intent",
+                            "smoothed_rest",
+                            "effective_rest",
+                            "activity",
+                            "pending_direct_life_damage",
+                            "effective_voluntary_motor_effort",
+                        ):
+                            setattr(
+                                creature,
+                                attribute,
+                                float(continuation.get(attribute, 0.0)),
+                            )
 
             for food_state in state["foods"]:
                 food = Food(
@@ -2406,6 +2558,20 @@ class PersistenceManager:
                 )
             }
             world._prune_historical_archives()
+            if not reset_brain_epoch:
+                # Reconcile once more after all genomes, representatives, and
+                # archives have been restored and pruned.  The raw count
+                # iterator must never lag behind a node already present in a
+                # restored genome, even when the saved population contained
+                # long-lived RT-NEAT history.
+                final_allocator_state = (
+                    controller.evolution_allocator_state()
+                )
+                controller.restore_evolution_allocators(
+                    int(final_allocator_state["next_node_id"]),
+                    int(final_allocator_state["innovation_number"]),
+                    final_allocator_state.get("innovation_history"),
+                )
             world._refresh_stats()
             return world
         except BaseException:

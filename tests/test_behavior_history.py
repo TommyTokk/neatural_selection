@@ -823,9 +823,15 @@ class CompletionBackpressureTest(unittest.TestCase):
             service.poll()
             completed.extend(service.drain_completed_bouts())
             diagnostics = service.diagnostics
+            accepted_observations = (
+                diagnostics.samples_produced
+                - diagnostics.samples_dropped
+            )
             if (
                 diagnostics.completion_outbox_depth == 0
                 and not diagnostics.completion_recording_suspended
+                and diagnostics.observations_processed
+                >= accepted_observations
             ):
                 stable_empty_polls += 1
                 if stable_empty_polls >= 5:
