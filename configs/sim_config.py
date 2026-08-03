@@ -803,6 +803,63 @@ class BehaviorHistoryConfig:
 
 
 @dataclass(slots=True)
+class SchedulerConfig:
+    """Deterministic fixed-step scheduling configuration."""
+
+    physics_hz: int = 60
+    decision_period_steps: int = 3
+    biology_period_steps: int = 3
+    statistics_period_steps: int = 12
+    max_steps_per_frame: int = 5
+    max_backlog_steps: int = 60
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        for name in (
+            "physics_hz",
+            "decision_period_steps",
+            "biology_period_steps",
+            "statistics_period_steps",
+            "max_steps_per_frame",
+            "max_backlog_steps",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"scheduler.{name} must be a positive integer.")
+
+        for name in (
+            "decision_period_steps",
+            "biology_period_steps",
+            "statistics_period_steps",
+        ):
+            period = getattr(self, name)
+            if self.physics_hz % period != 0:
+                raise ValueError(
+                    f"scheduler.physics_hz must be exactly divisible by "
+                    f"scheduler.{name}."
+                )
+        if self.max_backlog_steps < self.max_steps_per_frame:
+            raise ValueError(
+                "scheduler.max_backlog_steps must be at least "
+                "scheduler.max_steps_per_frame."
+            )
+
+    @property
+    def decision_hz(self) -> int:
+        return self.physics_hz // self.decision_period_steps
+
+    @property
+    def biology_hz(self) -> int:
+        return self.physics_hz // self.biology_period_steps
+
+    @property
+    def statistics_hz(self) -> int:
+        return self.physics_hz // self.statistics_period_steps
+
+
+@dataclass(slots=True)
 class SimConfig:
     random_seed: int = 7
     display: DisplayConfig = field(default_factory=DisplayConfig)
@@ -810,6 +867,7 @@ class SimConfig:
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     biome: BiomeConfig = field(default_factory=BiomeConfig)
     zoom: ZoomConfig = field(default_factory=ZoomConfig)

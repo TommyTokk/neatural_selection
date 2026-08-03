@@ -157,6 +157,7 @@ class WorldVisionMutationTest(unittest.TestCase):
     def test_communication_intents_commit_together_and_scale_deposits_by_dt(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
+        world.fixed_timestep = 1.0 / world.config.scheduler.physics_hz
         world.creatures = [
             SimpleNamespace(creature_id=1, position=(10.0, 20.0)),
             SimpleNamespace(creature_id=2, position=(30.0, 40.0)),
@@ -204,6 +205,58 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertAlmostEqual(deposits[0][1], 0.5 * rate_per_step)
         self.assertAlmostEqual(deposits[0][2], 0.25 * rate_per_step)
         self.assertEqual(len(deposits), 1)
+
+    def test_cached_acoustic_level_replaces_state_until_next_decision(
+        self,
+    ) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        creature = SimpleNamespace(creature_id=1, position=(10.0, 20.0))
+        active = Action(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            emit_sound=0.8,
+            sound_tone=0.25,
+        )
+        world.creatures = [creature]
+        world._last_actions = {creature.creature_id: active}
+        replacements: list[tuple[object, ...]] = []
+        world.acoustics = SimpleNamespace(
+            replace_signals=lambda signals: replacements.append(
+                tuple(signals)
+            )
+        )
+        world.pheromones = SimpleNamespace(
+            deposit_many=lambda *_args: None
+        )
+
+        for _ in range(3):
+            world._commit_communication_intents(1.0 / 60.0)
+        world._last_actions[creature.creature_id] = Action(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        world._commit_communication_intents(1.0 / 60.0)
+
+        self.assertEqual([len(signals) for signals in replacements], [1, 1, 1, 0])
+        self.assertTrue(
+            all(
+                signals[0].emitter_id == creature.creature_id
+                and signals[0].strength == 0.8
+                and signals[0].tone == 0.25
+                for signals in replacements[:3]
+            )
+        )
 
     def test_inactive_pheromone_population_skips_batch_deposition(self) -> None:
         world = object.__new__(World)
@@ -454,6 +507,10 @@ class WorldVisionMutationTest(unittest.TestCase):
             )
         )
         world._last_actions = {}
+        world._simulation_step = (
+            creature.creature_id
+            % world.config.scheduler.decision_period_steps
+        )
         world._apply_carry_intent = lambda creature, action: None
         world._apply_action = lambda *args, **kwargs: None
 
@@ -480,6 +537,10 @@ class WorldVisionMutationTest(unittest.TestCase):
                 )
             )
             world._last_actions = {}
+            world._simulation_step = (
+                creature.creature_id
+                % world.config.scheduler.decision_period_steps
+            )
             world._apply_carry_intent = lambda creature, action: None
             world._apply_action = lambda *args, **kwargs: None
 
@@ -554,7 +615,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         world = self.make_world_for_biome_sensors()
         creature = self.biome_sensor_creature()
         world.creatures = [creature]
-        world.physics_step_count = 0
+        world._simulation_step = 0
         action = Action(
             accelerate=0.0,
             rotate=0.0,
@@ -592,7 +653,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         world = self.make_world_for_biome_sensors()
         creature = self.biome_sensor_creature()
         world.creatures = [creature]
-        world.physics_step_count = 0
+        world._simulation_step = 0
         action = Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         snapshot = world.vision._snapshot()
         world._last_actions = {creature.creature_id: action}
@@ -636,7 +697,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         for index, creature in enumerate(creatures, start=1):
             creature.creature_id = index
         world.creatures = creatures
-        world.physics_step_count = 0
+        world._simulation_step = 0
         cached_action = Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         cached_snapshot = world.vision._snapshot()
         world._last_actions = {
@@ -655,7 +716,7 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         world._apply_creature_intents()
 
-        self.assertEqual(decided_ids, [2, 4])
+        self.assertEqual(decided_ids, [3])
 
     def test_east_facing_biome_sensors_use_y_up_left_right_orientation(self) -> None:
         world = self.make_world_for_biome_sensors()
@@ -670,6 +731,7 @@ class WorldVisionMutationTest(unittest.TestCase):
     def make_world_for_biome_sensors(self, fertility: float = 0.0) -> World:
         world = object.__new__(World)
         world.config = build_sim_config()
+        world.fixed_timestep = 1.0 / world.config.scheduler.physics_hz
         world.elapsed_time = 0.0
         world.creatures = []
         world._held_food_by_creature_id = {}

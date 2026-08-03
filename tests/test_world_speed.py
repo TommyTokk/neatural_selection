@@ -11,7 +11,7 @@ for optional_module in ("arcade", "neat", "pymunk"):
     except ModuleNotFoundError:
         sys.modules[optional_module] = ModuleType(optional_module)
 
-from src.world import World
+from src.world import SimulationLagMetrics, World
 from configs.sim_config import build_sim_config
 from src.persistence import SimulationPaths
 
@@ -47,11 +47,14 @@ class WorldSimulationSpeedTest(unittest.TestCase):
     def _clock_world(self, speed: float) -> World:
         world = object.__new__(World)
         world.simulation_speed = speed
+        world.config = build_sim_config()
+        world.fixed_timestep = 1.0 / world.config.scheduler.physics_hz
         world.elapsed_time = 0.0
         world.fps = 0.0
         world.is_paused = False
         world._physics_accumulator = 0.0
-        world.physics_step_count = 0
+        world._simulation_step = 0
+        world.simulation_lag_metrics = SimulationLagMetrics()
         world.space = SimpleNamespace(step=lambda delta: None)
         world.pheromones = SimpleNamespace(accumulate=lambda delta: None)
         world.timebase_calls = {
@@ -86,6 +89,8 @@ class WorldSimulationSpeedTest(unittest.TestCase):
             "_apply_top_down_motion",
             "_limit_creature_motion",
             "_sync_carried_foods",
+            "_accumulate_mouth_exposures",
+            "_apply_immediate_direct_damage",
             "_update_fitness_survival",
             "_update_flocking_benchmark",
             "_update_chronometers",
@@ -107,7 +112,7 @@ class WorldSimulationSpeedTest(unittest.TestCase):
             World.MAX_FRAME_STEPS * World.FIXED_TIMESTEP,
         )
 
-    def test_large_frame_discards_time_beyond_step_budget(self) -> None:
+    def test_large_frame_retains_bounded_backlog(self) -> None:
         world = self._clock_world(1.0)
 
         world.update(1.0)
@@ -118,6 +123,14 @@ class WorldSimulationSpeedTest(unittest.TestCase):
             World.MAX_FRAME_STEPS * World.FIXED_TIMESTEP,
         )
         self.assertLess(world.elapsed_time, 1.0)
+        self.assertAlmostEqual(
+            world.simulation_lag_metrics.pending_seconds,
+            55 * World.FIXED_TIMESTEP,
+        )
+        self.assertEqual(
+            world.simulation_lag_metrics.session_dropped_seconds,
+            0.0,
+        )
 
     def test_fractional_time_is_preserved_until_one_step_completes(self) -> None:
         world = self._clock_world(0.25)
@@ -148,11 +161,14 @@ class WorldSimulationSpeedTest(unittest.TestCase):
 
         world.update(1.0 / 30.0)
 
-        expected = [World.FIXED_TIMESTEP] * World.MAX_FRAME_STEPS
-        self.assertEqual(world.timebase_calls["speciation"], expected)
-        self.assertEqual(world.timebase_calls["food"], expected)
-        self.assertEqual(world.timebase_calls["reproduction"], expected)
-        self.assertEqual(world.timebase_calls["telemetry"], expected)
+        fixed_expected = [World.FIXED_TIMESTEP] * World.MAX_FRAME_STEPS
+        self.assertEqual(world.timebase_calls["speciation"], fixed_expected)
+        self.assertEqual(world.timebase_calls["food"], fixed_expected)
+        self.assertEqual(
+            world.timebase_calls["reproduction"],
+            [World.FIXED_TIMESTEP * 3],
+        )
+        self.assertEqual(world.timebase_calls["telemetry"], fixed_expected)
         self.assertEqual(
             world.timebase_calls["persistence"],
             [1.0 / 30.0],

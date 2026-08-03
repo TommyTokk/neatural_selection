@@ -189,6 +189,7 @@ class StatsPanelComponent:
         bounds
             Rectangle defining the relevant UI area.
         """
+        lag = world.simulation_lag_metrics
         lines = [
             f"Population: {world.stats.herbivore_count}/{world.config.population.max_creatures}",
             f"Food nodes: {world.stats.food_count}",
@@ -202,6 +203,9 @@ class StatsPanelComponent:
             "State: Paused" if world.is_paused else "State: Running",
             "Controller: NEAT",
             f"Simulation speed: {world.simulation_speed:.2f}x",
+            f"Effective speed: {lag.effective_speed_multiplier:.2f}x",
+            f"Pending simulation: {lag.pending_seconds:.3f}s",
+            f"Dropped this session: {lag.session_dropped_seconds:.3f}s",
             f"Zoom: {world.environment_zoom:.2f}x",
             f"Births: {world.rt_neat.stats.births}",
             f"Deaths: {world.rt_neat.stats.deaths}",

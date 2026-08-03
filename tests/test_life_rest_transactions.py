@@ -13,7 +13,6 @@ from src.metabolism import (
     ENERGY_EPSILON,
     EnergyCostBreakdown,
     Metabolism,
-    MetabolismReport,
     ResourceCandidate,
     calculate_digestion,
     calculate_weighted_activity,
@@ -572,9 +571,6 @@ class SelectedDiagnosticsTest(unittest.TestCase):
         )
         world._resolve_resource_transactions = lambda _delta: resolution
         world._stage_final_reproductions = lambda _requests: ([], None, None)
-        world._process_eating_after_transactions = (
-            lambda _delta: MetabolismReport()
-        )
         world._last_digestion_processing_costs_per_second = {}
         world.foods = []
         world.fitness = {}

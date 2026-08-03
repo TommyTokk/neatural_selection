@@ -38,6 +38,7 @@ from src.fitness import CreatureFitness, flocking_benchmark_quality
 from src.flocking import (
     FlockingRuntimeSnapshot,
     SocialCompatibilityResolver,
+    SocialIntent,
     SocialObservation,
     accepted_counterfactual_contribution,
     blend_desired_velocity,
@@ -162,6 +163,122 @@ class MotionCommand:
 
 
 @dataclass(slots=True)
+class SimulationLagMetrics:
+    session_requested_seconds: float = 0.0
+    session_completed_seconds: float = 0.0
+    pending_seconds: float = 0.0
+    session_dropped_seconds: float = 0.0
+    effective_speed_multiplier: float = 0.0
+    clamped_this_update: bool = False
+
+
+@dataclass(slots=True)
+class _MouthExposureBuffer:
+    """Reusable primitive storage for unresolved fixed-step mouth contacts."""
+
+    steps: list[int] = field(default_factory=list)
+    creature_ids: list[int] = field(default_factory=list)
+    food_ids: list[int] = field(default_factory=list)
+    durations: list[float] = field(default_factory=list)
+    order: list[int] = field(default_factory=list)
+    count: int = 0
+
+    def append(
+        self,
+        step: int,
+        creature_id: int,
+        food_id: int,
+        duration: float,
+    ) -> None:
+        index = self.count
+        if index == len(self.steps):
+            capacity = max(16, len(self.steps) * 2)
+            growth = capacity - len(self.steps)
+            self.steps.extend([0] * growth)
+            self.creature_ids.extend([0] * growth)
+            self.food_ids.extend([0] * growth)
+            self.durations.extend([0.0] * growth)
+            self.order.extend([0] * growth)
+        self.steps[index] = int(step)
+        self.creature_ids[index] = int(creature_id)
+        self.food_ids[index] = int(food_id)
+        self.durations[index] = max(0.0, float(duration))
+        self.order[index] = index
+        self.count += 1
+
+    def clear(self) -> None:
+        self.count = 0
+
+    def state(self) -> tuple[tuple[int, int, int, float], ...]:
+        return tuple(
+            (
+                self.steps[index],
+                self.creature_ids[index],
+                self.food_ids[index],
+                self.durations[index],
+            )
+            for index in range(self.count)
+        )
+
+    def sort_order(self) -> None:
+        """Sort the reusable index workspace without allocating records."""
+        for index in range(self.count):
+            self.order[index] = index
+        for index in range(1, self.count):
+            candidate = self.order[index]
+            candidate_key = (
+                self.steps[candidate],
+                self.food_ids[candidate],
+                self.creature_ids[candidate],
+            )
+            insertion = index
+            while insertion > 0:
+                previous = self.order[insertion - 1]
+                previous_key = (
+                    self.steps[previous],
+                    self.food_ids[previous],
+                    self.creature_ids[previous],
+                )
+                if previous_key <= candidate_key:
+                    break
+                self.order[insertion] = previous
+                insertion -= 1
+            self.order[insertion] = candidate
+
+    def restore(self, records: object) -> None:
+        self.clear()
+        if not isinstance(records, (tuple, list)):
+            return
+        for record in records:
+            if not isinstance(record, (tuple, list)) or len(record) != 4:
+                continue
+            step, creature_id, food_id, duration = record
+            if (
+                type(step) is not int
+                or type(creature_id) is not int
+                or type(food_id) is not int
+            ):
+                continue
+            try:
+                elapsed = float(duration)
+            except (TypeError, ValueError):
+                continue
+            if not isfinite(elapsed) or elapsed <= 0.0:
+                continue
+            self.append(step, creature_id, food_id, elapsed)
+
+
+@dataclass(slots=True)
+class _MouthExposureRollbackState:
+    """State changed while validating authoritative mouth exposures."""
+
+    creature_states: list[tuple[object, float, float]]
+    food_states: list[tuple[object, int, float]]
+    held_foods: dict[int, Food]
+    food_carriers: dict[int, int]
+
+
+@dataclass(slots=True)
 class _FlockSteeringDebug:
     accepted_counterfactual_delta: tuple[float, float]
     max_force: float
@@ -238,7 +355,9 @@ class World:
     ) -> None:
         config.flocking.validate()
         config.action.validate()
+        config.scheduler.validate()
         self.config = config
+        self.fixed_timestep = 1.0 / config.scheduler.physics_hz
         self.rng = Random(config.random_seed)
         self.brain_initialization_seed = (
             config.random_seed
@@ -251,19 +370,31 @@ class World:
         self.simulation_speed = 1.0
         self.environment_map_mode: EnvironmentMapMode = "none"
         self._physics_accumulator = 0.0
+        self._simulation_step = 0
+        self.simulation_lag_metrics = SimulationLagMetrics()
+        self._mouth_exposures = _MouthExposureBuffer()
+        self._immediate_dead_buffer: list[Creature] = []
         self._reproduction_accumulator = 0.0
         self._speciation_adjustment_accumulator = 0.0
         self._flocking_telemetry_accumulator = 0.0
         self._flocking_capture_origin = 0.0
         self._flocking_capture_ordinal = 1
         self._flocking_capture_due_this_step = False
-        self.physics_step_count = 0
         self._last_actions: dict[int, Action] = {}
         self._effective_actions: dict[int, Action] = {}
         self._last_sensor_snapshots: dict[int, SensorSnapshot] = {}
         self._last_acoustic_debug: dict[int, AcousticDebugInfo] = {}
         self._last_flock_steering_debug: dict[int, _FlockSteeringDebug] = {}
         self._last_flocking_runtime: dict[int, FlockingRuntimeSnapshot] = {}
+        self._cached_social_intentions: dict[
+            int,
+            tuple[
+                SocialIntent,
+                SocialObservation,
+                float,
+                tuple[float, float],
+            ],
+        ] = {}
         self._flocking_benchmark_quality_by_creature_id: dict[int, float] = {}
         self.behavior_observer = BehaviorObserverService(
             config.behavior,
@@ -346,6 +477,8 @@ class World:
             )
             + 1
         )
+        for creature in self.creatures:
+            self._initialize_creature_runtime_state(creature)
         self._chronometers: dict[int, float] = {
             creature.creature_id: 0.0 for creature in self.creatures
         }
@@ -488,46 +621,161 @@ class World:
             )
 
         if self.is_paused:
+            if not hasattr(self, "simulation_lag_metrics"):
+                self.simulation_lag_metrics = SimulationLagMetrics()
+            self.simulation_lag_metrics.effective_speed_multiplier = 0.0
+            self.simulation_lag_metrics.clamped_this_update = False
+            self.simulation_lag_metrics.pending_seconds = (
+                getattr(self, "_physics_accumulator", 0.0)
+            )
             self._refresh_stats()
             return
 
         real_delta_time = max(0.0, delta_time)
         scaled_delta_time = real_delta_time * self.simulation_speed
-        self._physics_accumulator += min(
-            scaled_delta_time, self.FIXED_TIMESTEP * self.MAX_FRAME_STEPS
+        lag = self.simulation_lag_metrics
+        lag.session_requested_seconds += scaled_delta_time
+        requested_backlog = self._physics_accumulator + scaled_delta_time
+        maximum_backlog = (
+            self.fixed_timestep * self.config.scheduler.max_backlog_steps
         )
+        admitted_backlog = min(requested_backlog, maximum_backlog)
+        dropped = max(0.0, requested_backlog - admitted_backlog)
+        self._physics_accumulator = admitted_backlog
+        lag.session_dropped_seconds += dropped
+        lag.clamped_this_update = dropped > 1e-12
 
         steps = 0
+        completed_this_update = 0.0
         while (
-            self._physics_accumulator >= self.FIXED_TIMESTEP
-            and steps < self.MAX_FRAME_STEPS
+            self._physics_accumulator + 1e-12 >= self.fixed_timestep
+            and steps < self.config.scheduler.max_steps_per_frame
         ):
-            self.elapsed_time += self.FIXED_TIMESTEP
-            self._update_speciation_threshold(self.FIXED_TIMESTEP)
-            self._apply_creature_intents()
-            self._commit_communication_intents(self.FIXED_TIMESTEP)
-            self.space.step(self.FIXED_TIMESTEP)
-            self.physics_step_count += 1
-            self._settle_food_motion()
-            self._apply_top_down_motion()
-            self._limit_creature_motion()
-            self._sync_carried_foods()
-            self._update_fitness_survival(self.FIXED_TIMESTEP)
-            self._update_flocking_benchmark(self.FIXED_TIMESTEP)
-            self._update_chronometers(self.FIXED_TIMESTEP)
-            self._update_reproduction(self.FIXED_TIMESTEP)
-            self._update_metabolism(self.FIXED_TIMESTEP)
-            self.pheromones.accumulate(self.FIXED_TIMESTEP)
-            self._spawn_foods(self.FIXED_TIMESTEP)
-            self._update_flocking_telemetry(self.FIXED_TIMESTEP)
-            self._sample_selected_behavior()
-            self._sample_selected_why()
-            self._physics_accumulator -= self.FIXED_TIMESTEP
+            self._run_fixed_step()
+            self._physics_accumulator = max(
+                0.0,
+                self._physics_accumulator - self.fixed_timestep,
+            )
+            self._simulation_step += 1
+            completed_this_update += self.fixed_timestep
             steps += 1
 
-        self._refresh_stats()
+        lag.session_completed_seconds += completed_this_update
+        lag.pending_seconds = self._physics_accumulator
+        lag.effective_speed_multiplier = (
+            completed_this_update / real_delta_time
+            if real_delta_time > 0.0
+            else 0.0
+        )
         self._follow_selected_creature()
         self._update_persistence_timer(real_delta_time)
+
+    def _run_fixed_step(self) -> None:
+        """Execute the current zero-based step without committing its count.
+
+        The speciation threshold retains its historical pre-intention hook.
+        Creature decisions and cached motion precede physics; contact exposure
+        and direct-death removal follow physics. On completion boundaries, the
+        preserved survival/age, flocking fitness, chronometer, reproduction,
+        and resource/biology sequence runs before ancillary simulated-time
+        systems. ``update`` increments ``_simulation_step`` only after this
+        method returns successfully.
+        """
+        delta_time = self.fixed_timestep
+        self.elapsed_time += delta_time
+        self._update_speciation_threshold(delta_time)
+        self._apply_creature_intents()
+        self._commit_communication_intents(delta_time)
+        self.space.step(delta_time)
+        self._settle_food_motion()
+        self._apply_top_down_motion(delta_time)
+        self._limit_creature_motion()
+        self._sync_carried_foods()
+        self._accumulate_mouth_exposures(delta_time)
+        self._apply_immediate_direct_damage()
+        biology_period = self.config.scheduler.biology_period_steps
+        if (self._simulation_step + 1) % biology_period == 0:
+            biology_dt = delta_time * biology_period
+            # Preserve the historical relative order: survival/age and
+            # cooldown state advance before the resource transaction pass.
+            self._update_fitness_survival(biology_dt)
+            self._update_flocking_benchmark(biology_dt)
+            self._update_chronometers(biology_dt)
+            self._update_reproduction(biology_dt)
+            self._update_metabolism(biology_dt)
+        self.pheromones.accumulate(delta_time)
+        self._spawn_foods(delta_time)
+        self._update_flocking_telemetry(delta_time)
+        self._sample_selected_behavior()
+        self._sample_selected_why()
+        if (
+            (self._simulation_step + 1)
+            % self.config.scheduler.statistics_period_steps
+            == 0
+        ):
+            self._refresh_stats()
+
+    def _accumulate_mouth_exposures(self, delta_time: float) -> None:
+        """Capture fixed-step eat contacts without mutating food resources."""
+        if not hasattr(self.metabolism, "evaluate_candidate"):
+            return
+        for creature in self.creatures:
+            if not self._creature_want_to_eat(creature):
+                continue
+            # Record every overlapping candidate. Competition cannot be
+            # decided here because stomach and food state are intentionally
+            # unchanged until the biology pass. The chronological resolver
+            # chooses at most one successful food claim per creature and one
+            # successful creature claim per food for each physics step.
+            for food in self._eatable_foods_for(creature):
+                if not self.metabolism.food_overlaps_mouth(creature, food):
+                    continue
+                self._mouth_exposures.append(
+                    self._simulation_step,
+                    creature.creature_id,
+                    food.id,
+                    delta_time,
+                )
+
+    def _apply_immediate_direct_damage(self) -> None:
+        """Commit queued direct damage before any biology actions can run."""
+        dead = self._immediate_dead_buffer
+        dead.clear()
+        selected_id = getattr(self, "selected_creature_id", None)
+        for creature in self.creatures:
+            damage = max(
+                0.0,
+                float(getattr(creature, "pending_direct_life_damage", 0.0)),
+            )
+            if damage <= 0.0:
+                continue
+            creature.pending_direct_life_damage = 0.0
+            creature.life = max(0.0, creature.life - damage)
+            if creature.creature_id == selected_id:
+                diagnostics = creature.ledger_diagnostics
+                diagnostics.direct_life_damage = damage
+                diagnostics.final_life = creature.life
+                diagnostics.transaction_status = "direct_damage_committed"
+            if creature.life <= 0.0:
+                dead.append(creature)
+        self._remove_dead_creatures(dead, default_reason="direct_damage")
+
+    def _remove_dead_creatures(
+        self,
+        candidates: list[Creature],
+        *,
+        default_reason: str,
+    ) -> None:
+        """Remove each still-live-list dead creature at most once."""
+        for creature in candidates:
+            if creature not in self.creatures or creature.life > 0.0:
+                continue
+            reason = (
+                "old_age"
+                if default_reason == "metabolic" and self._is_senescent(creature)
+                else default_reason
+            )
+            self._remove_creature(creature, death_reason=reason)
 
     def close(self) -> None:
         if self._closed:
@@ -547,6 +795,11 @@ class World:
     @property
     def save_in_progress(self) -> bool:
         return self.persistence_manager.is_busy
+
+    @property
+    def physics_step_count(self) -> int:
+        """Compatibility view of the authoritative completed-step counter."""
+        return self._simulation_step
 
     def save_now(self) -> None:
         previous_quick_timer = self.time_since_last_quick_save
@@ -814,8 +1067,11 @@ class World:
         self._last_acoustic_debug = {}
         self._last_flock_steering_debug = {}
         self._last_flocking_runtime = {}
+        self._cached_social_intentions = {}
         self._flocking_benchmark_quality_by_creature_id = {}
         self._motion_commands = {}
+        for creature in self.creatures:
+            self._initialize_creature_runtime_state(creature)
         self._reset_flocking_capture_schedule()
         self._mark_behavior_cohort_dirty()
         self.rt_neat.stats = type(self.rt_neat.stats)()
@@ -2972,6 +3228,53 @@ class World:
             # Space.step() moves bodies immediately after this behavior pass.
             self._creature_spatial_state = None
 
+    @staticmethod
+    def _neutral_action() -> Action:
+        return Action(
+            accelerate=0.0,
+            rotate=0.0,
+            want_reproduce=0.0,
+            want_eat=0.0,
+            reset_chronometer=0.0,
+            want_grab=0.0,
+            want_release=0.0,
+        )
+
+    def _initialize_creature_runtime_state(self, creature: Creature) -> None:
+        """Install deterministic neutral transient state for a live creature."""
+        if not hasattr(self, "_last_actions"):
+            self._last_actions = {}
+        if not hasattr(self, "_effective_actions"):
+            self._effective_actions = {}
+        if not hasattr(self, "_cached_social_intentions"):
+            self._cached_social_intentions = {}
+        if not hasattr(self, "_motion_commands"):
+            self._motion_commands = {}
+        creature_id = creature.creature_id
+        action = self._neutral_action()
+        self._last_actions[creature_id] = action
+        self._effective_actions[creature_id] = action
+        try:
+            creature.last_action = action
+        except AttributeError:
+            pass
+        self._cached_social_intentions[creature_id] = (
+            SocialIntent(),
+            SocialObservation(),
+            0.0,
+            (0.0, 0.0),
+        )
+        self._motion_commands[creature_id] = MotionCommand(
+            effective_rotate=0.0,
+            max_speed=self.MAX_SPEED,
+            max_angular_speed=self.MAX_ANGULAR_SPEED,
+        )
+
+    def _decision_phase(self, creature_id: int) -> int:
+        if type(creature_id) is not int:
+            raise TypeError("creature_id must be a stable integer.")
+        return creature_id % self.config.scheduler.decision_period_steps
+
     def _apply_creature_intents_with_spatial_cache(self) -> None:
         """
         Apply the intents of all creatures in the simulation, based on their
@@ -2983,10 +3286,15 @@ class World:
             self._last_actions = {}
         if not hasattr(self, "_effective_actions"):
             self._effective_actions = {}
+        if not hasattr(self, "_cached_social_intentions"):
+            self._cached_social_intentions = {}
+        if not hasattr(self, "_motion_commands"):
+            self._motion_commands = {}
 
         thinking_rows: dict[int, int] = {}
         thinking_creatures: list[Creature] = []
-        physics_step_count = getattr(self, "physics_step_count", 0)
+        simulation_step = getattr(self, "_simulation_step", 0)
+        decision_period = self.config.scheduler.decision_period_steps
         selected_creature_id = getattr(self, "selected_creature_id", None)
         capture_global_diagnostics = getattr(
             self,
@@ -2995,10 +3303,11 @@ class World:
         )
         for creature in self.creatures:
             creature_id = creature.creature_id
+            if self._last_actions.get(creature_id) is None:
+                self._initialize_creature_runtime_state(creature)
             if (
-                self._last_actions.get(creature_id) is None
-                or self._last_sensor_snapshots.get(creature_id) is None
-                or (physics_step_count + creature_id) % 2 == 0
+                simulation_step % decision_period
+                == self._decision_phase(creature_id)
             ):
                 thinking_rows[creature_id] = len(thinking_creatures)
                 thinking_creatures.append(creature)
@@ -3041,10 +3350,15 @@ class World:
                     "decide_with_input_capture",
                     None,
                 )
-                action = (
-                    decide_with_capture(creature_id, snapshot)
+                decider = (
+                    decide_with_capture
                     if capture_inputs and callable(decide_with_capture)
-                    else self.neat_controller.decide(creature_id, snapshot)
+                    else self.neat_controller.decide
+                )
+                action = self._decide_with_duration(
+                    decider,
+                    creature_id,
+                    snapshot,
                 )
 
                 self._last_actions[creature.creature_id] = action
@@ -3062,7 +3376,7 @@ class World:
             if action is None:
                 continue
 
-            if capture_inputs and not should_think:
+            if capture_inputs and not should_think and snapshot is not None:
                 capture_snapshot = getattr(
                     self.neat_controller,
                     "capture_input_snapshot",
@@ -3071,7 +3385,22 @@ class World:
                 if callable(capture_snapshot):
                     capture_snapshot(creature_id)
 
-            effective_action = self._effective_action_for(creature, action)
+            cached_effective_action = self._effective_actions.get(creature_id)
+            energy_depleted = is_energy_depleted(creature.energy)
+            if should_think:
+                effective_action = self._effective_action_for(creature, action)
+            elif not energy_depleted:
+                # Recovery immediately exposes the authoritative cached raw
+                # action again without allocating a replacement.
+                effective_action = action
+            elif (
+                cached_effective_action is None
+                or cached_effective_action is action
+            ):
+                # Allocate the gated view only on the depletion transition.
+                effective_action = self._effective_action_for(creature, action)
+            else:
+                effective_action = cached_effective_action
             self._effective_actions[creature_id] = effective_action
             if should_think:
                 self._apply_carry_intent(creature, effective_action)
@@ -3087,7 +3416,29 @@ class World:
                     creature_id == selected_creature_id
                     and bool(getattr(self, "debug_vision_enabled", False))
                 ),
+                refresh_intention=should_think,
             )
+
+    def _decide_with_duration(
+        self,
+        decider,
+        creature_id: int,
+        snapshot: SensorSnapshot,
+    ) -> Action:
+        decision_dt = (
+            self.fixed_timestep
+            * self.config.scheduler.decision_period_steps
+        )
+        try:
+            return decider(
+                creature_id,
+                snapshot,
+                decision_dt=decision_dt,
+            )
+        except TypeError as error:
+            if "decision_dt" not in str(error):
+                raise
+            return decider(creature_id, snapshot)
 
     @staticmethod
     def _effective_action_for(creature: Creature, raw_action: Action) -> Action:
@@ -3197,6 +3548,7 @@ class World:
         *,
         capture_runtime: bool = True,
         capture_steering_debug: bool = True,
+        refresh_intention: bool = True,
     ) -> None:
         """
         Apply the specified action to the given creature, considering its current state,
@@ -3215,7 +3567,8 @@ class World:
 
         rest_intent = self._clamp(getattr(action, "rest", 0.0), 0.0, 1.0)
         response_rate = max(0.0, self.config.action.rest_response_rate)
-        rest_alpha = 1.0 - exp(-response_rate * self.FIXED_TIMESTEP)
+        fixed_dt = getattr(self, "fixed_timestep", self.FIXED_TIMESTEP)
+        rest_alpha = 1.0 - exp(-response_rate * fixed_dt)
         creature.rest_intent = rest_intent
         previous_rest = getattr(creature, "smoothed_rest", 0.0)
         smoothed_rest = self._clamp(
@@ -3263,16 +3616,17 @@ class World:
             self.config.action.active_angular_velocity_retention,
             0.0,
             1.0,
-        )
+        ) ** (fixed_dt / self.FIXED_TIMESTEP)
         current_max_angular_speed = (
             self.MAX_ANGULAR_SPEED * sprint_multiplier * turn_control_gain
         )
 
-        alpha = self._clamp(
+        reference_alpha = self._clamp(
             self.config.action.action_smoothing_alpha,
             0.0,
             1.0,
         )
+        alpha = self._physics_rate_alpha(reference_alpha, fixed_dt)
         previous_acceleration = getattr(creature, "smoothed_acceleration", 0.0)
         smoothed_acceleration = (
             previous_acceleration * (1.0 - alpha) + target_thrust * alpha
@@ -3312,26 +3666,59 @@ class World:
             current_velocity[0] + neural_request[0],
             current_velocity[1] + neural_request[1],
         )
-        social_intent, social_observation = self._social_intent(
-            creature,
-            action,
-            snapshot,
-            current_max_speed,
-            current_max_forward_force,
-        )
-        social_influence = configured_social_influence(
-            self.config.flocking,
-            social_intent,
-        )
-        blended_desired_velocity = blend_desired_velocity(
-            neural_desired_velocity,
-            social_intent.desired_velocity,
-            social_influence,
-        )
-        blended_request = (
-            blended_desired_velocity[0] - current_velocity[0],
-            blended_desired_velocity[1] - current_velocity[1],
-        )
+        cached_social = getattr(
+            self,
+            "_cached_social_intentions",
+            {},
+        ).get(creature.creature_id)
+        if refresh_intention or cached_social is None:
+            social_intent, social_observation = self._social_intent(
+                creature,
+                action,
+                snapshot,
+                current_max_speed,
+                current_max_forward_force,
+            )
+            social_influence = configured_social_influence(
+                self.config.flocking,
+                social_intent,
+            )
+            blended_desired_velocity = blend_desired_velocity(
+                neural_desired_velocity,
+                social_intent.desired_velocity,
+                social_influence,
+            )
+            blended_request = (
+                blended_desired_velocity[0] - current_velocity[0],
+                blended_desired_velocity[1] - current_velocity[1],
+            )
+            requested_social_contribution = (
+                blended_request[0] - neural_request[0],
+                blended_request[1] - neural_request[1],
+            )
+            if not hasattr(self, "_cached_social_intentions"):
+                self._cached_social_intentions = {}
+            self._cached_social_intentions[creature.creature_id] = (
+                social_intent,
+                social_observation,
+                social_influence,
+                requested_social_contribution,
+            )
+        else:
+            (
+                social_intent,
+                social_observation,
+                social_influence,
+                requested_social_contribution,
+            ) = cached_social
+            blended_request = (
+                neural_request[0] + requested_social_contribution[0],
+                neural_request[1] + requested_social_contribution[1],
+            )
+            blended_desired_velocity = (
+                current_velocity[0] + blended_request[0],
+                current_velocity[1] + blended_request[1],
+            )
         (
             voluntary_force,
             _counterfactual_neural_force,
@@ -3351,10 +3738,6 @@ class World:
             0.0,
             1.0,
         )
-        requested_social_contribution = (
-            blended_request[0] - neural_request[0],
-            blended_request[1] - neural_request[1],
-        )
         turn_steering_force = (
             mandatory_avoidance_force[0] + accepted_counterfactual_delta[0],
             mandatory_avoidance_force[1] + accepted_counterfactual_delta[1],
@@ -3365,7 +3748,7 @@ class World:
             1.0,
         )
         benchmark_config = self.config.flocking.benchmark
-        if benchmark_config.enabled:
+        if benchmark_config.enabled and refresh_intention:
             qualities = getattr(
                 self,
                 "_flocking_benchmark_quality_by_creature_id",
@@ -3879,9 +4262,14 @@ class World:
         forward_speed = velocity.x * forward_x + velocity.y * forward_y
         lateral_speed = velocity.x * lateral_x + velocity.y * lateral_y
 
-        forward_speed *= self.config.action.forward_velocity_retention
-        lateral_speed *= self.config.action.lateral_velocity_retention
-        elapsed = self.FIXED_TIMESTEP if delta_time is None else max(0.0, delta_time)
+        elapsed = (
+            getattr(self, "fixed_timestep", self.FIXED_TIMESTEP)
+            if delta_time is None
+            else max(0.0, delta_time)
+        )
+        time_scale = elapsed / self.FIXED_TIMESTEP
+        forward_speed *= self.config.action.forward_velocity_retention ** time_scale
+        lateral_speed *= self.config.action.lateral_velocity_retention ** time_scale
         rest_braking = exp(
             -max(0.0, self.config.action.rest_braking_strength)
             * self._clamp(getattr(creature, "smoothed_rest", 0.0), 0.0, 1.0)
@@ -3922,7 +4310,10 @@ class World:
             if rotate == 0.0
             else self.config.action.turn_response
         )
-        response = max(0.0, min(1.0, response))
+        response = self._physics_rate_alpha(
+            max(0.0, min(1.0, response)),
+            getattr(self, "fixed_timestep", self.FIXED_TIMESTEP),
+        )
         updated_angular_velocity = (
             current_angular_velocity
             + (target_angular_velocity - current_angular_velocity) * response
@@ -4603,6 +4994,7 @@ class World:
                 lineage=traits.lineage,
             )
             self.creatures.append(child)
+            self._initialize_creature_runtime_state(child)
             self._mark_behavior_cohort_dirty()
             self._initialize_creature_biome_memory(child)
             self.fitness[child.creature_id] = CreatureFitness()
@@ -4619,37 +5011,163 @@ class World:
             self.rt_neat.record_normal_replacement()
         self._next_creature_id_value = staged[-1].child_id + 1
 
-    def _process_eating_after_transactions(
+    def _capture_mouth_exposure_rollback_state(
         self,
-        delta_time: float,
-    ) -> MetabolismReport:
-        touched_foods: list[Food] = []
-        depleted_foods: list[Food] = []
-        consumptions: list[FoodConsumption] = []
-        for creature in self.creatures:
-            if not self._creature_want_to_eat(creature):
-                continue
-            food = self.metabolism.find_eatable_food(
-                creature,
-                self._eatable_foods_for(creature),
-                touched_foods,
-            )
-            if food is None:
-                continue
-            consumption = self.metabolism.eat(creature, food, delta_time)
-            if consumption.energy_swallowed <= 0.0 and not consumption.depleted:
-                continue
-            touched_foods.append(food)
-            if consumption.depleted:
-                depleted_foods.append(food)
-            consumptions.append(
-                FoodConsumption(
-                    creature_id=creature.creature_id,
-                    food=food,
-                    energy_swallowed=consumption.energy_swallowed,
-                    depleted=consumption.depleted,
+    ) -> _MouthExposureRollbackState:
+        buffer = getattr(self, "_mouth_exposures", None)
+        if buffer is None or buffer.count <= 0:
+            return _MouthExposureRollbackState([], [], {}, {})
+        creature_ids = {
+            buffer.creature_ids[index] for index in range(buffer.count)
+        }
+        food_ids = {buffer.food_ids[index] for index in range(buffer.count)}
+        return _MouthExposureRollbackState(
+            creature_states=[
+                (
+                    creature,
+                    float(getattr(creature, "stomach_energy", 0.0)),
+                    float(
+                        getattr(creature, "stomach_difficulty_load", 0.0)
+                    ),
                 )
-            )
+                for creature in self.creatures
+                if creature.creature_id in creature_ids
+            ],
+            food_states=[
+                (food, index, float(food.energy_value))
+                for index, food in enumerate(self.foods)
+                if food.id in food_ids
+            ],
+            held_foods=dict(
+                getattr(self, "_held_food_by_creature_id", {})
+            ),
+            food_carriers=dict(getattr(self, "_carrier_by_food_id", {})),
+        )
+
+    def _restore_mouth_exposure_rollback_state(
+        self,
+        state: _MouthExposureRollbackState,
+    ) -> None:
+        for creature, stomach_energy, difficulty_load in state.creature_states:
+            creature.stomach_energy = stomach_energy
+            try:
+                creature.stomach_difficulty_load = difficulty_load
+            except AttributeError:
+                pass
+
+        missing_foods: list[tuple[int, object]] = []
+        for food, original_index, energy_value in state.food_states:
+            food.energy_value = energy_value
+            resize = getattr(food, "_resize_for_remaining_energy", None)
+            if callable(resize):
+                resize()
+            if food not in self.foods:
+                missing_foods.append((original_index, food))
+        for original_index, food in sorted(missing_foods):
+            self.foods.insert(min(original_index, len(self.foods)), food)
+            body = getattr(food, "body", None)
+            shape = getattr(food, "shape", None)
+            space = getattr(self, "space", None)
+            if (
+                space is not None
+                and body is not None
+                and shape is not None
+                and getattr(body, "space", None) is None
+            ):
+                space.add(body, shape)
+            index_food = getattr(self, "_index_food", None)
+            if callable(index_food):
+                index_food(food)
+
+        reindex_shape = getattr(getattr(self, "space", None), "reindex_shape", None)
+        if callable(reindex_shape):
+            for food, _original_index, _energy_value in state.food_states:
+                if food in self.foods and hasattr(food, "shape"):
+                    reindex_shape(food.shape)
+        if hasattr(self, "_held_food_by_creature_id"):
+            self._held_food_by_creature_id = dict(state.held_foods)
+        if hasattr(self, "_carrier_by_food_id"):
+            self._carrier_by_food_id = dict(state.food_carriers)
+
+    def _resolve_accumulated_mouth_exposures(
+        self,
+        *,
+        clear_on_success: bool = True,
+        rollback_state: _MouthExposureRollbackState | None = None,
+    ) -> MetabolismReport:
+        """Resolve chronological fixed-step contacts before digestion."""
+        buffer = getattr(self, "_mouth_exposures", None)
+        if buffer is None:
+            return MetabolismReport()
+        if buffer.count <= 0:
+            return MetabolismReport()
+
+        rollback = rollback_state or self._capture_mouth_exposure_rollback_state()
+
+        creatures_by_id = {
+            creature.creature_id: creature for creature in self.creatures
+        }
+        foods_by_id = {food.id: food for food in self.foods}
+        touched_foods: list[Food] = []
+        touched_ids: set[int] = set()
+        depleted_foods: list[Food] = []
+        depleted_ids: set[int] = set()
+        claimed_food_step: set[tuple[int, int]] = set()
+        claimed_creature_step: set[tuple[int, int]] = set()
+        consumptions: list[FoodConsumption] = []
+        try:
+            buffer.sort_order()
+            for order_index in range(buffer.count):
+                record_index = buffer.order[order_index]
+                physics_step = buffer.steps[record_index]
+                creature_id = buffer.creature_ids[record_index]
+                creature = creatures_by_id.get(creature_id)
+                food_id = buffer.food_ids[record_index]
+                food = foods_by_id.get(food_id)
+                food_step = (physics_step, food_id)
+                creature_step = (physics_step, creature_id)
+                if (
+                    creature is None
+                    or creature.life <= 0.0
+                    or food is None
+                    or food_id in depleted_ids
+                    or food_step in claimed_food_step
+                    or creature_step in claimed_creature_step
+                ):
+                    continue
+                consumption = self.metabolism.eat(
+                    creature,
+                    food,
+                    buffer.durations[record_index],
+                )
+                if (
+                    consumption.energy_swallowed <= 0.0
+                    and not consumption.depleted
+                ):
+                    continue
+                claimed_food_step.add(food_step)
+                claimed_creature_step.add(creature_step)
+                if food_id not in touched_ids:
+                    touched_ids.add(food_id)
+                    touched_foods.append(food)
+                if consumption.depleted:
+                    depleted_ids.add(food_id)
+                    depleted_foods.append(food)
+                consumptions.append(
+                    FoodConsumption(
+                        creature_id=creature.creature_id,
+                        food=food,
+                        energy_swallowed=consumption.energy_swallowed,
+                        depleted=consumption.depleted,
+                    )
+                )
+        except BaseException:
+            self._restore_mouth_exposure_rollback_state(rollback)
+            raise
+
+        if clear_on_success:
+            buffer.clear()
+
         return MetabolismReport(
             depleted_foods=depleted_foods,
             touched_foods=touched_foods,
@@ -4660,6 +5178,29 @@ class World:
         if not hasattr(self.metabolism, "evaluate_candidate"):
             self._update_metabolism_legacy_adapter(delta_time)
             return
+        # Contacts represent bites accumulated since the previous biology
+        # boundary. Fill stomachs before evaluating the batched digestion and
+        # resource ledger so prior fixed-step bites are not stale.
+        rollback = self._capture_mouth_exposure_rollback_state()
+        try:
+            eating_report = self._resolve_accumulated_mouth_exposures(
+                clear_on_success=False,
+                rollback_state=rollback,
+            )
+            self._complete_metabolism_update(delta_time, eating_report)
+        except BaseException:
+            self._restore_mouth_exposure_rollback_state(rollback)
+            raise
+        else:
+            exposure_buffer = getattr(self, "_mouth_exposures", None)
+            if exposure_buffer is not None:
+                exposure_buffer.clear()
+
+    def _complete_metabolism_update(
+        self,
+        delta_time: float,
+        eating_report: MetabolismReport,
+    ) -> None:
         resolution = self._resolve_resource_transactions(delta_time)
         staged_offspring, shadow_controller, staged_rng_state = (
             self._stage_final_reproductions(resolution.reproductions)
@@ -4727,13 +5268,10 @@ class World:
                 staged_rng_state,
             )
 
-        for creature in dead_creatures:
-            death_reason = (
-                "old_age" if self._is_senescent(creature) else "metabolic"
-            )
-            self._remove_creature(creature, death_reason=death_reason)
-
-        eating_report = self._process_eating_after_transactions(delta_time)
+        self._remove_dead_creatures(
+            dead_creatures,
+            default_reason="metabolic",
+        )
 
         for consumption in eating_report.food_consumptions:
             self._record_behavior_food_consumption(consumption)
@@ -5197,6 +5735,12 @@ class World:
     def _clamp(self, value: float, minimum: float, maximum: float) -> float:
         return max(minimum, min(maximum, value))
 
+    def _physics_rate_alpha(self, reference_alpha: float, delta_time: float) -> float:
+        """Scale a historical 60 Hz interpolation coefficient by elapsed time."""
+        alpha = self._clamp(reference_alpha, 0.0, 1.0)
+        elapsed = max(0.0, delta_time)
+        return 1.0 - (1.0 - alpha) ** (elapsed / self.FIXED_TIMESTEP)
+
     def _ensure_food_grid(self) -> None:
         if not self._food_grid_dirty:
             return
@@ -5353,6 +5897,9 @@ class World:
             flock_runtime = getattr(self, "_last_flocking_runtime", None)
             if flock_runtime is not None:
                 flock_runtime.pop(creature.creature_id, None)
+            cached_social = getattr(self, "_cached_social_intentions", None)
+            if cached_social is not None:
+                cached_social.pop(creature.creature_id, None)
             benchmark_qualities = getattr(
                 self,
                 "_flocking_benchmark_quality_by_creature_id",
@@ -5642,6 +6189,7 @@ class World:
                 self._record_new_species(child, speciation_result)
 
             self.creatures.append(child)
+            self._initialize_creature_runtime_state(child)
             self._mark_behavior_cohort_dirty()
             self._initialize_creature_biome_memory(child)
             self.fitness[child_id] = CreatureFitness()
@@ -5796,6 +6344,7 @@ class World:
             self._record_new_species(child, speciation_result)
 
         self.creatures.append(child)
+        self._initialize_creature_runtime_state(child)
         self._mark_behavior_cohort_dirty()
         self._initialize_creature_biome_memory(child)
         self.fitness[child_id] = CreatureFitness()

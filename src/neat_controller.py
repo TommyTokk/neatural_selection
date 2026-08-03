@@ -592,12 +592,17 @@ class NeatBrainController:
         snapshot: SensorSnapshot,
         *,
         capture_inputs: bool = False,
+        decision_dt: float | None = None,
     ) -> Action:
         brain = self.brains.get(creature_id)
         if brain is None:
             return self.fallback_action()
 
-        return brain.decide(snapshot, capture_inputs=capture_inputs)
+        return brain.decide(
+            snapshot,
+            capture_inputs=capture_inputs,
+            decision_dt=decision_dt,
+        )
 
     def capture_input_snapshot(self, creature_id: int) -> None:
         """Publish the latest private activation inputs for diagnostics."""
@@ -609,9 +614,16 @@ class NeatBrainController:
         self,
         creature_id: int,
         snapshot: SensorSnapshot,
+        *,
+        decision_dt: float | None = None,
     ) -> Action:
         """Decide while publishing a stable inspector/telemetry input copy."""
-        return self.decide(creature_id, snapshot, capture_inputs=True)
+        return self.decide(
+            creature_id,
+            snapshot,
+            capture_inputs=True,
+            decision_dt=decision_dt,
+        )
 
     def fallback_action(self) -> Action:
         return Action(

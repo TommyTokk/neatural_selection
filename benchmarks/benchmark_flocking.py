@@ -35,6 +35,9 @@ def fill_to_physical_capacity(world: World) -> None:
         want_grab=0.0,
         want_release=0.0,
     )
+    world._effective_actions[parent.creature_id] = world._last_actions[
+        parent.creature_id
+    ]
     while len(world.creatures) < world.config.population.max_creatures:
         parent.energy = world.config.metabolism.max_energy
         if not world._try_reproduce():

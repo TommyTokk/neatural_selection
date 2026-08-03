@@ -24,9 +24,9 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 18
+CHECKPOINT_VERSION = 19
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -598,8 +598,20 @@ class PersistenceManager:
             "sim_time": world.elapsed_time,
             "rng_state": world.rng.getstate(),
             "world": {
-                "physics_accumulator": world._physics_accumulator,
+                "simulation_step": int(
+                    getattr(world, "_simulation_step", 0)
+                ),
+                "mouth_exposures": getattr(
+                    world,
+                    "_mouth_exposures",
+                    None,
+                ).state()
+                if getattr(world, "_mouth_exposures", None) is not None
+                else (),
                 "reproduction_accumulator": world._reproduction_accumulator,
+                "speciation_adjustment_accumulator": float(
+                    getattr(world, "_speciation_adjustment_accumulator", 0.0)
+                ),
                 "next_creature_id": next_creature_id,
                 "time_since_last_quick_save": (
                     world.time_since_last_quick_save
@@ -618,6 +630,33 @@ class PersistenceManager:
                 ),
                 "behavior_automatic_cohort": copy.deepcopy(
                     getattr(world, "_behavior_automatic_cohort", {})
+                ),
+                "behavior_next_sample_time": float(
+                    getattr(world, "_behavior_next_sample_time", 0.0)
+                ),
+                "why_next_probe_time": float(
+                    getattr(world, "_why_next_probe_time", 0.0)
+                ),
+                "behavior_selection_generation": int(
+                    getattr(world, "_behavior_selection_generation", 0)
+                ),
+                "behavior_subject_generation_counter": int(
+                    getattr(world, "_behavior_subject_generation_counter", 0)
+                ),
+                "behavior_food_consumption_count": int(
+                    getattr(world, "_behavior_food_consumption_count", 0)
+                ),
+                "behavior_food_consumed_energy_total": float(
+                    getattr(world, "_behavior_food_consumed_energy_total", 0.0)
+                ),
+                "behavior_consumption_totals": copy.deepcopy(
+                    getattr(world, "_behavior_consumption_totals", {})
+                ),
+                "behavior_active_subjects": copy.deepcopy(
+                    getattr(world, "_behavior_active_subjects", {})
+                ),
+                "behavior_cohort_dirty": bool(
+                    getattr(world, "_behavior_cohort_dirty", True)
                 ),
                 "flocking_telemetry_accumulator": getattr(
                     world,
@@ -1818,8 +1857,29 @@ class PersistenceManager:
             world.rng.setstate(state["rng_state"])
 
             runtime = state["world"]
-            world._physics_accumulator = runtime["physics_accumulator"]
+            # Render-loop debt and lag telemetry are session state. Never
+            # replay wall-clock backlog captured by an earlier process.
+            world._physics_accumulator = 0.0
+            world.simulation_lag_metrics = type(
+                world.simulation_lag_metrics
+            )()
+            saved_step = runtime.get("simulation_step")
+            world._simulation_step = (
+                max(0, int(saved_step))
+                if saved_step is not None
+                else max(
+                    0,
+                    int(round(world.elapsed_time / world.fixed_timestep)),
+                )
+            )
+            world._mouth_exposures.restore(
+                runtime.get("mouth_exposures", ())
+            )
             world._reproduction_accumulator = runtime["reproduction_accumulator"]
+            world._speciation_adjustment_accumulator = max(
+                0.0,
+                float(runtime.get("speciation_adjustment_accumulator", 0.0)),
+            )
             world.time_since_last_quick_save = runtime[
                 "time_since_last_quick_save"
             ]
@@ -1842,6 +1902,69 @@ class PersistenceManager:
                     {},
                 ).items()
             }
+            restore_behavior_runtime = (
+                "behavior_next_sample_time" in runtime
+                and "why_next_probe_time" in runtime
+            )
+            if restore_behavior_runtime:
+                behavior_deadline = float(runtime["behavior_next_sample_time"])
+                why_deadline = float(runtime["why_next_probe_time"])
+                world._behavior_next_sample_time = (
+                    behavior_deadline
+                    if isfinite(behavior_deadline) and behavior_deadline >= 0.0
+                    else world.elapsed_time
+                )
+                world._why_next_probe_time = (
+                    why_deadline
+                    if isfinite(why_deadline) and why_deadline >= 0.0
+                    else world.elapsed_time
+                )
+                world._behavior_selection_generation = max(
+                    0,
+                    int(runtime.get("behavior_selection_generation", 0)),
+                )
+                world._behavior_subject_generation_counter = max(
+                    0,
+                    int(
+                        runtime.get(
+                            "behavior_subject_generation_counter",
+                            0,
+                        )
+                    ),
+                )
+                world._behavior_food_consumption_count = max(
+                    0,
+                    int(runtime.get("behavior_food_consumption_count", 0)),
+                )
+                consumed_energy = float(
+                    runtime.get("behavior_food_consumed_energy_total", 0.0)
+                )
+                world._behavior_food_consumed_energy_total = (
+                    max(0.0, consumed_energy)
+                    if isfinite(consumed_energy)
+                    else 0.0
+                )
+                world._behavior_consumption_totals = {
+                    int(creature_id): (
+                        max(0, int(values[0])),
+                        max(0.0, float(values[1])),
+                    )
+                    for creature_id, values in runtime.get(
+                        "behavior_consumption_totals",
+                        {},
+                    ).items()
+                    if isinstance(values, (tuple, list)) and len(values) == 2
+                }
+                world._behavior_active_subjects = {
+                    int(creature_id): max(0, int(generation))
+                    for creature_id, generation in runtime.get(
+                        "behavior_active_subjects",
+                        {},
+                    ).items()
+                }
+                world._behavior_cohort_dirty = bool(
+                    runtime.get("behavior_cohort_dirty", True)
+                )
             world._flocking_telemetry_accumulator = float(
                 runtime.get("flocking_telemetry_accumulator", 0.0)
             )
@@ -1863,7 +1986,8 @@ class PersistenceManager:
                 )
                 world._flocking_capture_ordinal = 1
             world._flocking_capture_due_this_step = False
-            world._behavior_cohort_dirty = True
+            if not restore_behavior_runtime:
+                world._behavior_cohort_dirty = True
             world._flocking_group_tracker.restore(
                 runtime.get("flocking_group_tracker")
             )
@@ -2095,6 +2219,7 @@ class PersistenceManager:
                     )
                 )
                 world.creatures.append(creature)
+                world._initialize_creature_runtime_state(creature)
                 fitness = creature_state["fitness"]
                 if fitness is not None:
                     world.fitness[creature.creature_id] = fitness
@@ -2229,7 +2354,18 @@ class PersistenceManager:
                     ) + 1
                 controller._next_genome_id_value = next_genome_id
             if not reset_brain_epoch:
-                world._reset_behavior_focus(world.selected_creature_id)
+                if restore_behavior_runtime:
+                    observer = getattr(world, "behavior_observer", None)
+                    if observer is not None:
+                        observer.set_focus(
+                            world.selected_creature_id,
+                            world._behavior_selection_generation,
+                        )
+                    world.behavior_history.set_active_creatures(
+                        set(world._behavior_active_subjects)
+                    )
+                else:
+                    world._reset_behavior_focus(world.selected_creature_id)
                 selected = world.selected_creature
                 if selected is not None:
                     from src.behavior_observer import ObservationMode

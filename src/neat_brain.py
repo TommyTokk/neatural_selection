@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import isfinite, tanh
+from math import exp, isfinite, log1p, tanh
 from typing import Any
 
 import neat
@@ -86,6 +86,7 @@ class NeatBrain:
         snapshot: SensorSnapshot,
         *,
         capture_inputs: bool = False,
+        decision_dt: float | None = None,
     ) -> Action:
         """
         Decide on an action based on the current sensor snapshot.
@@ -111,9 +112,10 @@ class NeatBrain:
         self.last_raw_herding = self._positive_action_output(
             centered_outputs[BrainOutputIndex.HERDING]
         )
+        herding_alpha = self._elapsed_herding_alpha(decision_dt)
         self.herding_state = self._clamp(
-            self.herding_state * (1.0 - self.herding_decay_rate)
-            + self.last_raw_herding * self.herding_decay_rate,
+            self.herding_state * (1.0 - herding_alpha)
+            + self.last_raw_herding * herding_alpha,
             0.0,
             1.0,
         )
@@ -164,6 +166,18 @@ class NeatBrain:
             ),
         )
         return self.last_action
+
+    def _elapsed_herding_alpha(self, decision_dt: float | None) -> float:
+        """Preserve the historical 30 Hz filter response across cadences."""
+        alpha = self.herding_decay_rate
+        if decision_dt is None or alpha >= 1.0:
+            return alpha
+        elapsed = max(0.0, float(decision_dt))
+        if elapsed <= 0.0 or alpha <= 0.0:
+            return 0.0
+        reference_dt = 1.0 / 30.0
+        response_rate = -log1p(-alpha) / reference_dt
+        return 1.0 - exp(-response_rate * elapsed)
 
     def capture_input_snapshot(self) -> None:
         """Publish a stable copy of the latest activation inputs."""

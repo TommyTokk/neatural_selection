@@ -50,8 +50,8 @@ class PersistenceManagerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_checkpoint_versions_2_through_16_remain_loadable(self) -> None:
-        for version in range(2, 18):
+    def test_checkpoint_versions_2_through_18_remain_loadable(self) -> None:
+        for version in range(2, 19):
             PersistenceManager._validate_state({"version": version})
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
@@ -422,7 +422,13 @@ class PersistenceManagerTest(unittest.TestCase):
         self.assertEqual(state["brain_contract"]["sensor_schema"], 6)
         self.assertEqual(state["brain_contract"]["inputs"], 44)
         self.assertNotIn("previous_biome", state["world"])
-        self.assertEqual(state["world"]["physics_accumulator"], 0.0)
+        self.assertNotIn("physics_accumulator", state["world"])
+        self.assertEqual(state["world"]["simulation_step"], 0)
+        self.assertEqual(state["world"]["mouth_exposures"], ())
+        self.assertEqual(
+            state["world"]["speciation_adjustment_accumulator"],
+            0.0,
+        )
         self.assertEqual(state["world"]["time_since_last_quick_save"], 20.0)
         self.assertEqual(state["world"]["time_since_last_archive_save"], 50.0)
         self.assertEqual(state["world"]["next_creature_id"], 5)
@@ -542,6 +548,14 @@ class PersistenceManagerTest(unittest.TestCase):
             world.creatures[0].biome_fertility_ema = 0.37
             world.creatures[0].biome_fertility_ema_updated_at = 4.25
             world._physics_accumulator = 0.007
+            world._simulation_step = 7
+            world._speciation_adjustment_accumulator = 1.75
+            world._mouth_exposures.append(
+                6,
+                world.creatures[0].creature_id,
+                world.foods[0].id,
+                world.fixed_timestep,
+            )
             world.creatures[0].stomach_energy = 0.42
             world.creatures[0].stomach_difficulty_load = 0.47
             saved_digestive_traits = (
@@ -691,7 +705,20 @@ class PersistenceManagerTest(unittest.TestCase):
                 saved_member_color,
             )
             self.assertEqual(restored.creatures[0].biome_fertility_ema, 0.37)
-            self.assertEqual(restored._physics_accumulator, 0.007)
+            self.assertEqual(restored._physics_accumulator, 0.0)
+            self.assertEqual(restored._simulation_step, 7)
+            self.assertEqual(
+                restored._speciation_adjustment_accumulator,
+                1.75,
+            )
+            self.assertEqual(
+                restored._mouth_exposures.state(),
+                world._mouth_exposures.state(),
+            )
+            self.assertEqual(
+                restored.simulation_lag_metrics.session_requested_seconds,
+                0.0,
+            )
             self.assertEqual(
                 restored.creatures[0].biome_fertility_ema_updated_at,
                 4.25,
