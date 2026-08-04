@@ -8,9 +8,9 @@ substitutions and never feeds explanatory results back into the simulation.
 from __future__ import annotations
 
 from collections import Counter, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
-from math import isfinite, pi
+from math import cos, isfinite, pi
 from statistics import median
 from time import monotonic
 from typing import Any
@@ -91,6 +91,8 @@ class CounterfactualProbeInput:
     target_visible: bool = False
     food_target_id: int | None = None
     food_relative_angle: float | None = None
+    group_visible: bool = False
+    group_relative_angle: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,27 +504,94 @@ def _target_relative_rotate_effect(
     secondary_context: bool,
 ) -> OutputEffect:
     """Return a raw rotate delta with target-relative direction semantics."""
-    actual = _project_output("rotate", actual_value)
-    counterfactual = _project_output("rotate", counterfactual_value)
-    delta = actual - counterfactual
-    score = max(0.0, min(1.0, abs(delta) / _output_span("rotate")))
-    actual_alignment = steering_toward_target(
+    return _aligned_output_effect(
+        "rotate",
+        actual_value,
+        counterfactual_value,
+        actual_alignment=steering_toward_target(
+            actual_value,
+            target_relative_angle,
+            center_dead_zone,
+        ),
+        counterfactual_alignment=steering_toward_target(
+            counterfactual_value,
+            target_relative_angle,
+            center_dead_zone,
+        ),
+        secondary_context=secondary_context,
+    )
+
+
+def _target_relative_acceleration_effect(
+    actual_value: float,
+    counterfactual_value: float,
+    *,
+    target_relative_angle: float,
+    secondary_context: bool,
+) -> OutputEffect:
+    """Return acceleration influence aligned with one factual target."""
+    actual = _project_output("accelerate", actual_value)
+    counterfactual = _project_output("accelerate", counterfactual_value)
+    forward_alignment = cos(float(target_relative_angle))
+    if abs(forward_alignment) < DIRECTION_NOISE_EPSILON:
+        forward_alignment = 0.0
+    return _aligned_output_effect(
+        "accelerate",
         actual,
-        target_relative_angle,
-        center_dead_zone,
-    )
-    counterfactual_alignment = steering_toward_target(
         counterfactual,
-        target_relative_angle,
-        center_dead_zone,
+        actual_alignment=actual * forward_alignment,
+        counterfactual_alignment=counterfactual * forward_alignment,
+        secondary_context=secondary_context,
     )
+
+
+def _alarm_retreat_movement_effect(
+    name: str,
+    actual_value: float,
+    counterfactual_value: float,
+    *,
+    secondary_context: bool,
+) -> OutputEffect:
+    """Interpret retreat movement as forward travel with stable heading."""
+    actual = _project_output(name, actual_value)
+    counterfactual = _project_output(name, counterfactual_value)
+    if name == "accelerate":
+        actual_alignment = actual
+        counterfactual_alignment = counterfactual
+    else:
+        actual_alignment = -abs(actual)
+        counterfactual_alignment = -abs(counterfactual)
+    return _aligned_output_effect(
+        name,
+        actual,
+        counterfactual,
+        actual_alignment=actual_alignment,
+        counterfactual_alignment=counterfactual_alignment,
+        secondary_context=secondary_context,
+    )
+
+
+def _aligned_output_effect(
+    name: str,
+    actual_value: float,
+    counterfactual_value: float,
+    *,
+    actual_alignment: float,
+    counterfactual_alignment: float,
+    secondary_context: bool,
+) -> OutputEffect:
+    """Return one output change with explicit behavior-relative alignment."""
+    actual = _project_output(name, actual_value)
+    counterfactual = _project_output(name, counterfactual_value)
+    delta = actual - counterfactual
+    score = max(0.0, min(1.0, abs(delta) / _output_span(name)))
     direction = _target_alignment_direction(
         score,
         actual_alignment,
         counterfactual_alignment,
     )
     return OutputEffect(
-        output_name="rotate",
+        output_name=name,
         actual=actual,
         counterfactual=counterfactual,
         delta=delta,
@@ -539,7 +608,7 @@ def _target_alignment_direction(
     actual_alignment: float,
     counterfactual_alignment: float,
 ) -> EffectDirection:
-    """Classify one rotate effect from factual-target steering quality."""
+    """Classify one effect from factual behavior-relative alignment."""
     if influence_score < MINIMAL_INFLUENCE_THRESHOLD:
         return EffectDirection.MINIMAL
     materially_reverses = (
@@ -594,6 +663,29 @@ def _aggregate_direction(
     return EffectDirection.MINIMAL
 
 
+def _dominant_direction(
+    score: float,
+    directions: Counter[EffectDirection],
+) -> EffectDirection:
+    """Return the modal non-minimal direction, with deterministic ties."""
+    if score < MINIMAL_INFLUENCE_THRESHOLD:
+        return EffectDirection.MINIMAL
+    non_minimal = {
+        direction: count
+        for direction, count in directions.items()
+        if direction is not EffectDirection.MINIMAL and count > 0
+    }
+    if not non_minimal:
+        return EffectDirection.MINIMAL
+    highest = max(non_minimal.values())
+    leaders = [
+        direction
+        for direction, count in non_minimal.items()
+        if count == highest
+    ]
+    return leaders[0] if len(leaders) == 1 else EffectDirection.MIXED
+
+
 def semantic_effect(
     behavior: BehaviorKind,
     intervention: SemanticIntervention,
@@ -602,11 +694,13 @@ def semantic_effect(
     *,
     target_visible: bool = False,
     food_relative_angle: float | None = None,
+    group_visible: bool = False,
+    group_relative_angle: float | None = None,
     target_center_dead_zone: float = 0.05,
 ) -> SemanticEffectSnapshot:
     spec = BEHAVIOR_EXPLANATION_SPECS[behavior]
-    target_relative = behavior in _FOOD_TARGET_BEHAVIORS
-    if target_relative and (
+    food_target_relative = behavior in _FOOD_TARGET_BEHAVIORS
+    if food_target_relative and (
         not target_visible
         or food_relative_angle is None
         or not isfinite(float(food_relative_angle))
@@ -615,23 +709,70 @@ def semantic_effect(
             "Food-oriented counterfactual effects require a visible factual "
             "food target with a finite relative angle."
         )
-    effects = tuple(
-        (
-            _target_relative_rotate_effect(
-                actual_outputs[_OUTPUT_INDEX[name]],
-                counterfactual_outputs[_OUTPUT_INDEX[name]],
+    group_target_relative = behavior is BehaviorKind.COHESION
+    if group_target_relative and (
+        not group_visible
+        or group_relative_angle is None
+        or not isfinite(float(group_relative_angle))
+    ):
+        raise ValueError(
+            "Cohesion counterfactual effects require a visible factual "
+            "flock center with a finite relative angle."
+        )
+
+    def build_output_effect(name: str) -> OutputEffect:
+        actual = actual_outputs[_OUTPUT_INDEX[name]]
+        counterfactual = counterfactual_outputs[_OUTPUT_INDEX[name]]
+        secondary = name not in spec.scored_outputs
+        if food_target_relative and name == "rotate":
+            return _target_relative_rotate_effect(
+                actual,
+                counterfactual,
                 target_relative_angle=float(food_relative_angle),
                 center_dead_zone=target_center_dead_zone,
-                secondary_context=name not in spec.scored_outputs,
+                secondary_context=secondary,
             )
-            if target_relative and name == "rotate"
-            else output_effect(
+        if food_target_relative and name == "accelerate":
+            return _target_relative_acceleration_effect(
+                actual,
+                counterfactual,
+                target_relative_angle=float(food_relative_angle),
+                secondary_context=secondary,
+            )
+        if group_target_relative and name == "rotate":
+            return _target_relative_rotate_effect(
+                actual,
+                counterfactual,
+                target_relative_angle=float(group_relative_angle),
+                center_dead_zone=target_center_dead_zone,
+                secondary_context=secondary,
+            )
+        if group_target_relative and name == "accelerate":
+            return _target_relative_acceleration_effect(
+                actual,
+                counterfactual,
+                target_relative_angle=float(group_relative_angle),
+                secondary_context=secondary,
+            )
+        if behavior is BehaviorKind.ALARM_RETREAT and name in {
+            "accelerate",
+            "rotate",
+        }:
+            return _alarm_retreat_movement_effect(
                 name,
-                actual_outputs[_OUTPUT_INDEX[name]],
-                counterfactual_outputs[_OUTPUT_INDEX[name]],
-                secondary_context=name not in spec.scored_outputs,
+                actual,
+                counterfactual,
+                secondary_context=secondary,
             )
+        return output_effect(
+            name,
+            actual,
+            counterfactual,
+            secondary_context=secondary,
         )
+
+    effects = tuple(
+        build_output_effect(name)
         for name in spec.displayed_outputs
     )
     scored = [
@@ -699,54 +840,11 @@ class _CompletedOutputAccumulator:
         self.actual = BoundedMetricAccumulator(capacity)
         self.counterfactual = BoundedMetricAccumulator(capacity)
         self.delta = BoundedMetricAccumulator(capacity)
-        self.influence = BoundedMetricAccumulator(capacity)
-        self.actual_alignment = BoundedMetricAccumulator(capacity)
-        self.counterfactual_alignment = BoundedMetricAccumulator(capacity)
-        self.secondary_context = False
 
     def add(self, effect: OutputEffect) -> None:
         self.actual.add(effect.actual)
         self.counterfactual.add(effect.counterfactual)
         self.delta.add(effect.delta)
-        self.influence.add(effect.influence_score)
-        self.secondary_context = effect.secondary_context
-        if effect.actual_target_alignment is not None:
-            self.actual_alignment.add(effect.actual_target_alignment)
-        if effect.counterfactual_target_alignment is not None:
-            self.counterfactual_alignment.add(
-                effect.counterfactual_target_alignment
-            )
-
-    def median_output_effect(self) -> OutputEffect:
-        actual = self.actual.summary_values()[0]
-        counterfactual = self.counterfactual.summary_values()[0]
-        if self.actual_alignment.total_count <= 0:
-            return output_effect(
-                self.output_name,
-                actual,
-                counterfactual,
-                secondary_context=self.secondary_context,
-            )
-        actual_alignment = self.actual_alignment.summary_values()[0]
-        counterfactual_alignment = (
-            self.counterfactual_alignment.summary_values()[0]
-        )
-        influence = self.influence.summary_values()[0]
-        return OutputEffect(
-            output_name=self.output_name,
-            actual=actual,
-            counterfactual=counterfactual,
-            delta=self.delta.summary_values()[0],
-            influence_score=influence,
-            direction=_target_alignment_direction(
-                influence,
-                actual_alignment,
-                counterfactual_alignment,
-            ),
-            secondary_context=self.secondary_context,
-            actual_target_alignment=actual_alignment,
-            counterfactual_target_alignment=counterfactual_alignment,
-        )
 
     def completed_summary(self) -> CompletedOutputEffectSummary:
         delta_median, delta_p25, delta_p75, estimated = (
@@ -792,11 +890,6 @@ class _CompletedSemanticAccumulator:
 
     def finalize(self) -> CompletedSemanticEffect:
         score, p25, p75, estimated = self.influence.summary_values()
-        spec = BEHAVIOR_EXPLANATION_SPECS[self.behavior]
-        median_effects = tuple(
-            output.median_output_effect()
-            for output in self.outputs.values()
-        )
         return CompletedSemanticEffect(
             intervention=self.intervention,
             sample_count=self.influence.total_count,
@@ -804,11 +897,7 @@ class _CompletedSemanticAccumulator:
             p25=p25,
             p75=p75,
             influence_label=influence_label(score),
-            effect_direction=_aggregate_direction(
-                score,
-                median_effects,
-                spec,
-            ),
+            effect_direction=_dominant_direction(score, self.directions),
             direction_counts=EffectDirectionCounts(
                 supportive=self.directions[EffectDirection.SUPPORTIVE],
                 suppressive=self.directions[EffectDirection.SUPPRESSIVE],
@@ -909,6 +998,8 @@ class CounterfactualBoutAggregator:
                     job.outputs[intervention],
                     target_visible=probe.target_visible,
                     food_relative_angle=probe.food_relative_angle,
+                    group_visible=probe.group_visible,
+                    group_relative_angle=probe.group_relative_angle,
                     target_center_dead_zone=self.target_center_dead_zone,
                 )
                 key = (
@@ -1012,86 +1103,22 @@ class CounterfactualBoutAggregator:
 
     @staticmethod
     def _aggregate_samples(
-        behavior: BehaviorKind,
+        _behavior: BehaviorKind,
         samples: deque[SemanticEffectSnapshot],
     ) -> SemanticEffectSnapshot:
-        first = samples[0]
-        spec = BEHAVIOR_EXPLANATION_SPECS[behavior]
-        effects: list[OutputEffect] = []
-        for index, original in enumerate(first.output_effects):
-            actual = median(
-                sample.output_effects[index].actual for sample in samples
-            )
-            counterfactual = median(
-                sample.output_effects[index].counterfactual
-                for sample in samples
-            )
-            if original.actual_target_alignment is None:
-                effects.append(
-                    output_effect(
-                        original.output_name,
-                        actual,
-                        counterfactual,
-                        secondary_context=original.secondary_context,
-                    )
-                )
-                continue
-            actual_alignment = median(
-                float(sample.output_effects[index].actual_target_alignment)
-                for sample in samples
-                if (
-                    sample.output_effects[index].actual_target_alignment
-                    is not None
-                )
-            )
-            counterfactual_alignment = median(
-                float(
-                    sample.output_effects[
-                        index
-                    ].counterfactual_target_alignment
-                )
-                for sample in samples
-                if (
-                    sample.output_effects[
-                        index
-                    ].counterfactual_target_alignment
-                    is not None
-                )
-            )
-            delta = median(
-                sample.output_effects[index].delta for sample in samples
-            )
-            influence_score = median(
-                sample.output_effects[index].influence_score
-                for sample in samples
-            )
-            effects.append(
-                OutputEffect(
-                    original.output_name,
-                    actual,
-                    counterfactual,
-                    delta,
-                    influence_score,
-                    _target_alignment_direction(
-                        influence_score,
-                        actual_alignment,
-                        counterfactual_alignment,
-                    ),
-                    original.secondary_context,
-                    actual_alignment,
-                    counterfactual_alignment,
-                )
-            )
-        score = float(median(sample.influence_score for sample in samples))
-        effect_tuple = tuple(effects)
-        return SemanticEffectSnapshot(
-            intervention=first.intervention,
-            influence_score=score,
-            influence_label=influence_label(score),
-            effect_direction=_aggregate_direction(score, effect_tuple, spec),
-            output_effects=effect_tuple,
-            sample_count=len(samples),
+        median_score = float(
+            median(sample.influence_score for sample in samples)
         )
+        representative = samples[-1]
+        closest_distance = abs(
+            representative.influence_score - median_score
+        )
+        for sample in reversed(tuple(samples)[:-1]):
+            distance = abs(sample.influence_score - median_score)
+            if distance < closest_distance - 1e-12:
+                representative = sample
+                closest_distance = distance
+        return replace(representative, sample_count=len(samples))
 
 
 def mapped_probe_behaviors(
@@ -1126,6 +1153,10 @@ def validate_probe(probe: CounterfactualProbeInput) -> None:
         raise ValueError(
             "Counterfactual probe target visibility must be boolean."
         )
+    if type(probe.group_visible) is not bool:
+        raise ValueError(
+            "Counterfactual probe group visibility must be boolean."
+        )
     if (
         probe.food_target_id is not None
         and (
@@ -1142,6 +1173,14 @@ def validate_probe(probe: CounterfactualProbeInput) -> None:
             "Counterfactual probe food-relative angle must be finite and "
             "within [-pi, pi]."
         )
+    if probe.group_relative_angle is not None and (
+        not isfinite(float(probe.group_relative_angle))
+        or abs(float(probe.group_relative_angle)) > pi
+    ):
+        raise ValueError(
+            "Counterfactual probe group-relative angle must be finite and "
+            "within [-pi, pi]."
+        )
     for observed in probe.behaviors:
         if observed.behavior not in _FOOD_TARGET_BEHAVIORS:
             continue
@@ -1156,3 +1195,12 @@ def validate_probe(probe: CounterfactualProbeInput) -> None:
                 "Food-oriented probe behavior lacks matching factual target "
                 "context."
             )
+    if any(
+        observed.behavior is BehaviorKind.COHESION
+        for observed in probe.behaviors
+    ) and (
+        not probe.group_visible or probe.group_relative_angle is None
+    ):
+        raise ValueError(
+            "Cohesion probe behavior lacks factual flock-center context."
+        )

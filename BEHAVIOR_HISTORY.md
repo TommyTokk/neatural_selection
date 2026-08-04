@@ -24,8 +24,11 @@ Operational evidence uses the same keys, values, and units as the live
 observer. Up to `active_metric_sample_capacity` values are exact. Longer bouts
 use deterministic, time-distributed compaction while preserving exact counts,
 pass fractions, value totals for event evidence, and first/last values.
-Median and IQR fields carry an explicit `quantiles_estimated` marker only after
-compaction; at the default capacity, bouts through 512 samples are exact.
+Q1–Q3 denotes the middle-50% interval and IQR denotes its scalar width,
+`Q3 - Q1`. Median and quartile fields carry an explicit
+`quantiles_estimated` marker only after compaction; at the default capacity,
+bouts through 512 samples are exact. Lifetime WHY summaries propagate that
+marker when any contributing bout median was estimated.
 
 Completed records travel through a non-blocking FIFO worker outbox. Temporary
 backpressure is lossless. The outbox has soft, hard, and recovery thresholds;
@@ -50,8 +53,8 @@ keeps the live `NODE | BEHAVIOURS | WHY` inspector unchanged and provides:
   clickable immutable bout details;
 - `SUMMARY`: completed-bout counts, total/median duration, and outcomes;
 - `WHY`: one lifetime value per completed-bout median, intervention-specific
-  availability denominators, IQR, centralized influence labels, and
-  bout-direction counts.
+  availability denominators, Q1–Q3 and IQR, centralized influence labels,
+  estimated-value provenance, and bout-direction counts.
 
 The report is species-first: active species expose coverage and normalized
 aggregate behavior rates, monitored creatures remain available for individual

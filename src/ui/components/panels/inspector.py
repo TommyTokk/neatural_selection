@@ -859,10 +859,17 @@ class InspectorPanelComponent:
                 f"{getattr(ledger, 'unmet_energy_demand', 0.0):.4f}",
             ),
             (
+                "rest_recovery",
+                "Rest gain / healing spend",
+                f"{getattr(ledger, 'rest_energy_recovered', 0.0):.4f} / "
+                f"{getattr(ledger, 'healing_energy_spent', 0.0):.4f}",
+            ),
+            (
                 "life_damage",
-                "Deficit / direct damage",
+                "Deficit / direct / healed",
                 f"{getattr(ledger, 'life_damage_from_deficit', 0.0):.4f} / "
-                f"{getattr(ledger, 'direct_life_damage', 0.0):.4f}",
+                f"{getattr(ledger, 'direct_life_damage', 0.0):.4f} / "
+                f"{getattr(ledger, 'life_healed', 0.0):.4f}",
             ),
             (
                 "transaction_status",

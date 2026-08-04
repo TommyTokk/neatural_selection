@@ -379,6 +379,9 @@ class MetabolismConfig:
     life_damage_per_energy_deficit: float = 0.25
     movement_life_penalty_max_multiplier: float = 4.0
     rest_digestion_efficiency_bonus: float = 0.10
+    rest_energy_recovery_per_second: float = 0.04
+    rest_healing_rate_per_second: float = 0.01
+    rest_healing_energy_cost_per_life: float = 1.0
     basic_metabolism_rate: float = 0.01
     brain_upkeep_per_node: float = 0.0003
     brain_upkeep_per_connection: float = 0.0001
@@ -571,6 +574,7 @@ class ActionConfig:
     lateral_velocity_retention: float = 0.72
     linear_stop_threshold: float = 0.05
     rest_response_rate: float = 3.0
+    rest_decay_rate: float = 1.5
     rest_movement_exponent: float = 2.0
     rest_rotation_inhibition: float = 0.5
     rest_braking_strength: float = 2.5
@@ -582,6 +586,7 @@ class ActionConfig:
         """Validate rest parameters after construction or runtime mutation."""
         finite_nonnegative = (
             "rest_response_rate",
+            "rest_decay_rate",
             "rest_movement_exponent",
             "rest_rotation_inhibition",
             "rest_braking_strength",

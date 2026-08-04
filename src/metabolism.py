@@ -115,6 +115,9 @@ class ResourceCandidate:
     direct_life_damage: float
     final_energy: float
     final_life: float
+    rest_energy_recovered: float = 0.0
+    healing_energy_spent: float = 0.0
+    life_healed: float = 0.0
     powered_movement_energy_demand: float = 0.0
     unmet_other_energy_demand: float = 0.0
     unmet_powered_movement_demand: float = 0.0
@@ -508,7 +511,22 @@ class Metabolism:
         if remaining_stomach <= 1e-12:
             remaining_stomach = 0.0
             remaining_load = 0.0
-        available_energy = starting_energy + digestion.net_energy
+        energy_before_rest_recovery = min(
+            self.config.max_energy,
+            starting_energy + digestion.net_energy,
+        )
+        rest_strength = min(1.0, max(0.0, float(effective_rest)))
+        recovery_limit = min(
+            self.config.max_energy,
+            max(0.0, self.config.starvation_energy_threshold),
+        )
+        rest_energy_recovered = min(
+            max(0.0, self.config.rest_energy_recovery_per_second)
+            * rest_strength
+            * max(0.0, float(delta_time)),
+            max(0.0, recovery_limit - energy_before_rest_recovery),
+        )
+        available_energy = energy_before_rest_recovery + rest_energy_recovered
         energy_after_other = max(0.0, available_energy - other_demand)
         unmet_other_demand = max(0.0, other_demand - available_energy)
         paid_powered_movement = min(
@@ -566,8 +584,7 @@ class Metabolism:
         life_damage_from_deficit = (
             ordinary_life_damage + movement_life_damage
         )
-        final_energy = min(self.config.max_energy, remaining_energy)
-        final_life = min(
+        damaged_life = min(
             self.config.max_life,
             max(
                 0.0,
@@ -576,6 +593,24 @@ class Metabolism:
                 - direct_life_damage,
             ),
         )
+        life_healed = 0.0
+        healing_energy_spent = 0.0
+        if damaged_life > 0.0 and damaged_life < self.config.max_life:
+            healing_cost_per_life = max(
+                ENERGY_EPSILON,
+                self.config.rest_healing_energy_cost_per_life,
+            )
+            life_healed = min(
+                self.config.max_life - damaged_life,
+                max(0.0, self.config.rest_healing_rate_per_second)
+                * rest_strength
+                * max(0.0, float(delta_time)),
+                remaining_energy / healing_cost_per_life,
+            )
+            healing_energy_spent = life_healed * healing_cost_per_life
+            remaining_energy = max(0.0, remaining_energy - healing_energy_spent)
+        final_energy = min(self.config.max_energy, remaining_energy)
+        final_life = min(self.config.max_life, damaged_life + life_healed)
         return ResourceCandidate(
             digestion=digestion,
             total_energy_demand=demand,
@@ -588,6 +623,9 @@ class Metabolism:
             direct_life_damage=direct_life_damage,
             final_energy=final_energy,
             final_life=final_life,
+            rest_energy_recovered=rest_energy_recovered,
+            healing_energy_spent=healing_energy_spent,
+            life_healed=life_healed,
             powered_movement_energy_demand=powered_movement_demand,
             unmet_other_energy_demand=unmet_other_demand,
             unmet_powered_movement_demand=unmet_powered_movement,
@@ -632,6 +670,9 @@ class Metabolism:
         diagnostics.gross_energy = candidate.digestion.gross_energy
         diagnostics.processing_cost = candidate.digestion.processing_cost
         diagnostics.net_energy = candidate.digestion.net_energy
+        diagnostics.rest_energy_recovered = candidate.rest_energy_recovered
+        diagnostics.healing_energy_spent = candidate.healing_energy_spent
+        diagnostics.life_healed = candidate.life_healed
         diagnostics.total_energy_demand = candidate.total_energy_demand
         diagnostics.powered_movement_energy_demand = (
             candidate.powered_movement_energy_demand
@@ -937,6 +978,12 @@ class Metabolism:
             "rest_digestion_efficiency_bonus": (
                 metabolism.rest_digestion_efficiency_bonus
             ),
+            "rest_energy_recovery_per_second": (
+                metabolism.rest_energy_recovery_per_second
+            ),
+            "rest_healing_rate_per_second": (
+                metabolism.rest_healing_rate_per_second
+            ),
         }
         for name, value in nonnegative.items():
             if require_finite(name, value) < 0.0:
@@ -996,6 +1043,25 @@ class Metabolism:
         max_life = require_finite("max_life", metabolism.max_life)
         if max_life <= 0.0:
             raise ValueError("max_life must be positive.")
+        max_energy = require_finite("max_energy", metabolism.max_energy)
+        if max_energy <= 0.0:
+            raise ValueError("max_energy must be positive.")
+        starvation_threshold = require_finite(
+            "starvation_energy_threshold",
+            metabolism.starvation_energy_threshold,
+        )
+        if not 0.0 <= starvation_threshold <= max_energy:
+            raise ValueError(
+                "starvation_energy_threshold must be within [0, max_energy]."
+            )
+        healing_energy_cost = require_finite(
+            "rest_healing_energy_cost_per_life",
+            metabolism.rest_healing_energy_cost_per_life,
+        )
+        if healing_energy_cost <= 0.0:
+            raise ValueError(
+                "rest_healing_energy_cost_per_life must be positive."
+            )
         initial_life_fraction = require_finite(
             "initial_life_fraction",
             metabolism.initial_life_fraction,

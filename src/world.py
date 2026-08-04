@@ -2559,18 +2559,43 @@ class World:
             and food_target_id >= 0
             and food_relative_angle is not None
         )
+        flock = None if sensor is None else getattr(sensor, "flock", None)
+        group_visible = bool(
+            flock is not None
+            and float(getattr(flock, "flockmate_count", 0.0)) > 1e-12
+        )
+        group_relative_angle = None
+        if group_visible:
+            try:
+                candidate_group_angle = self._signed_angle(
+                    float(getattr(flock, "cohesion_absolute_angle"))
+                    - float(selected.heading)
+                )
+            except (AttributeError, TypeError, ValueError):
+                candidate_group_angle = float("nan")
+            if isfinite(candidate_group_angle):
+                group_relative_angle = candidate_group_angle
+        group_context_valid = (
+            group_visible and group_relative_angle is not None
+        )
         mapped = tuple(
             observed
             for observed in mapped
             if (
-                observed.behavior
-                not in {
-                    BehaviorKind.FOOD_ORIENTATION,
-                    BehaviorKind.FOOD_APPROACH,
-                }
-                or (
-                    target_context_valid
-                    and observed.target_id == food_target_id
+                (
+                    observed.behavior
+                    not in {
+                        BehaviorKind.FOOD_ORIENTATION,
+                        BehaviorKind.FOOD_APPROACH,
+                    }
+                    or (
+                        target_context_valid
+                        and observed.target_id == food_target_id
+                    )
+                )
+                and (
+                    observed.behavior is not BehaviorKind.COHESION
+                    or group_context_valid
                 )
             )
         )
@@ -2624,6 +2649,12 @@ class World:
                 food_relative_angle=(
                     food_relative_angle
                     if target_context_valid
+                    else None
+                ),
+                group_visible=group_visible,
+                group_relative_angle=(
+                    group_relative_angle
+                    if group_context_valid
                     else None
                 ),
             )
@@ -3715,6 +3746,21 @@ class World:
             emit_alarm_pheromone=0.0,
         )
 
+    @staticmethod
+    def _smoothed_rest_value(
+        previous_rest: float,
+        rest_intent: float,
+        delta_time: float,
+        activation_rate: float,
+        decay_rate: float,
+    ) -> float:
+        """Apply the asymmetric, elapsed-time-aware rest response filter."""
+        previous = min(1.0, max(0.0, float(previous_rest)))
+        intent = min(1.0, max(0.0, float(rest_intent)))
+        rate = activation_rate if intent >= previous else decay_rate
+        alpha = 1.0 - exp(-max(0.0, float(rate)) * max(0.0, delta_time))
+        return min(1.0, max(0.0, previous + (intent - previous) * alpha))
+
     def _action_for_execution(self, creature_id: int) -> Action | None:
         """Return effective runtime output, with legacy-test compatibility."""
         effective_actions = getattr(self, "_effective_actions", None)
@@ -3826,15 +3872,15 @@ class World:
             self._last_flocking_runtime = {}
 
         rest_intent = self._clamp(getattr(action, "rest", 0.0), 0.0, 1.0)
-        response_rate = max(0.0, self.config.action.rest_response_rate)
         fixed_dt = getattr(self, "fixed_timestep", self.FIXED_TIMESTEP)
-        rest_alpha = 1.0 - exp(-response_rate * fixed_dt)
         creature.rest_intent = rest_intent
         previous_rest = getattr(creature, "smoothed_rest", 0.0)
-        smoothed_rest = self._clamp(
-            previous_rest + (rest_intent - previous_rest) * rest_alpha,
-            0.0,
-            1.0,
+        smoothed_rest = self._smoothed_rest_value(
+            previous_rest,
+            rest_intent,
+            fixed_dt,
+            self.config.action.rest_response_rate,
+            self.config.action.rest_decay_rate,
         )
         creature.smoothed_rest = smoothed_rest
         movement_scale = 1.0 - smoothed_rest ** max(

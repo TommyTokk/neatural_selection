@@ -63,6 +63,8 @@ def _draft(
     influence: float,
     probe_count: int,
     direction: EffectDirection,
+    *,
+    quantiles_estimated: bool = False,
 ) -> CompletedBehaviorBoutDraft:
     effect = CompletedSemanticEffect(
         intervention=SemanticIntervention.VISIBLE_FOOD_CUES,
@@ -89,6 +91,7 @@ def _draft(
             ),
         ),
         output_summaries=(),
+        quantiles_estimated=quantiles_estimated,
     )
     return CompletedBehaviorBoutDraft(
         creature_id=7,
@@ -619,6 +622,26 @@ class CreatureBehaviorHistoryStoreTest(unittest.TestCase):
         self.assertEqual(why.behavior_bout_count, 2)
         self.assertEqual(why.contributing_bout_count, 1)
         self.assertEqual(why.direction_counts.total, 1)
+
+    def test_lifetime_why_propagates_estimated_quantile_provenance(self) -> None:
+        self.store.append_draft(
+            _draft(
+                1,
+                0.7,
+                600,
+                EffectDirection.SUPPORTIVE,
+                quantiles_estimated=True,
+            )
+        )
+        self.store.append_draft(
+            _draft(2, 0.2, 5, EffectDirection.SUPPRESSIVE)
+        )
+
+        report = self.store.report_for(7)
+
+        assert report is not None
+        why = report.summary.behaviors[0].why_summaries[0]
+        self.assertTrue(why.quantiles_estimated)
 
     def test_capacity_and_incomplete_state_round_trip(self) -> None:
         for local_id in range(1, 7):

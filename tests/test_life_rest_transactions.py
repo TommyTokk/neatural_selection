@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import exp
 from types import SimpleNamespace
 import unittest
 
@@ -78,6 +79,29 @@ class DigestionLedgerTest(unittest.TestCase):
                 max_energy=1.0,
                 starting_energy=0.0,
             )
+
+
+class RestSmoothingTest(unittest.TestCase):
+    def test_activation_and_decay_use_distinct_exponential_rates(self) -> None:
+        activated = World._smoothed_rest_value(0.0, 1.0, 1.0, 3.0, 1.5)
+        decayed = World._smoothed_rest_value(1.0, 0.0, 1.0, 3.0, 1.5)
+
+        self.assertAlmostEqual(activated, 1.0 - exp(-3.0))
+        self.assertAlmostEqual(decayed, exp(-1.5))
+
+    def test_rest_smoothing_is_independent_of_fixed_step_cadence(self) -> None:
+        one_step = World._smoothed_rest_value(0.0, 1.0, 1.0, 3.0, 1.5)
+        many_steps = 0.0
+        for _ in range(60):
+            many_steps = World._smoothed_rest_value(
+                many_steps,
+                1.0,
+                1.0 / 60.0,
+                3.0,
+                1.5,
+            )
+
+        self.assertAlmostEqual(many_steps, one_step)
 
 
 class LifeCandidateTest(unittest.TestCase):
@@ -214,6 +238,115 @@ class LifeCandidateTest(unittest.TestCase):
 
         self.assertFalse(candidate.survives)
         self.assertEqual(candidate.final_life, 0.0)
+
+    def test_effective_rest_recovers_energy_without_stomach_contents(self) -> None:
+        self.creature.pending_direct_life_damage = 0.0
+
+        candidate = self.metabolism.evaluate_candidate(
+            self.creature,
+            1.0,
+            total_energy_demand=0.0,
+            effective_rest=1.0,
+        )
+
+        self.assertAlmostEqual(candidate.rest_energy_recovered, 0.04)
+        self.assertAlmostEqual(candidate.final_energy, 0.04)
+
+    def test_rest_recovery_stops_at_starvation_threshold(self) -> None:
+        self.creature.pending_direct_life_damage = 0.0
+        self.creature.energy = 0.29
+
+        candidate = self.metabolism.evaluate_candidate(
+            self.creature,
+            1.0,
+            total_energy_demand=0.0,
+            effective_rest=1.0,
+        )
+
+        self.assertAlmostEqual(candidate.rest_energy_recovered, 0.01)
+        self.assertAlmostEqual(candidate.final_energy, 0.3)
+
+    def test_digestion_can_raise_energy_above_rest_recovery_cap(self) -> None:
+        self.creature.pending_direct_life_damage = 0.0
+        self.creature.energy = 0.29
+        self.creature.stomach_energy = 1.0
+        self.creature.stomach_difficulty_load = 1.0
+
+        candidate = self.metabolism.evaluate_candidate(
+            self.creature,
+            1.0,
+            total_energy_demand=0.0,
+            effective_rest=1.0,
+        )
+
+        self.assertGreater(candidate.final_energy, 0.3)
+        self.assertEqual(candidate.rest_energy_recovered, 0.0)
+
+    def test_healing_uses_energy_left_after_upkeep(self) -> None:
+        self.creature.pending_direct_life_damage = 0.0
+        self.creature.energy = 0.05
+        self.creature.life = 0.5
+
+        candidate = self.metabolism.evaluate_candidate(
+            self.creature,
+            1.0,
+            total_energy_demand=0.02,
+            effective_rest=1.0,
+        )
+
+        self.assertAlmostEqual(candidate.life_healed, 0.01)
+        self.assertAlmostEqual(candidate.healing_energy_spent, 0.01)
+        self.assertAlmostEqual(candidate.final_life, 0.51)
+        self.assertAlmostEqual(candidate.final_energy, 0.06)
+
+    def test_nonlethal_damage_is_applied_before_healing(self) -> None:
+        self.creature.energy = 0.05
+        self.creature.life = 1.0
+        self.creature.pending_direct_life_damage = 0.2
+
+        candidate = self.metabolism.evaluate_candidate(
+            self.creature,
+            1.0,
+            total_energy_demand=0.0,
+            effective_rest=1.0,
+        )
+
+        self.assertAlmostEqual(candidate.direct_life_damage, 0.2)
+        self.assertAlmostEqual(candidate.life_healed, 0.01)
+        self.assertAlmostEqual(candidate.final_life, 0.81)
+
+    def test_lethal_damage_cannot_be_healed(self) -> None:
+        self.creature.energy = 0.0
+        self.creature.life = 1.0
+        self.creature.pending_direct_life_damage = 1.0
+
+        candidate = self.metabolism.evaluate_candidate(
+            self.creature,
+            1.0,
+            total_energy_demand=0.0,
+            effective_rest=1.0,
+        )
+
+        self.assertFalse(candidate.survives)
+        self.assertEqual(candidate.life_healed, 0.0)
+        self.assertEqual(candidate.final_life, 0.0)
+
+    def test_healing_never_creates_an_energy_deficit(self) -> None:
+        self.creature.pending_direct_life_damage = 0.0
+        self.creature.energy = 0.0
+        self.creature.life = 0.5
+
+        candidate = self.metabolism.evaluate_candidate(
+            self.creature,
+            1.0,
+            total_energy_demand=0.04,
+            effective_rest=1.0,
+        )
+
+        self.assertEqual(candidate.unmet_energy_demand, 0.0)
+        self.assertEqual(candidate.life_healed, 0.0)
+        self.assertEqual(candidate.final_energy, 0.0)
+        self.assertEqual(candidate.final_life, 0.5)
 
 
 class EffectiveActionTest(unittest.TestCase):
@@ -474,6 +607,9 @@ class SelectedDiagnosticsTest(unittest.TestCase):
             direct_life_damage=0.1,
             final_energy=0.5,
             final_life=0.9,
+            rest_energy_recovered=0.04,
+            healing_energy_spent=0.01,
+            life_healed=0.01,
         )
 
     def test_core_state_commits_without_detailed_ledger_writes(self) -> None:
@@ -621,6 +757,15 @@ class SelectedDiagnosticsTest(unittest.TestCase):
             creatures[1].ledger_diagnostics.transaction_status,
             "action_committed",
         )
+        self.assertAlmostEqual(
+            creatures[1].ledger_diagnostics.rest_energy_recovered,
+            0.04,
+        )
+        self.assertAlmostEqual(
+            creatures[1].ledger_diagnostics.healing_energy_spent,
+            0.01,
+        )
+        self.assertAlmostEqual(creatures[1].ledger_diagnostics.life_healed, 0.01)
         self.assertEqual(
             creatures[2].ledger_diagnostics.transaction_status,
             "unchanged",
@@ -658,6 +803,29 @@ class CompatibilityAndValidationTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             config.validate()
+
+    def test_runtime_mutation_of_rest_decay_is_revalidated(self) -> None:
+        config = ActionConfig()
+        config.rest_decay_rate = float("nan")
+
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_rest_recovery_and_healing_config_are_validated(self) -> None:
+        invalid_configs = (
+            MetabolismConfig(rest_energy_recovery_per_second=-0.01),
+            MetabolismConfig(rest_healing_rate_per_second=-0.01),
+            MetabolismConfig(rest_healing_energy_cost_per_life=0.0),
+            MetabolismConfig(starvation_energy_threshold=1.01),
+        )
+
+        for config in invalid_configs:
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                Metabolism(
+                    config,
+                    VisionSystem(VisionConfig(), max_life=config.max_life),
+                    TraitConfig(),
+                )
 
     def test_movement_life_penalty_multiplier_is_validated(self) -> None:
         config = MetabolismConfig(movement_life_penalty_max_multiplier=0.99)

@@ -168,7 +168,10 @@ class BehaviorReportWindowComponent:
                 "orientation scores rotation; approach scores acceleration and "
                 "rotation; feeding scores eat intent; cohesion and alarm retreat "
                 "score their relevant movement and specialized outputs. Resting "
-                "currently has no counterfactual WHY specification.",
+                "currently has no counterfactual WHY specification. Signed "
+                "movement direction is evaluated toward the factual food or "
+                "flock-center heading; alarm retreat favors forward movement "
+                "with a stable heading.",
             ),
             (
                 "Influence labels",
@@ -189,17 +192,19 @@ class BehaviorReportWindowComponent:
                 "influence threshold.",
             ),
             (
-                "Median and IQR",
+                "Median, quartiles, and IQR",
                 "The median is the middle retained value and resists occasional "
-                "extremes. The IQR runs from the 25th percentile (Q1) to the "
-                "75th percentile (Q3), containing the middle half of values; "
-                "it is unavailable for a single value. WHY first summarizes "
+                "extremes. Q1–Q3 is the middle-50% interval; IQR is its width, "
+                "Q3 − Q1. Both are unavailable for a single value. WHY first "
+                "summarizes "
                 "each completed bout by its median, then takes the lifetime "
                 "median and IQR across bouts so long bouts receive no extra "
-                "weight. Quantiles are exact through "
-                f"{history.active_metric_sample_capacity} retained samples per "
-                "active metric and are marked estimated after deterministic "
-                "bounded compaction.",
+                "weight. Probe histories display one real paired probe nearest "
+                "the median influence, using the newest probe to break ties. "
+                "Quantiles are exact through "
+                f"{history.active_metric_sample_capacity} probes per active "
+                "metric and are marked estimated after deterministic bounded "
+                "compaction.",
             ),
         )
 
@@ -1804,17 +1809,17 @@ class BehaviorReportWindowComponent:
                 8.5,
             )
         for index, effect in enumerate(effects):
-            iqr = (
-                ""
-                if effect.p25 is None or effect.p75 is None
-                else f" · IQR {effect.p25:.2f}–{effect.p75:.2f}"
+            spread = self._quartile_spread_text(
+                effect.p25,
+                effect.p75,
+                estimated=effect.quantiles_estimated,
             )
             line = (
                 f"{effect.intervention.value.replace('_', ' ').title()}: "
                 f"{effect.median_influence:.2f} · "
                 f"{effect.influence_label.value.upper()} · "
                 f"{effect.effect_direction.value.upper()} · "
-                f"{effect.sample_count} probes{iqr}"
+                f"{effect.sample_count} probes{spread}"
             )
             self._draw_text(
                 f"behavior_report_bout_detail_why_{index}",
@@ -2382,15 +2387,15 @@ class BehaviorReportWindowComponent:
     ) -> tuple[str, str, str, str]:
         """Return the unchanged stored-value copy used by a WHY card."""
         title = effect.intervention.value.replace("_", " ").title()
-        iqr = (
-            ""
-            if effect.p25 is None or effect.p75 is None
-            else f" · IQR {effect.p25:.2f}–{effect.p75:.2f}"
+        spread = self._quartile_spread_text(
+            effect.p25,
+            effect.p75,
+            estimated=effect.quantiles_estimated,
         )
         median = (
             "Median bout influence: "
             f"{effect.median_bout_influence:.2f} · "
-            f"{effect.influence_label.value.upper()}{iqr}"
+            f"{effect.influence_label.value.upper()}{spread}"
         )
         available = (
             "WHY available in "
@@ -2412,6 +2417,22 @@ class BehaviorReportWindowComponent:
             )
         )
         return title, median, available, wording
+
+    @staticmethod
+    def _quartile_spread_text(
+        p25: float | None,
+        p75: float | None,
+        *,
+        estimated: bool,
+    ) -> str:
+        """Format quartile endpoints and their conventional IQR width."""
+        if p25 is None or p75 is None:
+            return " · estimated" if estimated else ""
+        estimate = " · estimated" if estimated else ""
+        return (
+            f" · Q1–Q3 {p25:.2f}–{p75:.2f}"
+            f" · IQR {max(0.0, p75 - p25):.2f}{estimate}"
+        )
 
     def _wrapped_text_height(
         self,

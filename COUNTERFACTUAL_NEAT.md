@@ -58,10 +58,11 @@ is one.
 - below `0.60`: moderate;
 - otherwise: strong.
 
-Each output is supportive, suppressive, reversing, or minimal. A semantic
-effect may be `MIXED` when relevant outputs disagree. Material reversal of a
-behavior-critical signed output takes precedence. Scores are not probabilities
-and are never normalized to sum to 100.
+Each output is supportive, suppressive, reversing, or minimal relative to the
+behavior's factual reference. A semantic effect may be `MIXED` when relevant
+outputs disagree. Material reversal of a behavior-critical signed output takes
+precedence. Scores are not probabilities and are never normalized to sum to
+100.
 
 Food orientation scores rotation alone; acceleration is secondary context.
 Food approach scores acceleration and rotation. Resting has no direct neural
@@ -69,18 +70,20 @@ WHY in v1 because it is defined from realized locomotion and has no dedicated
 NEAT rest output.
 
 Per-behavior histories are keyed by creature, selection generation, brain
-revision, behavior, bout ID, and directional target ID. The latest 64 samples
-are aggregated with medians. Results are rejected after focus, brain, bout, or
-food-target changes.
+revision, behavior, bout ID, and directional target ID. From the latest 64
+samples, the live view selects one real paired probe nearest the median
+behavior influence; the newest probe breaks equal-distance ties. Results are
+rejected after focus, brain, bout, or food-target changes. Cohesion probes are
+deferred whenever their required factual flock reference is unavailable.
 
-### Target-relative food steering
+### Behavior-relative movement direction
 
-For `FOOD_ORIENTATION` and `FOOD_APPROACH`, raw rotate influence remains
-`abs(actual - counterfactual) / 2`, but its direction is evaluated relative to
-the factual food heading. Positive food angle and positive rotate are both
-counter-clockwise. Outside the configured centered-target dead zone, alignment
-is `sign(food_relative_angle) * rotate`; positive values steer toward the food
-and negative values steer away.
+For `FOOD_ORIENTATION` and `FOOD_APPROACH`, raw signed-output influence remains
+`abs(actual - counterfactual) / 2`, but direction is evaluated relative to the
+factual food heading. Positive food angle and positive rotate are both
+counter-clockwise. Outside the configured centered-target dead zone, rotate
+alignment is `sign(food_relative_angle) * rotate`; acceleration alignment is
+`accelerate * cos(food_relative_angle)`.
 
 Within the default `0.05` radian dead zone, alignment is `-abs(rotate)`, so a
 near-zero request is correctly treated as stabilizing relative to a large
@@ -93,6 +96,17 @@ snapshot that produced the factual NEAT inputs and outputs. This immutable
 reference is not altered by a food-removal counterfactual. Food-oriented WHY
 is deferred when that factual context is missing or no longer matches the
 observed bout; other simultaneous explanations continue normally.
+
+`COHESION` uses the same rotation and acceleration alignment rules relative to
+the immutable factual flock-center heading. Cohesion WHY waits when that
+reference is unavailable. `ALARM_RETREAT` follows its observer definition:
+forward acceleration and a stable, near-zero turn are better responses while
+moving down the forward alarm gradient.
+
+Completed bouts retain median influence and quartiles, plus counts of every
+probe direction. Their single direction label is the most frequent non-minimal
+direction; tied leaders are `MIXED`, and a below-threshold median influence is
+`MINIMAL`.
 
 ## Inspector layout
 

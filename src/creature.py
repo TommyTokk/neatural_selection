@@ -90,6 +90,9 @@ class LedgerDiagnostics:
     gross_energy: float = 0.0
     processing_cost: float = 0.0
     net_energy: float = 0.0
+    rest_energy_recovered: float = 0.0
+    healing_energy_spent: float = 0.0
+    life_healed: float = 0.0
     total_energy_demand: float = 0.0
     powered_movement_energy_demand: float = 0.0
     unmet_energy_demand: float = 0.0

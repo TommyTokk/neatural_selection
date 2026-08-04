@@ -607,7 +607,7 @@ class BehaviorReportUiTest(unittest.TestCase):
                 "Counterfactual influence",
                 "Influence labels",
                 "Effect directions",
-                "Median and IQR",
+                "Median, quartiles, and IQR",
             }.issubset(titles)
         )
         for expected in (
@@ -616,10 +616,51 @@ class BehaviorReportUiTest(unittest.TestCase):
             "9.5 px/s",
             "MINIMAL is below 0.10",
             "STRONG is 0.60 or above",
-            "25th percentile (Q1)",
-            "640 retained samples",
+            "Q1–Q3 is the middle-50% interval",
+            "IQR is its width",
+            "640 probes",
         ):
             self.assertIn(expected, copy)
+
+    def test_quartile_spread_shows_interval_width_and_estimate(self) -> None:
+        self.assertEqual(
+            self.renderer._quartile_spread_text(
+                0.4,
+                0.6,
+                estimated=True,
+            ),
+            " · Q1–Q3 0.40–0.60 · IQR 0.20 · estimated",
+        )
+        self.assertEqual(
+            self.renderer._quartile_spread_text(
+                None,
+                None,
+                estimated=True,
+            ),
+            " · estimated",
+        )
+
+    def test_lifetime_why_card_includes_quartiles_iqr_and_estimate(self) -> None:
+        report = self._why_report(completed_bout_count=3)
+        effect = BehaviorLifetimeWhySummary(
+            intervention=SemanticIntervention.VISIBLE_FOOD_CUES,
+            behavior_bout_count=3,
+            contributing_bout_count=3,
+            median_bout_influence=0.5,
+            p25=0.4,
+            p75=0.7,
+            influence_label=InfluenceLabel.MODERATE,
+            direction_counts=EffectDirectionCounts(supportive=3),
+            quantiles_estimated=True,
+        )
+
+        _title, median, _available, _wording = (
+            self.renderer._why_card_text(report, effect)
+        )
+
+        self.assertIn("Q1–Q3 0.40–0.70", median)
+        self.assertIn("IQR 0.30", median)
+        self.assertIn("estimated", median)
 
     def test_help_button_stays_inside_report_bottom_right(self) -> None:
         bounds = arcade.LBWH(20, 30, 640, 460)

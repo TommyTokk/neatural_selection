@@ -7,12 +7,19 @@ death occurs only when `life <= 0`. Manual kill remains immediate. The current
 brain contract is sensing schema 6 and action schema 2: input `-44` is
 `life_normalized`, and output `14` is the continuous sigmoid `rest` action.
 
-Rest is smoothed on every fixed step, including cached-brain steps:
+Rest is smoothed on every fixed step, including cached-brain steps. Activation
+uses the existing `rest_response_rate` while release uses the slower
+`rest_decay_rate`:
 
 ```text
-alpha = 1 - exp(-rest_response_rate * dt)
+rate = rest_response_rate if intent >= smoothed else rest_decay_rate
+alpha = 1 - exp(-rate * dt)
 smoothed += (intent - smoothed) * alpha
 ```
+
+The default activation and decay rates are `3.0/s` and `1.5/s`. This keeps rest
+continuous when the neural output flickers instead of toggling its biological
+effects on and off.
 
 Voluntary translation is multiplied by
 `1 - smoothed_rest ** rest_movement_exponent`; neural turning is multiplied by
@@ -41,22 +48,46 @@ The pure digestion calculation limits stomach use to the current rate and to
 the net energy that can cover same-step demand plus final energy headroom. A
 small numerical tolerance prevents loss when headroom is effectively zero.
 
+Effective rest also supplies ambient recovery before demand is paid:
+
+```text
+rest_recovery = min(
+    0.04 * effective_rest * dt,
+    starvation_energy_threshold - energy_after_digestion,
+)
+```
+
+Recovery is clamped to a nonnegative value, so it never raises the pre-demand
+energy pool above the starvation threshold. Digestion remains free to raise
+energy above that survival reserve.
+
 Each resource candidate is evaluated once from its starting snapshot:
 
 ```text
-available = starting_energy + net_digestion
+available = starting_energy + net_digestion + rest_recovery
 after_ordinary = max(0, available - ordinary_demand)
 ordinary_deficit = max(0, ordinary_demand - available)
 paid_powered_movement = min(powered_movement_demand, after_ordinary)
 unpaid_powered_movement = powered_movement_demand - paid_powered_movement
 remaining = after_ordinary - paid_powered_movement
-final_energy = min(max_energy, remaining)
-final_life = clamp(
+damaged_life = clamp(
     starting_life - ordinary_damage - movement_damage - direct_damage,
     0,
     max_life,
 )
+if damaged_life > 0:
+    life_healed = min(
+        max_life - damaged_life,
+        0.01 * effective_rest * dt,
+        remaining / healing_energy_cost_per_life,
+    )
+final_energy = min(max_energy, remaining - life_healed * healing_energy_cost_per_life)
+final_life = damaged_life + life_healed
 ```
+
+The default healing cost is one energy per life restored. Healing uses only
+energy left after upkeep and powered movement, begins for any missing life,
+and cannot create a deficit or revive a creature reduced to zero life.
 
 At depleted energy, locomotion remains available while communication, new
 grabs, nursing, and reproduction are gated from the effective action. Raw brain

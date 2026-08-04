@@ -158,6 +158,7 @@ class BehaviorLifetimeWhySummary:
     p75: float | None
     influence_label: InfluenceLabel
     direction_counts: EffectDirectionCounts
+    quantiles_estimated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -980,6 +981,9 @@ def _build_creature_summary(
                         reversing=directions[EffectDirection.REVERSING],
                         mixed=directions[EffectDirection.MIXED],
                         minimal=directions[EffectDirection.MINIMAL],
+                    ),
+                    quantiles_estimated=any(
+                        effect.quantiles_estimated for effect in effects
                     ),
                 )
             )

@@ -577,13 +577,22 @@ class BrainInspectorComponent:
                 "outputs only; it is not a percentage allocation."
             ),
             (
-                "For food orientation and approach, rotate influence still "
-                "uses that raw delta, but its direction compares steering "
-                "toward the same factual food heading. Within "
+                "For food behaviors, signed movement direction is compared "
+                "with the same factual food heading. Within "
                 f"{target_dead_zone:.2f} "
                 "rad, a smaller turn "
                 "is the better stabilizing response. Without a matching "
                 "visible target, food WHY waits instead of using magnitude."
+            ),
+            (
+                "Cohesion evaluates movement toward the factual flock center "
+                "and waits without that reference. Alarm retreat favors "
+                "forward acceleration with a stable, near-zero turn."
+            ),
+            (
+                "Live histories show one real paired probe nearest the median "
+                "behavior influence; the newest probe breaks equal-distance "
+                "ties, so displayed transitions remain internally coherent."
             ),
             (
                 f"Labels: <{MINIMAL_INFLUENCE_THRESHOLD:.2f} minimal, "
@@ -592,9 +601,9 @@ class BrainInspectorComponent:
                 "strong."
             ),
             (
-                "Supportive means the factual response weakens; suppressive "
-                "means it strengthens; reversing crosses zero; mixed means "
-                "scored outputs disagree."
+                "Supportive means factual cues strengthen the behavior-relative "
+                "response; suppressive means they weaken it; reversing crosses "
+                "zero; mixed means scored outputs disagree."
             ),
             (
                 "These are local mechanistic influences, not definitive "

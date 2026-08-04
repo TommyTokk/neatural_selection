@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter, deque
 from dataclasses import replace
 from math import pi
 import pickle
@@ -34,6 +35,7 @@ from src.counterfactual_neat import (
     semantic_effect,
     steering_toward_target,
     validate_probe,
+    _dominant_direction,
 )
 from src.neat_brain import NeatBrain
 from src.vision import SENSOR_CONTRACT, SENSOR_INPUT_NAMES, SensorSnapshot
@@ -411,22 +413,141 @@ class CounterfactualScoringTest(unittest.TestCase):
                 self.outputs(rotate=-0.5),
             )
 
-    def test_non_target_rotate_keeps_generic_magnitude_direction(self) -> None:
+    def test_cohesion_movement_uses_factual_group_heading(self) -> None:
         effect = semantic_effect(
             BehaviorKind.COHESION,
             SemanticIntervention.SOCIAL_CUES,
             self.outputs(accelerate=0.7, rotate=0.2),
             self.outputs(accelerate=0.3, rotate=0.55),
+            group_visible=True,
+            group_relative_angle=0.4,
         )
-        rotate = next(
-            output
-            for output in effect.output_effects
-            if output.output_name == "rotate"
+        by_name = {
+            output.output_name: output for output in effect.output_effects
+        }
+
+        self.assertIs(
+            by_name["accelerate"].direction,
+            EffectDirection.SUPPORTIVE,
+        )
+        self.assertIs(
+            by_name["rotate"].direction,
+            EffectDirection.SUPPRESSIVE,
+        )
+        self.assertIs(effect.effect_direction, EffectDirection.MIXED)
+
+    def test_food_acceleration_is_aligned_with_factual_target(self) -> None:
+        ahead = semantic_effect(
+            BehaviorKind.FOOD_APPROACH,
+            SemanticIntervention.VISIBLE_FOOD_CUES,
+            self.outputs(accelerate=0.7),
+            self.outputs(accelerate=0.2),
+            target_visible=True,
+            food_relative_angle=0.0,
+        )
+        behind = semantic_effect(
+            BehaviorKind.FOOD_APPROACH,
+            SemanticIntervention.VISIBLE_FOOD_CUES,
+            self.outputs(accelerate=-0.7),
+            self.outputs(accelerate=0.2),
+            target_visible=True,
+            food_relative_angle=pi,
         )
 
-        self.assertIs(rotate.direction, EffectDirection.SUPPRESSIVE)
-        self.assertIsNone(rotate.actual_target_alignment)
-        self.assertIsNone(rotate.counterfactual_target_alignment)
+        ahead_acceleration = next(
+            output
+            for output in ahead.output_effects
+            if output.output_name == "accelerate"
+        )
+        behind_acceleration = next(
+            output
+            for output in behind.output_effects
+            if output.output_name == "accelerate"
+        )
+        self.assertIs(
+            ahead_acceleration.direction,
+            EffectDirection.SUPPORTIVE,
+        )
+        self.assertIs(
+            behind_acceleration.direction,
+            EffectDirection.REVERSING,
+        )
+
+    def test_cohesion_turning_handles_left_right_and_behind_groups(self) -> None:
+        for group_angle, factual_rotate in (
+            (pi / 2.0, 0.7),
+            (-pi / 2.0, -0.7),
+        ):
+            with self.subTest(group_angle=group_angle):
+                effect = semantic_effect(
+                    BehaviorKind.COHESION,
+                    SemanticIntervention.SOCIAL_CUES,
+                    self.outputs(rotate=factual_rotate),
+                    self.outputs(rotate=-factual_rotate),
+                    group_visible=True,
+                    group_relative_angle=group_angle,
+                )
+                rotate = next(
+                    output
+                    for output in effect.output_effects
+                    if output.output_name == "rotate"
+                )
+                self.assertIs(rotate.direction, EffectDirection.REVERSING)
+
+        behind = semantic_effect(
+            BehaviorKind.COHESION,
+            SemanticIntervention.SOCIAL_CUES,
+            self.outputs(accelerate=-0.7),
+            self.outputs(accelerate=0.3),
+            group_visible=True,
+            group_relative_angle=pi,
+        )
+        acceleration = next(
+            output
+            for output in behind.output_effects
+            if output.output_name == "accelerate"
+        )
+        self.assertIs(acceleration.direction, EffectDirection.REVERSING)
+
+        side_acceleration = semantic_effect(
+            BehaviorKind.COHESION,
+            SemanticIntervention.SOCIAL_CUES,
+            self.outputs(accelerate=0.7),
+            self.outputs(accelerate=-0.7),
+            group_visible=True,
+            group_relative_angle=pi / 2.0,
+        )
+        acceleration = next(
+            output
+            for output in side_acceleration.output_effects
+            if output.output_name == "accelerate"
+        )
+        self.assertIs(acceleration.direction, EffectDirection.MINIMAL)
+
+    def test_alarm_retreat_prefers_forward_acceleration_and_stable_heading(
+        self,
+    ) -> None:
+        supportive = semantic_effect(
+            BehaviorKind.ALARM_RETREAT,
+            SemanticIntervention.ALARM_PHEROMONE_CUES,
+            self.outputs(accelerate=0.7, rotate=0.1),
+            self.outputs(accelerate=0.2, rotate=0.7),
+        )
+        suppressive = semantic_effect(
+            BehaviorKind.ALARM_RETREAT,
+            SemanticIntervention.ALARM_PHEROMONE_CUES,
+            self.outputs(accelerate=0.2, rotate=0.7),
+            self.outputs(accelerate=0.7, rotate=0.1),
+        )
+
+        self.assertIs(
+            supportive.effect_direction,
+            EffectDirection.SUPPORTIVE,
+        )
+        self.assertIs(
+            suppressive.effect_direction,
+            EffectDirection.SUPPRESSIVE,
+        )
 
     def test_mapped_food_behavior_preserves_target_identity(self) -> None:
         state = SimpleNamespace(
@@ -652,8 +773,8 @@ class CounterfactualAggregationTest(unittest.TestCase):
         )
 
         self.assertEqual(visible.sample_count, 2)
-        self.assertAlmostEqual(rotate.actual, 0.0)
-        self.assertAlmostEqual(rotate.counterfactual, 0.0)
+        self.assertAlmostEqual(rotate.actual, -0.8)
+        self.assertAlmostEqual(rotate.counterfactual, -0.2)
         self.assertAlmostEqual(rotate.actual_target_alignment, 0.8)
         self.assertAlmostEqual(
             rotate.counterfactual_target_alignment,
@@ -675,6 +796,88 @@ class CounterfactualAggregationTest(unittest.TestCase):
         self.assertEqual(switched.target_id, 10)
         self.assertEqual(switched_visible.sample_count, 1)
 
+    def test_median_probe_preserves_one_coherent_transition(self) -> None:
+        samples = deque(
+            semantic_effect(
+                BehaviorKind.FEEDING,
+                SemanticIntervention.VISIBLE_FOOD_CUES,
+                CounterfactualScoringTest.outputs(want_eat=actual),
+                CounterfactualScoringTest.outputs(want_eat=counterfactual),
+            )
+            for actual, counterfactual in (
+                (0.0, 0.0),
+                (0.0, 1.0),
+                (1.0, 1.0),
+            )
+        )
+
+        aggregated = CounterfactualBoutAggregator._aggregate_samples(
+            BehaviorKind.FEEDING,
+            samples,
+        )
+        output = aggregated.output_effects[0]
+
+        self.assertEqual(aggregated.sample_count, 3)
+        self.assertEqual(aggregated.influence_score, output.influence_score)
+        self.assertEqual(aggregated.effect_direction, output.direction)
+        self.assertEqual(output.delta, output.actual - output.counterfactual)
+        self.assertEqual((output.actual, output.counterfactual), (1.0, 1.0))
+
+    def test_even_median_probe_tie_prefers_newest_sample(self) -> None:
+        older = semantic_effect(
+            BehaviorKind.FEEDING,
+            SemanticIntervention.VISIBLE_FOOD_CUES,
+            CounterfactualScoringTest.outputs(want_eat=0.2),
+            CounterfactualScoringTest.outputs(want_eat=0.0),
+        )
+        newer = semantic_effect(
+            BehaviorKind.FEEDING,
+            SemanticIntervention.VISIBLE_FOOD_CUES,
+            CounterfactualScoringTest.outputs(want_eat=0.8),
+            CounterfactualScoringTest.outputs(want_eat=0.0),
+        )
+
+        aggregated = CounterfactualBoutAggregator._aggregate_samples(
+            BehaviorKind.FEEDING,
+            deque((older, newer)),
+        )
+
+        self.assertEqual(aggregated.influence_score, 0.8)
+        self.assertEqual(aggregated.output_effects[0].actual, 0.8)
+
+    def test_completed_direction_uses_dominant_non_minimal_count(self) -> None:
+        self.assertIs(
+            _dominant_direction(
+                0.4,
+                Counter(
+                    {
+                        EffectDirection.SUPPORTIVE: 2,
+                        EffectDirection.SUPPRESSIVE: 1,
+                    }
+                ),
+            ),
+            EffectDirection.SUPPORTIVE,
+        )
+        self.assertIs(
+            _dominant_direction(
+                0.4,
+                Counter(
+                    {
+                        EffectDirection.SUPPORTIVE: 1,
+                        EffectDirection.SUPPRESSIVE: 1,
+                    }
+                ),
+            ),
+            EffectDirection.MIXED,
+        )
+        self.assertIs(
+            _dominant_direction(
+                0.05,
+                Counter({EffectDirection.SUPPORTIVE: 10}),
+            ),
+            EffectDirection.MINIMAL,
+        )
+
 
 class CounterfactualProbeValidationTest(unittest.TestCase):
     @staticmethod
@@ -685,6 +888,8 @@ class CounterfactualProbeValidationTest(unittest.TestCase):
         target_visible: bool = False,
         food_target_id: int | None = None,
         food_relative_angle: float | None = None,
+        group_visible: bool = False,
+        group_relative_angle: float | None = None,
     ) -> CounterfactualProbeInput:
         return CounterfactualProbeInput(
             creature_id=1,
@@ -707,6 +912,8 @@ class CounterfactualProbeValidationTest(unittest.TestCase):
             target_visible=target_visible,
             food_target_id=food_target_id,
             food_relative_angle=food_relative_angle,
+            group_visible=group_visible,
+            group_relative_angle=group_relative_angle,
         )
 
     def test_target_behavior_requires_matching_visible_context(self) -> None:
@@ -745,6 +952,26 @@ class CounterfactualProbeValidationTest(unittest.TestCase):
 
     def test_non_target_behavior_does_not_require_food_context(self) -> None:
         validate_probe(self.probe(BehaviorKind.FEEDING))
+
+    def test_cohesion_requires_visible_flock_center_context(self) -> None:
+        validate_probe(
+            self.probe(
+                BehaviorKind.COHESION,
+                group_visible=True,
+                group_relative_angle=-0.4,
+            )
+        )
+        for invalid in (
+            self.probe(BehaviorKind.COHESION),
+            self.probe(
+                BehaviorKind.COHESION,
+                group_visible=True,
+                group_relative_angle=float("nan"),
+            ),
+        ):
+            with self.subTest(probe=invalid):
+                with self.assertRaises(ValueError):
+                    validate_probe(invalid)
 
     def test_intervention_keeps_factual_target_context_immutable(self) -> None:
         probe = self.probe(

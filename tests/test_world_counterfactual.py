@@ -71,7 +71,7 @@ def world_shell(behavior: BehaviorKind) -> World:
     world._why_next_probe_time = 0.0
     world._behavior_selection_generation = 2
     world.selected_creature_id = 4
-    creature = SimpleNamespace(creature_id=4)
+    creature = SimpleNamespace(creature_id=4, heading=0.1)
     world.creatures = [creature]
     brain = SimpleNamespace(
         brain_revision=7,
@@ -87,7 +87,11 @@ def world_shell(behavior: BehaviorKind) -> World:
                 visible=1.0,
                 nearest_id=5,
                 relative_angle=-0.25,
-            )
+            ),
+            flock=SimpleNamespace(
+                flockmate_count=3.0,
+                cohesion_absolute_angle=0.5,
+            ),
         )
     }
     world.behavior_observer = _WhyObserver()
@@ -156,6 +160,42 @@ class WorldCounterfactualTest(unittest.TestCase):
             observations_processed=1,
             produced_monotonic=0.0,
         )
+        world._sample_selected_why()
+
+        self.assertEqual(len(world.behavior_observer.probes), 1)
+        self.assertEqual(
+            tuple(
+                behavior.behavior
+                for behavior in world.behavior_observer.probes[0].behaviors
+            ),
+            (BehaviorKind.FEEDING,),
+        )
+
+    def test_cohesion_probe_carries_factual_group_heading(self) -> None:
+        world = world_shell(BehaviorKind.COHESION)
+
+        world._sample_selected_why()
+
+        self.assertEqual(len(world.behavior_observer.probes), 1)
+        probe = world.behavior_observer.probes[0]
+        self.assertTrue(probe.group_visible)
+        self.assertAlmostEqual(probe.group_relative_angle, 0.4)
+
+    def test_missing_group_context_defers_only_cohesion(self) -> None:
+        world = world_shell(BehaviorKind.COHESION)
+        world._last_sensor_snapshots[4].flock.flockmate_count = 0.0
+        world.behavior_observer.latest_snapshot = BehaviorSnapshot(
+            creature_id=4,
+            selection_generation=2,
+            simulation_time=0.0,
+            behaviors=(
+                _state(BehaviorKind.COHESION),
+                _state(BehaviorKind.FEEDING),
+            ),
+            observations_processed=1,
+            produced_monotonic=0.0,
+        )
+
         world._sample_selected_why()
 
         self.assertEqual(len(world.behavior_observer.probes), 1)

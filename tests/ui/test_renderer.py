@@ -120,6 +120,7 @@ from src.ui.layouts.brain_graph import (
 )
 from src.creature import (
     FlockingTraits,
+    LedgerDiagnostics,
     LineageInfo,
     PhysicalTraits,
     TraitMutationDelta,
@@ -449,9 +450,14 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertIn("<0.60 moderate", copy)
         self.assertIn("mixed", copy)
         self.assertIn("do not sum to 100%", copy)
-        self.assertIn("same factual food heading", copy)
+        self.assertIn("factual food heading", copy)
         self.assertIn("0.05 rad", copy)
         self.assertIn("smaller turn", copy)
+        self.assertIn("factual cues strengthen", copy)
+        self.assertIn("real paired probe nearest the median", copy)
+        self.assertIn("factual flock center", copy)
+        self.assertIn("stable, near-zero turn", copy)
+        self.assertNotIn("factual response weakens", copy)
 
     def test_expanded_why_card_draws_result_and_waiting_placeholders(
         self,
@@ -3122,6 +3128,11 @@ class FloatingSimulationUiTest(unittest.TestCase):
             ),
             flocking_traits=FlockingTraits(0.8, 0.3, 0.6),
             last_action=SimpleNamespace(herding=0.7),
+            ledger_diagnostics=LedgerDiagnostics(
+                rest_energy_recovered=0.04,
+                healing_energy_spent=0.01,
+                life_healed=0.01,
+            ),
             lineage=LineageInfo(
                 parent_id=12,
                 generation=3,
@@ -3177,6 +3188,14 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertEqual(
             rows["inspector_herding"],
             ("Herding raw / effective", "0.90 / 0.70"),
+        )
+        self.assertEqual(
+            rows["inspector_rest_recovery"],
+            ("Rest gain / healing spend", "0.0400 / 0.0100"),
+        )
+        self.assertEqual(
+            rows["inspector_life_damage"],
+            ("Deficit / direct / healed", "0.0000 / 0.0000 / 0.0100"),
         )
         self.assertEqual(
             rows["inspector_collision_avoidance"],
@@ -3299,7 +3318,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
         self.renderer._draw_inspector_panel(world)
         self.renderer._scroll_offsets["inspector"] = (
-            max(0.0, self.renderer._scroll_limits["inspector"] - 420.0)
+            self.renderer._scroll_limits["inspector"] * 0.6
         )
         self.renderer._draw_inspector_panel(world)
 
