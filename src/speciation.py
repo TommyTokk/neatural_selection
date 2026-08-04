@@ -2,11 +2,102 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isclose
-from typing import Any
+from typing import Any, Literal
 
 from src.creature import FlockingTraits, PhysicalTraits, VisionTraits
 
-NeuralShift = tuple[int, int, str, float]
+NeuralShiftType = Literal["added", "changed", "removed"]
+
+
+@dataclass(frozen=True, slots=True)
+class NeuralShift:
+    """One enabled neural-connection transition relative to a parent genome."""
+
+    source_node_id: int
+    target_node_id: int
+    change_type: NeuralShiftType
+    parent_weight: float | None
+    child_weight: float | None
+    weight_delta: float | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.change_type == "changed"
+            and self.parent_weight is not None
+            and self.child_weight is not None
+            and self.weight_delta is None
+        ):
+            object.__setattr__(
+                self,
+                "weight_delta",
+                self.child_weight - self.parent_weight,
+            )
+
+    @property
+    def weights_complete(self) -> bool:
+        """Return whether the transition contains every expected endpoint."""
+        if self.change_type == "added":
+            return self.parent_weight is None and self.child_weight is not None
+        if self.change_type == "removed":
+            return self.parent_weight is not None and self.child_weight is None
+        return self.parent_weight is not None and self.child_weight is not None
+
+
+def normalize_neural_shift(value: object) -> NeuralShift | None:
+    """Normalize current records and legacy ``(target, source, type, delta)`` rows."""
+    if isinstance(value, NeuralShift):
+        return value
+    if isinstance(value, dict):
+        try:
+            raw_type = str(value["change_type"])
+            change_type = "changed" if raw_type == "weight" else raw_type
+            if change_type not in {"added", "changed", "removed"}:
+                return None
+            parent = _finite_float(value.get("parent_weight"))
+            child = _finite_float(value.get("child_weight"))
+            delta = _finite_float(value.get("weight_delta"))
+            return NeuralShift(
+                source_node_id=int(value["source_node_id"]),
+                target_node_id=int(value["target_node_id"]),
+                change_type=change_type,  # type: ignore[arg-type]
+                parent_weight=parent,
+                child_weight=child,
+                weight_delta=delta,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+    if not isinstance(value, (tuple, list)) or len(value) != 4:
+        return None
+    try:
+        target, source, raw_type, raw_delta = value
+        legacy_type = str(raw_type)
+        delta = float(raw_delta)
+        if legacy_type == "added":
+            return NeuralShift(int(source), int(target), "added", None, delta)
+        if legacy_type == "removed":
+            return NeuralShift(int(source), int(target), "removed", -delta, None)
+        if legacy_type == "weight":
+            return NeuralShift(
+                int(source),
+                int(target),
+                "changed",
+                None,
+                None,
+                delta,
+            )
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def normalize_neural_shifts(values: object) -> tuple[NeuralShift, ...]:
+    """Return all valid current or legacy neural transitions in source order."""
+    try:
+        candidates = tuple(values)  # type: ignore[arg-type]
+    except TypeError:
+        return ()
+    normalized = tuple(normalize_neural_shift(value) for value in candidates)
+    return tuple(value for value in normalized if value is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,7 +377,7 @@ def extract_neural_shifts(
     *,
     weight_threshold: float = 0.5,
 ) -> tuple[NeuralShift, ...]:
-    """Return only behaviorally meaningful connection changes."""
+    """Return deterministic material enabled-connection transitions."""
     parent_connections = getattr(parent_genome, "connections", {}) or {}
     child_connections = getattr(child_genome, "connections", {}) or {}
     shifts: list[NeuralShift] = []
@@ -323,24 +414,28 @@ def extract_neural_shifts(
         )
 
         if not parent_enabled and child_enabled:
-            shifts.append(
-                (
-                    target_node_id,
-                    source_node_id,
-                    "added",
-                    0.0 if child_weight is None else child_weight,
+            if child_weight is not None:
+                shifts.append(
+                    NeuralShift(
+                        source_node_id,
+                        target_node_id,
+                        "added",
+                        None,
+                        child_weight,
+                    )
                 )
-            )
             continue
         if parent_enabled and not child_enabled:
-            shifts.append(
-                (
-                    target_node_id,
-                    source_node_id,
-                    "removed",
-                    0.0 if parent_weight is None else -parent_weight,
+            if parent_weight is not None:
+                shifts.append(
+                    NeuralShift(
+                        source_node_id,
+                        target_node_id,
+                        "removed",
+                        parent_weight,
+                        None,
+                    )
                 )
-            )
             continue
         if (
             parent_enabled
@@ -351,10 +446,12 @@ def extract_neural_shifts(
             delta = child_weight - parent_weight
             if abs(delta) > weight_threshold:
                 shifts.append(
-                    (
-                        target_node_id,
+                    NeuralShift(
                         source_node_id,
-                        "weight",
+                        target_node_id,
+                        "changed",
+                        parent_weight,
+                        child_weight,
                         delta,
                     )
                 )

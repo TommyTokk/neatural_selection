@@ -30,9 +30,9 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 21
+CHECKPOINT_VERSION = 22
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -1347,6 +1347,7 @@ class PersistenceManager:
             SpeciesDistanceBreakdown,
             SpeciesRecord,
             SpeciesTraitSnapshot,
+            normalize_neural_shifts,
         )
 
         if not isinstance(record, SpeciesRecord):
@@ -1508,7 +1509,9 @@ class PersistenceManager:
                 "emergence_pop_ratio",
                 None,
             ),
-            neural_shifts=tuple(getattr(record, "neural_shifts", ()) or ()),
+            neural_shifts=normalize_neural_shifts(
+                getattr(record, "neural_shifts", ()) or ()
+            ),
         )
 
     @staticmethod
@@ -1525,7 +1528,13 @@ class PersistenceManager:
         enriched: dict[int, Any] = {}
         for species_id, raw_record in history.items():
             record = PersistenceManager._normalize_species_record(raw_record)
-            if not isinstance(record, SpeciesRecord) or record.neural_shifts:
+            if not isinstance(record, SpeciesRecord):
+                enriched[int(species_id)] = record
+                continue
+            shifts_need_reconstruction = not record.neural_shifts or any(
+                not shift.weights_complete for shift in record.neural_shifts
+            )
+            if not shifts_need_reconstruction:
                 enriched[int(species_id)] = record
                 continue
             if record.parent_species_id is None:

@@ -6,9 +6,14 @@ from tempfile import TemporaryDirectory
 import sqlite3
 import unittest
 
-from src.telemetry import TelemetryDatabase
+from src.telemetry import (
+    TelemetryDatabase,
+    _deserialize_neural_shifts,
+    _serialize_neural_shifts,
+)
 from src.speciation import (
     NeatChangeSummary,
+    NeuralShift,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
@@ -83,8 +88,23 @@ def species_record() -> SpeciesRecord:
         ),
         emergence_food_ratio=0.25,
         emergence_pop_ratio=0.8,
-        neural_shifts=((7, -1, "added", 0.9),),
+        neural_shifts=(NeuralShift(-1, 7, "added", None, 0.9),),
     )
+
+
+class NeuralShiftSerializationTest(unittest.TestCase):
+    def test_json_is_explicit_and_legacy_rows_remain_readable(self) -> None:
+        shift = NeuralShift(-17, 8, "changed", -1.2, -0.6, 0.6)
+        serialized = _serialize_neural_shifts((shift,))
+        self.assertIsNotNone(serialized)
+        assert serialized is not None
+        self.assertIn('"source_node_id":-17', serialized)
+        self.assertEqual(_deserialize_neural_shifts(serialized), (shift,))
+
+        legacy = _deserialize_neural_shifts('[[8,-17,"weight",0.6]]')
+        self.assertEqual(legacy[0].change_type, "changed")
+        self.assertFalse(legacy[0].weights_complete)
+        self.assertEqual(legacy[0].weight_delta, 0.6)
 
 
 class TelemetryDatabaseTest(unittest.TestCase):

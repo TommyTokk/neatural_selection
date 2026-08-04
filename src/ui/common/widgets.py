@@ -951,7 +951,6 @@ class CommonUiComponent:
         body_color: arcade.Color | tuple[int, ...],
         first_line_bold: bool = False,
         wrap_lines: bool = False,
-        draw_ethogram_markers: bool = False,
     ) -> None:
         """Draw scrollable lines in bounds.
 
@@ -973,14 +972,11 @@ class CommonUiComponent:
             Value used by the operation.
         wrap_lines
             Whether logical lines should wrap within the available width.
-        draw_ethogram_markers
-            Value used by the operation.
         """
         visual_lines = (
             self._wrapped_scrollable_lines(
                 lines,
                 content.width - 12.0,
-                draw_ethogram_markers=draw_ethogram_markers,
                 first_line_bold=first_line_bold,
             )
             if wrap_lines
@@ -1051,7 +1047,6 @@ class CommonUiComponent:
         lines: Sequence[str],
         width: float,
         *,
-        draw_ethogram_markers: bool,
         first_line_bold: bool = False,
     ) -> tuple[
         tuple[
@@ -1070,8 +1065,6 @@ class CommonUiComponent:
             Value used by the operation.
         width
             Requested logical size.
-        draw_ethogram_markers
-            Value used by the operation.
         first_line_bold
             Whether the first logical line uses the bold text metrics.
 
@@ -1084,7 +1077,6 @@ class CommonUiComponent:
         cache_key = (
             logical_lines,
             round(float(width), 2),
-            bool(draw_ethogram_markers),
             bool(first_line_bold),
         )
         cached_lines = self._painter.wrapped_line_block_cache.get(cache_key)
@@ -1096,16 +1088,8 @@ class CommonUiComponent:
         ] = []
         base_x = 0.0
         for logical_index, raw_line in enumerate(logical_lines):
-            marker_color: tuple[int, int, int] | None = None
             line = raw_line
-            marker_indent = 0.0
-            if draw_ethogram_markers and line:
-                marker_color = self._ethogram_marker_color(line[0])
-                if marker_color is not None:
-                    line = line[1:].lstrip()
-                    marker_indent = 20.0
-
-            available_width = max(24.0, width - marker_indent)
+            available_width = max(24.0, width)
             wrapped = self._wrap_line(
                 line,
                 available_width,
@@ -1118,8 +1102,8 @@ class CommonUiComponent:
                     (
                         wrapped_line,
                         logical_index == 0,
-                        marker_color if wrapped_index == 0 else None,
-                        base_x + marker_indent,
+                        None,
+                        base_x,
                     )
                 )
         wrapped_block = tuple(visual_lines)
@@ -1127,27 +1111,6 @@ class CommonUiComponent:
             self._painter.wrapped_line_block_cache.clear()
         self._painter.wrapped_line_block_cache[cache_key] = wrapped_block
         return wrapped_block
-    @staticmethod
-    def _ethogram_marker_color(
-        marker: str,
-    ) -> tuple[int, int, int] | None:
-        """Return ethogram marker color.
-
-        Parameters
-        ----------
-        marker
-            Value used by the operation.
-
-        Returns
-        -------
-        tuple[int, int, int] | None
-            Computed collection.
-        """
-        return {
-            "🟢": (0, 210, 72),
-            "🔴": (255, 55, 65),
-            "⚪": (150, 160, 170),
-        }.get(marker)
     def _wrap_line(
         self,
         text: str,

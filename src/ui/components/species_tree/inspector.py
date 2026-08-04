@@ -13,14 +13,22 @@ from src.action import ACTION_OUTPUT_NAMES
 from src.analysis import (
     BEHAVIOR_RADAR_LABELS,
     InspectorReport,
+    action_node_label,
     calculate_behavior_scores,
+    classify_connection_transition,
     generate_inspector_report,
     generate_radar_chart_image,
     profile_morphology,
+    sensory_node_label,
 )
-from src.speciation import SpeciesRecord
+from src.speciation import NeuralShift, SpeciesRecord
 from src.ui.common.interaction import rect_contains
 from src.ui.components.state import (
+    BrainChangeGroupView,
+    BrainChangesView,
+    ConnectionChangeRowView,
+    NeuroIntegrationHubView,
+    NeuroIntegrationView,
     SpeciesInspectorRow as _SpeciesInspectorRow,
     SpeciesInspectorSection as _SpeciesInspectorSection,
     SpeciesTreeLabel as _SpeciesTreeLabel,
@@ -416,6 +424,20 @@ class SpeciesTreeInspectorComponent:
             output_keys,
             input_keys,
         )
+        self._species_tree_state.brain_changes_view = (
+            self._build_brain_changes_view(
+                self._species_tree_report,
+                input_keys,
+                output_keys,
+            )
+        )
+        self._species_tree_state.neuro_integration_view = (
+            self._build_neuro_integration_view(
+                self._species_tree_report,
+                input_keys,
+                output_keys,
+            )
+        )
         self._clear_species_radar_state()
         self._species_tree_radar_species_id = species_id
         controller = getattr(world, "neat_controller", None)
@@ -455,6 +477,206 @@ class SpeciesTreeInspectorComponent:
             self._species_tree_radar_error = "representative_unavailable"
         self._species_tree_report_species_id = species_id
         self._scroll_offsets["species_tree_inspector"] = 0.0
+
+    @staticmethod
+    def _format_brain_change_weight(value: float | None) -> str:
+        """Format one optional connection weight for display."""
+        return "None" if value is None else f"{value:+.2f}"
+
+    def _build_brain_changes_view(
+        self,
+        report: InspectorReport,
+        input_keys: tuple[int, ...] | None,
+        output_keys: tuple[int, ...],
+    ) -> BrainChangesView:
+        """Precompute grouped labels and factual transition text once per report."""
+        ordered_inputs = (
+            tuple(-(index + 1) for index in range(len(SENSOR_INPUT_NAMES)))
+            if input_keys is None
+            else tuple(int(key) for key in input_keys)
+        )
+        input_names = {
+            key: SENSOR_INPUT_NAMES[index]
+            for index, key in enumerate(ordered_inputs[: len(SENSOR_INPUT_NAMES)])
+        }
+        output_names = {
+            int(key): ACTION_OUTPUT_NAMES[index]
+            for index, key in enumerate(output_keys[: len(ACTION_OUTPUT_NAMES)])
+        }
+        input_rank = {key: index for index, key in enumerate(ordered_inputs)}
+        output_rank = {int(key): index for index, key in enumerate(output_keys)}
+        grouped: dict[int, list[ConnectionChangeRowView]] = {}
+        for shift in report.direct_brain_changes:
+            action_name = output_names.get(shift.target_node_id)
+            target_label = action_node_label(
+                action_name or f"output_{shift.target_node_id}"
+            )
+            grouped.setdefault(shift.source_node_id, []).append(
+                self._build_connection_change_row(
+                    shift,
+                    target_label.primary,
+                    target_label.technical,
+                    f"Output {shift.target_node_id}",
+                )
+            )
+        groups: list[BrainChangeGroupView] = []
+        for source_id in sorted(
+            grouped,
+            key=lambda node_id: (
+                input_rank.get(node_id, len(input_rank)),
+                node_id,
+            ),
+        ):
+            rows = sorted(
+                grouped[source_id],
+                key=lambda row: (
+                    output_rank.get(row.target_node_id, len(output_rank)),
+                    row.target_node_id,
+                ),
+            )
+            sensor_name = input_names.get(source_id)
+            source_label = sensory_node_label(
+                sensor_name or f"input_{source_id}"
+            )
+            groups.append(
+                BrainChangeGroupView(
+                    source_node_id=source_id,
+                    source_primary=source_label.primary,
+                    source_technical=source_label.technical,
+                    source_meta=f"Input {source_id}",
+                    connection_count=len(rows),
+                    rows=tuple(rows),
+                )
+            )
+        changes = report.direct_brain_changes
+        return BrainChangesView(
+            parent_species_id=report.parent_species_id,
+            total_count=len(changes),
+            added_count=sum(shift.change_type == "added" for shift in changes),
+            changed_count=sum(shift.change_type == "changed" for shift in changes),
+            removed_count=sum(shift.change_type == "removed" for shift in changes),
+            groups=tuple(groups),
+        )
+
+    def _build_neuro_integration_view(
+        self,
+        report: InspectorReport,
+        input_keys: tuple[int, ...] | None,
+        output_keys: tuple[int, ...],
+    ) -> NeuroIntegrationView:
+        """Precompute structured incoming and outgoing rows for hidden hubs."""
+        ordered_inputs = (
+            tuple(-(index + 1) for index in range(len(SENSOR_INPUT_NAMES)))
+            if input_keys is None
+            else tuple(int(key) for key in input_keys)
+        )
+        input_names = {
+            key: SENSOR_INPUT_NAMES[index]
+            for index, key in enumerate(ordered_inputs[: len(SENSOR_INPUT_NAMES)])
+        }
+        output_names = {
+            int(key): ACTION_OUTPUT_NAMES[index]
+            for index, key in enumerate(output_keys[: len(ACTION_OUTPUT_NAMES)])
+        }
+        input_rank = {key: index for index, key in enumerate(ordered_inputs)}
+        output_rank = {int(key): index for index, key in enumerate(output_keys)}
+        hubs: list[NeuroIntegrationHubView] = []
+        for hub in sorted(report.neuro_integration_hubs, key=lambda item: item.hub_id):
+            incoming_rows: list[ConnectionChangeRowView] = []
+            for shift in hub.incoming_sensor_changes:
+                sensor_name = input_names.get(
+                    shift.source_node_id,
+                    f"input_{shift.source_node_id}",
+                )
+                sensor_label = sensory_node_label(sensor_name)
+                incoming_rows.append(
+                    self._build_connection_change_row(
+                        shift,
+                        sensor_label.primary,
+                        sensor_label.technical,
+                        f"Input {shift.source_node_id}",
+                    )
+                )
+            outgoing_rows: list[ConnectionChangeRowView] = []
+            for shift in hub.outgoing_action_changes:
+                action_name = output_names.get(
+                    shift.target_node_id,
+                    f"output_{shift.target_node_id}",
+                )
+                action_label = action_node_label(action_name)
+                outgoing_rows.append(
+                    self._build_connection_change_row(
+                        shift,
+                        action_label.primary,
+                        action_label.technical,
+                        f"Output {shift.target_node_id}",
+                    )
+                )
+            incoming_rows.sort(
+                key=lambda row: (
+                    input_rank.get(row.source_node_id, len(input_rank)),
+                    row.source_node_id,
+                )
+            )
+            outgoing_rows.sort(
+                key=lambda row: (
+                    output_rank.get(row.target_node_id, len(output_rank)),
+                    row.target_node_id,
+                )
+            )
+            hubs.append(
+                NeuroIntegrationHubView(
+                    hub_id=hub.hub_id,
+                    title=f"Integration Hub {hub.hub_id}",
+                    technical=f"Hidden neural node {hub.hub_id}",
+                    incoming_count=len(incoming_rows),
+                    outgoing_count=len(outgoing_rows),
+                    incoming_rows=tuple(incoming_rows),
+                    outgoing_rows=tuple(outgoing_rows),
+                )
+            )
+        return NeuroIntegrationView(
+            parent_species_id=report.parent_species_id,
+            hub_count=len(hubs),
+            incoming_count=sum(hub.incoming_count for hub in hubs),
+            outgoing_count=sum(hub.outgoing_count for hub in hubs),
+            hubs=tuple(hubs),
+        )
+
+    def _build_connection_change_row(
+        self,
+        shift: NeuralShift,
+        endpoint_primary: str,
+        endpoint_technical: str,
+        endpoint_meta: str,
+    ) -> ConnectionChangeRowView:
+        """Format one factual connection transition for shared card rendering."""
+        classification = classify_connection_transition(
+            shift.parent_weight,
+            shift.child_weight,
+        )
+        return ConnectionChangeRowView(
+            source_node_id=shift.source_node_id,
+            target_node_id=shift.target_node_id,
+            change_type=shift.change_type,
+            badge_label=shift.change_type.upper(),
+            endpoint_primary=endpoint_primary,
+            endpoint_technical=endpoint_technical,
+            endpoint_meta=endpoint_meta,
+            classification=classification.label,
+            transition=(
+                f"{self._format_brain_change_weight(shift.parent_weight)} → "
+                f"{self._format_brain_change_weight(shift.child_weight)}"
+            ),
+            delta=(
+                None
+                if shift.weight_delta is None
+                else f"Δ {shift.weight_delta:+.2f}"
+            ),
+            child_sign=classification.child_sign,
+            movement=classification.movement,
+            weights_complete=shift.weights_complete,
+        )
     @staticmethod
     def _species_representative_genome(representative: object) -> object | None:
         """Return species representative genome.
@@ -529,9 +751,9 @@ class SpeciesTreeInspectorComponent:
 
         summary = arcade.LBWH(
             bounds.left + 14.0,
-            header.bottom - 68.0,
+            header.bottom - 72.0,
             bounds.width - 28.0,
-            58.0,
+            64.0,
         )
         marker_radius = 10.0
         marker_x = summary.left + marker_radius
@@ -573,17 +795,18 @@ class SpeciesTreeInspectorComponent:
         quality_label = None
         badge = None
         if record is not None:
-            quality_label = (
+            quality_value = (
                 "Exact"
                 if record.data_quality.lower() == "exact"
                 else "Reconstructed"
             )
-            badge_width = 58.0 if quality_label == "Exact" else 96.0
+            quality_label = f"Data: {quality_value}"
+            badge_width = 82.0 if quality_value == "Exact" else 118.0
             badge = arcade.LBWH(
                 summary.right - badge_width,
-                summary.center_y - 12.0,
+                summary.top - 28.0,
                 badge_width,
-                24.0,
+                20.0,
             )
             self._draw_rounded_rect(
                 badge,
@@ -619,10 +842,10 @@ class SpeciesTreeInspectorComponent:
             (
                 "Select a species"
                 if species_id is None
-                else f"Species {species_id} Inspector"
+                else f"Species {species_id}"
             ),
             title_left,
-            summary.center_y,
+            summary.top - 18.0,
             self.theme.text_primary,
             14,
             bold=True,
@@ -630,18 +853,35 @@ class SpeciesTreeInspectorComponent:
             multiline=True,
             anchor_y="center",
         )
-        navigation = arcade.LBWH(
-            bounds.left + 16.0,
-            summary.bottom - 38.0,
-            max(0.0, bounds.width - 32.0),
-            30.0,
+        parent_id = None if record is None else record.parent_species_id
+        parent_text = (
+            "Select a species"
+            if record is None
+            else "Founder species · No parent"
+            if parent_id is None
+            else f"Descended from Species {parent_id}"
+        )
+        navigation = arcade.LBWH(summary.right - 104.0, summary.bottom + 4.0, 104.0, 24.0)
+        parent_text_width = max(
+            24.0,
+            (navigation.left - 8.0 if parent_id is not None else summary.right)
+            - title_left,
+        )
+        self._draw_text(
+            "species_tree_parent_lineage",
+            self._fit_line(parent_text, parent_text_width),
+            title_left,
+            summary.bottom + 16.0,
+            self.theme.text_muted,
+            9.5,
+            anchor_y="center",
         )
         self._draw_species_parent_navigation(navigation, record)
         viewport = arcade.LBWH(
             bounds.left + 16.0,
             bounds.bottom + 14.0,
             max(0.0, bounds.width - 32.0),
-            max(0.0, navigation.bottom - bounds.bottom - 22.0),
+            max(0.0, summary.bottom - bounds.bottom - 8.0),
         )
         self._consume_species_radar_result()
         self._draw_species_inspector_content(viewport, report, record)
@@ -678,20 +918,11 @@ class SpeciesTreeInspectorComponent:
                 self.theme.accent,
                 0.62,
             )
-            label = f"Go to Parent · Species {parent_id}"
+            label = "View parent"
             text_color = self.theme.accent
         else:
             self._control_hitboxes.pop("species_tree_parent_button", None)
-            fill = self.theme.card_background
-            border = self.theme.panel_border
-            label = (
-                "Select a species"
-                if record is None
-                else "Founder species · No parent"
-                if parent_id is None
-                else "Parent species unavailable"
-            )
-            text_color = self.theme.text_muted
+            return
         self._draw_rounded_rect(bounds, fill, border, 7.0, 1.25)
         self._draw_text(
             "species_tree_parent_navigation",
@@ -731,10 +962,21 @@ class SpeciesTreeInspectorComponent:
         total_height = 12.0
         for section_index, section in enumerate(sections):
             total_height += 34.0
-            total_height += sum(
-                self._species_inspector_row_height(row, content_width)
-                for row in section.rows
-            )
+            if section.kind == "brain_changes":
+                total_height += self._brain_changes_section_height(
+                    self._species_tree_state.brain_changes_view,
+                    content_width,
+                )
+            elif section.kind == "neuro_integration":
+                total_height += self._neuro_integration_section_height(
+                    self._species_tree_state.neuro_integration_view,
+                    content_width,
+                )
+            else:
+                total_height += sum(
+                    self._species_inspector_row_height(row, content_width)
+                    for row in section.rows
+                )
             total_height += 8.0
             if section_index == 0 and radar_size > 0.0:
                 total_height += 34.0 + radar_size + 12.0
@@ -761,20 +1003,39 @@ class SpeciesTreeInspectorComponent:
                     cursor,
                 )
                 cursor -= 34.0
-                for row_index, row in enumerate(section.rows):
-                    row_height = self._species_inspector_row_height(
-                        row,
-                        content_width,
-                    )
-                    self._draw_species_inspector_row(
+                if section.kind == "brain_changes":
+                    section_height = self._draw_brain_changes_section(
                         viewport,
                         section_index,
-                        row_index,
-                        row,
+                        self._species_tree_state.brain_changes_view,
                         cursor,
                         content_width,
                     )
-                    cursor -= row_height
+                    cursor -= section_height
+                elif section.kind == "neuro_integration":
+                    section_height = self._draw_neuro_integration_section(
+                        viewport,
+                        section_index,
+                        self._species_tree_state.neuro_integration_view,
+                        cursor,
+                        content_width,
+                    )
+                    cursor -= section_height
+                else:
+                    for row_index, row in enumerate(section.rows):
+                        row_height = self._species_inspector_row_height(
+                            row,
+                            content_width,
+                        )
+                        self._draw_species_inspector_row(
+                            viewport,
+                            section_index,
+                            row_index,
+                            row,
+                            cursor,
+                            content_width,
+                        )
+                        cursor -= row_height
                 cursor -= 8.0
 
                 if section_index == 0 and radar_size > 0.0:
@@ -953,6 +1214,778 @@ class SpeciesTreeInspectorComponent:
                     color,
                     10.5,
                     bold=row.tone in {"positive", "negative", "primary"},
+                )
+
+    def _neuro_integration_intro_lines(
+        self,
+        view: NeuroIntegrationView | None,
+        width: float,
+    ) -> tuple[str, ...]:
+        """Return wrapped hub comparison, summary, and empty-state lines."""
+        if view is None:
+            return ("Neuro-integration comparison unavailable.",)
+        if view.parent_species_id is None:
+            return ("Founder species has no parent hub comparison.",)
+        logical = (
+            f"Compared with parent Species {view.parent_species_id} at this species’ emergence.",
+            (
+                "Hidden nodes link sensory inputs to action outputs; these are "
+                "connection differences, not observed behaviours."
+            ),
+            f"{view.hub_count} integration hub{'s' if view.hub_count != 1 else ''}",
+            (
+                f"{view.incoming_count} input changes · "
+                f"{view.outgoing_count} output changes"
+            ),
+        )
+        lines: list[str] = []
+        for line in logical:
+            lines.extend(self._wrap_line(line, max(24.0, width), font_size=9.5))
+        if not view.hubs:
+            lines.extend(
+                self._wrap_line(
+                    "No hidden-node connection changes passed the comparison threshold.",
+                    max(24.0, width),
+                    font_size=9.5,
+                )
+            )
+        return tuple(lines)
+
+    def _neuro_integration_hub_card_height(
+        self,
+        hub: NeuroIntegrationHubView,
+        width: float,
+    ) -> float:
+        """Measure one hub card including both directional subsections."""
+        title_lines = max(
+            1,
+            len(
+                self._wrap_line(
+                    hub.title,
+                    max(40.0, width - 32.0),
+                    font_size=11.5,
+                    bold=True,
+                )
+            ),
+        )
+        technical_lines = max(
+            1,
+            len(
+                self._wrap_line(
+                    hub.technical,
+                    max(40.0, width - 32.0),
+                    font_size=8.5,
+                )
+            ),
+        )
+        header_height = 45.0 + title_lines * 15.0 + technical_lines * 12.0
+        incoming_height = 26.0 + (
+            sum(
+                self._connection_change_row_height(row, width)
+                for row in hub.incoming_rows
+            )
+            if hub.incoming_rows
+            else 28.0
+        )
+        outgoing_height = 26.0 + (
+            sum(
+                self._connection_change_row_height(row, width)
+                for row in hub.outgoing_rows
+            )
+            if hub.outgoing_rows
+            else 28.0
+        )
+        return header_height + incoming_height + outgoing_height + 10.0
+
+    def _neuro_integration_section_height(
+        self,
+        view: NeuroIntegrationView | None,
+        width: float,
+    ) -> float:
+        """Measure the complete neuro-integration hub section."""
+        intro_height = (
+            len(self._neuro_integration_intro_lines(view, width)) * 14.0 + 12.0
+        )
+        if view is None or not view.hubs:
+            return intro_height
+        return intro_height + sum(
+            self._neuro_integration_hub_card_height(hub, width) + 10.0
+            for hub in view.hubs
+        )
+
+    def _draw_neuro_integration_section(
+        self,
+        viewport: arcade.Rect,
+        section_index: int,
+        view: NeuroIntegrationView | None,
+        top: float,
+        width: float,
+    ) -> float:
+        """Draw hub summary text and visible cards, returning consumed height."""
+        cursor = top
+        intro_lines = self._neuro_integration_intro_lines(view, width)
+        for line_index, line in enumerate(intro_lines):
+            y = cursor - 11.0 - line_index * 14.0
+            if viewport.bottom <= y <= viewport.top:
+                emphasized = view is not None and line_index >= len(intro_lines) - 2
+                self._draw_text(
+                    f"species_tree_neuro_hubs_intro_{section_index}_{line_index}",
+                    line,
+                    viewport.left,
+                    y,
+                    self.theme.text_primary if emphasized else self.theme.text_muted,
+                    9.5,
+                    bold=emphasized,
+                )
+        cursor -= len(intro_lines) * 14.0 + 12.0
+        if view is not None:
+            for hub_index, hub in enumerate(view.hubs):
+                height = self._neuro_integration_hub_card_height(hub, width)
+                card = arcade.LBWH(viewport.left, cursor - height, width, height)
+                if self._rect_intersects(card, viewport):
+                    self._draw_neuro_integration_hub_card(
+                        viewport,
+                        section_index,
+                        hub_index,
+                        hub,
+                        card,
+                    )
+                cursor -= height + 10.0
+        return top - cursor
+
+    def _draw_neuro_integration_hub_card(
+        self,
+        viewport: arcade.Rect,
+        section_index: int,
+        hub_index: int,
+        hub: NeuroIntegrationHubView,
+        bounds: arcade.Rect,
+    ) -> None:
+        """Draw one hidden-hub card with incoming and outgoing subsections."""
+        prefix = f"species_tree_neuro_hub_{section_index}_{hub_index}"
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        title_lines = self._wrap_line(
+            hub.title,
+            max(40.0, bounds.width - 32.0),
+            font_size=11.5,
+            bold=True,
+        )
+        title_y = bounds.top - 17.0
+        if viewport.bottom <= title_y <= viewport.top:
+            arcade.draw_circle_filled(
+                bounds.left + 16.0,
+                title_y + 3.0,
+                4.0,
+                self.theme.accent,
+            )
+        for line_index, line in enumerate(title_lines):
+            y = title_y - line_index * 15.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_title_{line_index}",
+                    line,
+                    bounds.left + 29.0,
+                    y,
+                    self.theme.text_primary,
+                    11.5,
+                    bold=True,
+                )
+        cursor = title_y - max(1, len(title_lines)) * 15.0 - 2.0
+        technical_lines = self._wrap_line(
+            hub.technical,
+            max(40.0, bounds.width - 32.0),
+            font_size=8.5,
+        )
+        for line_index, line in enumerate(technical_lines):
+            y = cursor - line_index * 12.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_technical_{line_index}",
+                    line,
+                    bounds.left + 16.0,
+                    y,
+                    self.theme.text_muted,
+                    8.5,
+                )
+        cursor -= max(1, len(technical_lines)) * 12.0 + 8.0
+        count_text = (
+            f"{hub.incoming_count} input change"
+            f"{'s' if hub.incoming_count != 1 else ''} · "
+            f"{hub.outgoing_count} output change"
+            f"{'s' if hub.outgoing_count != 1 else ''}"
+        )
+        if viewport.bottom <= cursor <= viewport.top:
+            self._draw_text(
+                f"{prefix}_count",
+                count_text,
+                bounds.left + 16.0,
+                cursor,
+                self.theme.text_muted,
+                8.5,
+                bold=True,
+            )
+        cursor -= 18.0
+        cursor = self._draw_neuro_integration_subsection(
+            viewport,
+            f"{prefix}_incoming",
+            "INPUTS INTO HUB",
+            "No input connection changes",
+            hub.incoming_rows,
+            bounds,
+            cursor,
+        )
+        self._draw_neuro_integration_subsection(
+            viewport,
+            f"{prefix}_outgoing",
+            "OUTPUTS FROM HUB",
+            "No output connection changes",
+            hub.outgoing_rows,
+            bounds,
+            cursor,
+        )
+
+    def _draw_neuro_integration_subsection(
+        self,
+        viewport: arcade.Rect,
+        prefix: str,
+        label: str,
+        empty_text: str,
+        rows: tuple[ConnectionChangeRowView, ...],
+        bounds: arcade.Rect,
+        top: float,
+    ) -> float:
+        """Draw one directional hub subsection and return its bottom cursor."""
+        if viewport.bottom <= top <= viewport.top:
+            arcade.draw_line(
+                bounds.left + 12.0,
+                top,
+                bounds.right - 12.0,
+                top,
+                self.theme.panel_border,
+                1.0,
+            )
+        label_y = top - 16.0
+        if viewport.bottom <= label_y <= viewport.top:
+            self._draw_text(
+                f"{prefix}_label",
+                label,
+                bounds.left + 16.0,
+                label_y,
+                self.theme.text_muted,
+                8.0,
+                bold=True,
+            )
+        cursor = top - 26.0
+        if not rows:
+            empty_y = cursor - 12.0
+            if viewport.bottom <= empty_y <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_empty",
+                    empty_text,
+                    bounds.left + 16.0,
+                    empty_y,
+                    self.theme.text_muted,
+                    8.5,
+                )
+            return cursor - 28.0
+        for row_index, row in enumerate(rows):
+            row_height = self._connection_change_row_height(row, bounds.width)
+            row_bounds = arcade.LBWH(
+                bounds.left,
+                cursor - row_height,
+                bounds.width,
+                row_height,
+            )
+            if row_index > 0 and viewport.bottom <= cursor <= viewport.top:
+                arcade.draw_line(
+                    bounds.left + 12.0,
+                    cursor,
+                    bounds.right - 12.0,
+                    cursor,
+                    self.theme.panel_border,
+                    1.0,
+                )
+            if self._rect_intersects(row_bounds, viewport):
+                self._draw_connection_change_row(
+                    viewport,
+                    f"{prefix}_row_{row_index}",
+                    row,
+                    row_bounds,
+                )
+            cursor -= row_height
+        return cursor
+
+    def _brain_change_intro_lines(
+        self,
+        view: BrainChangesView | None,
+        width: float,
+    ) -> tuple[str, ...]:
+        """Return wrapped comparison, summary, and empty-state lines."""
+        if view is None:
+            return ("Brain-change comparison unavailable.",)
+        if view.parent_species_id is None:
+            return ("Founder species has no parent comparison.",)
+        logical = (
+            f"Compared with parent Species {view.parent_species_id} at this species’ emergence.",
+            "These are direct neural-connection differences, not observed behaviours.",
+            f"{view.total_count} direct connection changes",
+            (
+                f"{view.added_count} Added · {view.changed_count} Changed · "
+                f"{view.removed_count} Removed"
+            ),
+        )
+        lines: list[str] = []
+        for line in logical:
+            lines.extend(self._wrap_line(line, max(24.0, width), font_size=9.5))
+        if not view.groups:
+            lines.extend(
+                self._wrap_line(
+                    "No direct input-to-output connection changes passed the comparison threshold.",
+                    max(24.0, width),
+                    font_size=9.5,
+                )
+            )
+        return tuple(lines)
+
+    def _connection_change_row_height(
+        self,
+        row: ConnectionChangeRowView,
+        card_width: float,
+    ) -> float:
+        """Measure a connection row including every wrapped text line."""
+        body_width = max(48.0, card_width - 104.0)
+        title_width = max(32.0, body_width - 62.0)
+        title_lines = max(
+            1,
+            len(
+                self._wrap_line(
+                    row.endpoint_primary,
+                    title_width,
+                    font_size=10.5,
+                    bold=True,
+                )
+            ),
+        )
+        technical_lines = max(
+            1,
+            len(
+                self._wrap_line(
+                    row.endpoint_technical,
+                    body_width,
+                    font_size=8.5,
+                )
+            ),
+        )
+        classification_lines = max(
+            1,
+            len(self._wrap_line(row.classification, body_width, font_size=9.5)),
+        )
+        narrow_metadata_height = (
+            (14.0 if row.delta is not None else 0.0)
+            + (14.0 if row.movement is not None else 0.0)
+            if card_width < 300.0
+            else 0.0
+        )
+        return (
+            12.0
+            + title_lines * 14.0
+            + technical_lines * 12.0
+            + classification_lines * 14.0
+            + 34.0
+            + narrow_metadata_height
+            + 10.0
+        )
+
+    def _brain_change_card_height(
+        self,
+        group: BrainChangeGroupView,
+        width: float,
+    ) -> float:
+        """Measure one source-group card and all of its connection rows."""
+        source_title_width = max(40.0, width - 116.0)
+        source_lines = max(
+            1,
+            len(
+                self._wrap_line(
+                    group.source_primary,
+                    source_title_width,
+                    font_size=11.5,
+                    bold=True,
+                )
+            ),
+        )
+        technical_lines = max(
+            1,
+            len(
+                self._wrap_line(
+                    group.source_technical,
+                    max(40.0, width - 32.0),
+                    font_size=8.5,
+                )
+            ),
+        )
+        header_height = 18.0 + source_lines * 15.0 + technical_lines * 12.0 + 24.0
+        return header_height + sum(
+            self._connection_change_row_height(row, width) for row in group.rows
+        )
+
+    def _brain_changes_section_height(
+        self,
+        view: BrainChangesView | None,
+        width: float,
+    ) -> float:
+        """Measure the complete direct-brain-changes section."""
+        intro_height = len(self._brain_change_intro_lines(view, width)) * 14.0 + 12.0
+        if view is None or not view.groups:
+            return intro_height
+        return intro_height + sum(
+            self._brain_change_card_height(group, width) + 10.0
+            for group in view.groups
+        )
+
+    def _draw_brain_changes_section(
+        self,
+        viewport: arcade.Rect,
+        section_index: int,
+        view: BrainChangesView | None,
+        top: float,
+        width: float,
+    ) -> float:
+        """Draw summary text and visible source cards, returning consumed height."""
+        cursor = top
+        intro_lines = self._brain_change_intro_lines(view, width)
+        for line_index, line in enumerate(intro_lines):
+            y = cursor - 11.0 - line_index * 14.0
+            if viewport.bottom <= y <= viewport.top:
+                emphasized = view is not None and line_index >= len(intro_lines) - 2
+                self._draw_text(
+                    f"species_tree_brain_changes_intro_{section_index}_{line_index}",
+                    line,
+                    viewport.left,
+                    y,
+                    self.theme.text_primary if emphasized else self.theme.text_muted,
+                    9.5,
+                    bold=emphasized,
+                )
+        cursor -= len(intro_lines) * 14.0 + 12.0
+        if view is not None:
+            for group_index, group in enumerate(view.groups):
+                height = self._brain_change_card_height(group, width)
+                card = arcade.LBWH(viewport.left, cursor - height, width, height)
+                if self._rect_intersects(card, viewport):
+                    self._draw_brain_change_group_card(
+                        viewport,
+                        section_index,
+                        group_index,
+                        group,
+                        card,
+                    )
+                cursor -= height + 10.0
+        return top - cursor
+
+    def _draw_brain_change_group_card(
+        self,
+        viewport: arcade.Rect,
+        section_index: int,
+        group_index: int,
+        group: BrainChangeGroupView,
+        bounds: arcade.Rect,
+    ) -> None:
+        """Draw a Brain Inspector-style card for one input source."""
+        prefix = f"species_tree_brain_change_{section_index}_{group_index}"
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            self.config.layout.card_radius,
+            1.0,
+        )
+        source_width = max(40.0, bounds.width - 116.0)
+        source_lines = self._wrap_line(
+            group.source_primary,
+            source_width,
+            font_size=11.5,
+            bold=True,
+        )
+        source_y = bounds.top - 17.0
+        if viewport.bottom <= source_y <= viewport.top:
+            arcade.draw_circle_filled(
+                bounds.left + 16.0,
+                source_y + 3.0,
+                4.0,
+                self.theme.accent,
+            )
+        for line_index, line in enumerate(source_lines):
+            y = source_y - line_index * 15.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_source_{line_index}",
+                    line,
+                    bounds.left + 29.0,
+                    y,
+                    self.theme.text_primary,
+                    11.5,
+                    bold=True,
+                )
+        meta_y = source_y
+        if viewport.bottom <= meta_y <= viewport.top:
+            self._draw_text(
+                f"{prefix}_source_meta",
+                group.source_meta,
+                bounds.right - 14.0,
+                meta_y,
+                self.theme.text_muted,
+                8.5,
+                bold=True,
+                anchor_x="right",
+            )
+        cursor = source_y - max(1, len(source_lines)) * 15.0 - 2.0
+        technical_lines = self._wrap_line(
+            group.source_technical,
+            max(40.0, bounds.width - 32.0),
+            font_size=8.5,
+        )
+        for line_index, line in enumerate(technical_lines):
+            y = cursor - line_index * 12.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_source_technical_{line_index}",
+                    line,
+                    bounds.left + 16.0,
+                    y,
+                    self.theme.text_muted,
+                    8.5,
+                )
+        cursor -= max(1, len(technical_lines)) * 12.0 + 8.0
+        count_label = (
+            f"{group.connection_count} connection change"
+            f"{'s' if group.connection_count != 1 else ''}"
+        )
+        if viewport.bottom <= cursor <= viewport.top:
+            self._draw_text(
+                f"{prefix}_count",
+                count_label,
+                bounds.left + 16.0,
+                cursor,
+                self.theme.text_muted,
+                8.5,
+                bold=True,
+            )
+        cursor -= 16.0
+        for row_index, row in enumerate(group.rows):
+            row_height = self._connection_change_row_height(row, bounds.width)
+            row_bounds = arcade.LBWH(
+                bounds.left,
+                cursor - row_height,
+                bounds.width,
+                row_height,
+            )
+            if viewport.bottom <= cursor <= viewport.top:
+                arcade.draw_line(
+                    bounds.left + 12.0,
+                    cursor,
+                    bounds.right - 12.0,
+                    cursor,
+                    self.theme.panel_border,
+                    1.0,
+                )
+            if self._rect_intersects(row_bounds, viewport):
+                self._draw_connection_change_row(
+                    viewport,
+                    f"{prefix}_row_{row_index}",
+                    row,
+                    row_bounds,
+                )
+            cursor -= row_height
+
+    def _connection_change_badge_color(
+        self,
+        change_type: str,
+    ) -> tuple[int, int, int]:
+        """Return the supplemental structural-change badge colour."""
+        if change_type == "added":
+            return (34, 139, 94)
+        if change_type == "changed":
+            return tuple(self.theme.accent[:3])
+        return (108, 117, 125)
+
+    def _connection_change_sign_color(self, sign: str) -> tuple[int, ...]:
+        """Return the supplemental child-connection sign colour."""
+        if sign == "Positive":
+            return (20, 139, 70)
+        if sign == "Negative":
+            return tuple(self.theme.selected_outline)
+        return tuple(self.theme.text_muted)
+
+    def _draw_connection_change_row(
+        self,
+        viewport: arcade.Rect,
+        prefix: str,
+        row: ConnectionChangeRowView,
+        bounds: arcade.Rect,
+    ) -> None:
+        """Draw one factual neural-connection transition row."""
+        badge_color = self._connection_change_badge_color(row.change_type)
+        badge = arcade.LBWH(bounds.left + 12.0, bounds.top - 31.0, 70.0, 20.0)
+        self._draw_rounded_rect(
+            badge,
+            self._brain_blend_color(self.theme.card_background, badge_color, 0.15),
+            badge_color,
+            6.0,
+            1.0,
+        )
+        self._draw_text(
+            f"{prefix}_badge",
+            row.badge_label,
+            badge.center_x,
+            badge.center_y,
+            badge_color,
+            8.0,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+        body_left = bounds.left + 94.0
+        body_width = max(48.0, bounds.right - 12.0 - body_left)
+        title_width = max(32.0, body_width - 62.0)
+        title_lines = self._wrap_line(
+            row.endpoint_primary,
+            title_width,
+            font_size=10.5,
+            bold=True,
+        )
+        cursor = bounds.top - 15.0
+        for line_index, line in enumerate(title_lines):
+            y = cursor - line_index * 14.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_target_{line_index}",
+                    line,
+                    body_left,
+                    y,
+                    self.theme.text_primary,
+                    10.5,
+                    bold=True,
+                )
+        if viewport.bottom <= cursor <= viewport.top:
+            self._draw_text(
+                f"{prefix}_target_meta",
+                row.endpoint_meta,
+                bounds.right - 12.0,
+                cursor,
+                self.theme.text_muted,
+                8.0,
+                bold=True,
+                anchor_x="right",
+            )
+        cursor -= max(1, len(title_lines)) * 14.0
+        technical_lines = self._wrap_line(
+            row.endpoint_technical,
+            body_width,
+            font_size=8.5,
+        )
+        for line_index, line in enumerate(technical_lines):
+            y = cursor - line_index * 12.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_technical_{line_index}",
+                    line,
+                    body_left,
+                    y,
+                    self.theme.text_muted,
+                    8.5,
+                )
+        cursor -= max(1, len(technical_lines)) * 12.0 + 2.0
+        classification_lines = self._wrap_line(
+            row.classification,
+            body_width,
+            font_size=9.5,
+        )
+        for line_index, line in enumerate(classification_lines):
+            y = cursor - line_index * 14.0
+            if viewport.bottom <= y <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_classification_{line_index}",
+                    line,
+                    body_left,
+                    y,
+                    self.theme.text_primary,
+                    9.5,
+                )
+        cursor -= max(1, len(classification_lines)) * 14.0 + 2.0
+        stack_metadata = bounds.width < 300.0
+        if viewport.bottom <= cursor <= viewport.top:
+            self._draw_text(
+                f"{prefix}_transition",
+                row.transition,
+                body_left,
+                cursor,
+                self.theme.text_primary,
+                9.5,
+                bold=True,
+            )
+            if row.delta is not None and not stack_metadata:
+                self._draw_text(
+                    f"{prefix}_delta",
+                    row.delta,
+                    bounds.right - 12.0,
+                    cursor,
+                    self.theme.text_muted,
+                    9.0,
+                    bold=True,
+                    anchor_x="right",
+                )
+        if row.delta is not None and stack_metadata:
+            cursor -= 14.0
+            if viewport.bottom <= cursor <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_delta",
+                    row.delta,
+                    body_left,
+                    cursor,
+                    self.theme.text_muted,
+                    9.0,
+                    bold=True,
+                )
+        cursor -= 17.0
+        if viewport.bottom <= cursor <= viewport.top:
+            self._draw_text(
+                f"{prefix}_child_sign",
+                f"Child: {row.child_sign}",
+                body_left,
+                cursor,
+                self._connection_change_sign_color(row.child_sign),
+                8.5,
+                bold=True,
+            )
+            if row.movement is not None and not stack_metadata:
+                self._draw_text(
+                    f"{prefix}_movement",
+                    f"Weight: {row.movement}",
+                    bounds.right - 12.0,
+                    cursor,
+                    self.theme.text_muted,
+                    8.0,
+                    bold=True,
+                    anchor_x="right",
+                )
+        if row.movement is not None and stack_metadata:
+            cursor -= 14.0
+            if viewport.bottom <= cursor <= viewport.top:
+                self._draw_text(
+                    f"{prefix}_movement",
+                    f"Weight: {row.movement}",
+                    body_left,
+                    cursor,
+                    self.theme.text_muted,
+                    8.0,
+                    bold=True,
                 )
     def _species_inspector_tone_color(
         self,
@@ -1284,72 +2317,19 @@ class SpeciesTreeInspectorComponent:
             _SpeciesInspectorSection("METABOLIC PROFILE", metabolism_rows)
         )
 
-        hub_rows: list[_SpeciesInspectorRow] = []
-        if not report.neuro_integration_hubs:
-            hub_rows.append(
-                _SpeciesInspectorRow(
-                    None,
-                    "No evolving interneuron hubs detected",
-                    "muted",
-                )
-            )
-        for hub in report.neuro_integration_hubs:
-            hub_rows.append(
-                _SpeciesInspectorRow(
-                    None,
-                    f"Integration Hub {hub.hub_id}",
-                    "primary",
-                )
-            )
-            for description in hub.sensory_integrations:
-                hub_rows.append(_SpeciesInspectorRow(None, description))
-            for description in hub.behavioral_modulations:
-                hub_rows.append(_SpeciesInspectorRow(None, description))
         sections.append(
             _SpeciesInspectorSection(
                 "NEURO-INTEGRATION HUBS",
-                tuple(hub_rows),
+                (),
+                "neuro_integration",
             )
         )
 
-        ethogram_rows: list[_SpeciesInspectorRow] = []
-        if not report.behavioral_ethogram:
-            ethogram_rows.append(
-                _SpeciesInspectorRow(
-                    None,
-                    "No direct stimulus-response reflex shifts",
-                    "muted",
-                )
-            )
-        for reflex in report.behavioral_ethogram:
-            description = reflex.description
-            marker_color = (
-                self._ethogram_marker_color(description[0])
-                if description
-                else None
-            )
-            if marker_color is not None:
-                description = description[1:].lstrip()
-            ethogram_rows.append(
-                _SpeciesInspectorRow(
-                    None,
-                    description,
-                    (
-                        "positive"
-                        if reflex.weight_delta > 0.0
-                        else (
-                            "negative"
-                            if reflex.weight_delta < 0.0
-                            else "muted"
-                        )
-                    ),
-                    marker_color,
-                )
-            )
         sections.append(
             _SpeciesInspectorSection(
-                "BEHAVIORAL ETHOGRAM",
-                tuple(ethogram_rows),
+                "BRAIN CHANGES FROM PARENT",
+                (),
+                "brain_changes",
             )
         )
 

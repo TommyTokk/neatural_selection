@@ -60,7 +60,7 @@ class CheckpointV20MigrationTest(unittest.TestCase):
         )
 
     def test_v20_fixtures_migrate_and_follow_the_recorded_trajectory(self) -> None:
-        self.assertEqual(CHECKPOINT_VERSION, 21)
+        self.assertEqual(CHECKPOINT_VERSION, 22)
         for metadata in self.manifest["fixtures"]:
             with self.subTest(fixture=metadata["file"]):
                 with gzip.open(FIXTURE_DIRECTORY / metadata["file"], "rb") as stream:

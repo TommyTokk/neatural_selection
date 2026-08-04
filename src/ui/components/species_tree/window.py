@@ -169,6 +169,8 @@ class SpeciesTreeWindowComponent:
         self._species_tree_pending_selection_id = None
         self._species_tree_report = None
         self._species_tree_report_species_id = None
+        self._species_tree_state.brain_changes_view = None
+        self._species_tree_state.neuro_integration_view = None
         self._clear_species_radar_state()
         self._scroll_offsets["species_tree_inspector"] = 0.0
         self._species_tree_scroll_drag = None
@@ -204,6 +206,8 @@ class SpeciesTreeWindowComponent:
         self._species_tree_pending_selection_id = None
         self._species_tree_report = None
         self._species_tree_report_species_id = None
+        self._species_tree_state.brain_changes_view = None
+        self._species_tree_state.neuro_integration_view = None
         self._clear_species_radar_state()
         self._scroll_offsets.pop("species_tree_inspector", None)
         self._species_tree_scroll_drag = None
@@ -755,6 +759,8 @@ class SpeciesTreeWindowComponent:
         if changed:
             self._species_tree_report = None
             self._species_tree_report_species_id = None
+            self._species_tree_state.brain_changes_view = None
+            self._species_tree_state.neuro_integration_view = None
             self._clear_species_radar_state()
             self._scroll_offsets["species_tree_inspector"] = 0.0
         if focus:

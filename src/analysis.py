@@ -10,7 +10,12 @@ from PIL import Image
 
 from configs.sim_config import SimConfig
 from src.action import ACTION_OUTPUT_NAMES
-from src.speciation import NeuralShift, SpeciesRecord, SpeciesTraitSnapshot
+from src.speciation import (
+    NeuralShift,
+    SpeciesRecord,
+    SpeciesTraitSnapshot,
+    normalize_neural_shifts,
+)
 from src.vision import SENSOR_INPUT_NAMES
 
 
@@ -44,35 +49,24 @@ class MetabolicProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class CognitiveShift:
-    source_node_id: int
-    shift_type: str
-    weight_delta: float
+class NodeSemanticLabel:
+    primary: str
+    technical: str
 
 
 @dataclass(frozen=True, slots=True)
-class BehavioralShiftGroup:
-    action: str
-    excitatory: tuple[CognitiveShift, ...]
-    inhibitory: tuple[CognitiveShift, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class EthogramReflex:
-    behavior: str
-    sense: str
-    description: str
-    target_node_id: int
-    source_node_id: int
-    shift_type: str
-    weight_delta: float
+class ConnectionClassification:
+    key: str
+    label: str
+    child_sign: str
+    movement: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class NeuroIntegrationHub:
     hub_id: int
-    sensory_integrations: tuple[str, ...]
-    behavioral_modulations: tuple[str, ...]
+    incoming_sensor_changes: tuple[NeuralShift, ...]
+    outgoing_action_changes: tuple[NeuralShift, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,9 +82,8 @@ class InspectorReport:
     species_traits: SpeciesTraitSnapshot | None
     morphology: tuple[MorphologyInsight, ...]
     metabolism: MetabolicProfile
-    behavioral_shifts: tuple[BehavioralShiftGroup, ...]
     neuro_integration_hubs: tuple[NeuroIntegrationHub, ...]
-    behavioral_ethogram: tuple[EthogramReflex, ...]
+    direct_brain_changes: tuple[NeuralShift, ...]
     food_scarcity: float | None
     population_density: float | None
     legacy: LegacyProfile
@@ -130,7 +123,74 @@ _ACTION_LABELS = {
     "rest": "Rest / Recovery Reflexes",
 }
 
-_HIDDEN_ACTION = "Sensory Processing (Hidden)"
+_ACTION_PRIMARY_LABELS = {
+    "accelerate": "Accelerate",
+    "rotate": "Turn",
+    "want_reproduce": "Reproduce",
+    "want_eat": "Eat / consume",
+    "reset_chronometer": "Reset internal timer",
+    "want_grab": "Pick up food",
+    "want_release": "Release carried food",
+    "want_nurse": "Care for offspring",
+    "flee_panic_intensity": "Panic intensity",
+    "herding": "Herding",
+    "emit_sound": "Communicate acoustically",
+    "sound_tone": "Acoustic tone",
+    "emit_trail_pheromone": "Emit trail pheromone",
+    "emit_alarm_pheromone": "Emit alarm pheromone",
+    "rest": "Rest / recover",
+}
+
+_SENSORY_PRIMARY_LABELS = {
+    "constant": "Baseline drive",
+    "feeding_drive": "Hunger / feeding drive",
+    "reproductive_readiness": "Reproductive readiness",
+    "energy_percent": "Energy reserve",
+    "speed": "Current speed",
+    "creature_count": "Nearby creature density",
+    "food_count": "Nearby food density",
+    "clock_tik_tok": "Alternating body clock",
+    "clock_chronometer": "Internal timer",
+    "clock_time_alive": "Age",
+    "food_proximity": "Nearest food distance",
+    "food_angle": "Nearest food direction",
+    "creature_proximity": "Nearest creature distance",
+    "creature_angle": "Nearest creature direction",
+    "wall_proximity": "Wall distance",
+    "wall_angle": "Wall direction",
+    "is_grabbing": "Carrying something",
+    "biome_fertility_here": "Local fertility",
+    "biome_fertility_left_gradient": "Fertility to the left",
+    "biome_fertility_right_gradient": "Fertility to the right",
+    "biome_fertility_trend": "Fertility trend",
+    "own_infant_proximity": "Nearest offspring distance",
+    "own_infant_angle": "Nearest offspring direction",
+    "flock_center_proximity": "Flock-centre distance",
+    "flock_center_angle": "Flock-centre direction",
+    "flock_average_relative_heading": "Flock heading difference",
+    "flockmate_count": "Compatible flockmate count",
+    "flock_presence": "Compatible flock presence",
+    "flock_effective_count": "Effective flockmate count",
+    "flock_center_forward": "Flock centre ahead / behind",
+    "flock_center_right": "Flock centre left / right",
+    "flock_relative_velocity_forward": "Flock forward velocity difference",
+    "flock_relative_velocity_right": "Flock sideways velocity difference",
+    "long_range_social_intensity": "Long-range social signal strength",
+    "long_range_social_direction_forward": "Long-range social direction ahead",
+    "long_range_social_direction_right": "Long-range social direction right",
+    "stomach_fullness": "Stomach fullness",
+    "sound_strength": "Sound strength",
+    "sound_dir_sin": "Sound direction (sine)",
+    "sound_dir_cos": "Sound direction (cosine)",
+    "sound_tone": "Sound tone",
+    "trail_pheromone_here": "Trail pheromone here",
+    "trail_pheromone_forward_left": "Trail pheromone ahead-left",
+    "trail_pheromone_forward_right": "Trail pheromone ahead-right",
+    "alarm_pheromone_here": "Alarm pheromone here",
+    "alarm_pheromone_forward_left": "Alarm pheromone ahead-left",
+    "alarm_pheromone_forward_right": "Alarm pheromone ahead-right",
+    "life_normalized": "Remaining life reserve",
+}
 
 _SENSORY_DESCRIPTIONS = {
     "constant": "Endogenous Baseline Drive",
@@ -187,6 +247,118 @@ _SENSORY_DESCRIPTIONS = {
 
 if not set(SENSOR_INPUT_NAMES).issubset(_SENSORY_DESCRIPTIONS):
     raise RuntimeError("Sensory descriptions must match SensorSnapshot.as_inputs().")
+if not set(SENSOR_INPUT_NAMES).issubset(_SENSORY_PRIMARY_LABELS):
+    raise RuntimeError("Plain sensory labels must match SensorSnapshot.as_inputs().")
+if not set(ACTION_OUTPUT_NAMES).issubset(_ACTION_PRIMARY_LABELS):
+    raise RuntimeError("Plain action labels must match the action output contract.")
+
+
+def sensory_node_label(name: str) -> NodeSemanticLabel:
+    """Return centralized plain and technical labels for one sensor name."""
+    fallback = name.replace("_", " ").title()
+    return NodeSemanticLabel(
+        _SENSORY_PRIMARY_LABELS.get(name, fallback),
+        _SENSORY_DESCRIPTIONS.get(name, fallback),
+    )
+
+
+def action_node_label(name: str) -> NodeSemanticLabel:
+    """Return centralized plain and technical labels for one action name."""
+    fallback = name.replace("_", " ").title()
+    return NodeSemanticLabel(
+        _ACTION_PRIMARY_LABELS.get(name, fallback),
+        _ACTION_LABELS.get(name, fallback),
+    )
+
+
+def classify_connection_transition(
+    parent_weight: float | None,
+    child_weight: float | None,
+) -> ConnectionClassification:
+    """Classify one factual weight transition without claiming behavior causation."""
+    if parent_weight is None and child_weight is None:
+        return ConnectionClassification(
+            "unavailable",
+            "Historical weights unavailable",
+            "Unknown",
+            None,
+        )
+    if parent_weight is None:
+        assert child_weight is not None
+        if child_weight > 0.0:
+            return ConnectionClassification(
+                "positive_added", "Positive influence added", "Positive", None
+            )
+        if child_weight < 0.0:
+            return ConnectionClassification(
+                "negative_added", "Negative influence added", "Negative", None
+            )
+        return ConnectionClassification(
+            "neutral_added", "Zero-weight connection added", "Neutral", None
+        )
+    if child_weight is None:
+        if parent_weight > 0.0:
+            return ConnectionClassification(
+                "positive_removed", "Positive influence removed", "No connection", None
+            )
+        if parent_weight < 0.0:
+            return ConnectionClassification(
+                "negative_removed", "Negative influence removed", "No connection", None
+            )
+        return ConnectionClassification(
+            "neutral_removed", "Zero-weight connection removed", "No connection", None
+        )
+
+    movement = (
+        "Increased"
+        if child_weight > parent_weight
+        else "Decreased" if child_weight < parent_weight else "Unchanged"
+    )
+    child_sign = (
+        "Positive"
+        if child_weight > 0.0
+        else "Negative" if child_weight < 0.0 else "Neutral"
+    )
+    if parent_weight == child_weight:
+        return ConnectionClassification(
+            "unchanged", "Influence unchanged", child_sign, movement
+        )
+    if parent_weight > 0.0 and child_weight < 0.0:
+        return ConnectionClassification(
+            "positive_to_negative",
+            "Influence changed from positive to negative",
+            child_sign,
+            movement,
+        )
+    if parent_weight < 0.0 and child_weight > 0.0:
+        return ConnectionClassification(
+            "negative_to_positive",
+            "Influence changed from negative to positive",
+            child_sign,
+            movement,
+        )
+    if parent_weight > 0.0 and child_weight == 0.0:
+        label = "Positive influence weakened to zero"
+        key = "positive_to_neutral"
+    elif parent_weight < 0.0 and child_weight == 0.0:
+        label = "Negative influence weakened to zero"
+        key = "negative_to_neutral"
+    elif parent_weight == 0.0 and child_weight > 0.0:
+        label = "Influence changed from zero to positive"
+        key = "neutral_to_positive"
+    elif parent_weight == 0.0 and child_weight < 0.0:
+        label = "Influence changed from zero to negative"
+        key = "neutral_to_negative"
+    elif parent_weight > 0.0:
+        strengthened = child_weight > parent_weight
+        label = f"Positive influence {'strengthened' if strengthened else 'weakened'}"
+        key = "positive_strengthened" if strengthened else "positive_weakened"
+    else:
+        strengthened = abs(child_weight) > abs(parent_weight)
+        label = f"Negative influence {'strengthened' if strengthened else 'weakened'}"
+        key = "negative_strengthened" if strengthened else "negative_weakened"
+    return ConnectionClassification(key, label, child_sign, movement)
+
 
 def calculate_behavior_scores(
     genome: Any,
@@ -379,11 +551,7 @@ def generate_inspector_report(
     """Build a semantic report on demand for one selected species."""
     morphology = profile_morphology(species_record, parent_record)
     metabolism = profile_metabolism(species_record, parent_record, sim_config)
-    behavioral_shifts = profile_cognition(
-        species_record.neural_shifts,
-        output_keys,
-    )
-    neuro_integration_hubs, behavioral_ethogram = profile_neuroethology(
+    neuro_integration_hubs, direct_brain_changes = profile_neuroethology(
         species_record.neural_shifts,
         output_keys,
         input_keys,
@@ -396,9 +564,8 @@ def generate_inspector_report(
         species_traits=species_record.founder_traits,
         morphology=morphology,
         metabolism=metabolism,
-        behavioral_shifts=behavioral_shifts,
         neuro_integration_hubs=neuro_integration_hubs,
-        behavioral_ethogram=behavioral_ethogram,
+        direct_brain_changes=direct_brain_changes,
         food_scarcity=None if food_ratio is None else 1.0 - food_ratio,
         population_density=_bounded_ratio(
             species_record.emergence_pop_ratio
@@ -471,164 +638,64 @@ def profile_neuroethology(
     neural_shifts: Iterable[NeuralShift],
     output_keys: Iterable[int],
     input_keys: Iterable[int] | None = None,
-) -> tuple[tuple[NeuroIntegrationHub, ...], tuple[EthogramReflex, ...]]:
+) -> tuple[tuple[NeuroIntegrationHub, ...], tuple[NeuralShift, ...]]:
     output_key_sequence = tuple(int(key) for key in output_keys)
     input_key_sequence = _ordered_input_keys(input_keys)
-    action_by_target = _action_labels_by_output_key(output_key_sequence)
-    sense_by_source = _sense_labels_by_input_key(input_key_sequence)
+    output_key_set = set(output_key_sequence)
+    input_key_set = set(input_key_sequence)
     input_rank = {key: index for index, key in enumerate(input_key_sequence)}
     output_rank = {key: index for index, key in enumerate(output_key_sequence)}
-    integrations: dict[int, list[tuple[int, str]]] = {}
-    modulations: dict[int, list[tuple[int, str]]] = {}
-    reflexes: list[EthogramReflex] = []
+    integrations: dict[int, list[tuple[int, NeuralShift]]] = {}
+    modulations: dict[int, list[tuple[int, NeuralShift]]] = {}
+    direct_changes: list[NeuralShift] = []
 
-    for target, source, shift_type, delta in neural_shifts:
-        target_id = int(target)
-        source_id = int(source)
-        normalized_type = str(shift_type)
-        weight_delta = float(delta)
-        sense = sense_by_source.get(source_id)
-        behavior = action_by_target.get(target_id)
+    for shift in normalize_neural_shifts(neural_shifts):
+        target_id = shift.target_node_id
+        source_id = shift.source_node_id
+        is_sensor = source_id in input_key_set
+        is_action = target_id in output_key_set
 
-        if sense is not None and behavior is not None:
-            description = _reflex_description(
-                sense,
-                behavior,
-                normalized_type,
-                weight_delta,
-            )
-            if description is not None:
-                reflexes.append(
-                    EthogramReflex(
-                        behavior=behavior,
-                        sense=sense,
-                        description=description,
-                        target_node_id=target_id,
-                        source_node_id=source_id,
-                        shift_type=normalized_type,
-                        weight_delta=weight_delta,
-                    )
-                )
+        if is_sensor and is_action:
+            direct_changes.append(shift)
             continue
 
-        if sense is not None and target_id >= 0:
+        if is_sensor and target_id >= 0:
             integrations.setdefault(target_id, []).append(
-                (
-                    input_rank[source_id],
-                    f"Integration Hub {target_id} is now integrating "
-                    f"[{sense}] into its internal state "
-                    f"(Delta: {weight_delta:+.2f})",
-                )
+                (input_rank[source_id], shift)
             )
             continue
 
-        if source_id >= 0 and behavior is not None:
+        if source_id >= 0 and is_action:
             modulations.setdefault(source_id, []).append(
-                (
-                    output_rank[target_id],
-                    f"{behavior} is now modulated by abstract concepts from "
-                    f"[Integration Hub {source_id}] "
-                    f"(Delta: {weight_delta:+.2f})",
-                )
+                (output_rank[target_id], shift)
             )
 
     hub_ids = sorted(set(integrations) | set(modulations))
     hubs = tuple(
         NeuroIntegrationHub(
             hub_id=hub_id,
-            sensory_integrations=tuple(
-                description
-                for _, description in sorted(integrations.get(hub_id, ()))
+            incoming_sensor_changes=tuple(
+                shift for _, shift in sorted(integrations.get(hub_id, ()))
             ),
-            behavioral_modulations=tuple(
-                description
-                for _, description in sorted(modulations.get(hub_id, ()))
+            outgoing_action_changes=tuple(
+                shift for _, shift in sorted(modulations.get(hub_id, ()))
             ),
         )
         for hub_id in hub_ids
     )
-    reflexes.sort(
-        key=lambda reflex: (
-            input_rank.get(reflex.source_node_id, len(input_rank)),
-            output_rank.get(reflex.target_node_id, len(output_rank)),
+    direct_changes.sort(
+        key=lambda shift: (
+            input_rank.get(shift.source_node_id, len(input_rank)),
+            output_rank.get(shift.target_node_id, len(output_rank)),
         )
     )
-    return hubs, tuple(reflexes)
-
-
-def profile_cognition(
-    neural_shifts: Iterable[NeuralShift],
-    output_keys: Iterable[int],
-) -> tuple[BehavioralShiftGroup, ...]:
-    action_by_target = _action_labels_by_output_key(output_keys)
-    grouped: dict[str, tuple[list[CognitiveShift], list[CognitiveShift]]] = {}
-    for target, source, shift_type, delta in neural_shifts:
-        action = action_by_target.get(int(target), _HIDDEN_ACTION)
-        excitatory, inhibitory = grouped.setdefault(action, ([], []))
-        shift = CognitiveShift(
-            source_node_id=int(source),
-            shift_type=str(shift_type),
-            weight_delta=float(delta),
-        )
-        (excitatory if delta > 0.0 else inhibitory).append(shift)
-
-    return tuple(
-        BehavioralShiftGroup(
-            action=action,
-            excitatory=tuple(values[0]),
-            inhibitory=tuple(values[1]),
-        )
-        for action, values in grouped.items()
-    )
-
-
-def _action_labels_by_output_key(
-    output_keys: Iterable[int],
-) -> dict[int, str]:
-    return {
-        int(key): _ACTION_LABELS.get(name, name.replace("_", " ").title())
-        for key, name in zip(output_keys, ACTION_OUTPUT_NAMES)
-    }
-
-
-def _sense_labels_by_input_key(
-    input_keys: Iterable[int] | None,
-) -> dict[int, str]:
-    keys = _ordered_input_keys(input_keys)
-    return {
-        key: _SENSORY_DESCRIPTIONS[SENSOR_INPUT_NAMES[index]]
-        for index, key in enumerate(keys[: len(SENSOR_INPUT_NAMES)])
-    }
+    return hubs, tuple(direct_changes)
 
 
 def _ordered_input_keys(input_keys: Iterable[int] | None) -> tuple[int, ...]:
     if input_keys is None:
         return tuple(-(index + 1) for index in range(len(SENSOR_INPUT_NAMES)))
     return tuple(int(key) for key in input_keys)
-
-
-def _reflex_description(
-    sense: str,
-    behavior: str,
-    shift_type: str,
-    weight_delta: float,
-) -> str | None:
-    if shift_type == "removed":
-        return (
-            f"⚪ Lost the instinct to trigger [{behavior}] "
-            f"in response to [{sense}]"
-        )
-    if weight_delta > 0.0:
-        return (
-            f"🟢 [{sense}] now actively triggers/sensitizes "
-            f"[{behavior}]"
-        )
-    if weight_delta < 0.0:
-        return (
-            f"🔴 [{sense}] now actively suppresses/brakes "
-            f"[{behavior}]"
-        )
-    return None
 
 
 def query_species_legacy(

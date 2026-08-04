@@ -1238,6 +1238,57 @@ class SpeciesHistoryReconstructionTest(unittest.TestCase):
             ),
         )
 
+    def test_version_21_legacy_neural_shift_is_normalized_without_guessing_weights(self) -> None:
+        PersistenceManager._validate_state({"version": 21})
+        legacy = replace(
+            self._record(2, 1, 4.5),
+            neural_shifts=((8, -17, "weight", 0.6),),  # type: ignore[arg-type]
+        )
+
+        normalized = PersistenceManager._normalize_species_record(legacy)
+
+        shift = normalized.neural_shifts[0]
+        self.assertEqual((shift.source_node_id, shift.target_node_id), (-17, 8))
+        self.assertEqual(shift.change_type, "changed")
+        self.assertEqual(shift.weight_delta, 0.6)
+        self.assertFalse(shift.weights_complete)
+
+    def test_incomplete_legacy_shift_is_reconstructed_from_representatives(self) -> None:
+        parent_genome = SimpleNamespace(
+            nodes={},
+            connections={
+                (-17, 8): SimpleNamespace(enabled=True, weight=-1.2),
+            },
+        )
+        child_genome = SimpleNamespace(
+            nodes={},
+            connections={
+                (-17, 8): SimpleNamespace(enabled=True, weight=-0.6),
+            },
+        )
+        legacy = replace(
+            self._record(2, 1, 4.5),
+            neural_shifts=((8, -17, "weight", 0.6),),  # type: ignore[arg-type]
+        )
+        controller = SimpleNamespace(
+            species_manager=SimpleNamespace(
+                representatives={
+                    1: (parent_genome, None, None, None),
+                    2: (child_genome, None, None, None),
+                }
+            )
+        )
+
+        enriched = PersistenceManager._enrich_species_neat_changes(
+            {1: self._record(1, None, 0.0), 2: legacy},
+            controller,
+        )
+
+        shift = enriched[2].neural_shifts[0]
+        self.assertTrue(shift.weights_complete)
+        self.assertEqual((shift.parent_weight, shift.child_weight), (-1.2, -0.6))
+        self.assertAlmostEqual(shift.weight_delta, 0.6)
+
     def _reconstruction_inputs(
         self,
         lineage: list[tuple[int, int | None, float | None]],

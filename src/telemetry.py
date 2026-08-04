@@ -6,9 +6,11 @@ import sqlite3
 
 from src.speciation import (
     NeatChangeSummary,
+    NeuralShift,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
+    normalize_neural_shifts,
 )
 
 
@@ -757,27 +759,34 @@ def _optional_float(value: object) -> float | None:
 
 def _serialize_neural_shifts(shifts: object) -> str | None:
     try:
-        compact = [
-            [int(target), int(source), str(shift_type), float(delta)]
-            for target, source, shift_type, delta in shifts  # type: ignore[misc]
-        ]
-    except (TypeError, ValueError):
+        raw_shifts = tuple(shifts)  # type: ignore[arg-type]
+    except TypeError:
         return None
+    normalized = normalize_neural_shifts(raw_shifts)
+    if len(normalized) != len(raw_shifts):
+        return None
+    compact = [
+        {
+            "source_node_id": shift.source_node_id,
+            "target_node_id": shift.target_node_id,
+            "change_type": shift.change_type,
+            "parent_weight": shift.parent_weight,
+            "child_weight": shift.child_weight,
+            "weight_delta": shift.weight_delta,
+        }
+        for shift in normalized
+    ]
     return json.dumps(compact, separators=(",", ":"))
 
 
 def _deserialize_neural_shifts(
     value: object,
-) -> tuple[tuple[int, int, str, float], ...]:
+) -> tuple[NeuralShift, ...]:
     if value is None:
         return ()
     try:
         rows = json.loads(str(value))
-        return tuple(
-            (int(target), int(source), str(shift_type), float(delta))
-            for target, source, shift_type, delta in rows
-            if str(shift_type) in {"added", "removed", "weight"}
-        )
+        return normalize_neural_shifts(rows)
     except (TypeError, ValueError, json.JSONDecodeError):
         return ()
 

@@ -128,6 +128,7 @@ from src.creature import (
 from src.ui.layouts.screen import build_screen_layout
 from src.speciation import (
     NeatChangeSummary,
+    NeuralShift,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
@@ -2184,7 +2185,6 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         visual_lines = self.renderer._wrapped_scrollable_lines(
             [value],
             viewport.width - 12.0,
-            draw_ethogram_markers=False,
         )
         self.assertGreater(len(rendered), 1)
         self.assertEqual("".join(line for line, *_ in visual_lines), value)
@@ -3808,6 +3808,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         *,
         exact: bool = True,
         emerged_at: float | None = None,
+        neural_shifts: tuple[NeuralShift, ...] = (),
     ) -> SpeciesRecord:
         traits = (
             SpeciesTraitSnapshot(16.0 + species_id, 100.0, 0.9, 1.0)
@@ -3845,6 +3846,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
                 vision_angle_component=0.1 if exact else None,
                 movement_cost_component=0.1 if exact else None,
             ),
+            neural_shifts=neural_shifts,
         )
 
     def make_world(
@@ -4739,6 +4741,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.renderer._draw_species_tree_window(world)
         self.renderer._select_species_tree_species(3)
         self.renderer._draw_species_tree_window(world)
+        self.assertIsNotNone(self.renderer._species_tree_state.neuro_integration_view)
         parent_button = self.renderer._control_hitboxes[
             "species_tree_parent_button"
         ]
@@ -4754,6 +4757,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertEqual(self.renderer._species_tree_zoom, 1.0)
         self.assertFalse(self.renderer._species_tree_fit_mode)
         self.assertIsNone(self.renderer._species_tree_report_species_id)
+        self.assertIsNone(self.renderer._species_tree_state.neuro_integration_view)
         self.assertEqual(
             self.renderer._scroll_offsets["species_tree_inspector"],
             0.0,
@@ -4778,7 +4782,11 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertIn("species_tree_parent_button", self.renderer._control_hitboxes)
         self.assertEqual(
             self.renderer._text_cache["species_tree_parent_navigation"].text,
-            "Go to Parent · Species 1",
+            "View parent",
+        )
+        self.assertEqual(
+            self.renderer._text_cache["species_tree_parent_lineage"].text,
+            "Descended from Species 1",
         )
 
         self.renderer._select_species_tree_species(1)
@@ -4788,7 +4796,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             self.renderer._control_hitboxes,
         )
         self.assertEqual(
-            self.renderer._text_cache["species_tree_parent_navigation"].text,
+            self.renderer._text_cache["species_tree_parent_lineage"].text,
             "Founder species · No parent",
         )
 
@@ -5065,9 +5073,9 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
         summary = arcade.LBWH(
             bounds.left + 14.0,
-            bounds.top - 44.0 - 68.0,
+            bounds.top - 44.0 - 72.0,
             bounds.width - 28.0,
-            58.0,
+            64.0,
         )
         marker_x = summary.left + 10.0
         marker_y = summary.center_y
@@ -5083,18 +5091,18 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             self.renderer._text_cache[
                 "species_tree_inspector_title"
             ].text,
-            "Species 2 Inspector",
+            "Species 2",
         )
         self.assertEqual(
             self.renderer._text_cache["species_tree_inspector_quality"].text,
-            "Exact",
+            "Data: Exact",
         )
         sections = self.renderer._species_inspector_sections(report, record)
         section_titles = {section.title for section in sections}
         self.assertIn("ANATOMY & MORPHOLOGY", section_titles)
         self.assertIn("METABOLIC PROFILE", section_titles)
         self.assertIn("NEURO-INTEGRATION HUBS", section_titles)
-        self.assertIn("BEHAVIORAL ETHOGRAM", section_titles)
+        self.assertIn("BRAIN CHANGES FROM PARENT", section_titles)
         rows = {
             row.label: row.value
             for section in sections
@@ -5141,6 +5149,547 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             scroll_limit,
         )
 
+    def test_neuro_integration_view_groups_canonical_inputs_and_outputs(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(
+                NeuralShift(-17, 53, "added", None, 0.41),
+                NeuralShift(53, 8, "changed", 0.5, 2.74, 2.24),
+                NeuralShift(-36, 26, "added", None, 0.36),
+                NeuralShift(53, 0, "removed", -0.8, None),
+                NeuralShift(53, 1, "added", None, 0.2),
+                NeuralShift(-2, 53, "removed", 1.1, None),
+            ),
+        )
+        input_keys = tuple(range(-1, -45, -1))
+        output_keys = tuple(range(15))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+
+        view = self.renderer._build_neuro_integration_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+
+        self.assertEqual(
+            (view.hub_count, view.incoming_count, view.outgoing_count),
+            (2, 3, 3),
+        )
+        self.assertEqual([hub.hub_id for hub in view.hubs], [26, 53])
+        hub = view.hubs[1]
+        self.assertEqual(
+            [row.source_node_id for row in hub.incoming_rows],
+            [-2, -17],
+        )
+        self.assertEqual(
+            [row.target_node_id for row in hub.outgoing_rows],
+            [0, 1, 8],
+        )
+        self.assertEqual(
+            [row.endpoint_primary for row in hub.outgoing_rows],
+            ["Accelerate", "Turn", "Panic intensity"],
+        )
+        self.assertEqual(
+            hub.outgoing_rows[0].classification,
+            "Negative influence removed",
+        )
+        self.assertEqual(hub.outgoing_rows[0].child_sign, "No connection")
+        self.assertEqual(hub.incoming_rows[-1].endpoint_primary, "Carrying something")
+
+    def test_neuro_integration_view_uses_safe_unknown_node_fallbacks(self) -> None:
+        parent = self.make_record(1, None)
+        input_keys = (*tuple(range(-1, -45, -1)), -99)
+        output_keys = (*tuple(range(15)), 99)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(
+                NeuralShift(-99, 53, "added", None, 0.2),
+                NeuralShift(53, 99, "added", None, 0.3),
+            ),
+        )
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+
+        view = self.renderer._build_neuro_integration_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+
+        self.assertEqual(view.hubs[0].incoming_rows[0].endpoint_primary, "Input -99")
+        self.assertEqual(view.hubs[0].outgoing_rows[0].endpoint_primary, "Output 99")
+
+    def test_neuro_integration_incomplete_rows_do_not_guess_weights(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(
+                (53, -17, "weight", 0.6),
+                (8, 53, "weight", -0.4),
+            ),
+        )
+        input_keys = tuple(range(-1, -45, -1))
+        output_keys = tuple(range(15))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+
+        view = self.renderer._build_neuro_integration_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+
+        rows = view.hubs[0].incoming_rows + view.hubs[0].outgoing_rows
+        self.assertTrue(all(not row.weights_complete for row in rows))
+        self.assertTrue(
+            all(row.classification == "Historical weights unavailable" for row in rows)
+        )
+        self.assertEqual([row.transition for row in rows], ["None → None"] * 2)
+        self.assertEqual([row.delta for row in rows], ["Δ +0.60", "Δ -0.40"])
+
+    def test_neuro_integration_cards_use_shared_rows_and_standard_frame(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(
+                NeuralShift(-36, 26, "added", None, 0.36),
+                NeuralShift(26, 8, "changed", 0.5, 2.74, 2.24),
+            ),
+        )
+        input_keys = tuple(range(-1, -45, -1))
+        output_keys = tuple(range(15))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+        view = self.renderer._build_neuro_integration_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+        bounds = arcade.LBWH(100.0, 100.0, 340.0, 900.0)
+
+        with patch.object(self.renderer, "_draw_rounded_rect") as rounded:
+            consumed = self.renderer._draw_neuro_integration_section(
+                bounds,
+                0,
+                view,
+                bounds.top,
+                bounds.width,
+            )
+
+        self.assertEqual(
+            consumed,
+            self.renderer._neuro_integration_section_height(view, bounds.width),
+        )
+        self.assertTrue(
+            any(
+                call.args[1:5]
+                == (
+                    self.renderer.theme.card_background,
+                    self.renderer.theme.panel_border,
+                    self.renderer.config.layout.card_radius,
+                    1.0,
+                )
+                for call in rounded.call_args_list
+            )
+        )
+        texts = {text.text for text in self.renderer._text_cache.values()}
+        self.assertIn("Integration Hub 26", texts)
+        self.assertIn("Hidden neural node 26", texts)
+        self.assertIn("INPUTS INTO HUB", texts)
+        self.assertIn("OUTPUTS FROM HUB", texts)
+        self.assertIn("Sound direction (cosine)", texts)
+        self.assertIn("Panic intensity", texts)
+        self.assertIn("ADDED", texts)
+        self.assertIn("CHANGED", texts)
+        self.assertIn("None → +0.36", texts)
+        self.assertIn("+0.50 → +2.74", texts)
+        self.assertIn("Δ +2.24", texts)
+
+    def test_neuro_integration_minimum_width_stacks_shared_metadata(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(
+                NeuralShift(53, 13, "changed", -0.65, 0.75, 1.4),
+            ),
+        )
+        input_keys = tuple(range(-1, -45, -1))
+        output_keys = tuple(range(15))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+        view = self.renderer._build_neuro_integration_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+        width = 256.0
+        bounds = arcade.LBWH(100.0, 100.0, width, 900.0)
+
+        consumed = self.renderer._draw_neuro_integration_section(
+            bounds,
+            0,
+            view,
+            bounds.top,
+            width,
+        )
+
+        self.assertEqual(
+            consumed,
+            self.renderer._neuro_integration_section_height(view, width),
+        )
+        expected_body_left = bounds.left + 94.0
+        self.assertEqual(
+            self.renderer._text_cache[
+                "species_tree_neuro_hub_0_0_outgoing_row_0_delta"
+            ].x,
+            expected_body_left,
+        )
+        self.assertEqual(
+            self.renderer._text_cache[
+                "species_tree_neuro_hub_0_0_outgoing_row_0_movement"
+            ].x,
+            expected_body_left,
+        )
+
+    def test_neuro_integration_section_has_root_and_empty_states(self) -> None:
+        input_keys = tuple(range(-1, -45, -1))
+        output_keys = tuple(range(15))
+        root_report = generate_inspector_report(
+            self.make_record(1, None),
+            None,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+        root_view = self.renderer._build_neuro_integration_view(
+            root_report,
+            input_keys,
+            output_keys,
+        )
+        self.assertEqual(
+            self.renderer._neuro_integration_intro_lines(root_view, 300.0),
+            ("Founder species has no parent hub comparison.",),
+        )
+
+        empty_report = generate_inspector_report(
+            self.make_record(2, 1),
+            self.make_record(1, None),
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+        empty_view = self.renderer._build_neuro_integration_view(
+            empty_report,
+            input_keys,
+            output_keys,
+        )
+        self.assertTrue(
+            any(
+                "No hidden-node connection changes" in line
+                for line in self.renderer._neuro_integration_intro_lines(
+                    empty_view,
+                    300.0,
+                )
+            )
+        )
+
+    def test_brain_change_view_groups_sources_and_keeps_exact_outputs(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(
+                NeuralShift(-17, 0, "added", None, 0.72),
+                NeuralShift(-17, 1, "changed", -1.2, -0.6, 0.6),
+                NeuralShift(-17, 8, "removed", -0.8, None),
+            ),
+        )
+        input_keys = tuple(range(-1, -39, -1))
+        output_keys = tuple(range(12))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+
+        view = self.renderer._build_brain_changes_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+
+        self.assertEqual(
+            (view.total_count, view.added_count, view.changed_count, view.removed_count),
+            (3, 1, 1, 1),
+        )
+        self.assertEqual(len(view.groups), 1)
+        self.assertEqual(view.groups[0].source_primary, "Carrying something")
+        self.assertEqual(
+            [row.endpoint_primary for row in view.groups[0].rows],
+            ["Accelerate", "Turn", "Panic intensity"],
+        )
+        removed = view.groups[0].rows[-1]
+        self.assertEqual(removed.classification, "Negative influence removed")
+        self.assertEqual(removed.child_sign, "No connection")
+        self.assertEqual(removed.transition, "-0.80 → None")
+
+    def test_brain_change_groups_and_rows_use_canonical_node_order(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(
+                NeuralShift(-17, 8, "added", None, 0.2),
+                NeuralShift(-2, 8, "added", None, 0.3),
+                NeuralShift(-2, 0, "added", None, 0.4),
+            ),
+        )
+        input_keys = tuple(range(-1, -39, -1))
+        output_keys = tuple(range(12))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+
+        view = self.renderer._build_brain_changes_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+
+        self.assertEqual([group.source_node_id for group in view.groups], [-2, -17])
+        self.assertEqual(view.groups[0].connection_count, 2)
+        self.assertEqual(
+            [row.target_node_id for row in view.groups[0].rows],
+            [0, 8],
+        )
+
+    def test_incomplete_historical_row_preserves_delta_without_guessing(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=((8, -17, "weight", 0.6),),
+        )
+        input_keys = tuple(range(-1, -39, -1))
+        output_keys = tuple(range(12))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+
+        view = self.renderer._build_brain_changes_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+        row = view.groups[0].rows[0]
+
+        self.assertFalse(row.weights_complete)
+        self.assertEqual(row.classification, "Historical weights unavailable")
+        self.assertEqual(row.transition, "None → None")
+        self.assertEqual(row.delta, "Δ +0.60")
+
+    def test_brain_change_cards_use_standard_card_frame_and_text_badges(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(NeuralShift(-17, 8, "added", None, -0.8),),
+        )
+        input_keys = tuple(range(-1, -39, -1))
+        output_keys = tuple(range(12))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+        view = self.renderer._build_brain_changes_view(report, input_keys, output_keys)
+        bounds = arcade.LBWH(100.0, 100.0, 340.0, 500.0)
+
+        with patch.object(self.renderer, "_draw_rounded_rect") as rounded:
+            self.renderer._draw_brain_changes_section(
+                bounds,
+                0,
+                view,
+                bounds.top,
+                bounds.width,
+            )
+
+        self.assertTrue(
+            any(
+                call.args[1:5]
+                == (
+                    self.renderer.theme.card_background,
+                    self.renderer.theme.panel_border,
+                    self.renderer.config.layout.card_radius,
+                    1.0,
+                )
+                for call in rounded.call_args_list
+            )
+        )
+        texts = {text.text for text in self.renderer._text_cache.values()}
+        self.assertIn("ADDED", texts)
+        self.assertIn("Negative influence added", texts)
+        self.assertIn("None → -0.80", texts)
+
+    def test_brain_change_card_height_matches_minimum_width_rendering(self) -> None:
+        parent = self.make_record(1, None)
+        record = self.make_record(
+            2,
+            1,
+            neural_shifts=(
+                NeuralShift(-31, 10, "changed", -0.65, 0.75, 1.4),
+                NeuralShift(-31, 13, "removed", -0.8, None),
+            ),
+        )
+        input_keys = tuple(range(-1, -45, -1))
+        output_keys = tuple(range(15))
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            output_keys,
+            input_keys,
+        )
+        view = self.renderer._build_brain_changes_view(
+            report,
+            input_keys,
+            output_keys,
+        )
+        width = 256.0
+        bounds = arcade.LBWH(100.0, 100.0, width, 900.0)
+
+        consumed = self.renderer._draw_brain_changes_section(
+            bounds,
+            0,
+            view,
+            bounds.top,
+            width,
+        )
+
+        self.assertEqual(
+            consumed,
+            self.renderer._brain_changes_section_height(view, width),
+        )
+        self.assertFalse(
+            any(
+                "..." in text.text
+                for key, text in self.renderer._text_cache.items()
+                if key.startswith("species_tree_brain_change_")
+            )
+        )
+        expected_body_left = bounds.left + 94.0
+        self.assertEqual(
+            self.renderer._text_cache[
+                "species_tree_brain_change_0_0_row_0_delta"
+            ].x,
+            expected_body_left,
+        )
+        self.assertEqual(
+            self.renderer._text_cache[
+                "species_tree_brain_change_0_0_row_0_movement"
+            ].x,
+            expected_body_left,
+        )
+        self.assertEqual(
+            self.renderer._connection_change_badge_color("removed"),
+            (108, 117, 125),
+        )
+
+    def test_brain_change_section_has_root_and_empty_states(self) -> None:
+        root_report = generate_inspector_report(
+            self.make_record(1, None),
+            None,
+            None,
+            self.renderer.config,
+            tuple(range(12)),
+            tuple(range(-1, -39, -1)),
+        )
+        root_view = self.renderer._build_brain_changes_view(
+            root_report,
+            tuple(range(-1, -39, -1)),
+            tuple(range(12)),
+        )
+        self.assertEqual(
+            self.renderer._brain_change_intro_lines(root_view, 300.0),
+            ("Founder species has no parent comparison.",),
+        )
+
+        empty_report = generate_inspector_report(
+            self.make_record(2, 1),
+            self.make_record(1, None),
+            None,
+            self.renderer.config,
+            tuple(range(12)),
+            tuple(range(-1, -39, -1)),
+        )
+        empty_view = self.renderer._build_brain_changes_view(
+            empty_report,
+            tuple(range(-1, -39, -1)),
+            tuple(range(12)),
+        )
+        self.assertTrue(
+            any(
+                "No direct input-to-output" in line
+                for line in self.renderer._brain_change_intro_lines(empty_view, 300.0)
+            )
+        )
+
     def test_species_inspector_marker_uses_legacy_color_fallback(self) -> None:
         record = replace(
             self.make_record(7, None),
@@ -5154,7 +5703,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.assertIn(
             (
                 bounds.left + 24.0,
-                bounds.top - 83.0,
+                bounds.top - 84.0,
                 10.0,
                 self.renderer.theme.herbivore_fill,
             ),
@@ -5169,11 +5718,11 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
         self.assertEqual(
             self.renderer._text_cache["species_tree_inspector_quality"].text,
-            "Reconstructed",
+            "Data: Reconstructed",
         )
         self.assertEqual(
             self.renderer._text_cache["species_tree_inspector_title"].text,
-            "Species 7 Inspector",
+            "Species 7",
         )
 
     def test_species_inspector_marker_stays_fixed_while_scrolling(self) -> None:
@@ -5294,65 +5843,6 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             vertical_offset,
         )
         self.assertFalse(self.renderer._species_tree_canvas_drag)
-
-    def test_species_inspector_wraps_long_lines_without_ellipses(self) -> None:
-        viewport = arcade.LBWH(100.0, 100.0, 145.0, 180.0)
-        lines = [
-            "Behavioral Ethogram",
-            (
-                "🟢 [Load Carriage State (Carrying Object)] now actively "
-                "triggers/sensitizes [Threat Avoidance Reflexes]"
-            ),
-        ]
-
-        self.renderer._draw_scrollable_lines_in_bounds(
-            "species_tree_inspector",
-            viewport,
-            lines,
-            line_spacing=19.0,
-            first_line_color=self.renderer.theme.text_primary,
-            body_color=self.renderer.theme.text_muted,
-            first_line_bold=True,
-            wrap_lines=True,
-            draw_ethogram_markers=True,
-        )
-
-        rendered = [
-            text.text
-            for key, text in self.renderer._text_cache.items()
-            if key.startswith("species_tree_inspector_line_")
-        ]
-        self.assertGreater(len(rendered), len(lines))
-        self.assertFalse(any("..." in line for line in rendered))
-        self.assertFalse(any(line.startswith("🟢") for line in rendered))
-
-    def test_species_inspector_ethogram_markers_use_bright_custom_colors(self) -> None:
-        viewport = arcade.LBWH(100.0, 100.0, 520.0, 120.0)
-        circles: list[tuple[object, ...]] = []
-        original_circle = arcade.draw_circle_filled
-        arcade.draw_circle_filled = lambda *args: circles.append(args)
-        try:
-            self.renderer._draw_scrollable_lines_in_bounds(
-                "species_tree_inspector",
-                viewport,
-                ["🟢 [Sense] now actively triggers/sensitizes [Behavior]"],
-                line_spacing=19.0,
-                first_line_color=self.renderer.theme.text_primary,
-                body_color=self.renderer.theme.text_muted,
-                wrap_lines=True,
-                draw_ethogram_markers=True,
-            )
-        finally:
-            arcade.draw_circle_filled = original_circle
-
-        self.assertIn(
-            (viewport.left + 8.0, viewport.top - 8.0, 6.0, (0, 210, 72)),
-            circles,
-        )
-        self.assertEqual(
-            self.renderer._text_cache["species_tree_inspector_line_0"].text,
-            "[Sense] now actively triggers/sensitizes [Behavior]",
-        )
 
     def test_tooltip_is_compact_and_uses_parent_percentages(self) -> None:
         parent = self.make_record(1, None)

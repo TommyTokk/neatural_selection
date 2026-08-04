@@ -94,6 +94,8 @@ class SpeciesTreeState:
     pending_selection_id: int | None = None
     report: InspectorReport | None = None
     report_species_id: int | None = None
+    brain_changes_view: BrainChangesView | None = None
+    neuro_integration_view: NeuroIntegrationView | None = None
     radar_texture: arcade.Texture | None = None
     radar_species_id: int | None = None
     radar_future: Future[object] | None = None
@@ -151,6 +153,74 @@ class SpeciesInspectorSection:
 
     title: str
     rows: tuple[SpeciesInspectorRow, ...]
+    kind: str = "rows"
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionChangeRowView:
+    """Preformatted factual neural-connection transition for card renderers."""
+
+    source_node_id: int
+    target_node_id: int
+    change_type: str
+    badge_label: str
+    endpoint_primary: str
+    endpoint_technical: str
+    endpoint_meta: str
+    classification: str
+    transition: str
+    delta: str | None
+    child_sign: str
+    movement: str | None
+    weights_complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BrainChangeGroupView:
+    """One source input and its deterministically ordered output changes."""
+
+    source_node_id: int
+    source_primary: str
+    source_technical: str
+    source_meta: str
+    connection_count: int
+    rows: tuple[ConnectionChangeRowView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BrainChangesView:
+    """Cached summary and source cards for direct parent brain changes."""
+
+    parent_species_id: int | None
+    total_count: int
+    added_count: int
+    changed_count: int
+    removed_count: int
+    groups: tuple[BrainChangeGroupView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NeuroIntegrationHubView:
+    """Cached incoming and outgoing connection rows for one hidden hub."""
+
+    hub_id: int
+    title: str
+    technical: str
+    incoming_count: int
+    outgoing_count: int
+    incoming_rows: tuple[ConnectionChangeRowView, ...]
+    outgoing_rows: tuple[ConnectionChangeRowView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NeuroIntegrationView:
+    """Cached summary and hub cards for parent-relative hidden-node changes."""
+
+    parent_species_id: int | None
+    hub_count: int
+    incoming_count: int
+    outgoing_count: int
+    hubs: tuple[NeuroIntegrationHubView, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -529,10 +529,52 @@ class NeatChangeSummaryTest(unittest.TestCase):
 
         shifts = extract_neural_shifts(parent, child)
 
-        self.assertNotIn((0, -1, "weight", 0.5), shifts)
-        self.assertIn((7, -2, "weight", 0.51), shifts)
-        self.assertIn((1, -3, "removed", 0.4), shifts)
-        self.assertIn((7, -4, "added", -0.9), shifts)
+        by_edge = {
+            (shift.source_node_id, shift.target_node_id): shift
+            for shift in shifts
+        }
+        self.assertNotIn((-1, 0), by_edge)
+        changed = by_edge[(-2, 7)]
+        self.assertEqual(changed.change_type, "changed")
+        self.assertEqual((changed.parent_weight, changed.child_weight), (0.8, 1.31))
+        self.assertAlmostEqual(changed.weight_delta or 0.0, 0.51)
+        removed = by_edge[(-3, 1)]
+        self.assertEqual((removed.change_type, removed.parent_weight), ("removed", -0.4))
+        added = by_edge[(-4, 7)]
+        self.assertEqual((added.change_type, added.child_weight), ("added", -0.9))
+
+    def test_neural_shifts_treat_enabled_state_transitions_as_add_remove(self) -> None:
+        parent = FakeGenome()
+        parent.connections = {
+            (-1, 0): FakeGene(weight=0.4, enabled=False),
+            (-2, 1): FakeGene(weight=-0.7, enabled=True),
+            (-3, 2): FakeGene(weight=0.8, enabled=False),
+        }
+        child = FakeGenome()
+        child.connections = {
+            (-1, 0): FakeGene(weight=0.6, enabled=True),
+            (-2, 1): FakeGene(weight=-0.5, enabled=False),
+            (-3, 2): FakeGene(weight=1.2, enabled=False),
+        }
+
+        shifts = extract_neural_shifts(parent, child)
+
+        self.assertEqual(
+            [
+                (
+                    shift.source_node_id,
+                    shift.target_node_id,
+                    shift.change_type,
+                    shift.parent_weight,
+                    shift.child_weight,
+                )
+                for shift in shifts
+            ],
+            [
+                (-1, 0, "added", None, 0.6),
+                (-2, 1, "removed", -0.7, None),
+            ],
+        )
 
     def test_summarizes_structural_and_parameter_changes(self) -> None:
         parent = FakeGenome()

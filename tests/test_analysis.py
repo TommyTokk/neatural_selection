@@ -6,13 +6,19 @@ from types import SimpleNamespace
 import unittest
 
 from configs.sim_config import build_sim_config
+from src.action import ACTION_OUTPUT_NAMES
 from src.analysis import (
     BEHAVIOR_RADAR_LABELS,
+    action_node_label,
     calculate_behavior_scores,
+    classify_connection_transition,
     generate_inspector_report,
     generate_radar_chart_image,
+    sensory_node_label,
 )
+from src.vision import SENSOR_INPUT_NAMES
 from src.speciation import (
+    NeuralShift,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
     SpeciesTraitSnapshot,
@@ -24,7 +30,7 @@ def record(
     parent_species_id: int | None,
     traits: SpeciesTraitSnapshot,
     *,
-    neural_shifts: tuple[tuple[int, int, str, float], ...] = (),
+    neural_shifts: tuple[object, ...] = (),
 ) -> SpeciesRecord:
     return SpeciesRecord(
         species_id=species_id,
@@ -99,23 +105,23 @@ class InspectorAnalysisTest(unittest.TestCase):
         self.assertEqual(report.parent_species_id, 1)
         self.assertEqual(report.species_traits, self.child.founder_traits)
         self.assertNotEqual(report.species_traits, self.parent.founder_traits)
-        self.assertEqual(len(report.behavioral_ethogram), 1)
-        self.assertIn(
-            "Endogenous Baseline Drive",
-            report.behavioral_ethogram[0].description,
-        )
+        self.assertEqual(len(report.direct_brain_changes), 1)
+        self.assertEqual(report.direct_brain_changes[0].source_node_id, -1)
+        self.assertEqual(report.direct_brain_changes[0].target_node_id, 7)
         self.assertEqual(len(report.neuro_integration_hubs), 1)
         self.assertEqual(report.neuro_integration_hubs[0].hub_id, 99)
-        self.assertIn(
-            "Feeding Drive (Satiety-Modulated)",
-            report.neuro_integration_hubs[0].sensory_integrations[0],
+        self.assertEqual(
+            report.neuro_integration_hubs[0]
+            .incoming_sensor_changes[0]
+            .source_node_id,
+            -2,
         )
         self.assertEqual(report.legacy.descendant_count, 1)
         self.assertEqual(report.legacy.average_lifespan, 15.0)
         self.assertEqual(report.food_scarcity, 0.75)
         self.assertEqual(report.population_density, 0.8)
 
-    def test_direct_reflex_translation_for_load_carriage_to_fleeing(self) -> None:
+    def test_direct_change_retains_load_carriage_to_panic_edge(self) -> None:
         child = record(
             2,
             1,
@@ -131,11 +137,9 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(12),
         )
 
-        self.assertEqual(
-            report.behavioral_ethogram[0].description,
-            "🟢 [Load Carriage State (Carrying Object)] now actively "
-            "triggers/sensitizes [Threat Avoidance Reflexes]",
-        )
+        shift = report.direct_brain_changes[0]
+        self.assertEqual((shift.source_node_id, shift.target_node_id), (-17, 8))
+        self.assertEqual((shift.parent_weight, shift.child_weight), (None, 0.8))
 
     def test_stomach_fullness_sensor_has_satiety_lexicon_entry(self) -> None:
         child = record(
@@ -153,9 +157,10 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(12),
         )
 
-        self.assertIn(
+        self.assertEqual(report.direct_brain_changes[0].source_node_id, -33)
+        self.assertEqual(
+            sensory_node_label("stomach_fullness").technical,
             "Stomach Fullness (Satiety)",
-            report.behavioral_ethogram[0].description,
         )
 
     def test_effective_flockmate_count_has_analysis_lexicon_entry(self) -> None:
@@ -174,9 +179,10 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(12),
         )
 
-        self.assertIn(
+        self.assertEqual(report.direct_brain_changes[0].source_node_id, -25)
+        self.assertEqual(
+            sensory_node_label("flock_effective_count").technical,
             "Target-Scaled Compatible Flockmate Count",
-            report.behavioral_ethogram[0].description,
         )
 
     def test_species_reflex_summary_uses_canonical_input_order(self) -> None:
@@ -200,13 +206,10 @@ class InspectorAnalysisTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            [reflex.source_node_id for reflex in report.behavioral_ethogram],
+            [shift.source_node_id for shift in report.direct_brain_changes],
             list(range(-1, -34, -1)),
         )
-        self.assertIn(
-            "Stomach Fullness (Satiety)",
-            report.behavioral_ethogram[-1].description,
-        )
+        self.assertEqual(report.direct_brain_changes[-1].source_node_id, -33)
 
     def test_species_hub_summary_uses_canonical_input_order(self) -> None:
         child = record(
@@ -229,12 +232,13 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(-1, -34, -1),
         )
 
-        integrations = report.neuro_integration_hubs[0].sensory_integrations
-        self.assertIn("Endogenous Baseline Drive", integrations[0])
-        self.assertIn("Nearest Food Distance", integrations[1])
-        self.assertIn("Stomach Fullness (Satiety)", integrations[2])
+        integrations = report.neuro_integration_hubs[0].incoming_sensor_changes
+        self.assertEqual(
+            [shift.source_node_id for shift in integrations],
+            [-1, -11, -33],
+        )
 
-    def test_direct_reflex_translation_for_inhibitory_shift(self) -> None:
+    def test_direct_negative_addition_retains_negative_child_weight(self) -> None:
         child = record(
             2,
             1,
@@ -250,13 +254,14 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(12),
         )
 
+        shift = report.direct_brain_changes[0]
+        self.assertEqual(shift.child_weight, -0.8)
         self.assertEqual(
-            report.behavioral_ethogram[0].description,
-            "🔴 [Load Carriage State (Carrying Object)] now actively "
-            "suppresses/brakes [Threat Avoidance Reflexes]",
+            classify_connection_transition(None, shift.child_weight).label,
+            "Negative influence added",
         )
 
-    def test_removed_reflex_translation(self) -> None:
+    def test_legacy_removed_inhibitory_edge_is_classified_as_removed(self) -> None:
         child = record(
             2,
             1,
@@ -272,10 +277,11 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(12),
         )
 
+        shift = report.direct_brain_changes[0]
+        self.assertEqual((shift.parent_weight, shift.child_weight), (-0.4, None))
         self.assertEqual(
-            report.behavioral_ethogram[0].description,
-            "⚪ Lost the instinct to trigger [Threat Avoidance Reflexes] "
-            "in response to [Load Carriage State (Carrying Object)]",
+            classify_connection_transition(shift.parent_weight, None).label,
+            "Negative influence removed",
         )
 
     def test_hidden_sensor_shift_is_grouped_as_integration_hub(self) -> None:
@@ -294,14 +300,16 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(12),
         )
 
-        self.assertEqual(report.behavioral_ethogram, ())
+        self.assertEqual(report.direct_brain_changes, ())
         self.assertEqual(len(report.neuro_integration_hubs), 1)
         hub = report.neuro_integration_hubs[0]
         self.assertEqual(hub.hub_id, 491)
-        self.assertIn(
-            "Integration Hub 491 is now integrating "
-            "[Load Carriage State (Carrying Object)]",
-            hub.sensory_integrations[0],
+        self.assertEqual(
+            (
+                hub.incoming_sensor_changes[0].source_node_id,
+                hub.incoming_sensor_changes[0].target_node_id,
+            ),
+            (-17, 491),
         )
 
     def test_hidden_output_shift_is_grouped_as_behavioral_modulation(self) -> None:
@@ -320,12 +328,78 @@ class InspectorAnalysisTest(unittest.TestCase):
             range(12),
         )
 
-        self.assertEqual(report.behavioral_ethogram, ())
+        self.assertEqual(report.direct_brain_changes, ())
         self.assertEqual(len(report.neuro_integration_hubs), 1)
-        self.assertIn(
-            "Kinetic / Locomotion Reflexes is now modulated by "
-            "abstract concepts from [Integration Hub 491]",
-            report.neuro_integration_hubs[0].behavioral_modulations[0],
+        self.assertEqual(
+            (
+                report.neuro_integration_hubs[0]
+                .outgoing_action_changes[0]
+                .source_node_id,
+                report.neuro_integration_hubs[0]
+                .outgoing_action_changes[0]
+                .target_node_id,
+            ),
+            (491, 0),
+        )
+
+    def test_hub_changes_keep_exact_weights_and_ignore_hidden_to_hidden(self) -> None:
+        child = record(
+            2,
+            1,
+            SpeciesTraitSnapshot(20.0, 120.0, 1.2, 1.25),
+            neural_shifts=(
+                NeuralShift(-17, 53, "added", None, 0.41),
+                NeuralShift(53, 8, "changed", 0.5, 2.74, 2.24),
+                NeuralShift(53, 54, "added", None, 0.2),
+            ),
+        )
+
+        report = generate_inspector_report(
+            child,
+            self.parent,
+            None,
+            self.config,
+            range(12),
+        )
+
+        self.assertEqual(len(report.neuro_integration_hubs), 1)
+        hub = report.neuro_integration_hubs[0]
+        self.assertEqual(hub.hub_id, 53)
+        self.assertEqual(
+            (
+                hub.incoming_sensor_changes[0].parent_weight,
+                hub.incoming_sensor_changes[0].child_weight,
+            ),
+            (None, 0.41),
+        )
+        self.assertEqual(
+            (
+                hub.outgoing_action_changes[0].parent_weight,
+                hub.outgoing_action_changes[0].child_weight,
+                hub.outgoing_action_changes[0].weight_delta,
+            ),
+            (0.5, 2.74, 2.24),
+        )
+        self.assertEqual(report.direct_brain_changes, ())
+
+    def test_action_labels_keep_acceleration_and_turn_distinct(self) -> None:
+        self.assertEqual(action_node_label("accelerate").primary, "Accelerate")
+        self.assertEqual(action_node_label("rotate").primary, "Turn")
+
+    def test_semantic_registry_covers_contracts_and_has_safe_fallbacks(self) -> None:
+        self.assertTrue(
+            all(sensory_node_label(name).primary for name in SENSOR_INPUT_NAMES)
+        )
+        self.assertTrue(
+            all(action_node_label(name).primary for name in ACTION_OUTPUT_NAMES)
+        )
+        self.assertEqual(
+            sensory_node_label("future_sensor").primary,
+            "Future Sensor",
+        )
+        self.assertEqual(
+            action_node_label("future_action").technical,
+            "Future Action",
         )
 
     def test_metabolic_profile_uses_exact_configured_formulas(self) -> None:
@@ -377,6 +451,42 @@ class InspectorAnalysisTest(unittest.TestCase):
         self.assertIsNotNone(report.metabolism.child_active_cost)
         self.assertIsNone(report.metabolism.parent_idle_cost)
         self.assertIsNone(report.metabolism.idle_percent_change)
+
+
+class ConnectionClassificationTest(unittest.TestCase):
+    def test_requested_weight_transitions(self) -> None:
+        cases = (
+            (None, 0.7, "Positive influence added"),
+            (None, -0.7, "Negative influence added"),
+            (0.8, None, "Positive influence removed"),
+            (-0.8, None, "Negative influence removed"),
+            (0.3, 0.8, "Positive influence strengthened"),
+            (0.8, 0.3, "Positive influence weakened"),
+            (-0.6, -1.2, "Negative influence strengthened"),
+            (-1.2, -0.6, "Negative influence weakened"),
+            (0.5, -0.3, "Influence changed from positive to negative"),
+            (-0.5, 0.3, "Influence changed from negative to positive"),
+        )
+        for parent, child, expected in cases:
+            with self.subTest(parent=parent, child=child):
+                self.assertEqual(
+                    classify_connection_transition(parent, child).label,
+                    expected,
+                )
+
+    def test_zero_unchanged_and_unavailable_transitions(self) -> None:
+        self.assertEqual(
+            classify_connection_transition(None, 0.0).label,
+            "Zero-weight connection added",
+        )
+        self.assertEqual(
+            classify_connection_transition(0.4, 0.4).label,
+            "Influence unchanged",
+        )
+        self.assertEqual(
+            classify_connection_transition(None, None).label,
+            "Historical weights unavailable",
+        )
 
 
 class BehaviorRadarAnalysisTest(unittest.TestCase):
