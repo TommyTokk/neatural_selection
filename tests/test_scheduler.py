@@ -799,9 +799,8 @@ class SchedulerBiologyRateTest(unittest.TestCase):
                 communication_cost,
             )
             self.assertAlmostEqual(
-                emitting_fitness.trait_energy_cost
-                - quiet_fitness.trait_energy_cost,
-                communication_cost,
+                emitting_creature.total_energy_gathered,
+                quiet_creature.total_energy_gathered,
             )
         finally:
             quiet.close()
@@ -1132,7 +1131,7 @@ class DeterministicSchedulerIntegrationTest(unittest.TestCase):
                 if creature.creature_id == consumer_id
             )
             self.assertGreater(
-                first.fitness[first_consumer.creature_id].energy_gained,
+                first_consumer.total_energy_gathered,
                 0.0,
             )
             first_food = next(

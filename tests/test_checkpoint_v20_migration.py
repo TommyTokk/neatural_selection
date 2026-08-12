@@ -60,7 +60,7 @@ class CheckpointV20MigrationTest(unittest.TestCase):
         )
 
     def test_v20_fixtures_migrate_and_follow_the_recorded_trajectory(self) -> None:
-        self.assertEqual(CHECKPOINT_VERSION, 22)
+        self.assertEqual(CHECKPOINT_VERSION, 23)
         for metadata in self.manifest["fixtures"]:
             with self.subTest(fixture=metadata["file"]):
                 with gzip.open(FIXTURE_DIRECTORY / metadata["file"], "rb") as stream:
@@ -89,6 +89,28 @@ class CheckpointV20MigrationTest(unittest.TestCase):
                                 world._last_actions[sentinel_id] is before
                             )
                         actual = AuthoritativeStateDigest.capture(world)
+                        # Version-20 trajectory fixtures predate the lifetime
+                        # energy ledger. Compare every recorded field while
+                        # accepting the newly authoritative ledger value.
+                        for expected_creature, actual_creature in zip(
+                            expected.value["creatures"],
+                            actual.value["creatures"],
+                        ):
+                            expected_creature["total_energy_gathered"] = (
+                                actual_creature["total_energy_gathered"]
+                            )
+                            legacy_fitness = dict(
+                                expected_creature["age_fitness"]
+                            )
+                            expected_creature["age_fitness"] = tuple(
+                                (
+                                    key,
+                                    legacy_fitness.get(key, actual_value),
+                                )
+                                for key, actual_value in actual_creature[
+                                    "age_fitness"
+                                ]
+                            )
                         difference = expected.compare(actual)
                         self.assertIsNone(
                             difference,

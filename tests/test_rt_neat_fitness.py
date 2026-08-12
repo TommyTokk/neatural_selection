@@ -11,7 +11,7 @@ for optional_module in ("neat", "pymunk"):
     except ModuleNotFoundError:
         sys.modules[optional_module] = ModuleType(optional_module)
 
-from configs.sim_config import FitnessConfig, PopulationConfig
+from configs.sim_config import PopulationConfig
 from src.creature import LineageInfo
 from src.fitness import CreatureFitness
 from src.rt_neat import RtNeatManager
@@ -21,6 +21,7 @@ from src.rt_neat import RtNeatManager
 class FakeCreature:
     creature_id: int
     energy: float = 1.0
+    total_energy_gathered: float = 0.0
     lineage: LineageInfo = field(default_factory=LineageInfo)
 
 
@@ -53,39 +54,29 @@ class FakeBrainController:
 
 
 class RtNeatFitnessRankingTest(unittest.TestCase):
-    def test_update_stats_ranks_eligible_parents_with_fitness_config(self) -> None:
+    def test_update_stats_ranks_eligible_parents_by_implicit_fitness(self) -> None:
         manager = RtNeatManager(brain_controller=None)
         population_config = PopulationConfig(
             min_reproduction_age=0.0,
             reproduction_cooldown=0.0,
             reproduction_energy_threshold=0.0,
         )
-        fitness_config = FitnessConfig(
-            age_weight=0.0,
-            food_discovery_weight=0.0,
-            energy_gained_weight=10.0,
-            energy_efficiency_weight=0.0,
-            movement_effort_penalty=0.0,
-            offspring_weight=0.0,
-        )
-
         manager.update_stats(
             creatures=[
-                FakeCreature(creature_id=1),
-                FakeCreature(creature_id=2),
+                FakeCreature(creature_id=1, total_energy_gathered=1.0),
+                FakeCreature(creature_id=2, total_energy_gathered=3.0),
             ],
             fitness_by_creature_id={
-                1: CreatureFitness(energy_gained=1.0),
-                2: CreatureFitness(energy_gained=3.0),
+                1: CreatureFitness(),
+                2: CreatureFitness(),
             },
             population_config=population_config,
-            fitness_config=fitness_config,
         )
 
         self.assertEqual(manager.eligible_parent_ids, [2, 1])
         self.assertEqual(manager.stats.best_creature_id, 2)
-        self.assertAlmostEqual(manager.stats.best_fitness, 30.0)
-        self.assertAlmostEqual(manager.stats.worst_fitness, 10.0)
+        self.assertAlmostEqual(manager.stats.best_fitness, 3.0)
+        self.assertAlmostEqual(manager.stats.worst_fitness, 1.0)
 
     def test_update_stats_shares_fitness_across_living_species(self) -> None:
         manager = RtNeatManager(brain_controller=None)
@@ -94,19 +85,10 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
             reproduction_cooldown=0.0,
             reproduction_energy_threshold=0.0,
         )
-        fitness_config = FitnessConfig(
-            age_weight=0.0,
-            food_discovery_weight=0.0,
-            energy_gained_weight=1.0,
-            energy_efficiency_weight=0.0,
-            movement_effort_penalty=0.0,
-            offspring_weight=0.0,
-            matured_offspring_weight=0.0,
-            trait_energy_cost_penalty_weight=0.0,
-        )
         creatures = [
             FakeCreature(
                 creature_id=creature_id,
+                total_energy_gathered=100.0,
                 lineage=LineageInfo(species_id=1),
             )
             for creature_id in range(1, 11)
@@ -114,20 +96,18 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
         creatures.append(
             FakeCreature(
                 creature_id=11,
+                total_energy_gathered=30.0,
                 lineage=LineageInfo(species_id=2),
             )
         )
         fitness_by_creature_id = {
-            creature_id: CreatureFitness(energy_gained=100.0)
-            for creature_id in range(1, 11)
+            creature_id: CreatureFitness() for creature_id in range(1, 12)
         }
-        fitness_by_creature_id[11] = CreatureFitness(energy_gained=30.0)
 
         manager.update_stats(
             creatures=creatures,
             fitness_by_creature_id=fitness_by_creature_id,
             population_config=population_config,
-            fitness_config=fitness_config,
         )
 
         self.assertEqual(len(manager.eligible_parent_ids), 11)
@@ -158,7 +138,6 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
                 reproduction_cooldown=0.0,
                 reproduction_energy_threshold=0.0,
             ),
-            fitness_config=FitnessConfig(),
             elapsed_time=120.0,
         )
 

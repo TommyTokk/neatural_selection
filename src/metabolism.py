@@ -642,6 +642,10 @@ class Metabolism:
         record_diagnostics: bool = True,
     ) -> None:
         """Commit a previously evaluated candidate exactly once."""
+        creature.total_energy_gathered = max(
+            0.0,
+            float(getattr(creature, "total_energy_gathered", 0.0)),
+        ) + max(0.0, candidate.digestion.net_energy)
         creature.stomach_energy = candidate.final_stomach_energy
         creature.stomach_difficulty_load = (
             candidate.final_stomach_difficulty_load
@@ -786,18 +790,6 @@ class Metabolism:
             pheromone=pheromone,
             digestive_upkeep=digestive_upkeep,
         )
-
-    def trait_energy_cost_per_second(
-        self,
-        creature: Creature,
-        max_speed: float,
-        communication_intensities: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    ) -> float:
-        return self.energy_cost_breakdown_per_second(
-            creature,
-            max_speed,
-            communication_intensities=communication_intensities,
-        ).trait
 
     def body_energy_cost_per_second(self, creature: Creature) -> float:
         max_radius = max(self.trait_config.max_radius, 0.0001)

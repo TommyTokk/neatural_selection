@@ -30,9 +30,10 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 22
+CHECKPOINT_VERSION = 23
 LEGACY_CHECKPOINT_VERSIONS = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+    22,
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -478,6 +479,12 @@ class PersistenceManager:
                     "velocity": (body.velocity.x, body.velocity.y),
                     "angular_velocity": body.angular_velocity,
                     "energy": creature.energy,
+                    "total_energy_gathered": max(
+                        0.0,
+                        float(
+                            getattr(creature, "total_energy_gathered", 0.0)
+                        ),
+                    ),
                     "life": float(getattr(creature, "life", 1.0)),
                     "stomach_energy": max(
                         0.0,
@@ -2349,6 +2356,20 @@ class PersistenceManager:
                 world._register_living_creature(creature)
                 world._initialize_creature_runtime_state(creature)
                 fitness = creature_state["fitness"]
+                saved_total = creature_state.get("total_energy_gathered")
+                if saved_total is None:
+                    saved_total = getattr(
+                        fitness,
+                        "_legacy_energy_gained",
+                        getattr(fitness, "energy_gained", 0.0),
+                    )
+                try:
+                    parsed_total = float(saved_total)
+                except (TypeError, ValueError, OverflowError):
+                    parsed_total = 0.0
+                creature.total_energy_gathered = (
+                    max(0.0, parsed_total) if isfinite(parsed_total) else 0.0
+                )
                 if fitness is not None:
                     world.fitness[creature.creature_id] = fitness
                 world._chronometers[creature.creature_id] = creature_state[

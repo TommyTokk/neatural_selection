@@ -630,6 +630,7 @@ class SelectedDiagnosticsTest(unittest.TestCase):
         )
 
         self.assertEqual(creature.energy, 0.5)
+        self.assertAlmostEqual(creature.total_energy_gathered, 0.16)
         self.assertEqual(creature.life, 0.9)
         self.assertEqual(creature.stomach_energy, 0.4)
         self.assertEqual(creature.pending_direct_life_damage, 0.0)

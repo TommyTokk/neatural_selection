@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from configs.sim_config import PopulationConfig, FitnessConfig
+from configs.sim_config import PopulationConfig
 from src.creature import Creature
 from src.fitness import CreatureFitness
 from src.neat_controller import NeatBrainController
@@ -44,7 +44,6 @@ class RtNeatManager:
         creatures: list[Creature],
         fitness_by_creature_id: dict[int, CreatureFitness],
         population_config: PopulationConfig,
-        fitness_config: FitnessConfig,
         elapsed_time: float = 0.0,
     ) -> None:
         live_scores: list[tuple[int, float]] = []
@@ -59,7 +58,7 @@ class RtNeatManager:
         for creature in creatures:
             fitness = fitness_by_creature_id.get(creature.creature_id)
             if fitness is not None:
-                score = fitness.score(fitness_config)
+                score = fitness.score(creature)
                 live_scores.append((creature.creature_id, score))
                 live_fitnesses.append(fitness)
                 if self.is_reproduction_eligible(creature, fitness, population_config):

@@ -1856,13 +1856,12 @@ class World:
         return here, forward_left, forward_right
 
     def sensor_snapshot_for(self, creature: Creature) -> SensorSnapshot:
-        return self._sensor_snapshot_for(creature, record_food_discoveries=False)
+        return self._sensor_snapshot_for(creature)
 
     def _sensor_snapshot_for(
         self,
         creature: Creature,
         *,
-        record_food_discoveries: bool,
         pheromone_values: np.ndarray | None = None,
         nearby_creatures=None,
         own_infants=None,
@@ -1906,8 +1905,13 @@ class World:
         ignored_food_ids = self._ignored_food_ids_for(creature)
         is_grabbing = creature.creature_id in self._held_food_by_creature_id
 
-        if record_food_discoveries:
-            result = self.vision.sense_with_visible_food_ids(
+        reuse_scratch = nearby_creatures is getattr(
+            self,
+            "_active_candidate_buffer",
+            None,
+        )
+        if reuse_scratch:
+            snapshot = self.vision.sense_with_visible_food_ids(
                 creature,
                 nearby_foods,
                 nearby_creatures,
@@ -1920,14 +1924,8 @@ class World:
                 is_grabbing=is_grabbing,
                 ignored_food_ids=ignored_food_ids,
                 own_infants=own_infants,
-                reuse_scratch=(nearby_creatures is getattr(
-                    self,
-                    "_active_candidate_buffer",
-                    None,
-                )),
-            )
-            self._record_food_discoveries(creature, result.visible_food_ids)
-            snapshot = result.snapshot
+                reuse_scratch=True,
+            ).snapshot
         else:
             snapshot = self.vision.sense(
                 creature,
@@ -3619,7 +3617,6 @@ class World:
 
             if should_think:
                 sensing_kwargs = {
-                    "record_food_discoveries": True,
                     "pheromone_values": (
                         None
                         if pheromones is None
@@ -5084,7 +5081,6 @@ class World:
             self.creatures,
             self.fitness,
             self.config.population,
-            self.config.fitness,
             self.elapsed_time,
         )
 
@@ -5093,27 +5089,8 @@ class World:
             fitness = self.fitness.get(creature.creature_id)
             if fitness is not None:
                 previous_age = fitness.age_seconds
-                fitness.record_tick(delta_time, creature.speed, self.MAX_SPEED)
-                fitness.record_trait_cost(
-                    self.metabolism.trait_energy_cost_per_second(
-                        creature,
-                        self.MAX_SPEED,
-                        self._communication_intensities_for(creature.creature_id),
-                    ),
-                    delta_time,
-                )
+                fitness.record_tick(delta_time, creature.speed)
                 self._record_maturity_if_crossed(creature, previous_age, fitness)
-
-    def _record_food_discoveries(
-        self,
-        creature: Creature,
-        visible_food_ids,
-    ) -> None:
-        fitness = self.fitness.get(creature.creature_id)
-        if fitness is None:
-            return
-
-        fitness.record_food_discoveries(visible_food_ids)
 
     def _apply_carry_intent(self, creature: Creature, action: Action) -> None:
         if is_active_intent(action.want_release):
@@ -5900,7 +5877,6 @@ class World:
         }
         action_creature_ids = reproduction_ids | nursing_donor_ids
         selected_creature_id = getattr(self, "selected_creature_id", None)
-        digested_energy_gained: list[tuple[int, float]] = []
         processing_costs: dict[int, float] = {}
         dead_creatures: list[Creature] = []
 
@@ -5928,10 +5904,6 @@ class World:
             self._scheduler_validation_failure_point(
                 "biology.after_creature_commit"
             )
-            if candidate.digestion.net_energy > 0.0:
-                digested_energy_gained.append(
-                    (creature_id, candidate.digestion.net_energy)
-                )
             if candidate.digestion.processing_cost > 0.0:
                 processing_costs[creature_id] = (
                     candidate.digestion.processing_cost
@@ -5970,15 +5942,7 @@ class World:
             self._record_behavior_food_consumption(consumption)
             fitness = self.fitness.get(consumption.creature_id)
             if fitness is not None:
-                fitness.record_food(
-                    0.0,
-                    depleted=consumption.depleted,
-                )
-
-        for creature_id, energy_gained in digested_energy_gained:
-            fitness = self.fitness.get(creature_id)
-            if fitness is not None:
-                fitness.record_food(energy_gained, depleted=False)
+                fitness.record_food(depleted=consumption.depleted)
 
         self._last_digestion_processing_costs_per_second = {
             creature_id: (
@@ -5986,11 +5950,6 @@ class World:
             )
             for creature_id, cost in processing_costs.items()
         }
-        for creature_id, processing_cost in processing_costs.items():
-            fitness = self.fitness.get(creature_id)
-            if fitness is not None:
-                fitness.record_trait_cost(processing_cost, 1.0)
-
         for food in eating_report.touched_foods:
             reindex_shape = getattr(self.space, "reindex_shape", None)
             if reindex_shape is not None and food in self.foods:
@@ -6058,24 +6017,12 @@ class World:
             self._record_behavior_food_consumption(consumption)
             fitness = self.fitness.get(consumption.creature_id)
             if fitness is not None:
-                fitness.record_food(0.0, depleted=consumption.depleted)
-        for creature_id, energy_gained in getattr(
-            report,
-            "digested_energy_gained",
-            {},
-        ).items():
-            fitness = self.fitness.get(creature_id)
-            if fitness is not None:
-                fitness.record_food(energy_gained, depleted=False)
+                fitness.record_food(depleted=consumption.depleted)
         processing_costs = getattr(report, "digestion_processing_costs", {})
         self._last_digestion_processing_costs_per_second = {
             creature_id: cost / delta_time if delta_time > 0.0 else 0.0
             for creature_id, cost in processing_costs.items()
         }
-        for creature_id, processing_cost in processing_costs.items():
-            fitness = self.fitness.get(creature_id)
-            if fitness is not None:
-                fitness.record_trait_cost(processing_cost, 1.0)
         for food in report.touched_foods:
             reindex_shape = getattr(self.space, "reindex_shape", None)
             if reindex_shape is not None and food in self.foods:
@@ -6573,7 +6520,7 @@ class World:
         fitness = self.fitness.get(creature.creature_id)
         if fitness is not None:
             self.neat_controller.archive_brain(
-                creature.creature_id, fitness.score(self.config.fitness)
+                creature.creature_id, fitness.score(creature)
             )
 
         if creature in self.creatures:

@@ -3783,9 +3783,8 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
     def test_selected_fitness_label_uses_live_creature_fitness(self) -> None:
         selected = SimpleNamespace(creature_id=938)
-        live_fitness = SimpleNamespace(score=lambda fitness_config: 7.25)
+        live_fitness = SimpleNamespace(score=lambda creature: 7.25)
         world = SimpleNamespace(
-            config=SimpleNamespace(fitness=object()),
             fitness_for=lambda creature: live_fitness
             if creature is selected
             else None,

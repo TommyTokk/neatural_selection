@@ -558,6 +558,7 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             world.creatures[0].stomach_energy = 0.42
             world.creatures[0].stomach_difficulty_load = 0.47
+            world.creatures[0].total_energy_gathered = 2.75
             saved_digestive_traits = (
                 world.creatures[0].physical_traits.stomach_capacity,
                 world.creatures[0].physical_traits.digestion_rate,
@@ -724,6 +725,10 @@ class PersistenceManagerTest(unittest.TestCase):
                 4.25,
             )
             self.assertAlmostEqual(restored.creatures[0].stomach_energy, 0.42)
+            self.assertAlmostEqual(
+                restored.creatures[0].total_energy_gathered,
+                2.75,
+            )
             self.assertAlmostEqual(
                 restored.creatures[0].stomach_difficulty_load,
                 0.47,
@@ -907,7 +912,6 @@ class PersistenceManagerTest(unittest.TestCase):
             parent, infant = world.creatures
             infant.lineage.parent_id = parent.creature_id
             world.fitness[parent.creature_id].age_seconds = 28.0
-            world.fitness[parent.creature_id].energy_gained = 3.5
             world.fitness[infant.creature_id].age_seconds = 7.0
             historical_root = replace(
                 world.species_history[1],
@@ -927,6 +931,12 @@ class PersistenceManagerTest(unittest.TestCase):
             state["version"] = 10
             state["brain_contract"]["sensor_schema"] = 2
             state["brain_contract"]["inputs"] = 37
+            for creature_state in state["creatures"]:
+                creature_state.pop("total_energy_gathered", None)
+            state["creatures"][0]["fitness"].__setstate__((None, {
+                "age_seconds": 28.0,
+                "energy_gained": 3.5,
+            }))
             state["fitness_archive"] = {
                 99: copy.deepcopy(state["creatures"][0]["fitness"])
             }
@@ -961,11 +971,15 @@ class PersistenceManagerTest(unittest.TestCase):
                 set(restored.neat_controller.species_manager.representatives),
                 {6},
             )
-            for creature, age in zip(restored.creatures, (28.0, 7.0)):
+            for creature, age, gathered in zip(
+                restored.creatures,
+                (28.0, 7.0),
+                (3.5, 0.0),
+            ):
                 fitness = restored.fitness[creature.creature_id]
                 self.assertEqual(fitness.age_seconds, age)
                 self.assertEqual(fitness.evaluation_start_age_seconds, age)
-                self.assertEqual(fitness.energy_gained, 0.0)
+                self.assertEqual(creature.total_energy_gathered, gathered)
                 brain = restored.neat_controller.brain_for(creature.creature_id)
                 self.assertIsNot(brain.genome, old_genomes[brain.genome_id])
             self.assertEqual(restored.fitness_archive, {})

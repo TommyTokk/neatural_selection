@@ -292,7 +292,7 @@ class InspectorPanelComponent:
         parent_id = getattr(lineage, "parent_id", None)
         generation = getattr(lineage, "generation", 0)
         fitness_score = (
-            fitness.score(world.config.fitness) if fitness is not None else None
+            fitness.score(selected) if fitness is not None else None
         )
         species_id, species_color = self._selected_species_identity(
             world,
@@ -1026,11 +1026,11 @@ class InspectorPanelComponent:
                 lines.extend(
                     [
                         f"Genome: {genome_id if genome_id is not None else 'None'}",
-                        f"Fitness: {fitness.score(world.config.fitness):.2f}",
+                        f"Fitness: {fitness.score(selected):.2f}",
                         f"Age: {fitness.age_seconds:.1f}s",
-                        f"Food discovered: {fitness.food_discovered}",
                         f"Food eaten: {fitness.food_eaten}",
-                        f"Energy gained: {fitness.energy_gained:.3f}",
+                        "Lifetime energy gathered: "
+                        f"{selected.total_energy_gathered:.3f}",
                         f"Can reproduce: {'Yes' if can_reproduce else 'No'}",
                         f"Cooldown: {cooldown_remaining:.1f}s",
                         f"Offspring: {fitness.offspring_count}",
@@ -1757,4 +1757,4 @@ class InspectorPanelComponent:
         fitness = world.fitness_for(selected)
         if fitness is None:
             return "None"
-        return self._format_genome_fitness(fitness.score(world.config.fitness))
+        return self._format_genome_fitness(fitness.score(selected))

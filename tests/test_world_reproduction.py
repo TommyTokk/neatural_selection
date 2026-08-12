@@ -52,6 +52,7 @@ from src.world import ArchivedCreatureTraits, World
 class FakeCreature:
     creature_id: int
     energy: float = 1.0
+    total_energy_gathered: float = 0.0
     stomach_energy: float = 0.0
     heading: float = 0.0
     position: tuple[float, float] = (0.0, 0.0)
@@ -432,6 +433,7 @@ class WorldReproductionTest(unittest.TestCase):
             world.creatures[-1].energy,
             world.config.population.infant_energy_spawn,
         )
+        self.assertEqual(world.creatures[-1].total_energy_gathered, 0.0)
         self.assertEqual(world.creatures[-1].lineage.parent_id, 1)
         self.assertEqual(world.creatures[-1].lineage.generation, 1)
         self.assertEqual(world.fitness[1].offspring_count, 1)

@@ -77,10 +77,6 @@ class FakeRng:
 class FakeFitness:
     def __init__(self) -> None:
         self.age_seconds = 0.0
-        self.discovered_food_ids: list[int] = []
-
-    def record_food_discoveries(self, food_ids: list[int]) -> None:
-        self.discovered_food_ids.extend(food_ids)
 
 
 class FakeVisionSystem:
@@ -404,7 +400,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertNotEqual(delta.digestion_rate, 0.0)
         self.assertNotEqual(delta.digestion_efficiency, 0.0)
 
-    def test_sensor_snapshot_records_food_discoveries_from_single_vision_pass(self) -> None:
+    def test_sensor_snapshot_uses_standard_vision_pass(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
         world.creatures = []
@@ -425,15 +421,11 @@ class WorldVisionMutationTest(unittest.TestCase):
         )
         world.fitness = {1: fitness}
 
-        snapshot = world._sensor_snapshot_for(
-            creature,
-            record_food_discoveries=True,
-        )
+        snapshot = world._sensor_snapshot_for(creature)
 
         self.assertIsInstance(snapshot, SensorSnapshot)
-        self.assertEqual(fitness.discovered_food_ids, [101, 202])
-        self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 1)
-        self.assertEqual(world.vision.sense_calls, 0)
+        self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 0)
+        self.assertEqual(world.vision.sense_calls, 1)
 
     def test_sensor_snapshot_uses_nearby_creature_candidates(self) -> None:
         world = self.make_world_for_biome_sensors()
@@ -443,7 +435,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         world.creatures = [observer, nearby]
         world._nearby_creatures_for = lambda creature, radius: [observer, nearby]
 
-        world._sensor_snapshot_for(observer, record_food_discoveries=False)
+        world._sensor_snapshot_for(observer)
 
         self.assertEqual(world.vision.last_creatures, [observer, nearby])
 
@@ -462,10 +454,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         creature = self.biome_sensor_creature()
         world._initialize_creature_biome_memory(creature)
 
-        snapshot = world._sensor_snapshot_for(
-            creature,
-            record_food_discoveries=False,
-        )
+        snapshot = world._sensor_snapshot_for(creature)
 
         self.assertAlmostEqual(snapshot.biome.here, 0.8)
         self.assertAlmostEqual(snapshot.biome.trend, 0.0)
@@ -475,14 +464,8 @@ class WorldVisionMutationTest(unittest.TestCase):
         creature = self.biome_sensor_creature()
         creature.biome_fertility_ema = 0.2
 
-        first_snapshot = world._sensor_snapshot_for(
-            creature,
-            record_food_discoveries=False,
-        )
-        second_snapshot = world._sensor_snapshot_for(
-            creature,
-            record_food_discoveries=False,
-        )
+        first_snapshot = world._sensor_snapshot_for(creature)
+        second_snapshot = world._sensor_snapshot_for(creature)
 
         self.assertAlmostEqual(creature.biome_fertility_ema, 0.2)
         self.assertAlmostEqual(first_snapshot.biome.trend, 0.7)
@@ -558,10 +541,7 @@ class WorldVisionMutationTest(unittest.TestCase):
             creature = self.biome_sensor_creature()
             creature.biome_fertility_ema = 0.0
             creature.biome_fertility_ema_updated_at = 0.0
-            snapshot = world._sensor_snapshot_for(
-                creature,
-                record_food_discoveries=False,
-            )
+            snapshot = world._sensor_snapshot_for(creature)
             elapsed = step
             while elapsed <= 3.0 + 1e-9:
                 world.elapsed_time = min(elapsed, 3.0)
@@ -579,10 +559,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         )
         creature = self.biome_sensor_creature()
 
-        snapshot = world._sensor_snapshot_for(
-            creature,
-            record_food_discoveries=False,
-        )
+        snapshot = world._sensor_snapshot_for(creature)
 
         self.assertAlmostEqual(snapshot.biome.here, 0.5)
         self.assertGreater(snapshot.biome.left_gradient, 0.0)
@@ -596,18 +573,12 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         world.fitness[creature.creature_id].age_seconds = 12.0
         self.assertFalse(world._is_infant(creature))
-        adolescent_snapshot = world._sensor_snapshot_for(
-            creature,
-            record_food_discoveries=False,
-        )
+        adolescent_snapshot = world._sensor_snapshot_for(creature)
         self.assertAlmostEqual(adolescent_snapshot.reproductive_readiness, 0.6)
 
         world.fitness[creature.creature_id].age_seconds = 20.0
 
-        snapshot = world._sensor_snapshot_for(
-            creature,
-            record_food_discoveries=False,
-        )
+        snapshot = world._sensor_snapshot_for(creature)
 
         self.assertEqual(snapshot.reproductive_readiness, 1.0)
 

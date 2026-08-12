@@ -367,10 +367,7 @@ class SchemaFiveSensingTest(unittest.TestCase):
 
             world._nearby_creatures_for = counted
             observer = world.creatures[0]
-            world._sensor_snapshot_for(
-                observer,
-                record_food_discoveries=False,
-            )
+            world._sensor_snapshot_for(observer)
             self.assertEqual(len(calls), 1)
             self.assertEqual(
                 calls[0],
@@ -385,10 +382,7 @@ class SchemaFiveSensingTest(unittest.TestCase):
             calls.clear()
             self.config.flocking.long_range.enabled = False
             observer.vision.range = 100.0
-            world._sensor_snapshot_for(
-                observer,
-                record_food_discoveries=False,
-            )
+            world._sensor_snapshot_for(observer)
             self.assertEqual(
                 calls,
                 [

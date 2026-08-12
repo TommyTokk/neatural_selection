@@ -120,6 +120,7 @@ class Creature:
     flocking_traits: FlockingTraits = field(default_factory=FlockingTraits)
     stomach_energy: float = 0.0
     stomach_difficulty_load: float = 0.0
+    total_energy_gathered: float = 0.0
     lineage: LineageInfo = field(default_factory=LineageInfo)
     render_sprite: object | None = None
     last_action: object | None = None

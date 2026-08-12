@@ -445,29 +445,6 @@ class SpeciationConfig:
 
 
 @dataclass(slots=True)
-class FitnessConfig:
-    # Lifespan expectation used for normalizing survival age (e.g. max senescence age)
-    target_lifespan_seconds: float = 200.0
-
-    # Base Survival Weights (Should sum to ~1.0 for clean internal weighting)
-    age_weight: float = 0.25                  # Rewards surviving toward target lifespan
-    energy_efficiency_weight: float = 0.35    # Rewards gaining energy efficiently vs movement/trait expenditure
-    exploration_weight: float = 0.25          # Rewards searching and finding new food sources
-    flocking_benchmark_weight: float = 0.0   # Rewards social coordination quality
-
-    # Discovery & Benchmark Normalization Caps
-    food_discovery_cap: int = 25
-    max_flocking_reward_cap: float = 1.0
-
-    # Minimum age before full efficiency calculation takes effect
-    efficiency_min_age_seconds: float = 5.0
-
-    # Reproductive Multipliers (Multiply base survival score)
-    offspring_weight: float = 2.0             # +200% base score per born child
-    matured_offspring_weight: float = 5.0     # +500% base score per child that survives to adulthood
-
-
-@dataclass(slots=True)
 class TraitConfig:
     default_radius: float = 16.0
     min_radius: float = 12.0
@@ -878,9 +855,6 @@ class SimConfig:
 
     # Metabolism config
     metabolism: MetabolismConfig = field(default_factory=MetabolismConfig)
-
-    # Fitness config
-    fitness: FitnessConfig = field(default_factory=FitnessConfig)
 
     # Population config
     population: PopulationConfig = field(default_factory=PopulationConfig)

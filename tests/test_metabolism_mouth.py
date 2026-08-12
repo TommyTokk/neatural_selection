@@ -22,6 +22,7 @@ class FakeCreature:
     radius: float
     heading: float
     energy: float = 0.5
+    total_energy_gathered: float = 0.0
     stomach_energy: float = 0.0
     stomach_difficulty_load: float = 0.0
     creature_id: int = 1
@@ -144,6 +145,7 @@ class MetabolismMouthEatingTest(unittest.TestCase):
         consumption = metabolism.eat(creature, food, delta_time=0.4)
 
         self.assertAlmostEqual(creature.energy, 0.8)
+        self.assertEqual(creature.total_energy_gathered, 0.0)
         self.assertAlmostEqual(creature.stomach_energy, 0.2)
         self.assertAlmostEqual(consumption.energy_swallowed, 0.2)
         self.assertFalse(consumption.depleted)
@@ -521,6 +523,7 @@ class MetabolismMouthEatingTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(creature.energy, 0.0562)
+        self.assertAlmostEqual(creature.total_energy_gathered, 0.1602)
         self.assertAlmostEqual(creature.stomach_energy, 0.0)
         self.assertAlmostEqual(report.digested_energy_gained[1], 0.1602)
         self.assertAlmostEqual(report.digestion_processing_costs[1], 0.0198)
@@ -543,6 +546,7 @@ class MetabolismMouthEatingTest(unittest.TestCase):
 
         self.assertEqual(gained, 0.0)
         self.assertEqual(creature.energy, 1.0)
+        self.assertEqual(creature.total_energy_gathered, 0.0)
         self.assertEqual(creature.stomach_energy, 1.0)
         self.assertEqual(creature.stomach_difficulty_load, 1.0)
 

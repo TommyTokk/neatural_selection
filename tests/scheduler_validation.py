@@ -227,6 +227,9 @@ def authoritative_state(world: World) -> dict[str, Any]:
                 "heading": float(creature.heading),
                 "angular_velocity": float(creature.body.angular_velocity),
                 "energy": float(creature.energy),
+                "total_energy_gathered": float(
+                    creature.total_energy_gathered
+                ),
                 "life": float(creature.life),
                 "stomach_energy": float(creature.stomach_energy),
                 "stomach_difficulty_load": float(
