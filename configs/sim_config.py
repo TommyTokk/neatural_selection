@@ -446,26 +446,25 @@ class SpeciationConfig:
 
 @dataclass(slots=True)
 class FitnessConfig:
-    age_weight: float = 0.1  # Increased to reward baseline survival
-    food_discovery_weight: float = 0.5  # Increased to encourage exploration
+    # Lifespan expectation used for normalizing survival age (e.g. max senescence age)
+    target_lifespan_seconds: float = 200.0
+
+    # Base Survival Weights (Should sum to ~1.0 for clean internal weighting)
+    age_weight: float = 0.25                  # Rewards surviving toward target lifespan
+    energy_efficiency_weight: float = 0.35    # Rewards gaining energy efficiently vs movement/trait expenditure
+    exploration_weight: float = 0.25          # Rewards searching and finding new food sources
+    flocking_benchmark_weight: float = 0.0   # Rewards social coordination quality
+
+    # Discovery & Benchmark Normalization Caps
     food_discovery_cap: int = 25
-    # food_eaten_weight: float = 8               REMOVED (Prevents double-dipping with energy)
-    energy_gained_weight: float = 30.0  # Lowered to balance with reproduction
-    energy_efficiency_weight: float = (
-        10.0  # SLASHED from 120 to fix the "Zen Monk" immobile exploit
-    )
-    efficiency_min_age_seconds: float = 20.0
-    movement_effort_penalty: float = (
-        0.02  # Lowered so active foragers aren't punished heavily
-    )
-    offspring_weight: float = 20.0  # MASSIVELY INCREASED (Base reward for giving birth)
-    matured_offspring_weight: float = (
-        40.0  # INCREASED (Bonus reward if the child survives)
-    )
-    trait_energy_cost_penalty_weight: float = (
-        2.0  # Lowered so big creatures can still evolve
-    )
-    flocking_benchmark_weight: float = 2.0
+    max_flocking_reward_cap: float = 1.0
+
+    # Minimum age before full efficiency calculation takes effect
+    efficiency_min_age_seconds: float = 5.0
+
+    # Reproductive Multipliers (Multiply base survival score)
+    offspring_weight: float = 2.0             # +200% base score per born child
+    matured_offspring_weight: float = 5.0     # +500% base score per child that survives to adulthood
 
 
 @dataclass(slots=True)
