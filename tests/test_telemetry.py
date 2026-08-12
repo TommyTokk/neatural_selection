@@ -126,7 +126,7 @@ class TelemetryDatabaseTest(unittest.TestCase):
         table_rows = self.database.connection.execute(
             """
             SELECT name FROM sqlite_master
-            WHERE type = ? AND name IN (?, ?, ?, ?)
+            WHERE type = ? AND name IN (?, ?, ?, ?, ?)
             """,
             (
                 "table",
@@ -134,13 +134,20 @@ class TelemetryDatabaseTest(unittest.TestCase):
                 "creatures",
                 "population_metrics",
                 "species_history",
+                "parent_selection_events",
             ),
         ).fetchall()
 
         self.assertEqual(journal_mode, ("wal",))
         self.assertEqual(
             {row[0] for row in table_rows},
-            {"species", "creatures", "population_metrics", "species_history"},
+            {
+                "species",
+                "creatures",
+                "population_metrics",
+                "species_history",
+                "parent_selection_events",
+            },
         )
 
     def test_parameterized_helpers_store_values_safely(self) -> None:
@@ -172,6 +179,44 @@ class TelemetryDatabaseTest(unittest.TestCase):
         self.assertEqual(creature, (2, 8.0, malicious_reason, 123.0, 17.0))
         self.assertEqual(metrics, (3, 40, 12.5))
         self.assertEqual(creatures_table, ("creatures",))
+
+    def test_parent_selection_events_store_complexity_and_outcome(self) -> None:
+        self.database.log_parent_selection_events(
+            [
+                {
+                    "sim_time": 3.5,
+                    "parent_creature_id": 9,
+                    "species_id": 2,
+                    "total_energy_gathered": 12.0,
+                    "node_count": 4,
+                    "enabled_connection_count": 3,
+                    "network_complexity": 7.0,
+                    "eligible_pool_size": 5,
+                    "tournament_k1": 3,
+                    "tournament_k2": 2,
+                    "outcome": "committed",
+                }
+            ]
+        )
+
+        row = self.database.connection.execute(
+            """
+            SELECT parent_creature_id, species_id, total_energy_gathered,
+                   node_count, enabled_connection_count, network_complexity,
+                   eligible_pool_size, tournament_k1, tournament_k2, outcome
+            FROM parent_selection_events
+            """
+        ).fetchone()
+        average_complexity = self.database.connection.execute(
+            """
+            SELECT AVG(network_complexity)
+            FROM parent_selection_events
+            WHERE outcome = 'committed'
+            """
+        ).fetchone()
+
+        self.assertEqual(row, (9, 2, 12.0, 4, 3, 7.0, 5, 3, 2, "committed"))
+        self.assertEqual(average_complexity, (7.0,))
 
     def test_load_species_end_times_respects_checkpoint_time(self) -> None:
         self.database.log_creature_birth(1, 1, 0.0, 100.0, 15.0)
@@ -244,16 +289,20 @@ class TelemetryDatabaseTest(unittest.TestCase):
 
         upgraded = TelemetryDatabase(legacy_file)
         try:
-            table = upgraded.connection.execute(
+            tables = upgraded.connection.execute(
                 """
                 SELECT name FROM sqlite_master
-                WHERE type = 'table' AND name = 'species_history'
+                WHERE type = 'table'
+                  AND name IN ('species_history', 'parent_selection_events')
                 """
-            ).fetchone()
+            ).fetchall()
         finally:
             upgraded.close()
 
-        self.assertEqual(table, ("species_history",))
+        self.assertEqual(
+            {row[0] for row in tables},
+            {"species_history", "parent_selection_events"},
+        )
 
     def test_existing_history_table_gains_neat_changes_column(self) -> None:
         legacy_file = Path(self.temporary_directory.name) / "legacy_history.sqlite"

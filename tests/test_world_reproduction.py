@@ -458,6 +458,38 @@ class WorldReproductionTest(unittest.TestCase):
         }
         self.assertIs(world._reproduction_parent(), parent)
 
+    def test_parent_pool_requires_current_eligibility_and_intent(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        ineligible = FakeCreature(
+            creature_id=1,
+            energy=0.79,
+            total_energy_gathered=100.0,
+        )
+        unwilling = FakeCreature(
+            creature_id=2,
+            energy=1.0,
+            total_energy_gathered=50.0,
+        )
+        eligible = FakeCreature(
+            creature_id=3,
+            energy=1.0,
+            total_energy_gathered=1.0,
+        )
+        world.creatures = [ineligible, unwilling, eligible]
+        world.fitness = {
+            creature.creature_id: CreatureFitness(age_seconds=30.0)
+            for creature in world.creatures
+        }
+        world.rt_neat = RtNeatManager(brain_controller=None, rng=Random(7))
+        world._last_actions = {
+            1: Action(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
+            2: Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            3: Action(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
+        }
+
+        self.assertIs(world._reproduction_parent(), eligible)
+
     def test_eating_intent_uses_strict_centered_threshold(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()

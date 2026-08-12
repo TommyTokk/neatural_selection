@@ -296,6 +296,10 @@ class ReproductionRequest:
     parent: Creature
     eligibility_rank: int
     reserved_energy_cost: float
+    selection_pool_size: int = 0
+    node_count: int = 0
+    enabled_connection_count: int = 0
+    network_complexity: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +330,9 @@ class TransactionResolution:
     activities: dict[int, ActivityResult]
     reproductions: list[ReproductionRequest]
     nursing_transfers: list[AcceptedNursingTransfer]
+    reproduction_attempts: list[tuple[ReproductionRequest, str]] = field(
+        default_factory=list
+    )
 
 
 class World:
@@ -595,7 +602,7 @@ class World:
             communication_config=config.communication,
             food_config=config.food,
         )
-        self.rt_neat = RtNeatManager(self.neat_controller)
+        self.rt_neat = RtNeatManager(self.neat_controller, self.rng)
         self._trait_archive_by_genome_id: dict[int, ArchivedCreatureTraits] = {}
         self.species_history: dict[int, SpeciesRecord] = {}
         if bootstrap:
@@ -5201,20 +5208,37 @@ class World:
         self._reproduction_due_this_step = False
         if not due or not self._has_reproduction_resources():
             return []
-        live = {creature.creature_id: creature for creature in self.creatures}
+        eligible_pool = self._eligible_reproduction_parents()
+        population_config = getattr(
+            getattr(self, "config", None),
+            "population",
+            None,
+        )
+        tournament_k1 = getattr(population_config, "tournament_k1", 3)
+        tournament_k2 = getattr(population_config, "tournament_k2", 2)
+        remaining = list(eligible_pool)
         requests: list[ReproductionRequest] = []
-        for rank, creature_id in enumerate(self.rt_neat.eligible_parent_ids):
-            parent = live.get(creature_id)
-            if parent is None or creature_id not in self.fitness:
-                continue
-            action = self._action_for_execution(creature_id)
-            if action is None or not is_active_intent(action.want_reproduce):
-                continue
+        while remaining:
+            selection_pool_size = len(remaining)
+            selector = getattr(self.rt_neat, "select_parent", None)
+            parent = (
+                selector(
+                    remaining,
+                    tournament_k1,
+                    tournament_k2,
+                )
+                if callable(selector)
+                else remaining[0]
+            )
+            if parent is None:
+                break
+            remaining.remove(parent)
+            rank = len(requests)
             requests.append(
-                ReproductionRequest(
-                    parent=parent,
-                    eligibility_rank=rank,
-                    reserved_energy_cost=self._reproduction_cost_for(parent),
+                self._reproduction_request_for(
+                    parent,
+                    rank,
+                    selection_pool_size,
                 )
             )
         return sorted(
@@ -5223,6 +5247,72 @@ class World:
                 request.eligibility_rank,
                 request.parent.creature_id,
             ),
+        )
+
+    def _reproduction_request_for(
+        self,
+        parent: Creature,
+        rank: int,
+        selection_pool_size: int,
+    ) -> ReproductionRequest:
+        network_size = getattr(self.rt_neat, "network_size", None)
+        node_count, enabled_connection_count = (
+            network_size(parent)
+            if callable(network_size)
+            else (0, 0)
+        )
+        complexity_for = getattr(
+            self.rt_neat,
+            "network_complexity",
+            None,
+        )
+        network_complexity = (
+            complexity_for(parent)
+            if callable(complexity_for)
+            else float(node_count + enabled_connection_count)
+        )
+        return ReproductionRequest(
+            parent=parent,
+            eligibility_rank=rank,
+            reserved_energy_cost=self._reproduction_cost_for(parent),
+            selection_pool_size=selection_pool_size,
+            node_count=node_count,
+            enabled_connection_count=enabled_connection_count,
+            network_complexity=network_complexity,
+        )
+
+    def _eligible_reproduction_parents(self) -> list[Creature]:
+        """Return live adults that are eligible and currently want offspring."""
+        legacy_ids = set(getattr(self.rt_neat, "eligible_parent_ids", ()))
+        checker = getattr(self.rt_neat, "is_reproduction_eligible", None)
+        candidates: list[Creature] = []
+        for parent in self.creatures:
+            fitness = self.fitness.get(parent.creature_id)
+            if fitness is None:
+                continue
+            if callable(checker):
+                if not checker(parent, fitness, self.config.population):
+                    continue
+            elif parent.creature_id not in legacy_ids:
+                continue
+            action = self._action_for_execution(parent.creature_id)
+            if action is None or not is_active_intent(action.want_reproduce):
+                continue
+            candidates.append(parent)
+        return candidates
+
+    def _parent_is_reproduction_eligible(self, parent: Creature) -> bool:
+        """Revalidate a queued parent against authoritative current state."""
+        if not hasattr(self, "fitness") or not hasattr(self, "rt_neat"):
+            return True
+        fitness = self.fitness.get(parent.creature_id)
+        if fitness is None:
+            return False
+        checker = getattr(self.rt_neat, "is_reproduction_eligible", None)
+        if callable(checker):
+            return bool(checker(parent, fitness, self.config.population))
+        return parent.creature_id in set(
+            getattr(self.rt_neat, "eligible_parent_ids", ())
         )
 
     def _prepare_nursing_requests(
@@ -5349,6 +5439,7 @@ class World:
             ),
         )
         banned: set[int] = set()
+        attempted: dict[int, tuple[ReproductionRequest, str]] = {}
         selected = reproduction_requests[:reproduction_capacity]
         if not selected and not nursing_requests:
             return TransactionResolution(
@@ -5358,6 +5449,11 @@ class World:
                 nursing_transfers=[],
             )
         while True:
+            for request in selected:
+                attempted.setdefault(
+                    request.parent.creature_id,
+                    (request, "committed"),
+                )
             resolution, failed = self._resolve_transaction_pass(
                 delta_time,
                 selected,
@@ -5368,6 +5464,9 @@ class World:
                 powered_movement_demands=powered_movement_demands,
             )
             banned.update(failed)
+            for creature_id, outcome in failed.items():
+                request = attempted[creature_id][0]
+                attempted[creature_id] = (request, outcome)
             survivors = [
                 request
                 for request in selected
@@ -5392,6 +5491,7 @@ class World:
             if [r.parent.creature_id for r in next_selected] == [
                 r.parent.creature_id for r in selected
             ]:
+                resolution.reproduction_attempts = list(attempted.values())
                 return resolution
             selected = next_selected
 
@@ -5405,7 +5505,7 @@ class World:
         baseline_activities: dict[int, ActivityResult],
         *,
         powered_movement_demands: dict[int, float] | None = None,
-    ) -> tuple[TransactionResolution, set[int]]:
+    ) -> tuple[TransactionResolution, dict[int, str]]:
         powered_demands = powered_movement_demands or {
             creature_id: 0.0 for creature_id in upkeep_demands
         }
@@ -5413,7 +5513,7 @@ class World:
             request.parent.creature_id: request
             for request in selected_reproductions
         }
-        failed_reproductions: set[int] = set()
+        failed_reproductions: dict[int, str] = {}
         chosen_candidates: dict[int, ResourceCandidate] = {}
         chosen_activities: dict[int, ActivityResult] = {}
         accepted: list[AcceptedNursingTransfer] = []
@@ -5424,6 +5524,12 @@ class World:
         ) -> tuple[ResourceCandidate, bool]:
             creature_id = creature.creature_id
             reproduction = selected_by_id.get(creature_id)
+            if (
+                reproduction is not None
+                and creature_id not in failed_reproductions
+                and not self._parent_is_reproduction_eligible(creature)
+            ):
+                failed_reproductions[creature_id] = "eligibility_rejected"
             reproduction_cost = (
                 0.0
                 if reproduction is None
@@ -5459,8 +5565,11 @@ class World:
                 ),
             )
             if not candidate.survives:
-                if reproduction is not None:
-                    failed_reproductions.add(creature_id)
+                if (
+                    reproduction is not None
+                    and creature_id not in failed_reproductions
+                ):
+                    failed_reproductions[creature_id] = "resource_rejected"
                 candidate = baseline_candidates[creature_id]
                 activity = baseline_activities[creature_id]
                 chosen_candidates[creature_id] = candidate
@@ -5968,6 +6077,8 @@ class World:
         if self.selected_creature_id is not None and self.selected_creature is None:
             self.selected_creature_id = None
             self._reset_behavior_focus(None)
+
+        self._log_parent_selection_attempts(resolution.reproduction_attempts)
 
     def _update_metabolism_legacy_adapter(self, delta_time: float) -> None:
         """Keep small historical test/extension metabolism doubles usable."""
@@ -6952,14 +7063,23 @@ class World:
         if not self._has_reproduction_resources():
             return False
 
-        if not self.rt_neat.eligible_parent_ids:
-            return False
-
-        parent = self._reproduction_parent()
+        eligible_pool = self._eligible_reproduction_parents()
+        parent = self._select_reproduction_parent(eligible_pool)
         if parent is None:
             return False
 
-        reproduction_cost = self._reproduction_cost_for(parent)
+        request = self._reproduction_request_for(
+            parent,
+            0,
+            len(eligible_pool),
+        )
+        if not self._parent_is_reproduction_eligible(parent):
+            self._log_parent_selection_attempts(
+                [(request, "eligibility_rejected")]
+            )
+            return False
+
+        reproduction_cost = request.reserved_energy_cost
         parent_fitness = self.fitness[parent.creature_id]
         child_id = self._next_creature_id()
         child_traits = self._mutated_child_traits(parent)
@@ -6991,6 +7111,9 @@ class World:
         if child_brain is None:
             self._unindex_creature_shape(child)
             self.space.remove(child.body, child.shape)
+            self._log_parent_selection_attempts(
+                [(request, "resource_rejected")]
+            )
             return False
         assert speciation_result is not None
         child.lineage.species_id = speciation_result.species_id
@@ -7010,7 +7133,48 @@ class World:
         self._spend_reproduction_energy(parent, reproduction_cost)
         parent_fitness.record_reproduction()
         self.rt_neat.record_normal_replacement()
+        self._log_parent_selection_attempts([(request, "committed")])
         return True
+
+    def _log_parent_selection_attempts(
+        self,
+        attempts: list[tuple[ReproductionRequest, str]],
+    ) -> None:
+        telemetry = getattr(self, "telemetry", None)
+        log_events = getattr(telemetry, "log_parent_selection_events", None)
+        if not callable(log_events) or not attempts:
+            return
+        population_config = self.config.population
+        rows: list[dict[str, object]] = []
+        for request, outcome in attempts:
+            parent = request.parent
+            try:
+                gathered = float(parent.total_energy_gathered)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                gathered = 0.0
+            complexity = request.network_complexity
+            rows.append(
+                {
+                    "sim_time": float(getattr(self, "elapsed_time", 0.0)),
+                    "parent_creature_id": parent.creature_id,
+                    "species_id": parent.lineage.species_id,
+                    "total_energy_gathered": (
+                        gathered if isfinite(gathered) else 0.0
+                    ),
+                    "node_count": request.node_count,
+                    "enabled_connection_count": (
+                        request.enabled_connection_count
+                    ),
+                    "network_complexity": (
+                        complexity if isfinite(complexity) else None
+                    ),
+                    "eligible_pool_size": request.selection_pool_size,
+                    "tournament_k1": population_config.tournament_k1,
+                    "tournament_k2": population_config.tournament_k2,
+                    "outcome": outcome,
+                }
+            )
+        log_events(rows)
 
     def _has_reproduction_resources(self) -> bool:
         child_energy = self.config.population.reproduction_energy_cost_base
@@ -7033,22 +7197,28 @@ class World:
         )
 
     def _reproduction_parent(self) -> Creature | None:
-        live_creatures = {creature.creature_id: creature for creature in self.creatures}
-        for parent_id in self.rt_neat.eligible_parent_ids:
-            parent = live_creatures.get(parent_id)
-            if parent is None or parent.creature_id not in self.fitness:
-                continue
+        eligible_pool = self._eligible_reproduction_parents()
+        return self._select_reproduction_parent(eligible_pool)
 
-            parent_action = getattr(self, "_effective_actions", {}).get(
-                parent.creature_id,
-                self._last_actions.get(parent.creature_id),
-            )
-            if parent_action is not None and is_active_intent(
-                parent_action.want_reproduce
-            ):
-                return parent
-
-        return None
+    def _select_reproduction_parent(
+        self,
+        eligible_pool: list[Creature],
+    ) -> Creature | None:
+        if not eligible_pool:
+            return None
+        selector = getattr(self.rt_neat, "select_parent", None)
+        population_config = getattr(
+            getattr(self, "config", None),
+            "population",
+            None,
+        )
+        if not callable(selector) or population_config is None:
+            return eligible_pool[0]
+        return selector(
+            eligible_pool,
+            population_config.tournament_k1,
+            population_config.tournament_k2,
+        )
 
     def _creature_want_to_eat(self, creature: Creature) -> bool:
         action = self._last_actions.get(creature.creature_id)

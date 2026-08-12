@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import inf, isfinite
+from random import Random
 
 from configs.sim_config import PopulationConfig
 from src.creature import Creature
@@ -32,8 +34,13 @@ class RtNeatStats:
 
 
 class RtNeatManager:
-    def __init__(self, brain_controller: NeatBrainController) -> None:
+    def __init__(
+        self,
+        brain_controller: NeatBrainController | None,
+        rng: Random | None = None,
+    ) -> None:
         self.brain_controller = brain_controller
+        self.rng = Random(0) if rng is None else rng
         self.stats = RtNeatStats()
         self.eligible_parent_ids: list[int] = []
         self._lifespan_at_death_total = 0.0
@@ -49,11 +56,6 @@ class RtNeatManager:
         live_scores: list[tuple[int, float]] = []
         eligible_scores: list[tuple[int, float]] = []
         live_fitnesses: list[CreatureFitness] = []
-        species_counts: dict[int, int] = {}
-
-        for creature in creatures:
-            species_id = creature.lineage.species_id
-            species_counts[species_id] = species_counts.get(species_id, 0) + 1
 
         for creature in creatures:
             fitness = fitness_by_creature_id.get(creature.creature_id)
@@ -62,13 +64,7 @@ class RtNeatManager:
                 live_scores.append((creature.creature_id, score))
                 live_fitnesses.append(fitness)
                 if self.is_reproduction_eligible(creature, fitness, population_config):
-                    species_size = max(
-                        1,
-                        species_counts[creature.lineage.species_id],
-                    )
-                    eligible_scores.append(
-                        (creature.creature_id, score / species_size)
-                    )
+                    eligible_scores.append((creature.creature_id, score))
 
         if not live_scores:
             self.eligible_parent_ids = []
@@ -91,12 +87,7 @@ class RtNeatManager:
         _, worst_score = min(live_scores, key=lambda item: item[1])
         average_score = sum(score for _, score in live_scores) / len(live_scores)
         self.eligible_parent_ids = [
-            creature_id
-            for creature_id, _ in sorted(
-                eligible_scores,
-                key=lambda item: item[1],
-                reverse=True,
-            )
+            creature_id for creature_id, _ in eligible_scores
         ]
 
         self.stats.best_fitness = best_score
@@ -106,7 +97,9 @@ class RtNeatManager:
         self.stats.evaluated_count = len(live_scores)
         self.stats.eligible_parent_count = len(eligible_scores)
         self.stats.best_eligible_parent_id = (
-            self.eligible_parent_ids[0] if self.eligible_parent_ids else None
+            max(eligible_scores, key=lambda item: (item[1], -item[0]))[0]
+            if eligible_scores
+            else None
         )
         self.stats.average_speed = sum(
             fitness.average_speed() for fitness in live_fitnesses
@@ -151,6 +144,90 @@ class RtNeatManager:
             fitness.seconds_since_reproduction()
             >= population_config.reproduction_cooldown
         )
+
+    def select_parent(
+        self,
+        eligible_pool: list[Creature],
+        k1: int = 3,
+        k2: int = 2,
+    ) -> Creature | None:
+        """Select one eligible parent by fitness, then network parsimony."""
+        if not eligible_pool:
+            return None
+        if type(k1) is not int or k1 <= 0:
+            raise ValueError("k1 must be a positive integer.")
+        if type(k2) is not int or k2 <= 0:
+            raise ValueError("k2 must be a positive integer.")
+        if k2 > k1:
+            raise ValueError("k2 must not exceed k1.")
+
+        if len(eligible_pool) <= k1:
+            return min(
+                eligible_pool,
+                key=lambda creature: (
+                    -self._selection_energy(creature),
+                    self.network_complexity(creature),
+                    creature.creature_id,
+                ),
+            )
+
+        sampled = self.rng.sample(eligible_pool, k1)
+        fitness_finalists = sorted(
+            sampled,
+            key=lambda creature: (
+                -self._selection_energy(creature),
+                creature.creature_id,
+            ),
+        )[:k2]
+        return min(
+            fitness_finalists,
+            key=lambda creature: (
+                self.network_complexity(creature),
+                -self._selection_energy(creature),
+                creature.creature_id,
+            ),
+        )
+
+    def network_size(self, creature: Creature) -> tuple[int, int]:
+        """Return node and enabled-connection counts for selection telemetry."""
+        if self.brain_controller is None:
+            return 0, 0
+        brain_for = getattr(self.brain_controller, "brain_for", None)
+        if not callable(brain_for):
+            return 0, 0
+        brain = brain_for(creature.creature_id)
+        genome = None if brain is None else getattr(brain, "genome", None)
+        if genome is None:
+            return 0, 0
+        nodes = getattr(genome, "nodes", {}) or {}
+        connections = getattr(genome, "connections", {}) or {}
+        enabled_connections = sum(
+            1
+            for connection in connections.values()
+            if bool(getattr(connection, "enabled", True))
+        )
+        return len(nodes), enabled_connections
+
+    def network_complexity(self, creature: Creature) -> float:
+        """Return parsimony complexity; missing genomes rank behind valid ones."""
+        if self.brain_controller is None:
+            return inf
+        brain_for = getattr(self.brain_controller, "brain_for", None)
+        if not callable(brain_for):
+            return inf
+        brain = brain_for(creature.creature_id)
+        if brain is None or getattr(brain, "genome", None) is None:
+            return inf
+        nodes, enabled_connections = self.network_size(creature)
+        return float(nodes + enabled_connections)
+
+    @staticmethod
+    def _selection_energy(creature: Creature) -> float:
+        try:
+            gathered = float(creature.total_energy_gathered)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return 0.0
+        return max(0.0, gathered) if isfinite(gathered) else 0.0
 
     def _update_brain_size_stats(self, creatures: list[Creature]) -> None:
         if self.brain_controller is None:

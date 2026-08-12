@@ -106,6 +106,21 @@ class TelemetryDatabase:
                 best_fitness REAL
             );
 
+            CREATE TABLE IF NOT EXISTS parent_selection_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sim_time REAL NOT NULL,
+                parent_creature_id INTEGER NOT NULL,
+                species_id INTEGER NOT NULL,
+                total_energy_gathered REAL NOT NULL,
+                node_count INTEGER NOT NULL,
+                enabled_connection_count INTEGER NOT NULL,
+                network_complexity REAL,
+                eligible_pool_size INTEGER NOT NULL,
+                tournament_k1 INTEGER NOT NULL,
+                tournament_k2 INTEGER NOT NULL,
+                outcome TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS flocking_population_metrics (
                 sim_time REAL PRIMARY KEY,
                 population_size INTEGER,
@@ -139,6 +154,8 @@ class TelemetryDatabase:
                 ON species(parent_species_id);
             CREATE INDEX IF NOT EXISTS idx_creatures_species
                 ON creatures(species_id);
+            CREATE INDEX IF NOT EXISTS idx_parent_selection_time
+                ON parent_selection_events(sim_time);
             """
         )
         self._ensure_species_history_columns()
@@ -657,6 +674,33 @@ class TelemetryDatabase:
                 best_fitness = excluded.best_fitness
             """,
             (sim_time, alive_count, food_count, best_fitness),
+        )
+        self.connection.commit()
+
+    def log_parent_selection_events(
+        self,
+        events: list[dict[str, object]],
+    ) -> None:
+        if not events:
+            return
+        columns = (
+            "sim_time",
+            "parent_creature_id",
+            "species_id",
+            "total_energy_gathered",
+            "node_count",
+            "enabled_connection_count",
+            "network_complexity",
+            "eligible_pool_size",
+            "tournament_k1",
+            "tournament_k2",
+            "outcome",
+        )
+        self.connection.executemany(
+            "INSERT INTO parent_selection_events "
+            f"({', '.join(columns)}) VALUES "
+            f"({', '.join('?' for _ in columns)})",
+            [tuple(event[column] for column in columns) for event in events],
         )
         self.connection.commit()
 

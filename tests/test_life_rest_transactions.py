@@ -7,6 +7,7 @@ import unittest
 from configs.sim_config import ActionConfig, MetabolismConfig, TraitConfig, VisionConfig
 from src.action import Action
 from src.creature import LedgerDiagnostics
+from src.fitness import CreatureFitness
 from src.persistence import PersistenceManager
 from src.metabolism import (
     ActivityResult,
@@ -20,6 +21,7 @@ from src.metabolism import (
     movement_life_penalty_multiplier,
 )
 from src.vision import VisionSystem
+from src.rt_neat import RtNeatManager
 from src.world import (
     AcceptedNursingTransfer,
     NursingRequest,
@@ -589,6 +591,49 @@ class TransactionPerformanceContractTest(unittest.TestCase):
         self.assertAlmostEqual(
             resolution.candidates[2].total_energy_demand,
             0.4,
+        )
+
+    def test_parent_below_threshold_after_queue_promotes_next(self) -> None:
+        creatures = [
+            SimpleNamespace(
+                creature_id=index,
+                smoothed_rest=0.0,
+                energy=1.0,
+                total_energy_gathered=10.0 - index,
+                lineage=SimpleNamespace(species_id=1),
+            )
+            for index in (1, 2, 3)
+        ]
+        requests = [
+            ReproductionRequest(creature, rank, 0.4)
+            for rank, creature in enumerate(creatures[:2])
+        ]
+        world = self.make_world(requests)
+        world.creatures = creatures
+        world.config.population.min_reproduction_age = 20.0
+        world.config.population.reproduction_cooldown = 12.0
+        world.config.population.reproduction_energy_threshold = 0.8
+        world.fitness = {
+            creature.creature_id: CreatureFitness(age_seconds=30.0)
+            for creature in creatures
+        }
+        world.rt_neat = RtNeatManager(brain_controller=None)
+        creatures[0].energy = 0.79
+
+        resolution = world._resolve_resource_transactions(1.0 / 60.0)
+
+        self.assertEqual(
+            [request.parent.creature_id for request in resolution.reproductions],
+            [2],
+        )
+        self.assertEqual(resolution.candidates[1].total_energy_demand, 0.0)
+        self.assertAlmostEqual(resolution.candidates[2].total_energy_demand, 0.4)
+        self.assertEqual(
+            [
+                (request.parent.creature_id, outcome)
+                for request, outcome in resolution.reproduction_attempts
+            ],
+            [(1, "eligibility_rejected"), (2, "committed")],
         )
 
 

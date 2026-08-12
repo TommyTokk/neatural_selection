@@ -1096,6 +1096,19 @@ class DeterministicSchedulerIntegrationTest(unittest.TestCase):
                 reproduction = neutral_action()
                 reproduction.want_reproduce = 1.0
                 parent = world.creatures[0]
+                parent.energy = max(
+                    parent.energy,
+                    world.config.population.reproduction_energy_threshold,
+                )
+                parent_fitness = world.fitness[parent.creature_id]
+                parent_fitness.age_seconds = max(
+                    parent_fitness.age_seconds,
+                    world.config.population.min_reproduction_age,
+                )
+                parent_fitness.last_reproduction_age = (
+                    parent_fitness.age_seconds
+                    - world.config.population.reproduction_cooldown
+                )
                 world.rt_neat.eligible_parent_ids = [parent.creature_id]
                 world._last_actions[parent.creature_id] = reproduction
                 world._effective_actions[parent.creature_id] = reproduction

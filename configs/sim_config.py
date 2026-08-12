@@ -419,6 +419,8 @@ class PopulationConfig:
     min_reproduction_age: float = 20.0
     reproduction_cooldown: float = 12.0
     reproduction_energy_threshold: float = 0.8
+    tournament_k1: int = 3
+    tournament_k2: int = 2
     reproduction_energy_cost_base: float = 0.35
     reproduction_cost_per_node: float = 0.008
     reproduction_cost_per_connection: float = 0.002
@@ -430,6 +432,19 @@ class PopulationConfig:
     reproduction_min_food_ratio: float = 0.2
     reproduction_min_available_biomass_ratio: float = 0.02
     reproduction_recovery_pressure_threshold: float = 0.25
+
+    def __post_init__(self) -> None:
+        for name in ("tournament_k1", "tournament_k2"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(
+                    f"population.{name} must be a positive integer."
+                )
+        if self.tournament_k2 > self.tournament_k1:
+            raise ValueError(
+                "population.tournament_k2 must not exceed "
+                "population.tournament_k1."
+            )
 
 
 @dataclass(slots=True)

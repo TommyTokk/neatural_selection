@@ -636,6 +636,15 @@ class PopulationChurnValidationTest(unittest.TestCase):
         if step > 0 and step % 15 == 0 and world.creatures:
             parent = min(world.creatures, key=lambda item: item.creature_id)
             parent.energy = max(parent.energy, 1.0)
+            parent_fitness = world.fitness[parent.creature_id]
+            parent_fitness.age_seconds = max(
+                parent_fitness.age_seconds,
+                world.config.population.min_reproduction_age,
+            )
+            parent_fitness.last_reproduction_age = (
+                parent_fitness.age_seconds
+                - world.config.population.reproduction_cooldown
+            )
             reproduce = _action(reproduce=True)
             world._last_actions[parent.creature_id] = reproduce
             world._effective_actions[parent.creature_id] = reproduce

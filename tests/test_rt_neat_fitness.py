@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from random import Random
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -54,7 +55,7 @@ class FakeBrainController:
 
 
 class RtNeatFitnessRankingTest(unittest.TestCase):
-    def test_update_stats_ranks_eligible_parents_by_implicit_fitness(self) -> None:
+    def test_update_stats_keeps_non_ranked_eligible_parent_snapshot(self) -> None:
         manager = RtNeatManager(brain_controller=None)
         population_config = PopulationConfig(
             min_reproduction_age=0.0,
@@ -73,12 +74,13 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
             population_config=population_config,
         )
 
-        self.assertEqual(manager.eligible_parent_ids, [2, 1])
+        self.assertEqual(manager.eligible_parent_ids, [1, 2])
+        self.assertEqual(manager.stats.best_eligible_parent_id, 2)
         self.assertEqual(manager.stats.best_creature_id, 2)
         self.assertAlmostEqual(manager.stats.best_fitness, 3.0)
         self.assertAlmostEqual(manager.stats.worst_fitness, 1.0)
 
-    def test_update_stats_shares_fitness_across_living_species(self) -> None:
+    def test_update_stats_does_not_share_fitness_across_species(self) -> None:
         manager = RtNeatManager(brain_controller=None)
         population_config = PopulationConfig(
             min_reproduction_age=0.0,
@@ -112,10 +114,78 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
 
         self.assertEqual(len(manager.eligible_parent_ids), 11)
         self.assertEqual(manager.stats.eligible_parent_count, 11)
-        self.assertEqual(manager.eligible_parent_ids[0], 11)
-        self.assertEqual(manager.stats.best_eligible_parent_id, 11)
+        self.assertEqual(manager.eligible_parent_ids[0], 1)
+        self.assertEqual(manager.stats.best_eligible_parent_id, 1)
         self.assertEqual(manager.stats.best_creature_id, 1)
         self.assertAlmostEqual(manager.stats.best_fitness, 100.0)
+
+    def test_select_parent_returns_none_for_empty_pool(self) -> None:
+        manager = RtNeatManager(brain_controller=None, rng=Random(7))
+
+        self.assertIsNone(manager.select_parent([]))
+
+    def test_noneligible_creatures_are_never_selected(self) -> None:
+        manager = RtNeatManager(brain_controller=None, rng=Random(7))
+        config = PopulationConfig(
+            min_reproduction_age=20.0,
+            reproduction_cooldown=12.0,
+            reproduction_energy_threshold=0.8,
+        )
+        creatures = [
+            FakeCreature(creature_id=1, energy=0.79, total_energy_gathered=99.0),
+            FakeCreature(creature_id=2, energy=1.0, total_energy_gathered=2.0),
+        ]
+        fitness = {
+            1: CreatureFitness(age_seconds=30.0),
+            2: CreatureFitness(age_seconds=30.0),
+        }
+        eligible = [
+            creature
+            for creature in creatures
+            if manager.is_reproduction_eligible(
+                creature,
+                fitness[creature.creature_id],
+                config,
+            )
+        ]
+
+        self.assertEqual(manager.select_parent(eligible).creature_id, 2)
+
+    def test_parsimony_round_prefers_smaller_enabled_network(self) -> None:
+        controller = FakeBrainController()
+        manager = RtNeatManager(brain_controller=controller)
+        manager.rng = SimpleNamespace(sample=lambda pool, count: pool[:count])
+        creatures = [
+            FakeCreature(creature_id=1, total_energy_gathered=10.0),
+            FakeCreature(creature_id=2, total_energy_gathered=10.0),
+            FakeCreature(creature_id=3, total_energy_gathered=10.0),
+            FakeCreature(creature_id=4, total_energy_gathered=10.0),
+        ]
+
+        selected = manager.select_parent(creatures, k1=3, k2=2)
+
+        self.assertEqual(manager.network_size(creatures[0]), (3, 1))
+        self.assertEqual(selected.creature_id, 1)
+
+    def test_small_pool_breaks_energy_ties_by_complexity(self) -> None:
+        manager = RtNeatManager(
+            brain_controller=FakeBrainController(),
+            rng=Random(7),
+        )
+        creatures = [
+            FakeCreature(creature_id=1, total_energy_gathered=10.0),
+            FakeCreature(creature_id=2, total_energy_gathered=10.0),
+        ]
+
+        selected = manager.select_parent(creatures, k1=3, k2=2)
+
+        self.assertEqual(selected.creature_id, 1)
+
+    def test_tournament_sizes_must_be_positive_and_ordered(self) -> None:
+        with self.assertRaises(ValueError):
+            PopulationConfig(tournament_k1=0)
+        with self.assertRaises(ValueError):
+            PopulationConfig(tournament_k1=2, tournament_k2=3)
 
     def test_update_stats_tracks_trend_metrics(self) -> None:
         manager = RtNeatManager(brain_controller=FakeBrainController())
