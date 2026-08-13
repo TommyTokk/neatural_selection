@@ -330,7 +330,7 @@ class WorldCameraTest(unittest.TestCase):
 
         self.assertEqual(
             CapturingFoodSpawner.captured_bounds,
-            (-1600.0, -1100.0, 1600.0, 1100.0),
+            (-1760.0, -1210.0, 1760.0, 1210.0),
         )
 
     def test_viewport_food_query_excludes_distant_food(self) -> None:

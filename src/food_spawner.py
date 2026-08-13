@@ -264,5 +264,9 @@ class FoodSpawner:
 
     def _reset_spawn_credits(self) -> None:
         self._spawn_credit = 0.0
+        self.reset_low_food_burst_state()
+
+    def reset_low_food_burst_state(self) -> None:
+        """Discard burst progress created by an earlier configuration."""
         self._low_food_burst_credit = 0.0
         self._pending_low_food_burst_items = 0

@@ -19,6 +19,10 @@ FIXTURE_DIRECTORY = (
 
 def migration_config():
     config = build_sim_config()
+    # The recorded v20 trajectory predates the larger default world and must
+    # retain the bounds and food capacity used to generate the fixtures.
+    config.environment.world_width = 3200.0
+    config.environment.world_height = 2200.0
     config.random_seed = 11
     config.persistence.enable_telemetry = False
     config.persistence.quick_save_interval_seconds = 0.0
@@ -29,6 +33,7 @@ def migration_config():
     config.population.min_reproduction_age = 10_000.0
     config.population.senescence_age_seconds = 10_000.0
     config.food.initial_food_items = 8
+    config.food.max_food_items = 300
     config.flocking.cohort_spawn.enabled = True
     config.flocking.cohort_spawn.size = 2
     config.flocking.cohort_spawn.radius = 24.0

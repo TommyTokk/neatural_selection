@@ -142,14 +142,32 @@ class PanelManagerComponent:
         arcade.Rect
             Computed UI rectangle.
         """
-        width = min(540.0, max(400.0, world.layout.window.width - 160.0))
-        height = 164.0
+        margin = float(self.config.layout.outer_padding)
+        available_width = max(1.0, world.layout.window.width - margin * 2.0)
+        available_height = max(1.0, world.layout.window.height - margin * 2.0)
+        width = min(
+            540.0,
+            max(400.0, world.layout.window.width - 160.0),
+            available_width,
+        )
+        preferred_height = 680.0 if self._settings_expanded else 216.0
+        height = min(preferred_height, available_height)
         default_bounds = arcade.LBWH(
             world.layout.window.center_x - width / 2.0,
             32.0,
             width,
             height,
         )
+        existing = self._panel_bounds.get("settings")
+        if existing is not None:
+            default_bounds = arcade.LBWH(
+                existing.left,
+                existing.bottom,
+                width,
+                height,
+            )
+            default_bounds = self._clamp_panel_bounds(world, default_bounds)
+            self._panel_bounds["settings"] = default_bounds
         return self._panel_bounds_for(world, "settings", default_bounds)
     def _panel_bounds_for(
         self,

@@ -16,6 +16,7 @@ import pymunk
 import numpy as np
 
 from configs.sim_config import (
+    LiveFoodConfig,
     SimConfig,
     SocialCompatibilityMode,
 )
@@ -517,7 +518,17 @@ class World:
         )
         for creature in self.creatures:
             self._initialize_creature_biome_memory(creature)
-        self.food_spawner = FoodSpawner(config.food, self.rng, self.biome_map)
+        self._live_food_config = LiveFoodConfig.from_configs(
+            config.biome,
+            config.food,
+        )
+        # Runtime editing must not mutate the configuration shared with the
+        # start menu and subsequently created simulations.
+        self.food_spawner = FoodSpawner(
+            replace(config.food),
+            self.rng,
+            self.biome_map,
+        )
         self.foods: list[Food] = []
         self._held_food_by_creature_id: dict[int, int] = {}
         self._carrier_by_food_id: dict[int, int] = {}
@@ -6841,6 +6852,96 @@ class World:
         if configured_total is not None:
             return configured_total
         return self._creature_energy() + self._plant_energy()
+
+    @property
+    def live_food_config(self) -> LiveFoodConfig:
+        """Return the immutable snapshot currently driving food spawning."""
+        return self._live_food_config
+
+    def set_live_food_config_value(
+        self,
+        name: str,
+        value: int | float,
+    ) -> LiveFoodConfig:
+        """Update one live food value and return the normalized snapshot."""
+        if name not in self._live_food_config.to_primitive():
+            raise KeyError(f"Unknown live food configuration field {name!r}.")
+
+        current = self._live_food_config
+        if name in ("max_food_items", "low_food_burst_items"):
+            normalized: int | float = max(0, int(round(float(value))))
+        else:
+            normalized = float(value)
+
+        if name == "critical_food_ratio":
+            normalized = min(
+                max(0.0, normalized),
+                current.low_food_pressure_threshold,
+            )
+        elif name == "low_food_pressure_threshold":
+            normalized = max(
+                current.critical_food_ratio,
+                min(1.0, normalized),
+            )
+
+        updated = replace(current, **{name: normalized})
+        self.apply_live_food_config(updated)
+        return self._live_food_config
+
+    def apply_live_food_config(self, settings: LiveFoodConfig) -> None:
+        """Atomically apply a complete live food configuration snapshot."""
+        lock = getattr(self, "_checkpoint_state_lock", None)
+        if lock is None:
+            self._apply_live_food_config_unlocked(settings)
+            return
+        with lock:
+            self._apply_live_food_config_unlocked(settings)
+
+    def _apply_live_food_config_unlocked(
+        self,
+        settings: LiveFoodConfig,
+    ) -> None:
+        current = self._live_food_config
+        burst_changed = any(
+            getattr(current, name) != getattr(settings, name)
+            for name in (
+                "low_food_pressure_threshold",
+                "critical_food_ratio",
+                "low_food_burst_items",
+                "low_food_burst_interval",
+            )
+        )
+        fertility_changed = any(
+            getattr(current, name) != getattr(settings, name)
+            for name in (
+                "forest_spawn_weight",
+                "bushes_spawn_weight",
+                "prairie_spawn_weight",
+            )
+        )
+
+        food_config = self.food_spawner.config
+        food_config.max_food_items = settings.max_food_items
+        food_config.low_food_pressure_threshold = (
+            settings.low_food_pressure_threshold
+        )
+        food_config.critical_food_ratio = settings.critical_food_ratio
+        food_config.low_food_burst_items = settings.low_food_burst_items
+        food_config.low_food_burst_interval = settings.low_food_burst_interval
+
+        if fertility_changed:
+            self.biome_map = replace(
+                self.biome_map,
+                spawn_weights={
+                    Biome.FOREST: settings.forest_spawn_weight,
+                    Biome.BUSHES: settings.bushes_spawn_weight,
+                    Biome.PRAIRIE: settings.prairie_spawn_weight,
+                },
+            )
+            self.food_spawner.biome_map = self.biome_map
+        if burst_changed:
+            self.food_spawner.reset_low_food_burst_state()
+        self._live_food_config = settings
 
     def _creature_energy(self) -> float:
         return sum(

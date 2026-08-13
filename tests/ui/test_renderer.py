@@ -92,7 +92,7 @@ for optional_module in ("neat", "pymunk"):
     except ModuleNotFoundError:
         sys.modules[optional_module] = ModuleType(optional_module)
 
-from configs.sim_config import build_sim_config
+from configs.sim_config import LiveFoodConfig, build_sim_config
 from src.analysis import generate_inspector_report
 from src.behavior_observer import (
     BehaviorKind,
@@ -3639,6 +3639,138 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.renderer._draw_settings_panel(world)
 
         self.assertNotIn("reset_speed", self.renderer._control_hitboxes)
+
+    def test_settings_food_controls_expand_upward_and_scroll(self) -> None:
+        config = build_sim_config()
+        world = SimpleNamespace(
+            is_paused=False,
+            simulation_speed=1.0,
+            MIN_SIMULATION_SPEED=0.25,
+            MAX_SIMULATION_SPEED=5.0,
+            live_food_config=LiveFoodConfig.from_configs(
+                config.biome,
+                config.food,
+            ),
+            layout=SimpleNamespace(
+                window=arcade.LBWH(0, 0, 1440, 900),
+                environment=arcade.LBWH(0, 0, 1440, 900),
+            ),
+        )
+
+        self.renderer._draw_settings_panel(world)
+        collapsed = self.renderer._control_hitboxes["settings_panel"]
+        toggle = self.renderer._control_hitboxes["settings_food_toggle"]
+        self.assertTrue(
+            self.renderer.handle_mouse_press(
+                world,
+                toggle.center_x,
+                toggle.center_y,
+            )
+        )
+
+        self.renderer._draw_settings_panel(world)
+        expanded = self.renderer._control_hitboxes["settings_panel"]
+        viewport = self.renderer._scroll_regions["settings_food"]
+        self.assertEqual(expanded.bottom, collapsed.bottom)
+        self.assertEqual(expanded.height, 680.0)
+        self.assertGreater(
+            self.renderer._scroll_limits["settings_food"],
+            0.0,
+        )
+        for field_name in self.renderer.LIVE_FOOD_SLIDER_FIELDS:
+            key = self.renderer._live_food_slider_key(field_name)
+            slider = self.renderer._control_hitboxes.get(key)
+            if slider is None:
+                continue
+            self.assertGreaterEqual(slider.bottom, viewport.bottom)
+            self.assertLessEqual(slider.top, viewport.top)
+
+        self.assertNotIn(
+            "food_slider_low_food_burst_interval",
+            self.renderer._control_hitboxes,
+        )
+        self.assertTrue(
+            self.renderer.handle_mouse_scroll(
+                viewport.center_x,
+                viewport.center_y,
+                -10.0,
+            )
+        )
+        self.renderer._draw_settings_panel(world)
+        self.assertIn(
+            "food_slider_low_food_burst_interval",
+            self.renderer._control_hitboxes,
+        )
+
+    def test_settings_food_toggle_has_its_own_padded_footer_row(self) -> None:
+        world = SimpleNamespace(
+            is_paused=False,
+            simulation_speed=1.0,
+            MIN_SIMULATION_SPEED=0.25,
+            MAX_SIMULATION_SPEED=5.0,
+            layout=SimpleNamespace(
+                window=arcade.LBWH(0, 0, 1440, 900),
+                environment=arcade.LBWH(0, 0, 1440, 900),
+            ),
+        )
+
+        self.renderer._draw_settings_panel(world)
+
+        content = self.renderer._control_hitboxes["settings_body"]
+        toggle = self.renderer._control_hitboxes["settings_food_toggle"]
+        first_hint = self.renderer._text_cache["settings_hint_0_key"]
+        divider_y = content.bottom + 100.0
+        self.assertGreaterEqual(divider_y - toggle.top, 12.0)
+        self.assertGreaterEqual(toggle.left - content.left, 16.0)
+        self.assertGreaterEqual(content.right - toggle.right, 16.0)
+        self.assertGreaterEqual(toggle.bottom - first_hint.y, 12.0)
+
+    def test_expanded_settings_panel_clamps_to_small_window(self) -> None:
+        config = build_sim_config()
+        self.renderer._settings_expanded = True
+        world = SimpleNamespace(
+            is_paused=False,
+            simulation_speed=1.0,
+            MIN_SIMULATION_SPEED=0.25,
+            MAX_SIMULATION_SPEED=5.0,
+            live_food_config=LiveFoodConfig.from_configs(
+                config.biome,
+                config.food,
+            ),
+            layout=SimpleNamespace(
+                window=arcade.LBWH(0, 0, 520, 420),
+                environment=arcade.LBWH(0, 0, 520, 420),
+            ),
+        )
+
+        self.renderer._draw_settings_panel(world)
+
+        panel = self.renderer._control_hitboxes["settings_panel"]
+        self.assertEqual(panel.height, 380.0)
+        self.assertGreaterEqual(panel.left, config.layout.outer_padding)
+        self.assertLessEqual(
+            panel.right,
+            world.layout.window.right - config.layout.outer_padding,
+        )
+
+    def test_live_food_slider_click_and_drag_snap_integer_values(self) -> None:
+        calls = []
+        key = "food_slider_max_food_items"
+        self.renderer._control_hitboxes[key] = arcade.LBWH(0, 0, 200, 18)
+        world = SimpleNamespace(
+            set_live_food_config_value=lambda name, value: calls.append(
+                (name, value)
+            )
+        )
+
+        self.assertTrue(self.renderer.handle_mouse_press(world, 100, 9))
+        self.assertEqual(self.renderer._active_slider, key)
+        self.assertEqual(calls[-1], ("max_food_items", 1000))
+
+        self.assertTrue(self.renderer.handle_mouse_drag(world, 200, 9))
+        self.assertEqual(calls[-1], ("max_food_items", 2000))
+        self.renderer.handle_mouse_release()
+        self.assertIsNone(self.renderer._active_slider)
 
     def test_pause_button_text_is_drawn_at_button_center(self) -> None:
         texts = []

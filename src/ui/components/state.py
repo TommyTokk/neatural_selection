@@ -23,7 +23,8 @@ from src.ui.layouts.species_tree import (
 class PanelState:
     """Track floating-panel, navigation, and speed-control interaction."""
 
-    active_slider: bool = False
+    active_slider: str | None = None
+    settings_expanded: bool = False
     open_panels: dict[str, bool] = field(
         default_factory=lambda: {
             "inspector": False,

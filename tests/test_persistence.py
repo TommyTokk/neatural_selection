@@ -835,6 +835,94 @@ class PersistenceManagerTest(unittest.TestCase):
             if restored is not None:
                 restored.close()
 
+    def test_live_food_configuration_round_trips_with_spawner_state(self) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 1
+        self.config.food.initial_food_items = 0
+        original_max_food = self.config.food.max_food_items
+        world = World(self.config, simulation_paths=self.simulation_paths)
+        restored = None
+        try:
+            world.set_live_food_config_value("forest_spawn_weight", 4.25)
+            world.set_live_food_config_value("bushes_spawn_weight", 0.75)
+            world.set_live_food_config_value("prairie_spawn_weight", 0.10)
+            world.set_live_food_config_value("max_food_items", 777)
+            world.set_live_food_config_value(
+                "low_food_pressure_threshold",
+                0.4,
+            )
+            world.set_live_food_config_value("critical_food_ratio", 0.2)
+            world.set_live_food_config_value("low_food_burst_items", 125)
+            world.set_live_food_config_value("low_food_burst_interval", 1.25)
+            world.food_spawner._low_food_burst_credit = 0.6
+            world.food_spawner._pending_low_food_burst_items = 9
+
+            state = PersistenceManager._capture_state(
+                world,
+                world.neat_controller,
+            )
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+            )
+
+            self.assertEqual(
+                restored.live_food_config.to_primitive(),
+                world.live_food_config.to_primitive(),
+            )
+            self.assertEqual(restored.food_spawner.config.max_food_items, 777)
+            self.assertEqual(
+                restored.food_spawner._low_food_burst_credit,
+                0.6,
+            )
+            self.assertEqual(
+                restored.food_spawner._pending_low_food_burst_items,
+                9,
+            )
+            self.assertEqual(self.config.food.max_food_items, original_max_food)
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
+
+    def test_checkpoint_without_live_food_configuration_uses_launch_values(
+        self,
+    ) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 1
+        self.config.food.initial_food_items = 0
+        world = World(self.config, simulation_paths=self.simulation_paths)
+        restored = None
+        try:
+            state = PersistenceManager._capture_state(
+                world,
+                world.neat_controller,
+            )
+            state["world"].pop("live_food_config")
+            self.config.food.max_food_items = 912
+            self.config.biome.forest_spawn_weight = 3.75
+
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+            )
+
+            self.assertEqual(restored.live_food_config.max_food_items, 912)
+            self.assertEqual(
+                restored.live_food_config.forest_spawn_weight,
+                3.75,
+            )
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
+
     def test_version_14_checkpoint_migrates_digestive_state(self) -> None:
         from src.world import World
 

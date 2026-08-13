@@ -59,6 +59,7 @@ class UiRenderer(
     SPECIES_TREE_TIMELINE_GAP = 12.0
     _STATE_FIELDS = {
         "_active_slider": ("_panel_state", "active_slider"),
+        "_settings_expanded": ("_panel_state", "settings_expanded"),
         "_panel_open": ("_panel_state", "open_panels"),
         "_map_submenu_open": ("_panel_state", "map_submenu_open"),
         "_panel_bounds": ("_panel_state", "bounds"),
@@ -759,6 +760,9 @@ class UiRenderer(
             if world.kill_selected_creature():
                 self._close_brain_window()
             return True
+        if self._contains_hitbox("settings_food_toggle", x, y):
+            self._settings_expanded = not self._settings_expanded
+            return True
         if self._contains_hitbox("pause", x, y):
             world.toggle_pause()
             return True
@@ -778,9 +782,15 @@ class UiRenderer(
             world.set_simulation_speed(world.MAX_SIMULATION_SPEED)
             return True
         if self._contains_hitbox("speed_slider", x, y):
-            self._active_slider = True
+            self._active_slider = "speed_slider"
             self._set_speed_from_slider(world, x)
             return True
+        for field_name in self.LIVE_FOOD_SLIDER_FIELDS:
+            slider_key = self._live_food_slider_key(field_name)
+            if self._contains_hitbox(slider_key, x, y):
+                self._active_slider = slider_key
+                self._set_live_food_from_slider(world, field_name, x)
+                return True
         for panel_name in self.PANEL_KEYS:
             if self._contains_hitbox(f"{panel_name}_drag", x, y):
                 bounds = self._panel_bounds.get(panel_name)
@@ -866,9 +876,17 @@ class UiRenderer(
                 ),
             )
             return True
-        if not self._active_slider:
+        if self._active_slider is None:
             return False
-        self._set_speed_from_slider(world, x)
+        if self._active_slider == "speed_slider":
+            self._set_speed_from_slider(world, x)
+        else:
+            field_name = self._live_food_field_from_slider_key(
+                self._active_slider
+            )
+            if field_name is None:
+                return False
+            self._set_live_food_from_slider(world, field_name, x)
         return True
 
     def handle_mouse_release(self) -> None:
@@ -882,7 +900,7 @@ class UiRenderer(
 
     def _finish_pointer_interaction(self, *, commit: bool) -> None:
         """Clear gesture state and optionally commit a captured click."""
-        self._active_slider = False
+        self._active_slider = None
         self._active_panel_drag = None
         self._species_tree_scroll_drag = None
         self._species_tree_inspector_resize_drag = False

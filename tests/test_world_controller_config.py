@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from random import Random
+from threading import RLock
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -27,7 +30,9 @@ if not hasattr(pymunk, "Space"):
 if not hasattr(pymunk, "Shape"):
     pymunk.Shape = object
 
-from configs.sim_config import SpeciationConfig, build_sim_config
+from configs.sim_config import LiveFoodConfig, SpeciationConfig, build_sim_config
+from src.biome import Biome, BiomeGenerationHandler
+from src.food_spawner import FoodSpawner
 import src.world as world_module
 from src.world import World
 
@@ -142,6 +147,87 @@ class NeatControllerWiringTest(unittest.TestCase):
 
         self.assertEqual(world.brain_initialization_seed, brain_seed)
         self.assertEqual(world.neat_controller.random_seed, brain_seed)
+
+
+class LiveFoodConfigTest(unittest.TestCase):
+    def make_runtime_world(self) -> tuple[World, object]:
+        config = build_sim_config()
+        world = object.__new__(World)
+        world._checkpoint_state_lock = RLock()
+        world.biome_map = BiomeGenerationHandler(config.biome).generate(
+            (-100.0, -100.0, 100.0, 100.0)
+        )
+        world.food_spawner = FoodSpawner(
+            replace(config.food),
+            Random(7),
+            world.biome_map,
+        )
+        world._live_food_config = LiveFoodConfig.from_configs(
+            config.biome,
+            config.food,
+        )
+        return world, config
+
+    def test_runtime_values_do_not_mutate_startup_configuration(self) -> None:
+        world, config = self.make_runtime_world()
+        old_map = world.biome_map
+        old_ema_grid = old_map._fertility_grid
+        original_max_food = config.food.max_food_items
+        original_burst_items = config.food.low_food_burst_items
+        original_forest_weight = config.biome.forest_spawn_weight
+
+        world.food_spawner._spawn_credit = 2.5
+        world.food_spawner._low_food_burst_credit = 0.75
+        world.food_spawner._pending_low_food_burst_items = 12
+        existing_foods = [object() for _ in range(25)]
+        world.foods = existing_foods
+        world.set_live_food_config_value("forest_spawn_weight", 4.5)
+        world.set_live_food_config_value("max_food_items", 111)
+        world.set_live_food_config_value("low_food_burst_items", 33)
+        world.set_live_food_config_value("max_food_items", 10)
+
+        self.assertEqual(world.live_food_config.forest_spawn_weight, 4.5)
+        self.assertEqual(world.food_spawner.config.max_food_items, 10)
+        self.assertEqual(world.food_spawner.config.low_food_burst_items, 33)
+        self.assertEqual(config.food.max_food_items, original_max_food)
+        self.assertEqual(config.food.low_food_burst_items, original_burst_items)
+        self.assertEqual(
+            config.biome.forest_spawn_weight,
+            original_forest_weight,
+        )
+        self.assertIs(world.biome_map.biome_ids, old_map.biome_ids)
+        self.assertIs(world.biome_map.render_rgba, old_map.render_rgba)
+        self.assertIsNot(world.biome_map._fertility_grid, old_ema_grid)
+        self.assertEqual(
+            world.biome_map.spawn_weights[Biome.FOREST],
+            4.5,
+        )
+        self.assertIs(world.food_spawner.biome_map, world.biome_map)
+        self.assertEqual(world.food_spawner._spawn_credit, 2.5)
+        self.assertEqual(world.food_spawner._low_food_burst_credit, 0.0)
+        self.assertEqual(world.food_spawner._pending_low_food_burst_items, 0)
+        self.assertIs(world.foods, existing_foods)
+        self.assertEqual(len(world.foods), 25)
+        self.assertEqual(
+            world.food_spawner.update(
+                1.0,
+                (-100.0, -100.0, 100.0, 100.0),
+                current_food_count=len(world.foods),
+                active_species_count=1,
+                available_biomass=10_000.0,
+            ),
+            [],
+        )
+
+    def test_runtime_ratio_edits_clamp_the_edited_value(self) -> None:
+        world, _config = self.make_runtime_world()
+
+        world.set_live_food_config_value("critical_food_ratio", 0.8)
+        self.assertEqual(world.live_food_config.critical_food_ratio, 0.5)
+
+        world.set_live_food_config_value("critical_food_ratio", 0.4)
+        world.set_live_food_config_value("low_food_pressure_threshold", 0.2)
+        self.assertEqual(world.live_food_config.low_food_pressure_threshold, 0.4)
 
 
 if __name__ == "__main__":

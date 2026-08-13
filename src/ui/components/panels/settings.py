@@ -49,6 +49,56 @@ _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 class SettingsPanelComponent:
     """Group related behavior extracted from ``UiRenderer``."""
 
+    LIVE_FOOD_SLIDERS = (
+        (
+            "Biome fertility",
+            (
+                ("forest_spawn_weight", "Forest", 0.0, 5.0, 0.05, 2),
+                ("bushes_spawn_weight", "Bushes", 0.0, 5.0, 0.05, 2),
+                ("prairie_spawn_weight", "Prairie", 0.0, 5.0, 0.05, 2),
+            ),
+        ),
+        (
+            "Capacity",
+            (("max_food_items", "Maximum food", 0.0, 2000.0, 1.0, 0),),
+        ),
+        (
+            "Low-food bursts",
+            (
+                (
+                    "low_food_pressure_threshold",
+                    "Low-food threshold",
+                    0.0,
+                    1.0,
+                    0.01,
+                    2,
+                ),
+                (
+                    "critical_food_ratio",
+                    "Critical ratio",
+                    0.0,
+                    1.0,
+                    0.01,
+                    2,
+                ),
+                ("low_food_burst_items", "Burst items", 0.0, 2000.0, 1.0, 0),
+                (
+                    "low_food_burst_interval",
+                    "Burst interval (s)",
+                    0.05,
+                    10.0,
+                    0.05,
+                    2,
+                ),
+            ),
+        ),
+    )
+    LIVE_FOOD_SLIDER_FIELDS = tuple(
+        field_name
+        for _section, rows in LIVE_FOOD_SLIDERS
+        for field_name, _label, _minimum, _maximum, _step, _precision in rows
+    )
+
     def _draw_settings_panel(self, world: World) -> None:
         """Draw settings panel.
 
@@ -58,6 +108,11 @@ class SettingsPanelComponent:
             Simulation world providing current state.
         """
         self._control_hitboxes.pop("reset_speed", None)
+        for field_name in self.LIVE_FOOD_SLIDER_FIELDS:
+            self._control_hitboxes.pop(
+                self._live_food_slider_key(field_name),
+                None,
+            )
         bounds = self._settings_panel_bounds(world)
         content = self._draw_floating_panel(
             bounds,
@@ -126,7 +181,7 @@ class SettingsPanelComponent:
                 self._draw_icon_text_button(button, label, key, fill_color=None, size=14)
             next_x += size + control_gap
 
-        divider_y = content.bottom + 50
+        divider_y = content.bottom + 100.0
         draw_line = getattr(arcade, "draw_line", None)
         if draw_line is not None:
             draw_line(
@@ -137,6 +192,43 @@ class SettingsPanelComponent:
                 self.theme.panel_border,
                 1,
             )
+
+        # Keep the expander in a dedicated padded footer row. The divider
+        # separates it from simulation controls and the keyboard hints stay
+        # below it, so neither label can collide with the button.
+        toggle_horizontal_padding = 16.0
+        toggle_vertical_padding = 14.0
+        toggle_height = 30.0
+        toggle_width = min(
+            156.0,
+            max(0.0, content.width - toggle_horizontal_padding * 2.0),
+        )
+        toggle = arcade.LBWH(
+            content.center_x - toggle_width / 2.0,
+            divider_y - toggle_vertical_padding - toggle_height,
+            toggle_width,
+            toggle_height,
+        )
+        self._control_hitboxes["settings_food_toggle"] = toggle
+        self._draw_rounded_rect(
+            toggle,
+            self.theme.card_background,
+            self.theme.panel_border,
+            7.0,
+            1.0,
+        )
+        self._draw_text(
+            "settings_food_toggle_label",
+            f"Food settings {'^' if self._settings_expanded else 'v'}",
+            toggle.center_x,
+            toggle.center_y,
+            self.theme.text_primary,
+            10,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+
         hints = (("SPACE", "PLAY/PAUSE"), ("A", "BACK"), ("D", "NEXT"))
         hint_positions = (
             content.left + 68,
@@ -148,6 +240,228 @@ class SettingsPanelComponent:
             self._draw_keycap(
                 f"settings_hint_{index}", key_label, label, x, content.bottom + 22
             )
+        if self._settings_expanded:
+            food_viewport = arcade.LBWH(
+                content.left,
+                divider_y + 12.0,
+                content.width,
+                max(0.0, content.top - 82.0 - divider_y - 12.0),
+            )
+            self._draw_live_food_controls(world, food_viewport)
+
+    def _draw_live_food_controls(
+        self,
+        world: World,
+        viewport: arcade.Rect,
+    ) -> None:
+        """Draw scrollable live food settings inside ``viewport``.
+
+        Parameters
+        ----------
+        world
+            Simulation world providing current values.
+        viewport
+            Clipped rectangle available for food controls.
+        """
+        settings = world.live_food_config
+        section_height = 30.0
+        row_height = 58.0
+        content_height = sum(
+            section_height + len(rows) * row_height
+            for _title, rows in self.LIVE_FOOD_SLIDERS
+        )
+        scroll_limit = max(0.0, content_height - viewport.height + 8.0)
+        scroll_offset = max(
+            0.0,
+            min(
+                scroll_limit,
+                self._scroll_offsets.get("settings_food", 0.0),
+            ),
+        )
+        self._scroll_offsets["settings_food"] = scroll_offset
+        self._scroll_limits["settings_food"] = scroll_limit
+        self._scroll_regions["settings_food"] = viewport
+
+        with self._ui_clip(viewport):
+            y = viewport.top + scroll_offset
+            for section_index, (section_title, rows) in enumerate(
+                self.LIVE_FOOD_SLIDERS
+            ):
+                heading_y = y - 18.0
+                if viewport.bottom <= heading_y <= viewport.top:
+                    self._draw_text(
+                        f"settings_food_section_{section_index}",
+                        section_title,
+                        viewport.left + 8.0,
+                        heading_y,
+                        self.theme.text_primary,
+                        12,
+                        bold=True,
+                    )
+                y -= section_height
+                for (
+                    field_name,
+                    label,
+                    minimum,
+                    maximum,
+                    _step,
+                    precision,
+                ) in rows:
+                    row_center = y - row_height / 2.0
+                    slider = arcade.LBWH(
+                        viewport.left + 188.0,
+                        row_center - 9.0,
+                        max(40.0, viewport.width - 210.0),
+                        18.0,
+                    )
+                    if (
+                        slider.bottom >= viewport.bottom
+                        and slider.top <= viewport.top
+                    ):
+                        self._control_hitboxes[
+                            self._live_food_slider_key(field_name)
+                        ] = slider
+                    if (
+                        row_center + 19.0 >= viewport.bottom
+                        and row_center - 19.0 <= viewport.top
+                    ):
+                        value = getattr(settings, field_name)
+                        formatted = (
+                            str(int(value))
+                            if precision == 0
+                            else f"{float(value):.{precision}f}"
+                        )
+                        self._draw_text(
+                            f"settings_food_label_{field_name}",
+                            label,
+                            viewport.left + 12.0,
+                            row_center + 7.0,
+                            self.theme.text_primary,
+                            10,
+                            bold=True,
+                        )
+                        self._draw_text(
+                            f"settings_food_value_{field_name}",
+                            formatted,
+                            viewport.left + 12.0,
+                            row_center - 11.0,
+                            self.theme.text_muted,
+                            10,
+                        )
+                        self._draw_live_food_slider(
+                            slider,
+                            float(value),
+                            minimum,
+                            maximum,
+                        )
+                    y -= row_height
+
+        if scroll_limit > 0.0:
+            self._draw_scrollbar(viewport, scroll_offset, scroll_limit)
+
+    def _draw_live_food_slider(
+        self,
+        bounds: arcade.Rect,
+        value: float,
+        minimum: float,
+        maximum: float,
+    ) -> None:
+        """Draw a normalized live food value slider.
+
+        Parameters
+        ----------
+        bounds
+            Slider hit and drawing bounds.
+        value
+            Current configuration value.
+        minimum, maximum
+            Inclusive slider range.
+        """
+        ratio = (value - minimum) / max(0.000001, maximum - minimum)
+        ratio = max(0.0, min(1.0, ratio))
+        knob_x = bounds.left + bounds.width * ratio
+        track_bottom = bounds.center_y - 3.0
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left,
+            bounds.right,
+            track_bottom,
+            track_bottom + 6.0,
+            self.theme.panel_border,
+        )
+        arcade.draw_lrbt_rectangle_filled(
+            bounds.left,
+            knob_x,
+            track_bottom,
+            track_bottom + 6.0,
+            self.theme.accent,
+        )
+        arcade.draw_circle_filled(
+            knob_x,
+            bounds.center_y,
+            7.0,
+            self.theme.accent_soft,
+        )
+        arcade.draw_circle_outline(
+            knob_x,
+            bounds.center_y,
+            7.0,
+            self.theme.accent,
+            2,
+        )
+
+    @staticmethod
+    def _live_food_slider_key(field_name: str) -> str:
+        """Return the stable hitbox key for a live food field."""
+        return f"food_slider_{field_name}"
+
+    @staticmethod
+    def _live_food_field_from_slider_key(key: str) -> str | None:
+        """Return the field encoded in a live food slider hitbox key."""
+        prefix = "food_slider_"
+        return key[len(prefix):] if key.startswith(prefix) else None
+
+    def _live_food_slider_spec(
+        self,
+        field_name: str,
+    ) -> tuple[float, float, float, int]:
+        """Return range, step, and precision metadata for ``field_name``."""
+        for _section, rows in self.LIVE_FOOD_SLIDERS:
+            for name, _label, minimum, maximum, step, precision in rows:
+                if name == field_name:
+                    return minimum, maximum, step, precision
+        raise KeyError(field_name)
+
+    def _set_live_food_from_slider(
+        self,
+        world: World,
+        field_name: str,
+        x: float,
+    ) -> None:
+        """Snap a pointer position and apply its live configuration value.
+
+        Parameters
+        ----------
+        world
+            Simulation world receiving the update.
+        field_name
+            Live configuration field represented by the slider.
+        x
+            Horizontal pointer position.
+        """
+        bounds = self._control_hitboxes[
+            self._live_food_slider_key(field_name)
+        ]
+        minimum, maximum, step, precision = self._live_food_slider_spec(
+            field_name
+        )
+        ratio = max(0.0, min(1.0, (x - bounds.left) / bounds.width))
+        step_count = round((ratio * (maximum - minimum)) / step)
+        value = minimum + step_count * step
+        value = max(minimum, min(maximum, value))
+        normalized: int | float = (
+            int(round(value)) if precision == 0 else round(value, precision)
+        )
+        world.set_live_food_config_value(field_name, normalized)
     def _draw_controls(self, world: World, bounds: arcade.Rect) -> None:
         """Draw controls.
 
@@ -374,4 +688,3 @@ class SettingsPanelComponent:
             world.MAX_SIMULATION_SPEED - world.MIN_SIMULATION_SPEED
         )
         world.set_simulation_speed(speed)
-

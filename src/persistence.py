@@ -14,7 +14,7 @@ from threading import Condition, Thread
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from configs.sim_config import PersistenceConfig, SimConfig
+from configs.sim_config import LiveFoodConfig, PersistenceConfig, SimConfig
 from src.action import (
     ACTION_OUTPUT_COUNT,
     ACTION_OUTPUT_NAMES,
@@ -744,6 +744,11 @@ class PersistenceManager:
                     world.time_since_last_archive_save
                 ),
                 "total_biomass_energy": world.total_biomass_energy,
+                "live_food_config": (
+                    world.live_food_config.to_primitive()
+                    if getattr(world, "live_food_config", None) is not None
+                    else None
+                ),
                 "simulation_speed": world.simulation_speed,
                 "is_paused": world.is_paused,
                 "selected_creature_id": world.selected_creature_id,
@@ -1990,6 +1995,14 @@ class PersistenceManager:
             world.rng.setstate(state["rng_state"])
 
             runtime = state["world"]
+            saved_live_food_config = runtime.get("live_food_config")
+            if saved_live_food_config is not None:
+                world.apply_live_food_config(
+                    LiveFoodConfig.from_primitive(
+                        saved_live_food_config,
+                        fallback=world.live_food_config,
+                    )
+                )
             # Render-loop debt and lag telemetry are session state. Never
             # replay wall-clock backlog captured by an earlier process.
             world._physics_accumulator = 0.0

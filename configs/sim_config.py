@@ -244,8 +244,8 @@ class PersistenceConfig:
 
 @dataclass(slots=True)
 class EnvironmentConfig:
-    world_width: float = 3200.0
-    world_height: float = 2200.0
+    world_width: float = 3520.0
+    world_height: float = 2420.0
 
 
 @dataclass(slots=True)
@@ -527,8 +527,8 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class FoodConfig:
-    initial_food_items: int = 300
-    max_food_items: int = 300
+    initial_food_items: int = 363
+    max_food_items: int = 363
     low_food_pressure_threshold: float = (
         0.5  # Food ratio below which low-food recovery can accumulate.
     )
@@ -543,6 +543,123 @@ class FoodConfig:
     min_food_radius: float = 6.0
     max_food_radius: float = 10.0
     energy_density: float = 0.002
+
+
+@dataclass(frozen=True, slots=True)
+class LiveFoodConfig:
+    """Food and biome-fertility values that may change during a run."""
+
+    forest_spawn_weight: float
+    bushes_spawn_weight: float
+    prairie_spawn_weight: float
+    max_food_items: int
+    low_food_pressure_threshold: float
+    critical_food_ratio: float
+    low_food_burst_items: int
+    low_food_burst_interval: float
+
+    def __post_init__(self) -> None:
+        for name in (
+            "forest_spawn_weight",
+            "bushes_spawn_weight",
+            "prairie_spawn_weight",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"{name} must be finite and nonnegative.")
+
+        for name in ("max_food_items", "low_food_burst_items"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer.")
+
+        for name in ("low_food_pressure_threshold", "critical_food_ratio"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(f"{name} must be finite and within [0, 1].")
+        if self.critical_food_ratio > self.low_food_pressure_threshold:
+            raise ValueError(
+                "critical_food_ratio must not exceed "
+                "low_food_pressure_threshold."
+            )
+
+        interval = self.low_food_burst_interval
+        if (
+            isinstance(interval, bool)
+            or not isinstance(interval, (int, float))
+            or not isfinite(interval)
+            or interval <= 0.0
+        ):
+            raise ValueError(
+                "low_food_burst_interval must be finite and positive."
+            )
+
+    @classmethod
+    def from_configs(
+        cls,
+        biome: BiomeConfig,
+        food: FoodConfig,
+    ) -> LiveFoodConfig:
+        return cls(
+            forest_spawn_weight=float(biome.forest_spawn_weight),
+            bushes_spawn_weight=float(biome.bushes_spawn_weight),
+            prairie_spawn_weight=float(biome.prairie_spawn_weight),
+            max_food_items=int(food.max_food_items),
+            low_food_pressure_threshold=float(
+                food.low_food_pressure_threshold
+            ),
+            critical_food_ratio=float(food.critical_food_ratio),
+            low_food_burst_items=int(food.low_food_burst_items),
+            low_food_burst_interval=float(food.low_food_burst_interval),
+        )
+
+    def to_primitive(self) -> dict[str, int | float]:
+        return {
+            "forest_spawn_weight": self.forest_spawn_weight,
+            "bushes_spawn_weight": self.bushes_spawn_weight,
+            "prairie_spawn_weight": self.prairie_spawn_weight,
+            "max_food_items": self.max_food_items,
+            "low_food_pressure_threshold": self.low_food_pressure_threshold,
+            "critical_food_ratio": self.critical_food_ratio,
+            "low_food_burst_items": self.low_food_burst_items,
+            "low_food_burst_interval": self.low_food_burst_interval,
+        }
+
+    @classmethod
+    def from_primitive(
+        cls,
+        value: object,
+        *,
+        fallback: LiveFoodConfig,
+    ) -> LiveFoodConfig:
+        if not isinstance(value, dict):
+            raise TypeError("live food configuration must be a dictionary.")
+        defaults = fallback.to_primitive()
+        defaults.update(value)
+        return cls(
+            forest_spawn_weight=float(defaults["forest_spawn_weight"]),
+            bushes_spawn_weight=float(defaults["bushes_spawn_weight"]),
+            prairie_spawn_weight=float(defaults["prairie_spawn_weight"]),
+            max_food_items=int(defaults["max_food_items"]),
+            low_food_pressure_threshold=float(
+                defaults["low_food_pressure_threshold"]
+            ),
+            critical_food_ratio=float(defaults["critical_food_ratio"]),
+            low_food_burst_items=int(defaults["low_food_burst_items"]),
+            low_food_burst_interval=float(
+                defaults["low_food_burst_interval"]
+            ),
+        )
 
 
 @dataclass(slots=True)
