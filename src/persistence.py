@@ -513,10 +513,6 @@ class PersistenceManager:
                     "chronometer": world._chronometers.get(
                         creature.creature_id, 0.0
                     ),
-                    "biome_fertility_ema": creature.biome_fertility_ema,
-                    "biome_fertility_ema_updated_at": (
-                        creature.biome_fertility_ema_updated_at
-                    ),
                     "scheduler_continuation": {
                         "raw_action": _action_to_primitive(
                             getattr(world, "_last_actions", {}).get(creature_id)
@@ -1028,43 +1024,6 @@ class PersistenceManager:
                 normalized_flocking(flocking_traits),
             )
         return migrated
-
-    @staticmethod
-    def _is_life_rest_append_migration(
-        sensor_schema: int,
-        action_schema: int,
-        input_count: int,
-        output_count: int,
-    ) -> bool:
-        """Return whether the old 43/14 contract has the append-only upgrade."""
-        return (
-            sensor_schema == 5
-            and action_schema == 1
-            and input_count == 43
-            and output_count == 14
-        )
-
-    @staticmethod
-    def _append_rest_output_node(genomes: object, genome_config: object) -> None:
-        """Add the disconnected zero-bias rest output to legacy genomes."""
-        if isinstance(genomes, dict):
-            candidates = genomes.values()
-        else:
-            candidates = genomes
-        seen: set[int] = set()
-        for genome in candidates:
-            if isinstance(genome, tuple):
-                genome = genome[0]
-            if genome is None or id(genome) in seen:
-                continue
-            seen.add(id(genome))
-            nodes = getattr(genome, "nodes", None)
-            if nodes is None or 14 in nodes:
-                continue
-            node = genome.create_node(genome_config, 14)
-            node.bias = 0.0
-            node.activation = "sigmoid"
-            nodes[14] = node
 
     @staticmethod
     def _reconstruct_species_history(
@@ -2137,8 +2096,6 @@ class PersistenceManager:
             world._flocking_group_tracker.restore(
                 runtime.get("flocking_group_tracker")
             )
-            legacy_fertility_baselines = runtime.get("previous_biome", {})
-
             communication_state = state.get("communication")
             if communication_state:
                 pheromone_metadata = communication_state.get(
@@ -2170,24 +2127,13 @@ class PersistenceManager:
             saved_action_schema = int(contract.get("action_schema", 0))
             saved_input_count = int(contract.get("inputs", 23))
             saved_output_count = int(contract.get("outputs", 8))
-            append_contract_migration = (
-                PersistenceManager._is_life_rest_append_migration(
-                    saved_sensor_schema,
-                    saved_action_schema,
-                    saved_input_count,
-                    saved_output_count,
-                )
-            )
             reset_brain_epoch = (
-                not append_contract_migration
-                and (
-                    saved_sensor_schema
-                    != world.vision.sensor_contract.schema_version
-                    or saved_action_schema != ACTION_SCHEMA_VERSION
-                    or saved_input_count
-                    != len(controller.config.genome_config.input_keys)
-                    or saved_output_count != ACTION_OUTPUT_COUNT
-                )
+                saved_sensor_schema
+                != world.vision.sensor_contract.schema_version
+                or saved_action_schema != ACTION_SCHEMA_VERSION
+                or saved_input_count
+                != len(controller.config.genome_config.input_keys)
+                or saved_output_count != ACTION_OUTPUT_COUNT
             )
             world.brain_contract_reset_occurred = reset_brain_epoch
             if reset_brain_epoch:
@@ -2224,11 +2170,6 @@ class PersistenceManager:
                     ACTION_OUTPUT_COUNT,
                 )
             controller.population.population = population_state["genomes"]
-            if append_contract_migration:
-                PersistenceManager._append_rest_output_node(
-                    controller.population.population,
-                    controller.config.genome_config,
-                )
             controller.population.generation = population_state["generation"]
             saved_evolution_rng_state = population_state.get(
                 "evolution_rng_state"
@@ -2267,11 +2208,6 @@ class PersistenceManager:
                     default_flocking_traits,
                 )
             )
-            if append_contract_migration:
-                PersistenceManager._append_rest_output_node(
-                    migrated_representatives.values(),
-                    controller.config.genome_config,
-                )
             controller.species_manager.representatives = {
                 species_id: (
                     genome,
@@ -2347,24 +2283,6 @@ class PersistenceManager:
                     )
                 creature.body.velocity = creature_state["velocity"]
                 creature.body.angular_velocity = creature_state["angular_velocity"]
-                creature.biome_fertility_ema = float(
-                    creature_state.get(
-                        "biome_fertility_ema",
-                        creature_state.get(
-                            "fertility_baseline",
-                            legacy_fertility_baselines.get(
-                                creature.creature_id,
-                                world._biome_fertility_at(*creature.position),
-                            ),
-                        ),
-                    )
-                )
-                creature.biome_fertility_ema_updated_at = float(
-                    creature_state.get(
-                        "biome_fertility_ema_updated_at",
-                        world.elapsed_time,
-                    )
-                )
                 world.creatures.append(creature)
                 world._register_living_creature(creature)
                 world._initialize_creature_runtime_state(creature)

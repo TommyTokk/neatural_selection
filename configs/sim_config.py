@@ -277,7 +277,6 @@ class BiomeConfig:
 class BiomeSensorConfig:
     forward_distance: float = 96.0
     side_offset: float = 48.0
-    trend_time_constant_seconds: float = 3.0
 
 
 @dataclass(slots=True)
@@ -547,7 +546,7 @@ class FoodConfig:
 
 @dataclass(frozen=True, slots=True)
 class LiveFoodConfig:
-    """Food and biome-fertility values that may change during a run."""
+    """Food and biome-richness values that may change during a run."""
 
     forest_spawn_weight: float
     bushes_spawn_weight: float

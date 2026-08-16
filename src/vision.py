@@ -14,6 +14,8 @@ from src.creature import Creature
 from src.communication import AcousticObservation, PheromoneSnapshot
 from src.food import Food
 
+BIOME_GRADIENT_EPSILON = 0.001
+
 SENSOR_INPUT_NAMES = (
     "constant",
     "feeding_drive",
@@ -32,10 +34,9 @@ SENSOR_INPUT_NAMES = (
     "wall_proximity",
     "wall_angle",
     "is_grabbing",
-    "biome_fertility_here",
-    "biome_fertility_left_gradient",
-    "biome_fertility_right_gradient",
-    "biome_fertility_trend",
+    "local_richness",
+    "lateral_gradient",
+    "forward_gradient",
     "own_infant_proximity",
     "own_infant_angle",
     "flock_presence",
@@ -74,7 +75,7 @@ class SensorContract:
 
 
 SENSOR_CONTRACT = SensorContract(
-    6,
+    7,
     SENSOR_INPUT_NAMES,
     "configs/neat_herbivore.ini",
 )
@@ -108,10 +109,37 @@ class BoundarySnapshot:
 
 @dataclass(slots=True)
 class BiomeSensorSnapshot:
-    here: float = 0.0
-    left_gradient: float = 0.0
-    right_gradient: float = 0.0
-    trend: float = 0.0
+    local_richness: float = 0.0
+    lateral_gradient: float = 0.0
+    forward_gradient: float = 0.0
+
+    @classmethod
+    def from_probe_samples(
+        cls,
+        here: float,
+        forward_left: float,
+        forward_right: float,
+    ) -> BiomeSensorSnapshot:
+        local = cls._clamp(float(here), 0.0, 1.0)
+        left = cls._clamp(float(forward_left), 0.0, 1.0)
+        right = cls._clamp(float(forward_right), 0.0, 1.0)
+        denominator = local + BIOME_GRADIENT_EPSILON
+        lateral = cls._clamp((left - right) / denominator, -1.0, 1.0)
+        ahead_average = (left + right) * 0.5
+        forward = cls._clamp(
+            (ahead_average - local) / denominator,
+            -1.0,
+            1.0,
+        )
+        return cls(
+            local_richness=local,
+            lateral_gradient=lateral,
+            forward_gradient=forward,
+        )
+
+    @staticmethod
+    def _clamp(value: float, minimum: float, maximum: float) -> float:
+        return max(minimum, min(maximum, value))
 
 
 @dataclass(slots=True)
@@ -249,13 +277,12 @@ class SensorSnapshot:
         output[14] = self.walls.proximity
         output[15] = self.walls.angle
         output[16] = self.is_grabbing
-        output[17] = self.biome.here
-        output[18] = self.biome.left_gradient
-        output[19] = self.biome.right_gradient
-        output[20] = self.biome.trend
-        output[21] = self.own_infants.proximity
-        output[22] = self.own_infants.angle
-        index = 23
+        output[17] = self.biome.local_richness
+        output[18] = self.biome.lateral_gradient
+        output[19] = self.biome.forward_gradient
+        output[20] = self.own_infants.proximity
+        output[21] = self.own_infants.angle
+        index = 22
         if self.sensor_contract.schema_version >= 4:
             output[index] = self._clamp01(self.flock.social_presence)
             output[index + 1] = self._target_scaled_flockmate_count(

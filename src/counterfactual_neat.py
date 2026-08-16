@@ -304,10 +304,9 @@ INTERVENTION_REPLACEMENTS: dict[
         "food_angle": _EMPTY_ANGLE,
     },
     SemanticIntervention.RESOURCE_GRADIENT_CUES: {
-        "biome_fertility_here": _NEUTRAL_BIOME.here,
-        "biome_fertility_left_gradient": _NEUTRAL_BIOME.left_gradient,
-        "biome_fertility_right_gradient": _NEUTRAL_BIOME.right_gradient,
-        "biome_fertility_trend": _NEUTRAL_BIOME.trend,
+        "local_richness": _NEUTRAL_BIOME.local_richness,
+        "lateral_gradient": _NEUTRAL_BIOME.lateral_gradient,
+        "forward_gradient": _NEUTRAL_BIOME.forward_gradient,
     },
     SemanticIntervention.SATIATED_STATE: _satiated_values(),
     SemanticIntervention.SOCIAL_CUES: {

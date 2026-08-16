@@ -51,7 +51,7 @@ class SettingsPanelComponent:
 
     LIVE_FOOD_SLIDERS = (
         (
-            "Biome fertility",
+            "Biome richness",
             (
                 ("forest_spawn_weight", "Forest", 0.0, 5.0, 0.05, 2),
                 ("bushes_spawn_weight", "Bushes", 0.0, 5.0, 0.05, 2),

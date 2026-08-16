@@ -34,7 +34,7 @@ from src.world import World
 from tests.test_vision import creature_at
 
 
-class SchemaFiveSensingTest(unittest.TestCase):
+class SchemaSevenSensingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.config = build_sim_config()
         self.config.flocking.long_range.enabled = True
@@ -44,8 +44,8 @@ class SchemaFiveSensingTest(unittest.TestCase):
         )
 
     def test_contract_has_exact_count(self) -> None:
-        self.assertEqual(SENSOR_CONTRACT.input_count, 44)
-        self.assertEqual(SENSOR_CONTRACT.schema_version, 6)
+        self.assertEqual(SENSOR_CONTRACT.input_count, 43)
+        self.assertEqual(SENSOR_CONTRACT.schema_version, 7)
 
     def test_write_inputs_matches_allocating_compatibility_api(self) -> None:
         observer = creature_at((0.0, 0.0), vision_range=100.0)
@@ -86,10 +86,10 @@ class SchemaFiveSensingTest(unittest.TestCase):
             100.0,
         )
         inputs = snapshot.as_inputs()
-        self.assertEqual(len(inputs), 44)
-        self.assertGreater(inputs[23], 0.0)
-        self.assertAlmostEqual(inputs[24], 0.25)
-        self.assertAlmostEqual(inputs[26], 0.0)
+        self.assertEqual(len(inputs), 43)
+        self.assertGreater(inputs[22], 0.0)
+        self.assertAlmostEqual(inputs[23], 0.25)
+        self.assertAlmostEqual(inputs[25], 0.0)
 
     def test_center_and_relative_velocity_are_in_the_observer_body_frame(
         self,
@@ -115,10 +115,10 @@ class SchemaFiveSensingTest(unittest.TestCase):
             100.0,
         )
         inputs = snapshot.as_inputs()
-        self.assertGreater(inputs[25], 0.0)
-        self.assertAlmostEqual(inputs[26], 0.0, places=12)
-        self.assertAlmostEqual(inputs[27], -0.05, places=12)
-        self.assertAlmostEqual(inputs[28], 0.0, places=12)
+        self.assertGreater(inputs[24], 0.0)
+        self.assertAlmostEqual(inputs[25], 0.0, places=12)
+        self.assertAlmostEqual(inputs[26], -0.05, places=12)
+        self.assertAlmostEqual(inputs[27], 0.0, places=12)
 
     def test_incompatible_neighbor_does_not_enter_personal_space(self) -> None:
         observer = creature_at(
@@ -562,8 +562,8 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 world,
                 world.neat_controller,
             )
-            state["brain_contract"]["sensor_schema"] = 4
-            state["brain_contract"]["inputs"] = 43
+            state["brain_contract"]["sensor_schema"] = 6
+            state["brain_contract"]["inputs"] = 44
             current = build_sim_config()
             current.persistence.enable_telemetry = False
             current.population.initial_creatures = 2
@@ -578,7 +578,7 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             )
             self.assertEqual(
                 len(restored.neat_controller.config.genome_config.input_keys),
-                44,
+                43,
             )
             self.assertTrue(restored.brain_contract_reset_occurred)
             for creature in restored.creatures:
@@ -592,7 +592,7 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             if restored is not None:
                 restored.close()
 
-    def test_schema_five_round_trip_preserves_contract_not_transient_vectors(
+    def test_schema_seven_round_trip_preserves_contract_not_transient_vectors(
         self,
     ) -> None:
         config = build_sim_config()
@@ -612,8 +612,8 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 world.neat_controller,
             )
             self.assertEqual(state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(state["brain_contract"]["sensor_schema"], 6)
-            self.assertEqual(state["brain_contract"]["inputs"], 44)
+            self.assertEqual(state["brain_contract"]["sensor_schema"], 7)
+            self.assertEqual(state["brain_contract"]["inputs"], 43)
             serialized_keys: set[str] = set()
 
             def collect_keys(value) -> None:

@@ -1274,7 +1274,7 @@ class InspectorPanelComponent:
             1 for connection in brain.genome.connections.values() if connection.enabled
         )
         biome_path_count = sum(
-            usage.has_enabled_path for usage in sensor_usage[17:21]
+            usage.has_enabled_path for usage in sensor_usage[17:20]
         )
         detail_lines = [
             f"Genome: {brain.genome_id}",
@@ -1284,7 +1284,7 @@ class InspectorPanelComponent:
             self._brain_output_readout(brain.last_outputs),
             f"Nodes: {len(brain.genome.nodes)}",
             f"Connections: {enabled_connections}/{len(brain.genome.connections)} enabled",
-            f"Biome sensing paths: {biome_path_count}/4",
+            f"Biome sensing paths: {biome_path_count}/3",
             f"Fitness: {self._selected_fitness_label(world, selected)}",
         ]
         self._draw_scrollable_lines_in_bounds(

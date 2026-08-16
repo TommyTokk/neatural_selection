@@ -748,17 +748,16 @@ class VisionWallSensorTest(unittest.TestCase):
         )
         first_seventeen_inputs = inputs[:17]
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 44)
+        self.assertEqual(SENSOR_INPUT_COUNT, 43)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertEqual(SENSOR_INPUT_NAMES[1], "feeding_drive")
         self.assertEqual(SENSOR_INPUT_NAMES[2], "reproductive_readiness")
         self.assertEqual(
-            SENSOR_INPUT_NAMES[17:21],
+            SENSOR_INPUT_NAMES[17:20],
             (
-                "biome_fertility_here",
-                "biome_fertility_left_gradient",
-                "biome_fertility_right_gradient",
-                "biome_fertility_trend",
+                "local_richness",
+                "lateral_gradient",
+                "forward_gradient",
             ),
         )
         self.assertAlmostEqual(first_seventeen_inputs[0], 1.0)
@@ -769,23 +768,25 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertAlmostEqual(first_seventeen_inputs[16], 0.0)
         self.assertGreaterEqual(inputs[17], 0.0)
         self.assertLessEqual(inputs[17], 1.0)
-        for biome_gradient_or_trend in inputs[18:21]:
-            self.assertGreaterEqual(biome_gradient_or_trend, -1.0)
-            self.assertLessEqual(biome_gradient_or_trend, 1.0)
+        for biome_gradient in inputs[18:20]:
+            self.assertGreaterEqual(biome_gradient, -1.0)
+            self.assertLessEqual(biome_gradient, 1.0)
+        self.assertAlmostEqual(inputs[20], 0.0)
         self.assertAlmostEqual(inputs[21], 0.0)
-        self.assertAlmostEqual(inputs[22], 0.0)
-        self.assertEqual(inputs[23:32], [0.0] * 9)
-        self.assertEqual(inputs[32:43], [0.0] * 11)
+        self.assertEqual(inputs[22:31], [0.0] * 9)
+        self.assertEqual(inputs[31:42], [0.0] * 11)
+        self.assertEqual(SENSOR_INPUT_NAMES[42], "life_normalized")
+        self.assertEqual(inputs[42], 1.0)
 
-    def test_stomach_fullness_is_the_33rd_input_and_clamps(self) -> None:
+    def test_stomach_fullness_is_the_32nd_input_and_clamps(self) -> None:
         creature = creature_at((50.0, 50.0), radius=10.0)
         creature.stomach_energy = 0.5
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
-        self.assertAlmostEqual(inputs[32], 0.5)
+        self.assertAlmostEqual(inputs[31], 0.5)
 
         creature.stomach_energy = 2.0
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
-        self.assertEqual(inputs[32], 1.0)
+        self.assertEqual(inputs[31], 1.0)
 
     def test_feeding_drive_requires_low_energy_and_stomach_capacity(self) -> None:
         creature = creature_at((50.0, 50.0), radius=10.0, energy=0.1)

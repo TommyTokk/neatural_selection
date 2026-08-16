@@ -8,7 +8,6 @@ from configs.sim_config import ActionConfig, MetabolismConfig, TraitConfig, Visi
 from src.action import Action
 from src.creature import LedgerDiagnostics
 from src.fitness import CreatureFitness
-from src.persistence import PersistenceManager
 from src.metabolism import (
     ActivityResult,
     DigestionResult,
@@ -819,30 +818,6 @@ class SelectedDiagnosticsTest(unittest.TestCase):
 
 
 class CompatibilityAndValidationTest(unittest.TestCase):
-    def test_legacy_contract_is_the_only_append_migration(self) -> None:
-        self.assertTrue(
-            PersistenceManager._is_life_rest_append_migration(5, 1, 43, 14)
-        )
-        self.assertFalse(
-            PersistenceManager._is_life_rest_append_migration(4, 1, 43, 14)
-        )
-
-    def test_rest_output_migration_is_disconnected_zero_bias_sigmoid(self) -> None:
-        class Genome:
-            def __init__(self) -> None:
-                self.nodes = {}
-                self.connections = {("old", "edge"): object()}
-
-            def create_node(self, _config: object, key: int) -> object:
-                return SimpleNamespace(key=key, bias=1.0, activation="tanh")
-
-        genome = Genome()
-        PersistenceManager._append_rest_output_node({1: genome}, object())
-
-        self.assertEqual(genome.nodes[14].bias, 0.0)
-        self.assertEqual(genome.nodes[14].activation, "sigmoid")
-        self.assertEqual(list(genome.connections), [("old", "edge")])
-
     def test_runtime_mutation_of_rest_config_is_revalidated(self) -> None:
         config = ActionConfig()
         config.rest_response_rate = float("nan")

@@ -98,8 +98,9 @@ class SemanticInterventionTest(unittest.TestCase):
             visible,
             {"food_count", "food_proximity", "food_angle"},
         )
-        self.assertTrue(
-            all(name.startswith("biome_fertility_") for name in resource)
+        self.assertEqual(
+            resource,
+            {"local_richness", "lateral_gradient", "forward_gradient"},
         )
         self.assertTrue(visible.isdisjoint(resource))
 

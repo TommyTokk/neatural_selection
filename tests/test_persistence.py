@@ -359,8 +359,6 @@ class PersistenceManagerTest(unittest.TestCase):
             ),
             color=(1, 2, 3),
             lineage=SimpleNamespace(species_id=2),
-            biome_fertility_ema=0.37,
-            biome_fertility_ema_updated_at=8.5,
         )
         spawner = SimpleNamespace(
             _next_food_id=1,
@@ -414,13 +412,13 @@ class PersistenceManagerTest(unittest.TestCase):
 
         self.assertEqual(state["simulation_id"], self.simulation_paths.simulation_id)
         self.assertEqual(state["creatures"][0]["genome_id"], 17)
-        self.assertEqual(state["creatures"][0]["biome_fertility_ema"], 0.37)
-        self.assertEqual(
-            state["creatures"][0]["biome_fertility_ema_updated_at"],
-            8.5,
+        self.assertNotIn("biome_fertility_ema", state["creatures"][0])
+        self.assertNotIn(
+            "biome_fertility_ema_updated_at",
+            state["creatures"][0],
         )
-        self.assertEqual(state["brain_contract"]["sensor_schema"], 6)
-        self.assertEqual(state["brain_contract"]["inputs"], 44)
+        self.assertEqual(state["brain_contract"]["sensor_schema"], 7)
+        self.assertEqual(state["brain_contract"]["inputs"], 43)
         self.assertNotIn("previous_biome", state["world"])
         self.assertNotIn("physics_accumulator", state["world"])
         self.assertEqual(state["world"]["simulation_step"], 0)
@@ -545,8 +543,6 @@ class PersistenceManagerTest(unittest.TestCase):
             original_brain.last_raw_herding = 0.9
             saved_member_color = (77, 88, 199)
             world.creatures[0].color = saved_member_color
-            world.creatures[0].biome_fertility_ema = 0.37
-            world.creatures[0].biome_fertility_ema_updated_at = 4.25
             world._physics_accumulator = 0.007
             world._simulation_step = 7
             world._speciation_adjustment_accumulator = 1.75
@@ -705,7 +701,6 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.creatures[0].color,
                 saved_member_color,
             )
-            self.assertEqual(restored.creatures[0].biome_fertility_ema, 0.37)
             self.assertEqual(restored._physics_accumulator, 0.0)
             self.assertEqual(restored._simulation_step, 7)
             self.assertEqual(
@@ -719,10 +714,6 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertEqual(
                 restored.simulation_lag_metrics.session_requested_seconds,
                 0.0,
-            )
-            self.assertEqual(
-                restored.creatures[0].biome_fertility_ema_updated_at,
-                4.25,
             )
             self.assertAlmostEqual(restored.creatures[0].stomach_energy, 0.42)
             self.assertAlmostEqual(
@@ -795,7 +786,7 @@ class PersistenceManagerTest(unittest.TestCase):
             if restored is not None:
                 restored.close()
 
-    def test_legacy_checkpoint_initializes_new_biome_memory_at_location(self) -> None:
+    def test_legacy_checkpoint_ignores_obsolete_biome_memory(self) -> None:
         from src.world import World
 
         self.config.persistence.enable_telemetry = False
@@ -811,8 +802,8 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             state["version"] = 10
             state["brain_contract"]["sensor_schema"] = 1
-            state["creatures"][0].pop("biome_fertility_ema")
-            state["creatures"][0].pop("biome_fertility_ema_updated_at")
+            state["creatures"][0]["biome_fertility_ema"] = 0.37
+            state["creatures"][0]["biome_fertility_ema_updated_at"] = 4.25
             state["world"]["previous_biome"] = {creature_id: 0.42}
 
             restored = PersistenceManager._restore_world(
@@ -822,13 +813,14 @@ class PersistenceManagerTest(unittest.TestCase):
                 allow_brain_contract_reset=True,
             )
 
-            expected = restored._biome_fertility_at(
-                *restored.creatures[0].position
+            self.assertFalse(
+                hasattr(restored.creatures[0], "biome_fertility_ema")
             )
-            self.assertEqual(restored.creatures[0].biome_fertility_ema, expected)
-            self.assertEqual(
-                restored.creatures[0].biome_fertility_ema_updated_at,
-                restored.elapsed_time,
+            self.assertFalse(
+                hasattr(
+                    restored.creatures[0],
+                    "biome_fertility_ema_updated_at",
+                )
             )
         finally:
             world.close()
@@ -1079,11 +1071,10 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.neat_controller,
             )
             self.assertEqual(current_state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 6)
-            self.assertEqual(current_state["brain_contract"]["inputs"], 44)
+            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 7)
+            self.assertEqual(current_state["brain_contract"]["inputs"], 43)
             self.assertEqual(current_state["brain_contract"]["outputs"], 15)
             self.assertEqual(current_state["brain_contract"]["action_schema"], 2)
-            saved_ema = current_state["creatures"][0]["biome_fertility_ema"]
             round_tripped = PersistenceManager._restore_world(
                 current_state,
                 self.config,
@@ -1095,9 +1086,8 @@ class PersistenceManagerTest(unittest.TestCase):
                 set(round_tripped.neat_controller.species_manager.representatives),
                 {6},
             )
-            self.assertEqual(
-                round_tripped.creatures[0].biome_fertility_ema,
-                saved_ema,
+            self.assertFalse(
+                hasattr(round_tripped.creatures[0], "biome_fertility_ema")
             )
         finally:
             world.close()

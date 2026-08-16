@@ -2229,7 +2229,7 @@ class BrainInspectorComponent:
         output_keys = list(world.neat_controller.config.genome_config.output_keys)
         biome_path_count = sum(
             item.has_enabled_path
-            for item in brain.sensor_usage(input_keys, output_keys)[17:21]
+            for item in brain.sensor_usage(input_keys, output_keys)[17:20]
         )
         action = brain.last_action
         action_label = (
@@ -2254,7 +2254,7 @@ class BrainInspectorComponent:
                 (24, 126, 70),
             ),
             ("SIGNED ACTION", action_label, (180, 83, 9)),
-            ("BIOME PATHS", f"{biome_path_count} / 4", (0, 112, 122)),
+            ("BIOME PATHS", f"{biome_path_count} / 3", (0, 112, 122)),
         )
         cell_width = bounds.width / len(metrics)
         for index, (label, value, label_color) in enumerate(metrics):

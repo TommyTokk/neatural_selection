@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import exp
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -141,12 +140,12 @@ class FakeVisionSystem:
 
 
 class FakeBiomeMap:
-    def __init__(self, fertility: float = 0.0) -> None:
-        self.fertility = fertility
+    def __init__(self, richness: float = 0.0) -> None:
+        self.richness = richness
 
-    def fertility_at(self, x: float, y: float) -> float:
+    def expected_food_density_at(self, x: float, y: float) -> float:
         del x, y
-        return self.fertility
+        return self.richness
 
 
 class WorldVisionMutationTest(unittest.TestCase):
@@ -439,69 +438,6 @@ class WorldVisionMutationTest(unittest.TestCase):
 
         self.assertEqual(world.vision.last_creatures, [observer, nearby])
 
-    def test_biome_memory_initializes_from_spawn_position(self) -> None:
-        world = self.make_world_for_biome_sensors(fertility=0.7)
-        creature = self.biome_sensor_creature()
-        creature.biome_fertility_ema = 0.1
-
-        world._initialize_creature_biome_memory(creature)
-
-        self.assertAlmostEqual(creature.biome_fertility_ema, 0.7)
-        self.assertAlmostEqual(creature.biome_fertility_ema_updated_at, 0.0)
-
-    def test_first_biome_sensor_tick_delta_is_zero(self) -> None:
-        world = self.make_world_for_biome_sensors(fertility=0.8)
-        creature = self.biome_sensor_creature()
-        world._initialize_creature_biome_memory(creature)
-
-        snapshot = world._sensor_snapshot_for(creature)
-
-        self.assertAlmostEqual(snapshot.biome.here, 0.8)
-        self.assertAlmostEqual(snapshot.biome.trend, 0.0)
-
-    def test_read_only_biome_sensor_snapshot_does_not_adapt_memory(self) -> None:
-        world = self.make_world_for_biome_sensors(fertility=0.9)
-        creature = self.biome_sensor_creature()
-        creature.biome_fertility_ema = 0.2
-
-        first_snapshot = world._sensor_snapshot_for(creature)
-        second_snapshot = world._sensor_snapshot_for(creature)
-
-        self.assertAlmostEqual(creature.biome_fertility_ema, 0.2)
-        self.assertAlmostEqual(first_snapshot.biome.trend, 0.7)
-        self.assertAlmostEqual(second_snapshot.biome.trend, 0.7)
-
-    def test_creature_intent_tick_adapts_biome_memory_by_elapsed_time(self) -> None:
-        world = self.make_world_for_biome_sensors(fertility=0.85)
-        creature = self.biome_sensor_creature()
-        world.creatures = [creature]
-        creature.biome_fertility_ema = 0.2
-        creature.biome_fertility_ema_updated_at = 0.0
-        world.elapsed_time = 1.5
-        world.neat_controller = SimpleNamespace(
-            decide=lambda creature_id, snapshot: Action(
-                accelerate=0.0,
-                rotate=0.0,
-                want_reproduce=0.0,
-                want_eat=0.0,
-                reset_chronometer=0.0,
-                want_grab=0.0,
-                want_release=0.0,
-            )
-        )
-        world._last_actions = {}
-        world._simulation_step = (
-            creature.creature_id
-            % world.config.scheduler.decision_period_steps
-        )
-        world._apply_carry_intent = lambda creature, action: None
-        world._apply_action = lambda *args, **kwargs: None
-
-        world._apply_creature_intents()
-
-        expected = 0.2 + (0.85 - 0.2) * (1.0 - exp(-0.5))
-        self.assertAlmostEqual(creature.biome_fertility_ema, expected)
-
     def test_chronometer_reset_uses_strict_centered_intent_threshold(self) -> None:
         def chronometer_after_intent(value: float) -> float:
             world = self.make_world_for_biome_sensors()
@@ -535,35 +471,18 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertEqual(chronometer_after_intent(0.1), 4.0)
         self.assertEqual(chronometer_after_intent(0.100001), 0.0)
 
-    def test_biome_memory_is_rate_independent(self) -> None:
-        def adapt_at_rate(step: float) -> float:
-            world = self.make_world_for_biome_sensors(fertility=1.0)
-            creature = self.biome_sensor_creature()
-            creature.biome_fertility_ema = 0.0
-            creature.biome_fertility_ema_updated_at = 0.0
-            snapshot = world._sensor_snapshot_for(creature)
-            elapsed = step
-            while elapsed <= 3.0 + 1e-9:
-                world.elapsed_time = min(elapsed, 3.0)
-                world._adapt_creature_biome_memory(creature, snapshot)
-                elapsed += step
-            return creature.biome_fertility_ema
-
-        self.assertAlmostEqual(adapt_at_rate(0.5), 1.0 - exp(-1.0))
-        self.assertAlmostEqual(adapt_at_rate(1.0), adapt_at_rate(0.5))
-
-    def test_biome_gradients_are_local_signed_differences(self) -> None:
+    def test_biome_gradients_are_body_frame_relative_contrasts(self) -> None:
         world = self.make_world_for_biome_sensors()
         world.biome_map = SimpleNamespace(
-            fertility_at=lambda x, y: 0.5 + y / 200.0
+            expected_food_density_at=lambda x, y: 0.5 + y / 200.0
         )
         creature = self.biome_sensor_creature()
 
         snapshot = world._sensor_snapshot_for(creature)
 
-        self.assertAlmostEqual(snapshot.biome.here, 0.5)
-        self.assertGreater(snapshot.biome.left_gradient, 0.0)
-        self.assertLess(snapshot.biome.right_gradient, 0.0)
+        self.assertAlmostEqual(snapshot.biome.local_richness, 0.5)
+        self.assertGreater(snapshot.biome.lateral_gradient, 0.0)
+        self.assertAlmostEqual(snapshot.biome.forward_gradient, 0.0)
 
     def test_reproductive_readiness_is_independent_from_infant_cutoff(self) -> None:
         world = self.make_world_for_biome_sensors()
@@ -618,7 +537,6 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertEqual(applied, [(creature, action, snapshot)])
         self.assertEqual(applied[0][1].herding, 0.15)
         self.assertEqual(world.vision.sense_with_visible_food_ids_calls, 0)
-        self.assertEqual(creature.biome_fertility_ema, 0.0)
 
     def test_cached_input_snapshots_are_captured_only_when_requested(self) -> None:
         world = self.make_world_for_biome_sensors()
@@ -699,7 +617,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertEqual(forward_right, (96.0, -48.0))
         self.assertGreater(forward_left[1], forward_right[1])
 
-    def make_world_for_biome_sensors(self, fertility: float = 0.0) -> World:
+    def make_world_for_biome_sensors(self, richness: float = 0.0) -> World:
         world = object.__new__(World)
         world.config = build_sim_config()
         world.fixed_timestep = 1.0 / world.config.scheduler.physics_hz
@@ -713,7 +631,7 @@ class WorldVisionMutationTest(unittest.TestCase):
         world.MAX_SPEED = 170.0
         world.vision = FakeVisionSystem()
         world.fitness = {1: FakeFitness()}
-        world.biome_map = FakeBiomeMap(fertility)
+        world.biome_map = FakeBiomeMap(richness)
         return world
 
     def biome_sensor_creature(
@@ -728,8 +646,6 @@ class WorldVisionMutationTest(unittest.TestCase):
             heading=heading,
             vision=SimpleNamespace(range=120.0),
             energy=1.0,
-            biome_fertility_ema=0.0,
-            biome_fertility_ema_updated_at=0.0,
         )
 
 

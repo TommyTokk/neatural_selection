@@ -17,15 +17,17 @@ WORLD_BOUNDS = (-1600.0, -1100.0, 1600.0, 1100.0)
 
 class BiomeGenerationHandlerTest(unittest.TestCase):
     @staticmethod
-    def _reference_fertility(biome_map: BiomeMap, x: float, y: float) -> float:
+    def _reference_density(biome_map: BiomeMap, x: float, y: float) -> float:
         weights = [
             max(0.0, weight) for weight in biome_map.spawn_weights.values()
         ]
-        minimum = min(weights, default=0.0)
         maximum = max(weights, default=0.0)
-        denominator = maximum - minimum
-        if denominator <= 0.0:
+        if maximum <= 0.0:
             return 1.0
+        uniform_probability = max(
+            0.0,
+            min(1.0, biome_map.uniform_spawn_chance),
+        )
         left, bottom, right, top = biome_map.world_bounds
         cell_width = max(0.0001, right - left) / biome_map.grid_width
         cell_height = max(0.0001, top - bottom) / biome_map.grid_height
@@ -44,9 +46,12 @@ class BiomeGenerationHandlerTest(unittest.TestCase):
 
         def sample(column: int, row: int) -> float:
             biome = Biome(int(biome_map.biome_ids[row, column]))
-            return (
-                max(0.0, biome_map.spawn_weights[biome]) - minimum
-            ) / denominator
+            normalized_weight = (
+                max(0.0, biome_map.spawn_weights[biome]) / maximum
+            )
+            return uniform_probability + (
+                1.0 - uniform_probability
+            ) * normalized_weight
 
         c00 = sample(column0, row0)
         c10 = sample(column1, row0)
@@ -109,29 +114,35 @@ class BiomeGenerationHandlerTest(unittest.TestCase):
         self.assertEqual(biome_map.biome_at(100.0, 100.0), Biome.BUSHES)
         self.assertEqual(biome_map.biome_at(5.0, 8.0), Biome.FOREST)
 
-    def test_fertility_uses_resource_spawn_weights(self) -> None:
+    def test_density_uses_resource_spawn_weights(self) -> None:
         biome_map = self._three_vertical_biome_map()
 
-        prairie = biome_map.fertility_at(-1000.0, 0.0)
-        bushes = biome_map.fertility_at(0.0, 0.0)
-        forest = biome_map.fertility_at(1000.0, 0.0)
+        prairie = biome_map.expected_food_density_at(-1000.0, 0.0)
+        bushes = biome_map.expected_food_density_at(0.0, 0.0)
+        forest = biome_map.expected_food_density_at(1000.0, 0.0)
 
         self.assertGreaterEqual(prairie, 0.0)
         self.assertLessEqual(forest, 1.0)
         self.assertLess(prairie, bushes)
         self.assertLess(bushes, forest)
 
-    def test_fertility_equal_spawn_weights_use_safe_fallback(self) -> None:
+    def test_density_equal_spawn_weights_use_safe_fallback(self) -> None:
         biome_map = replace(
             self._three_vertical_biome_map(),
             spawn_weights={biome: 1.0 for biome in Biome},
         )
 
-        self.assertEqual(biome_map.fertility_at(-1000.0, 0.0), 1.0)
-        self.assertEqual(biome_map.fertility_at(0.0, 0.0), 1.0)
-        self.assertEqual(biome_map.fertility_at(1000.0, 0.0), 1.0)
+        self.assertEqual(
+            biome_map.expected_food_density_at(-1000.0, 0.0),
+            1.0,
+        )
+        self.assertEqual(biome_map.expected_food_density_at(0.0, 0.0), 1.0)
+        self.assertEqual(
+            biome_map.expected_food_density_at(1000.0, 0.0),
+            1.0,
+        )
 
-    def test_fertility_bilinearly_interpolates_between_cell_centers(self) -> None:
+    def test_density_bilinearly_interpolates_between_cell_centers(self) -> None:
         biome_map = BiomeMap(
             biome_ids=np.array(
                 [
@@ -152,11 +163,11 @@ class BiomeGenerationHandlerTest(unittest.TestCase):
             max_spawn_attempts=4,
         )
 
-        self.assertEqual(biome_map.fertility_at(15.0, 25.0), 0.0)
-        self.assertEqual(biome_map.fertility_at(25.0, 35.0), 1.0)
-        self.assertEqual(biome_map.fertility_at(20.0, 30.0), 0.5)
+        self.assertEqual(biome_map.expected_food_density_at(15.0, 25.0), 0.0)
+        self.assertEqual(biome_map.expected_food_density_at(25.0, 35.0), 1.0)
+        self.assertEqual(biome_map.expected_food_density_at(20.0, 30.0), 0.5)
 
-    def test_fertility_interpolation_clamps_outside_world_bounds(self) -> None:
+    def test_density_interpolation_clamps_outside_world_bounds(self) -> None:
         biome_map = BiomeMap(
             biome_ids=np.array(
                 [[Biome.PRAIRIE, Biome.FOREST]],
@@ -174,10 +185,16 @@ class BiomeGenerationHandlerTest(unittest.TestCase):
             max_spawn_attempts=4,
         )
 
-        self.assertEqual(biome_map.fertility_at(-100.0, -100.0), 0.0)
-        self.assertEqual(biome_map.fertility_at(100.0, 100.0), 1.0)
+        self.assertEqual(
+            biome_map.expected_food_density_at(-100.0, -100.0),
+            0.0,
+        )
+        self.assertEqual(
+            biome_map.expected_food_density_at(100.0, 100.0),
+            1.0,
+        )
 
-    def test_cached_fertility_matches_reference_near_boundaries(self) -> None:
+    def test_cached_density_matches_reference_near_boundaries(self) -> None:
         biome_map = self._three_vertical_biome_map()
         rng = Random(4421)
         points = [
@@ -202,14 +219,14 @@ class BiomeGenerationHandlerTest(unittest.TestCase):
 
         for x, y in points:
             with self.subTest(x=x, y=y):
-                expected = self._reference_fertility(biome_map, x, y)
-                actual = biome_map.fertility_at(x, y)
+                expected = self._reference_density(biome_map, x, y)
+                actual = biome_map.expected_food_density_at(x, y)
                 self.assertEqual(actual, expected)
                 self.assertEqual(actual <= 0.0, expected <= 0.0)
                 self.assertEqual(actual >= 1.0, expected >= 1.0)
 
-        self.assertEqual(biome_map._fertility_grid.dtype, np.float64)
-        self.assertFalse(biome_map._fertility_grid.flags.writeable)
+        self.assertEqual(biome_map._expected_density_grid.dtype, np.float64)
+        self.assertFalse(biome_map._expected_density_grid.flags.writeable)
 
     def _three_vertical_biome_map(self) -> BiomeMap:
         biome_ids = np.array(

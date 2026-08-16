@@ -33,7 +33,7 @@ class BiomeMap:
     spawn_weights: dict[Biome, float]
     uniform_spawn_chance: float
     max_spawn_attempts: int
-    _fertility_grid: np.ndarray = field(
+    _expected_density_grid: np.ndarray = field(
         init=False,
         repr=False,
         compare=False,
@@ -49,17 +49,33 @@ class BiomeMap:
             ],
             dtype=np.float64,
         )
-        minimum = float(weights.min())
         maximum = float(weights.max())
-        if maximum <= minimum:
-            fertility_grid = np.ones_like(self.biome_ids, dtype=np.float64)
+        if maximum <= 0.0:
+            expected_density_grid = np.ones_like(
+                self.biome_ids,
+                dtype=np.float64,
+            )
         else:
-            fertility_grid = (
-                weights[self.biome_ids] - minimum
-            ) / (maximum - minimum)
-            fertility_grid = np.asarray(fertility_grid, dtype=np.float64)
-        fertility_grid.setflags(write=False)
-        object.__setattr__(self, "_fertility_grid", fertility_grid)
+            uniform_probability = max(
+                0.0,
+                min(1.0, float(self.uniform_spawn_chance)),
+            )
+            normalized_weights = weights[self.biome_ids] / maximum
+            expected_density_grid = (
+                uniform_probability
+                + (1.0 - uniform_probability) * normalized_weights
+            )
+            expected_density_grid = np.clip(
+                np.asarray(expected_density_grid, dtype=np.float64),
+                0.0,
+                1.0,
+            )
+        expected_density_grid.setflags(write=False)
+        object.__setattr__(
+            self,
+            "_expected_density_grid",
+            expected_density_grid,
+        )
 
     @property
     def grid_height(self) -> int:
@@ -76,7 +92,7 @@ class BiomeMap:
     def spawn_weight_at(self, x: float, y: float) -> float:
         return self.spawn_weights[self.biome_at(x, y)]
 
-    def fertility_at(self, x: float, y: float) -> float:
+    def expected_food_density_at(self, x: float, y: float) -> float:
         left, bottom, right, top = self.world_bounds
         cell_width = max(0.0001, right - left) / self.grid_width
         cell_height = max(0.0001, top - bottom) / self.grid_height
@@ -95,18 +111,22 @@ class BiomeMap:
         row0 = max(0, min(self.grid_height - 1, row0))
         row1 = max(0, min(self.grid_height - 1, row1))
 
-        c00 = float(self._fertility_grid[row0, column0])
-        c10 = float(self._fertility_grid[row0, column1])
-        c01 = float(self._fertility_grid[row1, column0])
-        c11 = float(self._fertility_grid[row1, column1])
-        normalized_fertility = (
+        c00 = float(self._expected_density_grid[row0, column0])
+        c10 = float(self._expected_density_grid[row0, column1])
+        c01 = float(self._expected_density_grid[row1, column0])
+        c11 = float(self._expected_density_grid[row1, column1])
+        expected_density = (
             c00 * (1.0 - u) * (1.0 - v)
             + c10 * u * (1.0 - v)
             + c01 * (1.0 - u) * v
             + c11 * u * v
         )
 
-        return max(0.0, min(1.0, normalized_fertility))
+        return max(0.0, min(1.0, expected_density))
+
+    def fertility_at(self, x: float, y: float) -> float:
+        """Compatibility alias for the expected food-density signal."""
+        return self.expected_food_density_at(x, y)
 
     def _cell_for_world_position(self, x: float, y: float) -> tuple[int, int]:
         left, bottom, right, top = self.world_bounds

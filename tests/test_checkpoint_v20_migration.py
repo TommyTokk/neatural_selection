@@ -7,9 +7,13 @@ import pickle
 import unittest
 
 from configs.sim_config import build_sim_config
-from src.persistence import CHECKPOINT_VERSION, PersistenceManager, SimulationPaths
+from src.persistence import (
+    CHECKPOINT_VERSION,
+    CheckpointContractError,
+    PersistenceManager,
+    SimulationPaths,
+)
 from src.flocking import SocialRuntime
-from tests.scheduler_validation import AuthoritativeStateDigest
 
 
 FIXTURE_DIRECTORY = (
@@ -64,7 +68,7 @@ class CheckpointV20MigrationTest(unittest.TestCase):
             )
         )
 
-    def test_v20_fixtures_migrate_and_follow_the_recorded_trajectory(self) -> None:
+    def test_v20_schema_six_fixtures_require_and_apply_brain_reset(self) -> None:
         self.assertEqual(CHECKPOINT_VERSION, 23)
         for metadata in self.manifest["fixtures"]:
             with self.subTest(fixture=metadata["file"]):
@@ -72,56 +76,45 @@ class CheckpointV20MigrationTest(unittest.TestCase):
                     payload = pickle.load(stream)
                 checkpoint = payload["checkpoint"]
                 self.assertEqual(checkpoint["version"], 20)
+                self.assertEqual(checkpoint["brain_contract"]["sensor_schema"], 6)
+                self.assertEqual(checkpoint["brain_contract"]["inputs"], 44)
+                with self.assertRaises(CheckpointContractError):
+                    PersistenceManager._restore_world(
+                        checkpoint,
+                        migration_config(),
+                        SimulationPaths(Path(".").resolve()),
+                    )
                 world = PersistenceManager._restore_world(
                     checkpoint,
                     migration_config(),
                     SimulationPaths(Path(".").resolve()),
+                    allow_brain_contract_reset=True,
                 )
                 try:
+                    self.assertTrue(world.brain_contract_reset_occurred)
+                    self.assertEqual(
+                        [tuple(creature.position) for creature in world.creatures],
+                        [
+                            tuple(creature_state["position"])
+                            for creature_state in checkpoint["creatures"]
+                        ],
+                    )
+                    self.assertEqual(
+                        [creature.energy for creature in world.creatures],
+                        [
+                            creature_state["energy"]
+                            for creature_state in checkpoint["creatures"]
+                        ],
+                    )
                     runtimes = tuple(world._cached_social_intentions.values())
                     self.assertTrue(
                         all(isinstance(runtime, SocialRuntime) for runtime in runtimes)
                     )
                     self.assertEqual(len({id(runtime) for runtime in runtimes}), len(runtimes))
                     sentinel_id = metadata["sentinel_creature_id"]
-                    action_reused = False
-                    for expected in payload["trajectory"]:
-                        phase = world._simulation_step % 3
-                        before = world._last_actions[sentinel_id]
+                    for _ in payload["trajectory"]:
                         world.update(world.fixed_timestep)
-                        if sentinel_id % 3 != phase:
-                            action_reused = action_reused or (
-                                world._last_actions[sentinel_id] is before
-                            )
-                        actual = AuthoritativeStateDigest.capture(world)
-                        # Version-20 trajectory fixtures predate the lifetime
-                        # energy ledger. Compare every recorded field while
-                        # accepting the newly authoritative ledger value.
-                        for expected_creature, actual_creature in zip(
-                            expected.value["creatures"],
-                            actual.value["creatures"],
-                        ):
-                            expected_creature["total_energy_gathered"] = (
-                                actual_creature["total_energy_gathered"]
-                            )
-                            legacy_fitness = dict(
-                                expected_creature["age_fitness"]
-                            )
-                            expected_creature["age_fitness"] = tuple(
-                                (
-                                    key,
-                                    legacy_fitness.get(key, actual_value),
-                                )
-                                for key, actual_value in actual_creature[
-                                    "age_fitness"
-                                ]
-                            )
-                        difference = expected.compare(actual)
-                        self.assertIsNone(
-                            difference,
-                            None if difference is None else difference.describe(),
-                        )
-                    self.assertTrue(action_reused)
+                    self.assertIn(sentinel_id, world._last_actions)
                 finally:
                     world.close()
 

@@ -21,7 +21,7 @@ CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "configs" / "neat_herbivore.ini"
 )
 WORLD_BOUNDS = (-200.0, -200.0, 200.0, 200.0)
-BIOME_SENSOR_NAMES = SENSOR_INPUT_NAMES[17:21]
+BIOME_SENSOR_NAMES = SENSOR_INPUT_NAMES[17:20]
 SPAWN_WEIGHTS = {
     Biome.PRAIRIE: 0.25,
     Biome.BUSHES: 1.25,
@@ -30,7 +30,7 @@ SPAWN_WEIGHTS = {
 
 
 def biome_only_brain(genome_id: int) -> NeatBrain:
-    """Build a NEAT brain driven only by local food-fertility sensing."""
+    """Build a NEAT brain driven only by expected food-density sensing."""
     config = neat.Config(
         neat.DefaultGenome,
         neat.DefaultReproduction,
@@ -50,17 +50,13 @@ def biome_only_brain(genome_id: int) -> NeatBrain:
         node.activation = "tanh"
         node.aggregation = "sum"
 
-    # Positive left/right gradients steer toward the richer sensor. Fertility
-    # and positive gradients drive forward exploration. A negative temporal
-    # trend has twice the weight, making a creature reverse out of a newly
-    # depleted area even when both forward probes are equally poor.
+    # Lateral contrast steers toward the richer probe. Local richness and the
+    # forward contrast drive acceleration, with a sufficiently poor region
+    # ahead producing reverse acceleration.
     wiring = (
-        ("biome_fertility_here", BrainOutputIndex.ACCELERATE, 1.0),
-        ("biome_fertility_left_gradient", BrainOutputIndex.ACCELERATE, 1.0),
-        ("biome_fertility_right_gradient", BrainOutputIndex.ACCELERATE, 1.0),
-        ("biome_fertility_trend", BrainOutputIndex.ACCELERATE, 2.0),
-        ("biome_fertility_left_gradient", BrainOutputIndex.ROTATE, 3.0),
-        ("biome_fertility_right_gradient", BrainOutputIndex.ROTATE, -3.0),
+        ("local_richness", BrainOutputIndex.ACCELERATE, 1.0),
+        ("forward_gradient", BrainOutputIndex.ACCELERATE, 2.0),
+        ("lateral_gradient", BrainOutputIndex.ROTATE, 3.0),
     )
     input_keys = config.genome_config.input_keys
     output_keys = config.genome_config.output_keys
@@ -116,14 +112,13 @@ def probe_creature(
     *,
     position: tuple[float, float],
     heading: float = 0.0,
-    remembered_fertility: float | None = None,
 ) -> Creature:
     radius = 12.0
     body = pymunk.Body(1.0, pymunk.moment_for_circle(1.0, 0.0, radius))
     body.position = position
     body.angle = heading
     shape = pymunk.Circle(body, radius)
-    creature = Creature(
+    return Creature(
         creature_id=1,
         name="Biome probe",
         body=body,
@@ -133,9 +128,6 @@ def probe_creature(
         physical_traits=PhysicalTraits(radius=radius),
         color=(255, 255, 255),
     )
-    if remembered_fertility is not None:
-        creature.biome_fertility_ema = remembered_fertility
-    return creature
 
 
 class BiomeOnlyBrainTest(unittest.TestCase):
@@ -243,12 +235,12 @@ class BiomeOnlyBrainTest(unittest.TestCase):
         )
         rich_right_action = brain.decide(rich_right_snapshot)
 
-        self.assertGreater(rich_left_snapshot.biome.left_gradient, 0.0)
-        self.assertEqual(rich_left_snapshot.biome.right_gradient, 0.0)
+        self.assertGreater(rich_left_snapshot.biome.lateral_gradient, 0.0)
+        self.assertGreater(rich_left_snapshot.biome.forward_gradient, 0.0)
         self.assertGreater(rich_left_action.accelerate, 0.0)
         self.assertGreater(rich_left_action.rotate, 0.0)
-        self.assertEqual(rich_right_snapshot.biome.left_gradient, 0.0)
-        self.assertGreater(rich_right_snapshot.biome.right_gradient, 0.0)
+        self.assertLess(rich_right_snapshot.biome.lateral_gradient, 0.0)
+        self.assertGreater(rich_right_snapshot.biome.forward_gradient, 0.0)
         self.assertGreater(rich_right_action.accelerate, 0.0)
         self.assertLess(rich_right_action.rotate, 0.0)
 
@@ -266,35 +258,31 @@ class BiomeOnlyBrainTest(unittest.TestCase):
     def test_creature_moves_into_the_more_food_rich_biome(self) -> None:
         biome_map = split_biome_map(axis="y", rich_positive=True)
         creature = probe_creature(position=(0.0, -20.0))
-        initial_fertility = biome_map.fertility_at(*creature.position)
+        initial_richness = biome_map.expected_food_density_at(*creature.position)
 
         self.simulate(creature, biome_map, biome_only_brain(1), steps=120)
 
-        final_fertility = biome_map.fertility_at(*creature.position)
+        final_richness = biome_map.expected_food_density_at(*creature.position)
         self.assertGreater(creature.position[1], -20.0)
-        self.assertGreater(final_fertility, initial_fertility)
+        self.assertGreater(final_richness, initial_richness)
 
-    def test_creature_reverses_out_of_a_low_food_area(self) -> None:
-        # Rich food is west (negative x); the probe faces east from within the
-        # depleted prairie and remembers the richer area it just left.
+    def test_creature_reverses_away_from_poorer_terrain_ahead(self) -> None:
+        # Rich food is west (negative x); the probe faces east from the rich
+        # side while both forward probes reach into depleted prairie.
         biome_map = split_biome_map(axis="x", rich_positive=False)
         creature = probe_creature(
-            position=(20.0, 0.0),
+            position=(-20.0, 0.0),
             heading=0.0,
-            remembered_fertility=1.0,
         )
-        initial_fertility = biome_map.fertility_at(*creature.position)
         initial_snapshot = self.snapshot_for(creature, biome_map)
         initial_action = biome_only_brain(1).decide(initial_snapshot)
 
-        self.assertLess(initial_snapshot.biome.trend, 0.0)
+        self.assertLess(initial_snapshot.biome.forward_gradient, 0.0)
         self.assertLess(initial_action.accelerate, 0.0)
 
         self.simulate(creature, biome_map, biome_only_brain(2), steps=90)
 
-        final_fertility = biome_map.fertility_at(*creature.position)
-        self.assertLess(creature.position[0], 15.0)
-        self.assertGreater(final_fertility, initial_fertility)
+        self.assertLess(creature.position[0], -20.0)
 
 
 if __name__ == "__main__":

@@ -516,8 +516,6 @@ class World:
             self.biome_map.grid_height,
             self.environment_world_bounds,
         )
-        for creature in self.creatures:
-            self._initialize_creature_biome_memory(creature)
         self._live_food_config = LiveFoodConfig.from_configs(
             config.biome,
             config.food,
@@ -575,7 +573,7 @@ class World:
         }
         # Small test/extension controllers written against the historical
         # constructor remain usable. The production controller advertises
-        # this argument and selects the schema-4 input topology before any
+        # this argument and selects the current input topology before any
         # genomes are created.
         controller_parameters = inspect.signature(
             NeatBrainController
@@ -1109,7 +1107,6 @@ class World:
             creature.last_action = None
             creature.smoothed_rotation = 0.0
             creature.smoothed_acceleration = 0.0
-            self._initialize_creature_biome_memory(creature)
 
         self.fitness_archive = {}
         self._trait_archive_by_genome_id = {}
@@ -2003,50 +2000,21 @@ class World:
 
     def _biome_sensor_snapshot_for(self, creature: Creature) -> BiomeSensorSnapshot:
         here, forward_left, forward_right = self.biome_sensor_positions_for(creature)
-        biome_here = self._biome_fertility_at(*here)
-        left_fertility = self._biome_fertility_at(*forward_left)
-        right_fertility = self._biome_fertility_at(*forward_right)
-        fertility_ema = getattr(creature, "biome_fertility_ema", biome_here)
-
-        return BiomeSensorSnapshot(
-            here=biome_here,
-            left_gradient=self._clamp(left_fertility - biome_here, -1.0, 1.0),
-            right_gradient=self._clamp(right_fertility - biome_here, -1.0, 1.0),
-            trend=self._clamp(biome_here - fertility_ema, -1.0, 1.0),
+        return BiomeSensorSnapshot.from_probe_samples(
+            self._biome_richness_at(*here),
+            self._biome_richness_at(*forward_left),
+            self._biome_richness_at(*forward_right),
         )
 
-    def _initialize_creature_biome_memory(self, creature: Creature) -> None:
-        creature.biome_fertility_ema = self._biome_fertility_at(*creature.position)
-        creature.biome_fertility_ema_updated_at = getattr(
-            self,
-            "elapsed_time",
-            0.0,
-        )
-
-    def _adapt_creature_biome_memory(
-        self,
-        creature: Creature,
-        snapshot: SensorSnapshot,
-    ) -> None:
-        previous = getattr(creature, "biome_fertility_ema", snapshot.biome.here)
-        updated_at = getattr(
-            creature, "biome_fertility_ema_updated_at", self.elapsed_time
-        )
-        delta_time = max(0.0, self.elapsed_time - updated_at)
-        time_constant = max(
-            0.0, self.config.biome_sensor.trend_time_constant_seconds
-        )
-        alpha = 1.0 if time_constant <= 0.0 else 1.0 - exp(-delta_time / time_constant)
-        creature.biome_fertility_ema = (
-            previous + (snapshot.biome.here - previous) * alpha
-        )
-        creature.biome_fertility_ema_updated_at = self.elapsed_time
-
-    def _biome_fertility_at(self, x: float, y: float) -> float:
+    def _biome_richness_at(self, x: float, y: float) -> float:
         biome_map = getattr(self, "biome_map", None)
         if biome_map is None:
             return 0.0
-        return self._clamp(float(biome_map.fertility_at(x, y)), 0.0, 1.0)
+        return self._clamp(
+            float(biome_map.expected_food_density_at(x, y)),
+            0.0,
+            1.0,
+        )
 
     def visible_foods_for(self, creature: Creature) -> list[Food]:
         nearby_foods = self._nearby_foods_for(
@@ -3672,8 +3640,6 @@ class World:
 
                 if is_active_intent(action.reset_chronometer):
                     self._chronometers[creature.creature_id] = 0.0
-
-                self._adapt_creature_biome_memory(creature, snapshot)
 
             if action is None:
                 if use_spatial_candidates:
@@ -5753,7 +5719,6 @@ class World:
             self._register_living_creature(child)
             self._initialize_creature_runtime_state(child)
             self._mark_behavior_cohort_dirty()
-            self._initialize_creature_biome_memory(child)
             self.fitness[child.creature_id] = CreatureFitness()
             self._chronometers[child.creature_id] = 0.0
             self._log_creature_birth(child)
@@ -6911,7 +6876,7 @@ class World:
                 "low_food_burst_interval",
             )
         )
-        fertility_changed = any(
+        richness_changed = any(
             getattr(current, name) != getattr(settings, name)
             for name in (
                 "forest_spawn_weight",
@@ -6929,7 +6894,7 @@ class World:
         food_config.low_food_burst_items = settings.low_food_burst_items
         food_config.low_food_burst_interval = settings.low_food_burst_interval
 
-        if fertility_changed:
+        if richness_changed:
             self.biome_map = replace(
                 self.biome_map,
                 spawn_weights={
@@ -7058,7 +7023,6 @@ class World:
             self._register_living_creature(child)
             self._initialize_creature_runtime_state(child)
             self._mark_behavior_cohort_dirty()
-            self._initialize_creature_biome_memory(child)
             self.fitness[child_id] = CreatureFitness()
             self._chronometers[child_id] = 0.0
             self._log_creature_birth(child)
@@ -7226,7 +7190,6 @@ class World:
         self._register_living_creature(child)
         self._initialize_creature_runtime_state(child)
         self._mark_behavior_cohort_dirty()
-        self._initialize_creature_biome_memory(child)
         self.fitness[child_id] = CreatureFitness()
         self._chronometers[child_id] = 0.0
         self._log_creature_birth(child)

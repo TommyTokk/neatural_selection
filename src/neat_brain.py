@@ -103,6 +103,16 @@ class NeatBrain:
         if len(self._input_buffer) != snapshot.sensor_contract.input_count:
             self._input_buffer = [0.0] * snapshot.sensor_contract.input_count
         snapshot.write_inputs(self._input_buffer)
+        network_input_nodes = getattr(self.network, "input_nodes", None)
+        if (
+            network_input_nodes is not None
+            and len(self._input_buffer) != len(network_input_nodes)
+        ):
+            raise RuntimeError(
+                "Runtime sensor input count mismatch. "
+                f"Vision: {len(self._input_buffer)}, "
+                f"network: {len(network_input_nodes)}"
+            )
         if capture_inputs:
             self.capture_input_snapshot()
         self.last_input_names = snapshot.sensor_contract.input_names

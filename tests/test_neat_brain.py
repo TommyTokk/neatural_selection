@@ -45,7 +45,12 @@ from src.action import (
 )
 from src.neat_brain import NeatBrain
 from src.neat_controller import NeatBrainController
-from src.vision import BoundarySnapshot, SensorSnapshot, VisionTargetSnapshot
+from src.vision import (
+    BoundarySnapshot,
+    SENSOR_CONTRACT,
+    SensorSnapshot,
+    VisionTargetSnapshot,
+)
 
 
 class FakeNetwork:
@@ -94,6 +99,41 @@ def sensor_snapshot() -> SensorSnapshot:
 
 
 class NeatBrainActionMappingTest(unittest.TestCase):
+    def test_shipped_config_matches_runtime_sensor_contract(self) -> None:
+        controller = NeatBrainController(Path("configs/neat_herbivore.ini"))
+
+        self.assertEqual(
+            len(controller.config.genome_config.input_keys),
+            SENSOR_CONTRACT.input_count,
+        )
+
+    def test_runtime_input_count_mismatch_fails_before_activation(self) -> None:
+        network = FakeNetwork([0.0] * ACTION_OUTPUT_COUNT)
+        network.input_nodes = list(range(SENSOR_CONTRACT.input_count - 1))
+        brain = NeatBrain(
+            genome_id=1,
+            genome=SimpleNamespace(),
+            network=network,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "input count mismatch"):
+            brain.decide(sensor_snapshot())
+
+        self.assertEqual(network.activate_count, 0)
+
+    def test_startup_contract_rejects_mismatched_config_input_count(self) -> None:
+        controller = NeatBrainController.__new__(NeatBrainController)
+        controller.config = SimpleNamespace(
+            genome_config=SimpleNamespace(
+                input_keys=list(range(SENSOR_CONTRACT.input_count - 1)),
+                output_keys=list(range(ACTION_OUTPUT_COUNT)),
+            )
+        )
+        controller.sensor_contract = SENSOR_CONTRACT
+
+        with self.assertRaisesRegex(ValueError, "input count mismatch"):
+            controller._validate_network_contract()
+
     def test_output_schema_is_contiguous_and_named(self) -> None:
         self.assertEqual(
             [int(output) for output in BrainOutputIndex],

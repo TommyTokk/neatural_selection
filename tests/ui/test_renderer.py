@@ -5288,13 +5288,13 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neural_shifts=(
                 NeuralShift(-17, 53, "added", None, 0.41),
                 NeuralShift(53, 8, "changed", 0.5, 2.74, 2.24),
-                NeuralShift(-36, 26, "added", None, 0.36),
+                NeuralShift(-35, 26, "added", None, 0.36),
                 NeuralShift(53, 0, "removed", -0.8, None),
                 NeuralShift(53, 1, "added", None, 0.2),
                 NeuralShift(-2, 53, "removed", 1.1, None),
             ),
         )
-        input_keys = tuple(range(-1, -45, -1))
+        input_keys = tuple(range(-1, -44, -1))
         output_keys = tuple(range(15))
         report = generate_inspector_report(
             record,
@@ -5338,7 +5338,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
     def test_neuro_integration_view_uses_safe_unknown_node_fallbacks(self) -> None:
         parent = self.make_record(1, None)
-        input_keys = (*tuple(range(-1, -45, -1)), -99)
+        input_keys = (*tuple(range(-1, -44, -1)), -99)
         output_keys = (*tuple(range(15)), 99)
         record = self.make_record(
             2,
@@ -5376,7 +5376,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
                 (8, 53, "weight", -0.4),
             ),
         )
-        input_keys = tuple(range(-1, -45, -1))
+        input_keys = tuple(range(-1, -44, -1))
         output_keys = tuple(range(15))
         report = generate_inspector_report(
             record,
@@ -5407,11 +5407,11 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             2,
             1,
             neural_shifts=(
-                NeuralShift(-36, 26, "added", None, 0.36),
+                NeuralShift(-35, 26, "added", None, 0.36),
                 NeuralShift(26, 8, "changed", 0.5, 2.74, 2.24),
             ),
         )
-        input_keys = tuple(range(-1, -45, -1))
+        input_keys = tuple(range(-1, -44, -1))
         output_keys = tuple(range(15))
         report = generate_inspector_report(
             record,
@@ -5475,7 +5475,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
                 NeuralShift(53, 13, "changed", -0.65, 0.75, 1.4),
             ),
         )
-        input_keys = tuple(range(-1, -45, -1))
+        input_keys = tuple(range(-1, -44, -1))
         output_keys = tuple(range(15))
         report = generate_inspector_report(
             record,
@@ -5520,7 +5520,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         )
 
     def test_neuro_integration_section_has_root_and_empty_states(self) -> None:
-        input_keys = tuple(range(-1, -45, -1))
+        input_keys = tuple(range(-1, -44, -1))
         output_keys = tuple(range(15))
         root_report = generate_inspector_report(
             self.make_record(1, None),
@@ -5723,11 +5723,11 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             2,
             1,
             neural_shifts=(
-                NeuralShift(-31, 10, "changed", -0.65, 0.75, 1.4),
-                NeuralShift(-31, 13, "removed", -0.8, None),
+                NeuralShift(-30, 10, "changed", -0.65, 0.75, 1.4),
+                NeuralShift(-30, 13, "removed", -0.8, None),
             ),
         )
-        input_keys = tuple(range(-1, -45, -1))
+        input_keys = tuple(range(-1, -44, -1))
         output_keys = tuple(range(15))
         report = generate_inspector_report(
             record,
@@ -5991,7 +5991,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
-                        input_keys=list(range(-1, -45, -1)),
+                        input_keys=list(range(-1, -44, -1)),
                         output_keys=list(range(15)),
                     )
                 )
@@ -6001,15 +6001,15 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         labels = self.renderer._species_tree_neat_node_labels(world)
 
         self.assertEqual(
-            [labels[key] for key in range(-1, -45, -1)],
+            [labels[key] for key in range(-1, -44, -1)],
             list(SENSOR_INPUT_NAMES),
         )
         self.assertEqual(labels[-11], "food_proximity")
-        self.assertEqual(labels[-25], "flock_effective_count")
-        self.assertEqual(labels[-33], "stomach_fullness")
-        self.assertEqual(labels[-34], "sound_strength")
-        self.assertEqual(labels[-44], "life_normalized")
-        self.assertEqual(self.renderer._short_brain_label(labels[-25]), "flock_n")
+        self.assertEqual(labels[-24], "flock_effective_count")
+        self.assertEqual(labels[-32], "stomach_fullness")
+        self.assertEqual(labels[-33], "sound_strength")
+        self.assertEqual(labels[-43], "life_normalized")
+        self.assertEqual(self.renderer._short_brain_label(labels[-24]), "flock_n")
         self.assertEqual(labels[0], "accelerate")
         self.assertEqual(labels[3], "want_eat")
         self.assertEqual(labels[10], "emit_sound")

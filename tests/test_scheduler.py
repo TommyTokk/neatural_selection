@@ -400,7 +400,6 @@ class DecisionPhaseTest(unittest.TestCase):
         counts = {creature.creature_id: 0 for creature in world.creatures}
         snapshot = object()
         world._sensor_snapshot_for = lambda *_args, **_kwargs: snapshot
-        world._adapt_creature_biome_memory = lambda *_args: None
         world._apply_carry_intent = lambda *_args: None
         world._apply_action = lambda *_args, **_kwargs: None
         world.neat_controller = SimpleNamespace(
@@ -505,7 +504,6 @@ class DecisionPhaseTest(unittest.TestCase):
         action.want_grab = 1.0
         action.want_release = 1.0
         world._sensor_snapshot_for = lambda *_args, **_kwargs: object()
-        world._adapt_creature_biome_memory = lambda *_args: None
         world.neat_controller = SimpleNamespace(
             decide=lambda *_args, **_kwargs: action
         )

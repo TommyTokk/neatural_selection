@@ -126,8 +126,6 @@ class Creature:
     last_action: object | None = None
     smoothed_rotation: float = 0.0
     smoothed_acceleration: float = 0.0
-    biome_fertility_ema: float = 0.0
-    biome_fertility_ema_updated_at: float = 0.0
     life: float = 1.0
     rest_intent: float = 0.0
     smoothed_rest: float = 0.0

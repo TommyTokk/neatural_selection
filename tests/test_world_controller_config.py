@@ -171,7 +171,7 @@ class LiveFoodConfigTest(unittest.TestCase):
     def test_runtime_values_do_not_mutate_startup_configuration(self) -> None:
         world, config = self.make_runtime_world()
         old_map = world.biome_map
-        old_ema_grid = old_map._fertility_grid
+        old_density_grid = old_map._expected_density_grid
         original_max_food = config.food.max_food_items
         original_burst_items = config.food.low_food_burst_items
         original_forest_weight = config.biome.forest_spawn_weight
@@ -197,7 +197,10 @@ class LiveFoodConfigTest(unittest.TestCase):
         )
         self.assertIs(world.biome_map.biome_ids, old_map.biome_ids)
         self.assertIs(world.biome_map.render_rgba, old_map.render_rgba)
-        self.assertIsNot(world.biome_map._fertility_grid, old_ema_grid)
+        self.assertIsNot(
+            world.biome_map._expected_density_grid,
+            old_density_grid,
+        )
         self.assertEqual(
             world.biome_map.spawn_weights[Biome.FOREST],
             4.5,

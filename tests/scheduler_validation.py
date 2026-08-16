@@ -239,12 +239,6 @@ def authoritative_state(world: World) -> dict[str, Any]:
                 "chronometer": float(
                     world._chronometers.get(creature_id, 0.0)
                 ),
-                "biome_fertility_ema": float(
-                    creature.biome_fertility_ema
-                ),
-                "biome_fertility_ema_updated_at": float(
-                    creature.biome_fertility_ema_updated_at
-                ),
                 "smoothing": (
                     float(creature.smoothed_rotation),
                     float(creature.smoothed_acceleration),

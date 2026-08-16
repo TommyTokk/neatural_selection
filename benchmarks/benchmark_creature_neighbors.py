@@ -35,7 +35,6 @@ def make_world(population: int) -> World:
         world.creatures.append(creature)
         world.fitness[creature_id] = CreatureFitness()
         world._chronometers[creature_id] = 0.0
-        world._initialize_creature_biome_memory(creature)
     for index, creature in enumerate(world.creatures):
         pair_index = index // 2
         creature.body.position = (
