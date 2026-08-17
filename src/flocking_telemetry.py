@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from math import hypot
 
-from src.flocking import FlockingRuntimeSnapshot
+from src.creature.flocking import FlockingRuntimeSnapshot
 
 
 @dataclass(frozen=True, slots=True)

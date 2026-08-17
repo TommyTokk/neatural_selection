@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from colorsys import hsv_to_rgb, rgb_to_hsv
 from dataclasses import dataclass, field, replace
 import copy
 import hashlib
@@ -18,13 +17,13 @@ import numpy as np
 from configs.sim_config import (
     LiveFoodConfig,
     SimConfig,
-    SocialCompatibilityMode,
 )
 import src.utils as ut
-from src.action import (
+from src.creature.action import (
     Action,
     acceleration_force_vector,
     is_active_intent,
+    neutral_action,
 )
 from src.biome import Biome, BiomeGenerationHandler
 from src.creature import (
@@ -36,8 +35,21 @@ from src.creature import (
     TraitMutationDelta,
     VisionTraits,
 )
-from src.fitness import CreatureFitness, flocking_benchmark_quality
-from src.flocking import (
+from src.creature.factory import CreatureFactory
+from src.creature.genotype import CreatureGenotype, GenotypeManager
+from src.creature.evolution import (
+    CreatureEvolutionCoordinator,
+    EvolutionTransaction,
+)
+from src.creature.runtime import (
+    CreatureActionService,
+    CreatureLifecycleService,
+    CreaturePerceptionService,
+    CreatureResourceService,
+    CreatureSocialService,
+)
+from src.creature.fitness import CreatureFitness, flocking_benchmark_quality
+from src.creature.flocking import (
     FlockingRuntimeSnapshot,
     SocialRuntime,
     SocialCompatibilityResolver,
@@ -51,7 +63,7 @@ from src.flocking import (
 )
 from src.food import Food
 from src.food_spawner import FoodSpawner
-from src.metabolism import (
+from src.creature.metabolism import (
     ActivityResult,
     ENERGY_EPSILON,
     FoodConsumption,
@@ -61,19 +73,21 @@ from src.metabolism import (
     calculate_weighted_activity,
     is_energy_depleted,
 )
-from src.vision import (
+from src.creature.vision import (
     BiomeSensorSnapshot,
     SENSOR_CONTRACT,
     SensorSnapshot,
     VisionSystem,
 )
-from src.neat_controller import NeatBrainController, SpeciationResult
+from src.creature.neat.controller import NeatBrainController
 from src.persistence import PersistenceManager, SavePriority, SimulationPaths
-from src.rt_neat import RtNeatManager
-from src.speciation import (
+from src.creature.neat.rt_neat import RtNeatManager
+from src.creature.speciation import (
+    ContinuousSpeciesManager,
     NeatChangeSummary,
     SpeciesDistanceBreakdown,
     SpeciesRecord,
+    SpeciationResult,
     SpeciesTraitSnapshot,
 )
 from src.telemetry import TelemetryDatabase
@@ -82,12 +96,12 @@ from src.flocking_telemetry import (
     PersistentGroupTracker,
 )
 from src.collision import BOUNDARY_CATEGORY, CREATURE_CATEGORY, FOOD_CATEGORY
-from src.spatial import (
+from src.creature.spatial import (
     BroadPhaseGeometry,
     CandidateBuffer,
     CreatureSpatialIndex,
 )
-from src.communication import (
+from src.creature.communication import (
     AcousticDebugInfo,
     AcousticSignal,
     AcousticSystem,
@@ -161,6 +175,53 @@ class ArchivedCreatureTraits:
     color: Color
     lineage: LineageInfo
     flocking_traits: FlockingTraits = field(default_factory=FlockingTraits)
+
+    @property
+    def genotype(self) -> CreatureGenotype:
+        """Return the archived flat fields as an aggregate genotype.
+
+        Parameters
+        ----------
+        None
+            This property receives no external parameters.
+
+        Returns
+        -------
+        CreatureGenotype
+            Independent aggregate genotype suitable for recovery mutation.
+        """
+        # Preserve the legacy checkpoint fields while exposing the new model.
+        return CreatureGenotype(
+            copy.deepcopy(self.vision),
+            copy.deepcopy(self.physical_traits),
+            copy.deepcopy(self.flocking_traits),
+            tuple(self.color),
+        )
+
+    @classmethod
+    def from_creature(cls, creature: Creature) -> ArchivedCreatureTraits:
+        """Capture genotype and lineage from a live creature.
+
+        Parameters
+        ----------
+        creature
+            Live creature being archived.
+
+        Returns
+        -------
+        ArchivedCreatureTraits
+            Legacy-compatible detached archive record.
+        """
+        # Snapshot helpers replace repeated field-by-field trait copying.
+        genotype = creature.genotype.snapshot()
+        return cls(
+            creature_id=creature.creature_id,
+            vision=genotype.vision,
+            physical_traits=genotype.physical_traits,
+            color=genotype.color,
+            lineage=creature.lineage.snapshot(),
+            flocking_traits=genotype.flocking_traits,
+        )
 
 
 @dataclass(slots=True)
@@ -368,6 +429,30 @@ class World:
         simulation_paths: SimulationPaths | None = None,
         brain_initialization_seed: int | None = None,
     ) -> None:
+        """Initialize world-owned environment state and composed services.
+
+        Parameters
+        ----------
+        config
+            Complete simulation configuration.
+        bootstrap
+            Whether to create the configured initial population and food.
+        simulation_paths
+            Optional filesystem paths for checkpoints and telemetry output.
+        brain_initialization_seed
+            Optional neural initialization seed independent of simulation RNG.
+
+        Returns
+        -------
+        None
+            The world and its service graph are initialized in place.
+
+        Notes
+        -----
+        Service construction preserves the historical random-consumption order;
+        in particular, creature spawning still consumes the simulation RNG.
+        """
+        # Validate configuration before any service allocates persistent state.
         config.flocking.validate()
         config.action.validate()
         config.scheduler.validate()
@@ -474,12 +559,25 @@ class World:
         self._creature_by_shape_id: dict[int, Creature] = {}
         self._living_creatures: dict[int, Creature] = {}
         self._issued_creature_ids: set[int] = set()
+        self.lifecycle = CreatureLifecycleService()
+        self.lifecycle.living = self._living_creatures
+        self.lifecycle.issued_ids = self._issued_creature_ids
         self._creature_query_filter = pymunk.ShapeFilter(mask=CREATURE_CATEGORY)
         # Kept as a compatibility sentinel for older diagnostics. Positions
         # are owned exclusively by the generation-stamped spatial index.
         self._creature_spatial_state = None
         self._boundary_shapes: list[pymunk.Shape] = []
         self._rebuild_boundaries()
+        # Creature construction and genotype logic now have explicit ownership.
+        self.genotype_manager = GenotypeManager(
+            config,
+            self.CREATURE_COLOR_PALETTE,
+        )
+        self.creature_factory = CreatureFactory(
+            config,
+            self.space,
+            self.genotype_manager,
+        )
         self.creatures = self._spawn_creatures() if bootstrap else []
         self._next_creature_id_value = (
             max(
@@ -488,6 +586,7 @@ class World:
             )
             + 1
         )
+        self.lifecycle.synchronize_allocator(self._next_creature_id_value)
         for creature in self.creatures:
             self._register_living_creature(creature)
             self._initialize_creature_runtime_state(creature)
@@ -590,19 +689,35 @@ class World:
             sensor_contract.neat_config_path,
             **controller_kwargs,
         )
+        # Keep the legacy alias while exposing explicit neural/species services.
+        self.brain_controller = self.neat_controller
+        self.species_manager = getattr(
+            self.brain_controller,
+            "species_manager",
+            None,
+        )
+        if self.species_manager is None:
+            self.species_manager = ContinuousSpeciesManager(
+                config.speciation.compatibility_threshold,
+                config.speciation.phenotypic_weight,
+                config.trait,
+                config.vision,
+                config.speciation.flocking_trait_distance_coefficient,
+            )
+            self.brain_controller.species_manager = self.species_manager
+        self.evolution = CreatureEvolutionCoordinator(
+            self.genotype_manager,
+            self.brain_controller,
+        )
         self.social_compatibility = SocialCompatibilityResolver(
             config.flocking.compatibility,
-            getattr(
-                self.neat_controller,
-                "flocking_compatibility",
-                lambda _first, _second: 0.0,
-            ),
+            self.evolution.flocking_compatibility,
         )
         self.vision.flock_compatibility_resolver = (
             self.social_compatibility.compatibility
         )
         if bootstrap:
-            self.neat_controller.assign_initial_brains(self.creatures)
+            self.evolution.assign_initial_brains(self.creatures)
         self.metabolism = Metabolism(
             config.metabolism,
             self.vision,
@@ -612,6 +727,39 @@ class World:
             food_config=config.food,
         )
         self.rt_neat = RtNeatManager(self.neat_controller, self.rng)
+        # Composed services become the debuggable owners of creature-domain state.
+        self.perception = CreaturePerceptionService(self.vision)
+        self.perception.spatial_index = self._creature_spatial_index
+        self.perception.candidate_buffer = self._candidate_buffer
+        self.perception.last_snapshots = self._last_sensor_snapshots
+        self.perception.last_acoustic_debug = self._last_acoustic_debug
+        self.actions = CreatureActionService()
+        self.actions.raw = self._last_actions
+        self.actions.effective = self._effective_actions
+        self.actions.motion_commands = self._motion_commands
+        self.social = CreatureSocialService(self.social_compatibility)
+        self.social.intentions = self._cached_social_intentions
+        self.social.last_runtime = self._last_flocking_runtime
+        self.social.last_debug = self._last_flock_steering_debug
+        self.social.communication_positions = self._communication_positions
+        self.social.communication_trail_amounts = self._communication_trail_amounts
+        self.social.communication_alarm_amounts = self._communication_alarm_amounts
+        self.resources = CreatureResourceService(self.metabolism)
+        self.resources.fitness = self.fitness
+        self.resources.held_food_by_creature_id = self._held_food_by_creature_id
+        self.resources.carrier_by_food_id = self._carrier_by_food_id
+        self.resources.mouth_exposures = self._mouth_exposures
+        self.resources.chronometers = self._chronometers
+        if not hasattr(self, "_last_digestion_processing_costs_per_second"):
+            self._last_digestion_processing_costs_per_second = {}
+        resources = getattr(self, "resources", None)
+        if resources is not None:
+            resources.last_digestion_processing_costs_per_second = (
+                self._last_digestion_processing_costs_per_second
+            )
+        self.lifecycle.add_discard_callback(self.perception.discard)
+        self.lifecycle.add_discard_callback(self.actions.discard)
+        self.lifecycle.add_discard_callback(self.social.discard)
         self._trait_archive_by_genome_id: dict[int, ArchivedCreatureTraits] = {}
         self.species_history: dict[int, SpeciesRecord] = {}
         if bootstrap:
@@ -833,6 +981,47 @@ class World:
             finally:
                 if self.telemetry is not None:
                     self.telemetry.close()
+
+    def rebind_creature_services(self) -> None:
+        """Reconnect compatibility state after persistence replaces containers.
+
+        Parameters
+        ----------
+        None
+            This method receives no external parameters.
+
+        Returns
+        -------
+        None
+            Every composed service points at authoritative restored state.
+        """
+        # Persistence intentionally replaces dictionaries atomically after loading.
+        self.lifecycle.living = self._living_creatures
+        self.lifecycle.issued_ids = self._issued_creature_ids
+        self.lifecycle.synchronize_allocator(self._next_creature_id_value)
+        self.perception.last_snapshots = self._last_sensor_snapshots
+        self.perception.last_acoustic_debug = self._last_acoustic_debug
+        self.perception.spatial_index = self._creature_spatial_index
+        self.perception.candidate_buffer = self._candidate_buffer
+        self.actions.raw = self._last_actions
+        self.actions.effective = self._effective_actions
+        self.actions.motion_commands = self._motion_commands
+        self.social.intentions = self._cached_social_intentions
+        self.social.last_runtime = self._last_flocking_runtime
+        self.social.last_debug = self._last_flock_steering_debug
+        self.social.communication_positions = self._communication_positions
+        self.social.communication_trail_amounts = self._communication_trail_amounts
+        self.social.communication_alarm_amounts = self._communication_alarm_amounts
+        self.resources.fitness = self.fitness
+        self.resources.held_food_by_creature_id = self._held_food_by_creature_id
+        self.resources.carrier_by_food_id = self._carrier_by_food_id
+        self.resources.mouth_exposures = self._mouth_exposures
+        self.resources.chronometers = self._chronometers
+        self.resources.last_digestion_processing_costs_per_second = (
+            self._last_digestion_processing_costs_per_second
+        )
+        self.species_manager = self.brain_controller.species_manager
+        self.evolution.species_manager = self.species_manager
 
     @property
     def save_in_progress(self) -> bool:
@@ -1084,7 +1273,7 @@ class World:
 
     def start_new_sensing_epoch(self, root_species_id: int) -> None:
         """Reset behavioral evolution while preserving the living world."""
-        self.neat_controller.reset_for_new_sensing_epoch(
+        self.evolution.reset_for_new_sensing_epoch(
             self.creatures,
             root_species_id,
         )
@@ -2674,14 +2863,14 @@ class World:
                 self._spawn_creature(
                     index + 1,
                     position=positions[index],
-                    color=self._initial_creature_color(0),
+                    color=self.genotype_manager.initial_color(0),
                 )
                 for index in range(self.config.population.initial_creatures)
             ]
         return [
             self._spawn_creature(
                 index + 1,
-                color=self._initial_creature_color(0),
+                color=self.genotype_manager.initial_color(0),
             )
             for index in range(self.config.population.initial_creatures)
         ]
@@ -2730,6 +2919,42 @@ class World:
         flocking_traits: FlockingTraits | None = None,
         lineage: LineageInfo | None = None,
     ) -> Creature:
+        """Materialize one creature through the domain factory.
+
+        Parameters
+        ----------
+        creature_id
+            Stable identity reserved for the creature.
+        position
+            Optional world-space position; a random position is used otherwise.
+        heading
+            Optional body heading in radians.
+        energy
+            Optional initial usable energy.
+        life
+            Optional initial life reserve.
+        color
+            Optional inherited RGB or RGBA colour.
+        vision
+            Optional inherited visual traits.
+        physical_traits
+            Optional inherited body and metabolic traits.
+        flocking_traits
+            Optional inherited social traits.
+        lineage
+            Optional ancestry and species metadata.
+
+        Returns
+        -------
+        Creature
+            Fully initialized physical creature, not yet registered as live.
+
+        Raises
+        ------
+        ValueError
+            If ``creature_id`` is live or was already issued this session.
+        """
+        # Resolve bounds once so the factory receives only creature-domain data.
         left, bottom, right, top = self.environment_world_bounds
         existing = getattr(self, "_living_creatures", {}).get(creature_id)
         if existing is not None:
@@ -2739,393 +2964,52 @@ class World:
                 f"Creature ID {creature_id} was already issued in this session."
             )
 
-        if physical_traits is None:
-            physical_traits = self._initial_physical_traits()
-
-        if lineage is None:
-            lineage = LineageInfo()
-        if flocking_traits is None:
-            flocking_traits = self._initial_flocking_traits()
-
-        radius = physical_traits.radius
-        margin = radius + 10.0
-
-        mass = 1.0
-        moment = pymunk.moment_for_circle(mass, 0.0, radius)
-        body = pymunk.Body(mass, moment)
-        if position is None:
-            body.position = (
-                self.rng.uniform(left + margin, right - margin),
-                self.rng.uniform(bottom + margin, top - margin),
-            )
-        else:
-            body.position = position
-        body.angle = (
-            self.rng.uniform(0.0, 6.283185307179586) if heading is None else heading
-        )
-        body.velocity = (0.0, 0.0)
-
-        # Creature shapes are one zero-offset circle each. Neighbor queries can
-        # therefore cache body.position as the circle's geometric center.
-        shape = pymunk.Circle(body, radius)
-        shape.filter = pymunk.ShapeFilter(
-            categories=CREATURE_CATEGORY,
-            mask=CREATURE_CATEGORY | FOOD_CATEGORY | BOUNDARY_CATEGORY,
-        )
-        shape.elasticity = 0.15
-        shape.friction = 0.0
-        self.space.add(body, shape)
-
-        if vision is None:
-            vision = VisionTraits(
-                range=self.rng.uniform(
-                    self.config.vision.min_range, self.config.vision.max_range
-                ),
-                angle=self.rng.uniform(
-                    self.config.vision.min_angle, self.config.vision.max_angle
-                ),
-            )
-
-        creature = Creature(
-            creature_id=creature_id,
-            name=f"Herbivore {creature_id:02d}",
-            body=body,
-            shape=shape,
-            energy=(self.rng.uniform(0.55, 0.95) if energy is None else energy),
-            life=(
-                self.config.metabolism.max_life
-                * self.config.metabolism.initial_life_fraction
-                if life is None
-                else self._clamp(
-                    life,
-                    0.0,
-                    self.config.metabolism.max_life,
-                )
-            ),
+        # Delegate physics and genotype construction while World guards identity.
+        creature = self.creature_factory.create(
+            creature_id,
+            (left, bottom, right, top),
+            self.rng,
+            position=position,
+            heading=heading,
+            energy=energy,
+            life=life,
+            color=color,
             vision=vision,
-            color=(
-                color
-                if color is not None
-                else self._initial_creature_color(creature_id - 1)
-            ),
             physical_traits=physical_traits,
             flocking_traits=flocking_traits,
             lineage=lineage,
         )
-        self._index_creature_shape(shape, creature)
+        self._index_creature_shape(creature.shape, creature)
         return creature
 
-    def _initial_creature_color(self, index: int) -> Color:
-        return self.CREATURE_COLOR_PALETTE[index % len(self.CREATURE_COLOR_PALETTE)]
-
-    def _initial_physical_traits(self) -> PhysicalTraits:
-        trait_config = self.config.trait
-        radius = self._clamp(
-            trait_config.default_radius
-            + self.rng.gauss(0.0, trait_config.initial_radius_jitter),
-            trait_config.min_radius,
-            trait_config.max_radius,
-        )
-        movement_cost_multiplier = self._clamp(
-            trait_config.default_movement_cost_multiplier
-            + self.rng.gauss(0.0, trait_config.initial_movement_cost_jitter),
-            trait_config.min_movement_cost_multiplier,
-            trait_config.max_movement_cost_multiplier,
-        )
-        stomach_capacity = self._clamp(
-            trait_config.default_stomach_capacity
-            + self.rng.gauss(
-                0.0,
-                trait_config.initial_stomach_capacity_jitter,
-            ),
-            trait_config.min_stomach_capacity,
-            trait_config.max_stomach_capacity,
-        )
-        digestion_rate = self._clamp(
-            trait_config.default_digestion_rate
-            + self.rng.gauss(
-                0.0,
-                trait_config.initial_digestion_rate_jitter,
-            ),
-            trait_config.min_digestion_rate,
-            trait_config.max_digestion_rate,
-        )
-        digestion_efficiency = self._clamp(
-            trait_config.default_digestion_efficiency
-            + self.rng.gauss(
-                0.0,
-                trait_config.initial_digestion_efficiency_jitter,
-            ),
-            trait_config.min_digestion_efficiency,
-            trait_config.max_digestion_efficiency,
-        )
-        return PhysicalTraits(
-            radius=radius,
-            movement_cost_multiplier=movement_cost_multiplier,
-            stomach_capacity=stomach_capacity,
-            digestion_rate=digestion_rate,
-            digestion_efficiency=digestion_efficiency,
-        )
-
-    def _initial_flocking_traits(self) -> FlockingTraits:
-        config = self.config.trait
-        return FlockingTraits(
-            separation_gene=self._clamp(
-                self.rng.gauss(
-                    config.default_separation_gene,
-                    config.initial_flocking_gene_stdev,
-                ),
-                0.0,
-                1.0,
-            ),
-            alignment_gene=self._clamp(
-                self.rng.gauss(
-                    config.default_alignment_gene,
-                    config.initial_flocking_gene_stdev,
-                ),
-                0.0,
-                1.0,
-            ),
-            cohesion_gene=self._clamp(
-                self.rng.gauss(
-                    config.default_cohesion_gene,
-                    config.initial_flocking_gene_stdev,
-                ),
-                0.0,
-                1.0,
-            ),
-            social_tag_x=(
-                self._clamp(
-                    self.rng.gauss(
-                        config.default_social_tag_x,
-                        config.initial_social_tag_stdev,
-                    ),
-                    0.0,
-                    1.0,
-                )
-                if self.config.flocking.compatibility.mode
-                is SocialCompatibilityMode.SOCIAL_TAG
-                else config.default_social_tag_x
-            ),
-            social_tag_y=(
-                self._clamp(
-                    self.rng.gauss(
-                        config.default_social_tag_y,
-                        config.initial_social_tag_stdev,
-                    ),
-                    0.0,
-                    1.0,
-                )
-                if self.config.flocking.compatibility.mode
-                is SocialCompatibilityMode.SOCIAL_TAG
-                else config.default_social_tag_y
-            ),
-        )
-
-    def _mutated_flocking_traits(
-        self,
-        parent_traits: FlockingTraits,
-    ) -> tuple[FlockingTraits, TraitMutationDelta]:
-        config = self.config.trait
-
-        def mutate(value: float) -> float:
-            roll = self.rng.random()
-            if roll < config.flocking_gene_replace_rate:
-                return self.rng.uniform(0.0, 1.0)
-            if roll < (
-                config.flocking_gene_replace_rate
-                + config.flocking_gene_mutation_rate
-            ):
-                value += self.rng.gauss(0.0, config.flocking_gene_mutation_power)
-            return self._clamp(value, 0.0, 1.0)
-
-        def mutate_social_tag(value: float) -> float:
-            if (
-                self.config.flocking.compatibility.mode
-                is not SocialCompatibilityMode.SOCIAL_TAG
-            ):
-                return value
-            roll = self.rng.random()
-            if roll < config.social_tag_replace_rate:
-                return self.rng.uniform(0.0, 1.0)
-            if roll < (
-                config.social_tag_replace_rate
-                + config.social_tag_mutation_rate
-            ):
-                value += self.rng.gauss(
-                    0.0,
-                    config.social_tag_mutation_power,
-                )
-            return self._clamp(value, 0.0, 1.0)
-
-        child = FlockingTraits(
-            separation_gene=mutate(parent_traits.separation_gene),
-            alignment_gene=mutate(parent_traits.alignment_gene),
-            cohesion_gene=mutate(parent_traits.cohesion_gene),
-            social_tag_x=mutate_social_tag(parent_traits.social_tag_x),
-            social_tag_y=mutate_social_tag(parent_traits.social_tag_y),
-        )
-        return (
-            child,
-            TraitMutationDelta(
-                separation_gene=(
-                    child.separation_gene - parent_traits.separation_gene
-                ),
-                alignment_gene=(
-                    child.alignment_gene - parent_traits.alignment_gene
-                ),
-                cohesion_gene=child.cohesion_gene - parent_traits.cohesion_gene,
-                social_tag_x=child.social_tag_x - parent_traits.social_tag_x,
-                social_tag_y=child.social_tag_y - parent_traits.social_tag_y,
-            ),
-        )
-
-    def _mutated_vision(self, parent_vision: VisionTraits) -> VisionTraits:
-        vision, _ = self._mutated_vision_with_delta(parent_vision)
-        return vision
-
-    def _mutated_vision_with_delta(
-        self,
-        parent_vision: VisionTraits,
-    ) -> tuple[VisionTraits, TraitMutationDelta]:
-        range_mutation = self.rng.gauss(0, 8)
-        angle_mutation = self.rng.gauss(0, 0.08)
-
-        child_vision = VisionTraits(
-            range=self._clamp(
-                parent_vision.range + range_mutation,
-                self.config.vision.min_range,
-                self.config.vision.max_range,
-            ),
-            angle=self._clamp(
-                parent_vision.angle + angle_mutation,
-                self.config.vision.min_angle,
-                self.config.vision.max_angle,
-            ),
-        )
-        return (
-            child_vision,
-            TraitMutationDelta(
-                vision_range=child_vision.range - parent_vision.range,
-                vision_angle=child_vision.angle - parent_vision.angle,
-            ),
-        )
-
-    def _mutated_physical_traits(
-        self,
-        parent_traits: PhysicalTraits,
-    ) -> tuple[PhysicalTraits, TraitMutationDelta]:
-        trait_config = self.config.trait
-        radius_mutation = self.rng.gauss(0.0, trait_config.radius_mutation_stddev)
-        movement_mutation = self.rng.gauss(
-            0.0,
-            trait_config.movement_cost_mutation_stddev,
-        )
-
-        child_radius = self._clamp(
-            parent_traits.radius + radius_mutation,
-            trait_config.min_radius,
-            trait_config.max_radius,
-        )
-        child_movement_cost_multiplier = self._clamp(
-            parent_traits.movement_cost_multiplier + movement_mutation,
-            trait_config.min_movement_cost_multiplier,
-            trait_config.max_movement_cost_multiplier,
-        )
-
-        def mutate_digestive(
-            value: float,
-            mutation_stddev: float,
-            minimum: float,
-            maximum: float,
-        ) -> float:
-            if self.rng.random() >= trait_config.digestive_trait_mutation_rate:
-                return self._clamp(value, minimum, maximum)
-            return self._clamp(
-                value + self.rng.gauss(0.0, mutation_stddev),
-                minimum,
-                maximum,
-            )
-
-        parent_stomach_capacity = getattr(
-            parent_traits,
-            "stomach_capacity",
-            trait_config.default_stomach_capacity,
-        )
-        parent_digestion_rate = getattr(
-            parent_traits,
-            "digestion_rate",
-            trait_config.default_digestion_rate,
-        )
-        parent_digestion_efficiency = getattr(
-            parent_traits,
-            "digestion_efficiency",
-            trait_config.default_digestion_efficiency,
-        )
-        child_stomach_capacity = mutate_digestive(
-            parent_stomach_capacity,
-            trait_config.stomach_capacity_mutation_stddev,
-            trait_config.min_stomach_capacity,
-            trait_config.max_stomach_capacity,
-        )
-        child_digestion_rate = mutate_digestive(
-            parent_digestion_rate,
-            trait_config.digestion_rate_mutation_stddev,
-            trait_config.min_digestion_rate,
-            trait_config.max_digestion_rate,
-        )
-        child_digestion_efficiency = mutate_digestive(
-            parent_digestion_efficiency,
-            trait_config.digestion_efficiency_mutation_stddev,
-            trait_config.min_digestion_efficiency,
-            trait_config.max_digestion_efficiency,
-        )
-
-        return (
-            PhysicalTraits(
-                radius=child_radius,
-                movement_cost_multiplier=child_movement_cost_multiplier,
-                stomach_capacity=child_stomach_capacity,
-                digestion_rate=child_digestion_rate,
-                digestion_efficiency=child_digestion_efficiency,
-            ),
-            TraitMutationDelta(
-                radius=child_radius - parent_traits.radius,
-                movement_cost_multiplier=(
-                    child_movement_cost_multiplier
-                    - parent_traits.movement_cost_multiplier
-                ),
-                stomach_capacity=(
-                    child_stomach_capacity - parent_stomach_capacity
-                ),
-                digestion_rate=(
-                    child_digestion_rate - parent_digestion_rate
-                ),
-                digestion_efficiency=(
-                    child_digestion_efficiency
-                    - parent_digestion_efficiency
-                ),
-            ),
-        )
-
     def _mutated_child_traits(self, parent: Creature) -> ChildCreatureTraits:
+        """Build inherited non-neural traits and lineage for one child.
+
+        Parameters
+        ----------
+        parent
+            Live parent supplying genotype and lineage.
+
+        Returns
+        -------
+        ChildCreatureTraits
+            Mutated traits and ancestry ready for neural evolution.
+        """
+        # Delegate all non-neural mutation to the genotype subsystem.
         return self._mutated_child_traits_from_parent_values(
             parent_id=parent.creature_id,
             parent_generation=parent.lineage.generation,
             parent_species_id=parent.lineage.species_id,
             parent_vision=parent.vision,
             parent_physical_traits=parent.physical_traits,
-            parent_flocking_traits=getattr(
-                parent,
-                "flocking_traits",
-                FlockingTraits(),
-            ),
+            parent_flocking_traits=parent.flocking_traits,
             parent_color=parent.color,
         )
 
     def _mutated_child_traits_from_parent_values(
         self,
-        parent_id: int | None,
+        *,
+        parent_id: int,
         parent_generation: int,
         parent_species_id: int,
         parent_vision: VisionTraits,
@@ -3133,93 +3017,53 @@ class World:
         parent_flocking_traits: FlockingTraits,
         parent_color: Color,
     ) -> ChildCreatureTraits:
-        child_vision, vision_delta = self._mutated_vision_with_delta(parent_vision)
-        child_physical_traits, physical_delta = self._mutated_physical_traits(
-            parent_physical_traits,
+        """Build child traits from live or archived parent values.
+
+        Parameters
+        ----------
+        parent_id
+            Stable identity of the parent.
+        parent_generation
+            Parent generation number.
+        parent_species_id
+            Parent species identity before child speciation.
+        parent_vision
+            Parent visual traits.
+        parent_physical_traits
+            Parent physical traits.
+        parent_flocking_traits
+            Parent social traits.
+        parent_color
+            Parent RGB or RGBA colour.
+
+        Returns
+        -------
+        ChildCreatureTraits
+            Mutated traits and lineage for the child.
+        """
+        # One aggregate mutation replaces four previously separate World paths.
+        result = self.genotype_manager.mutate(
+            CreatureGenotype(
+                parent_vision,
+                parent_physical_traits,
+                parent_flocking_traits,
+                parent_color,
+            ),
+            self.rng,
         )
-        child_flocking_traits, flocking_delta = self._mutated_flocking_traits(
-            parent_flocking_traits,
-        )
-        mutation_delta = TraitMutationDelta(
-            vision_range=vision_delta.vision_range,
-            vision_angle=vision_delta.vision_angle,
-            radius=physical_delta.radius,
-            movement_cost_multiplier=physical_delta.movement_cost_multiplier,
-            stomach_capacity=physical_delta.stomach_capacity,
-            digestion_rate=physical_delta.digestion_rate,
-            digestion_efficiency=physical_delta.digestion_efficiency,
-            separation_gene=flocking_delta.separation_gene,
-            alignment_gene=flocking_delta.alignment_gene,
-            cohesion_gene=flocking_delta.cohesion_gene,
-            social_tag_x=flocking_delta.social_tag_x,
-            social_tag_y=flocking_delta.social_tag_y,
-        )
+        genotype = result.genotype
         return ChildCreatureTraits(
-            vision=child_vision,
-            physical_traits=child_physical_traits,
-            flocking_traits=child_flocking_traits,
-            color=self._mutated_creature_color(parent_color),
+            vision=genotype.vision,
+            physical_traits=genotype.physical_traits,
+            flocking_traits=genotype.flocking_traits,
+            color=genotype.color,
             lineage=LineageInfo(
                 parent_id=parent_id,
                 generation=parent_generation + 1,
                 species_id=parent_species_id,
-                mutation_delta=mutation_delta,
+                mutation_delta=result.mutation_delta,
             ),
         )
-
-    def _mutated_creature_color(self, parent_color: Color) -> Color:
-        red, green, blue = parent_color[:3]
-        hue, saturation, value = rgb_to_hsv(
-            red / 255.0,
-            green / 255.0,
-            blue / 255.0,
-        )
-        hue = (hue + self.rng.uniform(-0.035, 0.035)) % 1.0
-        saturation = max(
-            0.48,
-            min(0.82, saturation + self.rng.uniform(-0.06, 0.06)),
-        )
-        value = max(0.62, min(0.92, value + self.rng.uniform(-0.05, 0.05)))
-        if self._is_food_like_color(hsv_to_rgb(hue, saturation, value)):
-            hue = (hue + 0.22) % 1.0
-        red, green, blue = hsv_to_rgb(hue, saturation, value)
-        return (int(red * 255), int(green * 255), int(blue * 255))
-
-    def _new_species_color(self, parent_color: Color) -> Color:
-        red, green, blue = parent_color[:3]
-        parent_hue, _, _ = rgb_to_hsv(
-            red / 255.0,
-            green / 255.0,
-            blue / 255.0,
-        )
-
-        for _ in range(32):
-            hue = (parent_hue + self.rng.uniform(0.18, 0.82)) % 1.0
-            saturation = self.rng.uniform(0.7, 1.0)
-            value = self.rng.uniform(0.8, 1.0)
-            candidate = hsv_to_rgb(hue, saturation, value)
-            color = tuple(int(channel * 255) for channel in candidate)
-            normalized_color = tuple(channel / 255.0 for channel in color)
-            if not self._is_food_like_color(normalized_color):
-                return color
-
-        for hue_shift in (0.5, 1.0 / 3.0, 2.0 / 3.0):
-            candidate = hsv_to_rgb((parent_hue + hue_shift) % 1.0, 0.85, 0.9)
-            color = tuple(int(channel * 255) for channel in candidate)
-            normalized_color = tuple(channel / 255.0 for channel in color)
-            if not self._is_food_like_color(normalized_color):
-                return color
-
-        candidate = hsv_to_rgb((parent_hue + 0.5) % 1.0, 1.0, 1.0)
-        return tuple(int(channel * 255) for channel in candidate)
-
-    def _is_food_like_color(self, color: tuple[float, float, float]) -> bool:
-        food_red, food_green, food_blue = self.config.theme.food_fill[:3]
-        red, green, blue = (channel * 255.0 for channel in color)
-        distance_squared = (
-            (red - food_red) ** 2 + (green - food_green) ** 2 + (blue - food_blue) ** 2
-        )
-        return distance_squared < 70.0**2
 
     def _child_spawn_position(
         self,
@@ -3275,6 +3119,19 @@ class World:
         return spawn_x, spawn_y
 
     def _next_creature_id(self) -> int:
+        """Reserve the next stable creature identity through lifecycle state.
+
+        Parameters
+        ----------
+        None
+            This method receives no external parameters.
+
+        Returns
+        -------
+        int
+            Identity that has not previously been issued in this session.
+        """
+        # Reconstruct compatibility fixtures that instantiate World without init.
         if not hasattr(self, "_next_creature_id_value"):
             self._next_creature_id_value = (
                 max(
@@ -3287,8 +3144,12 @@ class World:
                 )
                 + 1
             )
-        creature_id = self._next_creature_id_value
-        self._next_creature_id_value += 1
+        if not hasattr(self, "lifecycle"):
+            self.lifecycle = CreatureLifecycleService()
+            self.lifecycle.issued_ids = getattr(self, "_issued_creature_ids", set())
+        self.lifecycle.synchronize_allocator(self._next_creature_id_value)
+        creature_id = self.lifecycle.allocate_id()
+        self._next_creature_id_value = self.lifecycle.next_id_value
         return creature_id
 
     def _spawn_foods(self, delta_time: float) -> None:
@@ -3361,29 +3222,58 @@ class World:
             self._creature_spatial_state = None
 
     def _register_living_creature(self, creature: Creature) -> None:
-        """Register a successful spawn and reject IDs reused in this session."""
-        if not hasattr(self, "_living_creatures"):
-            self._living_creatures = {}
+        """Register a successful spawn and advance the stable ID allocator.
+
+        Parameters
+        ----------
+        creature
+            Creature that has completed physics creation.
+
+        Returns
+        -------
+        None
+            Lifecycle and allocator state are updated.
+
+        Raises
+        ------
+        ValueError
+            If the identity is already live or was previously issued.
+        """
+        # Lifecycle owns identity validation while World maintains the allocator.
+        if not hasattr(self, "lifecycle"):
+            self.lifecycle = CreatureLifecycleService()
+            self.lifecycle.living = getattr(self, "_living_creatures", {})
+            self.lifecycle.issued_ids = getattr(self, "_issued_creature_ids", set())
+            self._living_creatures = self.lifecycle.living
+            self._issued_creature_ids = self.lifecycle.issued_ids
+        self.lifecycle.register(creature)
         creature_id = creature.creature_id
-        if type(creature_id) is not int:
-            raise TypeError("creature_id must be a stable integer.")
-        existing = self._living_creatures.get(creature_id)
-        if existing is not None and existing is not creature:
-            raise ValueError(f"Duplicate live creature ID {creature_id}.")
-        self._living_creatures[creature_id] = creature
-        if not hasattr(self, "_issued_creature_ids"):
-            self._issued_creature_ids = set()
-        self._issued_creature_ids.add(creature_id)
         if hasattr(self, "_next_creature_id_value"):
             self._next_creature_id_value = max(
                 self._next_creature_id_value,
                 creature_id + 1,
             )
+            self.lifecycle.synchronize_allocator(self._next_creature_id_value)
 
     def _unregister_living_creature(self, creature: Creature) -> None:
-        registry = getattr(self, "_living_creatures", None)
-        if registry is not None and registry.get(creature.creature_id) is creature:
-            del registry[creature.creature_id]
+        """Unregister a creature and notify transient cache owners.
+
+        Parameters
+        ----------
+        creature
+            Creature leaving the live simulation.
+
+        Returns
+        -------
+        None
+            The live registry and registered service caches are cleared.
+        """
+        # Lifecycle also notifies every transient cache owner in stable order.
+        if not hasattr(self, "lifecycle"):
+            self.lifecycle = CreatureLifecycleService()
+            self.lifecycle.living = getattr(self, "_living_creatures", {})
+            self.lifecycle.issued_ids = getattr(self, "_issued_creature_ids", set())
+        self.lifecycle.unregister(creature)
 
     def _acquire_candidate_buffer(self) -> CandidateBuffer:
         if getattr(self, "_candidate_buffer_leased", False):
@@ -3484,15 +3374,20 @@ class World:
 
     @staticmethod
     def _neutral_action() -> Action:
-        return Action(
-            accelerate=0.0,
-            rotate=0.0,
-            want_reproduce=0.0,
-            want_eat=0.0,
-            reset_chronometer=0.0,
-            want_grab=0.0,
-            want_release=0.0,
-        )
+        """Return a fresh compatibility neutral action.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+
+        Returns
+        -------
+        Action
+            Independent action with every intent disabled.
+        """
+        # Delegate to the action domain so all neutral construction is canonical.
+        return neutral_action()
 
     def _initialize_creature_runtime_state(self, creature: Creature) -> None:
         """Install deterministic neutral transient state for a live creature."""
@@ -3803,6 +3698,19 @@ class World:
         acoustics.replace_signals(signals)
 
     def _ensure_communication_buffer_capacity(self, required: int) -> None:
+        """Grow reusable communication arrays to hold ``required`` emissions.
+
+        Parameters
+        ----------
+        required
+            Minimum number of emission rows needed by the current fixed step.
+
+        Returns
+        -------
+        None
+            World aliases and social-service buffers reference the grown arrays.
+        """
+        # Reuse existing storage whenever capacity already covers the workload.
         positions = getattr(self, "_communication_positions", None)
         current = 0 if positions is None else positions.shape[0]
         if current >= required:
@@ -3811,6 +3719,12 @@ class World:
         self._communication_positions = np.empty((capacity, 2), dtype=np.float64)
         self._communication_trail_amounts = np.empty(capacity, dtype=np.float64)
         self._communication_alarm_amounts = np.empty(capacity, dtype=np.float64)
+        # Keep social-service reusable buffers aligned after geometric growth.
+        social = getattr(self, "social", None)
+        if social is not None:
+            social.communication_positions = self._communication_positions
+            social.communication_trail_amounts = self._communication_trail_amounts
+            social.communication_alarm_amounts = self._communication_alarm_amounts
 
     def _ensure_pheromone_sensor_buffer_capacity(self, required: int) -> None:
         positions = getattr(self, "_pheromone_sensor_positions", None)
@@ -5317,48 +5231,63 @@ class World:
         self,
         delta_time: float,
     ) -> tuple[dict[int, float], dict[int, float]]:
+        """Calculate biology demand without changing inherited trait values.
+
+        Parameters
+        ----------
+        delta_time
+            Simulated biology interval in seconds.
+
+        Returns
+        -------
+        tuple[dict[int, float], dict[int, float]]
+            Total and powered-movement demand by creature identity.
+        """
         demands: dict[int, float] = {}
         powered_movement_demands: dict[int, float] = {}
-        with_infant_penalties = self._apply_infant_movement_penalties()
-        try:
-            for creature in self.creatures:
-                action = self._action_for_execution(creature.creature_id)
-                sprint = (
-                    0.0
-                    if action is None
-                    else getattr(action, "flee_panic_intensity", 0.0)
-                )
-                breakdown = self.metabolism.energy_cost_breakdown_per_second(
-                    creature,
-                    self.MAX_SPEED,
-                    sprint_intensity=sprint,
-                    age_seconds=self._creature_age_seconds(creature),
-                    communication_intensities=(
-                        self._communication_intensities_for(
-                            creature.creature_id
-                        )
-                    ),
-                )
-                multiplier = (
-                    max(0.0, delta_time)
-                    * self._senescence_factor_for(creature)
-                )
-                powered_movement_rate = breakdown.sprint
-                if (
-                    getattr(
-                        creature,
-                        "effective_voluntary_motor_effort",
-                        0.0,
-                    )
-                    > ENERGY_EPSILON
-                ):
-                    powered_movement_rate += breakdown.movement
-                demands[creature.creature_id] = breakdown.total * multiplier
-                powered_movement_demands[creature.creature_id] = (
-                    powered_movement_rate * multiplier
-                )
-        finally:
-            self._restore_movement_multipliers(with_infant_penalties)
+        # Infant penalties are local calculation inputs, never genotype mutations.
+        for creature in self.creatures:
+            action = self._action_for_execution(creature.creature_id)
+            sprint = (
+                0.0
+                if action is None
+                else getattr(action, "flee_panic_intensity", 0.0)
+            )
+            physical_traits = getattr(creature, "physical_traits", None)
+            inherited_movement_cost = getattr(
+                physical_traits,
+                "movement_cost_multiplier",
+                None,
+            )
+            movement_cost_multiplier = (
+                None
+                if inherited_movement_cost is None
+                else inherited_movement_cost
+                * (3.0 if self._is_infant(creature) else 1.0)
+            )
+            breakdown = self.metabolism.energy_cost_breakdown_per_second(
+                creature,
+                self.MAX_SPEED,
+                sprint_intensity=sprint,
+                age_seconds=self._creature_age_seconds(creature),
+                communication_intensities=(
+                    self._communication_intensities_for(creature.creature_id)
+                ),
+                movement_cost_multiplier=movement_cost_multiplier,
+            )
+            multiplier = max(0.0, delta_time) * self._senescence_factor_for(
+                creature
+            )
+            powered_movement_rate = breakdown.sprint
+            if (
+                getattr(creature, "effective_voluntary_motor_effort", 0.0)
+                > ENERGY_EPSILON
+            ):
+                powered_movement_rate += breakdown.movement
+            demands[creature.creature_id] = breakdown.total * multiplier
+            powered_movement_demands[creature.creature_id] = (
+                powered_movement_rate * multiplier
+            )
         return demands, powered_movement_demands
 
     def _upkeep_demands_for(self, delta_time: float) -> dict[int, float]:
@@ -5622,20 +5551,52 @@ class World:
         self,
         requests: list[ReproductionRequest],
     ) -> tuple[list[StagedOffspring], object | None, object | None]:
+        """Stage accepted offspring against isolated evolution and RNG state.
+
+        Parameters
+        ----------
+        requests
+            Deterministically ordered reproduction requests to stage.
+
+        Returns
+        -------
+        tuple[list[StagedOffspring], object | None, object | None]
+            Offspring records, shadow evolution state, and staged RNG state.
+
+        Raises
+        ------
+        RuntimeError
+            If a selected parent unexpectedly lacks a neural brain while staging.
+
+        Notes
+        -----
+        Live RNGs, allocators, representatives, and revisions remain unchanged
+        until :meth:`_commit_staged_reproductions` accepts the whole batch.
+        """
+        # Empty batches bypass all cloning and preserve allocator positions.
         if not requests:
             return [], None, None
-        shadow_factory = getattr(
-            self.neat_controller,
-            "transaction_shadow",
-            None,
-        )
-        shadow_controller = (
-            shadow_factory()
-            if callable(shadow_factory)
-            else copy.deepcopy(self.neat_controller)
-        )
-        shadow_rng = Random()
-        shadow_rng.setstate(self.rng.getstate())
+        # Full worlds stage the composed evolution and simulation RNG together.
+        evolution = getattr(self, "evolution", None)
+        if evolution is not None:
+            shadow_state: object = evolution.begin_transaction(self.rng)
+            shadow_controller = shadow_state.coordinator.brain_controller
+            shadow_rng = shadow_state.simulation_rng
+        else:
+            # Compatibility path supports focused tests with lightweight fakes.
+            shadow_factory = getattr(
+                self.neat_controller,
+                "transaction_shadow",
+                None,
+            )
+            shadow_controller = (
+                shadow_factory()
+                if callable(shadow_factory)
+                else copy.deepcopy(self.neat_controller)
+            )
+            shadow_rng = Random()
+            shadow_rng.setstate(self.rng.getstate())
+            shadow_state = shadow_controller
         live_rng = self.rng
         staged: list[StagedOffspring] = []
         first_child_id = self._next_creature_id_value
@@ -5649,21 +5610,45 @@ class World:
                     parent,
                     traits.physical_traits.radius,
                 )
-                child_brain, speciation = shadow_controller.create_child_brain(
-                    parent.creature_id,
-                    child_id,
-                    parent.lineage.species_id,
-                    traits.physical_traits,
-                    traits.vision,
-                    traits.flocking_traits,
-                )
-                if child_brain is None or speciation is None:
-                    raise RuntimeError(
-                        "Final reproduction staging lost a parent brain."
+                if isinstance(shadow_state, EvolutionTransaction):
+                    plan = shadow_state.coordinator.finalize_child(
+                        parent,
+                        child_id,
+                        CreatureGenotype(
+                            traits.vision,
+                            traits.physical_traits,
+                            traits.flocking_traits,
+                            traits.color,
+                        ),
+                        traits.lineage,
+                        shadow_rng,
                     )
-                traits.lineage.species_id = speciation.species_id
-                if speciation.is_new_species:
-                    traits.color = self._new_species_color(parent.color)
+                    if plan is None:
+                        raise RuntimeError(
+                            "Final reproduction staging lost a parent brain."
+                        )
+                    speciation = plan.speciation_result
+                    traits.color = plan.genotype.color
+                    traits.lineage = plan.lineage
+                else:
+                    child_brain, speciation = shadow_controller.create_child_brain(
+                        parent.creature_id,
+                        child_id,
+                        parent.lineage.species_id,
+                        traits.physical_traits,
+                        traits.vision,
+                        traits.flocking_traits,
+                    )
+                    if child_brain is None or speciation is None:
+                        raise RuntimeError(
+                            "Final reproduction staging lost a parent brain."
+                        )
+                    traits.lineage.species_id = speciation.species_id
+                    if speciation.is_new_species:
+                        traits.color = self.genotype_manager.new_species_color(
+                            parent.color,
+                            self.rng,
+                        )
                 staged.append(
                     StagedOffspring(
                         request=request,
@@ -5675,7 +5660,7 @@ class World:
                 )
         finally:
             self.rng = live_rng
-        return staged, shadow_controller, shadow_rng.getstate()
+        return staged, shadow_state, shadow_rng.getstate()
 
     def _commit_staged_reproductions(
         self,
@@ -5683,23 +5668,45 @@ class World:
         shadow_controller: object | None,
         staged_rng_state: object | None,
     ) -> None:
+        """Commit an accepted reproduction batch and materialize its creatures.
+
+        Parameters
+        ----------
+        staged
+            Successfully planned offspring in deterministic insertion order.
+        shadow_controller
+            Composed transaction or legacy controller shadow used for staging.
+        staged_rng_state
+            Legacy staged simulation RNG state retained for test compatibility.
+
+        Returns
+        -------
+        None
+            Evolution, RNG, physics, lifecycle, and telemetry state are committed.
+        """
+        # A partial or missing transaction is never observable by the live world.
         if not staged or shadow_controller is None:
             return
-        controller = self.neat_controller
-        for name in (
-            "config",
-            "population",
-            "brains",
-            "species_manager",
-            "_next_genome_id_value",
-            "_next_brain_revision_value",
-            "_evolution_rng",
-            "_pairwise_compatibility_distance_cache",
-        ):
-            if hasattr(shadow_controller, name):
-                setattr(controller, name, getattr(shadow_controller, name))
-        if staged_rng_state is not None:
-            self.rng.setstate(staged_rng_state)
+        # Commit the composed shadow atomically when the full service is present.
+        if isinstance(shadow_controller, EvolutionTransaction):
+            self.evolution.commit_transaction(shadow_controller, self.rng)
+            self.species_manager = self.brain_controller.species_manager
+        else:
+            controller = self.neat_controller
+            for name in (
+                "config",
+                "population",
+                "brains",
+                "species_manager",
+                "_next_genome_id_value",
+                "_next_brain_revision_value",
+                "_evolution_rng",
+                "_pairwise_compatibility_distance_cache",
+            ):
+                if hasattr(shadow_controller, name):
+                    setattr(controller, name, getattr(shadow_controller, name))
+            if staged_rng_state is not None:
+                self.rng.setstate(staged_rng_state)
 
         for offspring in staged:
             parent = offspring.request.parent
@@ -5732,6 +5739,7 @@ class World:
                 parent_fitness.record_reproduction()
             self.rt_neat.record_normal_replacement()
         self._next_creature_id_value = staged[-1].child_id + 1
+        self.lifecycle.synchronize_allocator(self._next_creature_id_value)
 
     def _capture_mouth_exposure_rollback_state(
         self,
@@ -5946,6 +5954,21 @@ class World:
         delta_time: float,
         eating_report: MetabolismReport,
     ) -> None:
+        """Commit resource transactions, digestion, deaths, and staged births.
+
+        Parameters
+        ----------
+        delta_time
+            Biological update duration in seconds.
+        eating_report
+            Resolved mouth-contact consumption preceding resource evaluation.
+
+        Returns
+        -------
+        None
+            Creature ledgers, resources, lifecycle, and diagnostics are committed.
+        """
+        # Resolve all candidates before staging evolution to retain atomicity.
         resolution = self._resolve_resource_transactions(delta_time)
         staged_offspring, shadow_controller, staged_rng_state = (
             self._stage_final_reproductions(resolution.reproductions)
@@ -6035,6 +6058,9 @@ class World:
             )
             for creature_id, cost in processing_costs.items()
         }
+        self.resources.last_digestion_processing_costs_per_second = (
+            self._last_digestion_processing_costs_per_second
+        )
         for food in eating_report.touched_foods:
             reindex_shape = getattr(self.space, "reindex_shape", None)
             if reindex_shape is not None and food in self.foods:
@@ -6057,48 +6083,75 @@ class World:
         self._log_parent_selection_attempts(resolution.reproduction_attempts)
 
     def _update_metabolism_legacy_adapter(self, delta_time: float) -> None:
-        """Keep small historical test/extension metabolism doubles usable."""
+        """Run the historical monolithic metabolism extension interface.
+
+        Parameters
+        ----------
+        delta_time
+            Fixed-step biological duration in seconds.
+
+        Returns
+        -------
+        None
+            Resource, food, death, and diagnostic state are updated in place.
+
+        Notes
+        -----
+        Infant movement penalties are runtime inputs and never mutate genotype.
+        """
+        # Nursing remains the first resource transition in this compatibility path.
         self._apply_nursing(delta_time)
-        with_infant_penalties = self._apply_infant_movement_penalties()
-        try:
-            report = self.metabolism.update(
-                self.creatures,
-                self.foods,
-                delta_time,
-                self.MAX_SPEED,
-                self._eatable_foods_for,
-                self._creature_want_to_eat,
-                {
-                    creature.creature_id: getattr(
-                        action,
-                        "flee_panic_intensity",
-                        0.0,
-                    )
-                    for creature in self.creatures
-                    if (
-                        action := getattr(self, "_effective_actions", {}).get(
-                            creature.creature_id,
-                            self._last_actions.get(creature.creature_id),
-                        )
-                    ) is not None
-                },
-                energy_cost_multipliers={
-                    creature.creature_id: self._senescence_factor_for(creature)
-                    for creature in self.creatures
-                },
-                creature_age_seconds={
-                    creature.creature_id: self._creature_age_seconds(creature)
-                    for creature in self.creatures
-                },
-                communication_intensities={
-                    creature.creature_id: self._communication_intensities_for(
-                        creature.creature_id
-                    )
-                    for creature in self.creatures
-                },
+        # Runtime overrides preserve immutable hereditary movement traits.
+        movement_cost_multipliers: dict[int, float] = {}
+        for creature in self.creatures:
+            physical_traits = getattr(creature, "physical_traits", None)
+            inherited_cost = getattr(
+                physical_traits,
+                "movement_cost_multiplier",
+                None,
             )
-        finally:
-            self._restore_movement_multipliers(with_infant_penalties)
+            if inherited_cost is not None:
+                movement_cost_multipliers[creature.creature_id] = (
+                    inherited_cost
+                    * (3.0 if self._is_infant(creature) else 1.0)
+                )
+        report = self.metabolism.update(
+            self.creatures,
+            self.foods,
+            delta_time,
+            self.MAX_SPEED,
+            self._eatable_foods_for,
+            self._creature_want_to_eat,
+            {
+                creature.creature_id: getattr(
+                    action,
+                    "flee_panic_intensity",
+                    0.0,
+                )
+                for creature in self.creatures
+                if (
+                    action := getattr(self, "_effective_actions", {}).get(
+                        creature.creature_id,
+                        self._last_actions.get(creature.creature_id),
+                    )
+                ) is not None
+            },
+            energy_cost_multipliers={
+                creature.creature_id: self._senescence_factor_for(creature)
+                for creature in self.creatures
+            },
+            creature_age_seconds={
+                creature.creature_id: self._creature_age_seconds(creature)
+                for creature in self.creatures
+            },
+            communication_intensities={
+                creature.creature_id: self._communication_intensities_for(
+                    creature.creature_id
+                )
+                for creature in self.creatures
+            },
+            movement_cost_multipliers=movement_cost_multipliers,
+        )
 
         for consumption in report.food_consumptions:
             self._record_behavior_food_consumption(consumption)
@@ -6110,6 +6163,11 @@ class World:
             creature_id: cost / delta_time if delta_time > 0.0 else 0.0
             for creature_id, cost in processing_costs.items()
         }
+        resources = getattr(self, "resources", None)
+        if resources is not None:
+            resources.last_digestion_processing_costs_per_second = (
+                self._last_digestion_processing_costs_per_second
+            )
         for food in report.touched_foods:
             reindex_shape = getattr(self.space, "reindex_shape", None)
             if reindex_shape is not None and food in self.foods:
@@ -6407,34 +6465,6 @@ class World:
                     nearest_key = key
         return nearest
 
-    def _apply_infant_movement_penalties(self) -> dict[int, float]:
-        if getattr(getattr(self, "config", None), "population", None) is None:
-            return {}
-
-        original_multipliers: dict[int, float] = {}
-        for creature in self.creatures:
-            if not self._is_infant(creature):
-                continue
-
-            original_multipliers[creature.creature_id] = (
-                creature.physical_traits.movement_cost_multiplier
-            )
-            creature.physical_traits.movement_cost_multiplier *= 3.0
-
-        return original_multipliers
-
-    def _restore_movement_multipliers(
-        self,
-        original_multipliers: dict[int, float],
-    ) -> None:
-        if not original_multipliers:
-            return
-
-        for creature in self.creatures:
-            original = original_multipliers.get(creature.creature_id)
-            if original is not None:
-                creature.physical_traits.movement_cost_multiplier = original
-
     def _foods_in_world_bounds(
         self,
         left: float,
@@ -6668,39 +6698,61 @@ class World:
         self._prune_historical_archives()
 
     def _prune_historical_archives(self) -> None:
+        """Prune aligned neural, genotype, species, and fitness archives.
+
+        Parameters
+        ----------
+        None
+            This method receives no external parameters.
+
+        Returns
+        -------
+        None
+            Historical archives are reduced to configured retention limits.
+        """
+        # Genotype and neural archives share genome IDs and must be pruned together.
         population_config = self.config.population
         trait_archive = getattr(self, "_trait_archive_by_genome_id", {})
-        prune_population = getattr(
-            self.neat_controller,
-            "prune_population_archive",
-            None,
-        )
-        retained_genome_ids = (
-            prune_population(population_config.elite_archive_size)
-            if prune_population is not None
-            else set(trait_archive)
-        )
-
-        retained_species_ids = {
+        active_species_ids = {
             creature.lineage.species_id for creature in self.creatures
         }
-        retained_species_ids.update(
-            archived.lineage.species_id
-            for genome_id, archived in trait_archive.items()
-            if genome_id in retained_genome_ids
-        )
-        self._trait_archive_by_genome_id = {
-            genome_id: archived
-            for genome_id, archived in trait_archive.items()
-            if genome_id in retained_genome_ids
-        }
-        prune_representatives = getattr(
-            self.neat_controller,
-            "prune_species_representatives",
-            None,
-        )
-        if prune_representatives is not None:
-            prune_representatives(retained_species_ids)
+        evolution = getattr(self, "evolution", None)
+        if evolution is not None:
+            self._trait_archive_by_genome_id = evolution.prune_archives(
+                trait_archive,
+                active_species_ids,
+                population_config.elite_archive_size,
+            )
+        else:
+            # Focused legacy fixtures may provide only controller-level methods.
+            prune_population = getattr(
+                self.neat_controller,
+                "prune_population_archive",
+                None,
+            )
+            retained_genome_ids = (
+                prune_population(population_config.elite_archive_size)
+                if prune_population is not None
+                else set(trait_archive)
+            )
+            retained_species_ids = set(active_species_ids)
+            retained_species_ids.update(
+                archived.lineage.species_id
+                for genome_id, archived in trait_archive.items()
+                if genome_id in retained_genome_ids
+            )
+            self._trait_archive_by_genome_id = {
+                genome_id: archived
+                for genome_id, archived in trait_archive.items()
+                if genome_id in retained_genome_ids
+            }
+            prune_representatives = getattr(
+                self.neat_controller,
+                "prune_species_representatives",
+                None,
+            )
+            if prune_representatives is not None:
+                prune_representatives(retained_species_ids)
 
         protected_parent_ids = {
             creature.lineage.parent_id
@@ -6721,95 +6773,29 @@ class World:
         }
 
     def _archive_creature_traits(self, creature: Creature) -> None:
+        """Archive one creature genotype under its neural genome identity.
+
+        Parameters
+        ----------
+        creature
+            Live creature leaving the population.
+
+        Returns
+        -------
+        None
+            A detached archive entry is stored when a genome exists.
+        """
+        # Neural identity is the integration key used by extinction recovery.
         genome_id_for = getattr(self.neat_controller, "genome_id_for", None)
         if genome_id_for is None:
             return
-
         genome_id = genome_id_for(creature.creature_id)
         if genome_id is None:
             return
-
         if not hasattr(self, "_trait_archive_by_genome_id"):
             self._trait_archive_by_genome_id = {}
-
-        self._trait_archive_by_genome_id[genome_id] = ArchivedCreatureTraits(
-            creature_id=creature.creature_id,
-            vision=VisionTraits(
-                range=creature.vision.range,
-                angle=creature.vision.angle,
-            ),
-            physical_traits=PhysicalTraits(
-                radius=creature.physical_traits.radius,
-                movement_cost_multiplier=(
-                    creature.physical_traits.movement_cost_multiplier
-                ),
-                stomach_capacity=creature.physical_traits.stomach_capacity,
-                digestion_rate=creature.physical_traits.digestion_rate,
-                digestion_efficiency=(
-                    creature.physical_traits.digestion_efficiency
-                ),
-            ),
-            flocking_traits=FlockingTraits(
-                separation_gene=getattr(
-                    getattr(creature, "flocking_traits", FlockingTraits()),
-                    "separation_gene",
-                    0.5,
-                ),
-                alignment_gene=getattr(
-                    getattr(creature, "flocking_traits", FlockingTraits()),
-                    "alignment_gene",
-                    0.5,
-                ),
-                cohesion_gene=getattr(
-                    getattr(creature, "flocking_traits", FlockingTraits()),
-                    "cohesion_gene",
-                    0.5,
-                ),
-                social_tag_x=getattr(
-                    getattr(creature, "flocking_traits", FlockingTraits()),
-                    "social_tag_x",
-                    0.5,
-                ),
-                social_tag_y=getattr(
-                    getattr(creature, "flocking_traits", FlockingTraits()),
-                    "social_tag_y",
-                    0.5,
-                ),
-            ),
-            color=creature.color,
-            lineage=LineageInfo(
-                parent_id=creature.lineage.parent_id,
-                generation=creature.lineage.generation,
-                species_id=creature.lineage.species_id,
-                mutation_delta=TraitMutationDelta(
-                    vision_range=creature.lineage.mutation_delta.vision_range,
-                    vision_angle=creature.lineage.mutation_delta.vision_angle,
-                    radius=creature.lineage.mutation_delta.radius,
-                    movement_cost_multiplier=(
-                        creature.lineage.mutation_delta.movement_cost_multiplier
-                    ),
-                    stomach_capacity=(
-                        creature.lineage.mutation_delta.stomach_capacity
-                    ),
-                    digestion_rate=(
-                        creature.lineage.mutation_delta.digestion_rate
-                    ),
-                    digestion_efficiency=(
-                        creature.lineage.mutation_delta.digestion_efficiency
-                    ),
-                    separation_gene=(
-                        creature.lineage.mutation_delta.separation_gene
-                    ),
-                    alignment_gene=creature.lineage.mutation_delta.alignment_gene,
-                    cohesion_gene=creature.lineage.mutation_delta.cohesion_gene,
-                    social_tag_x=(
-                        creature.lineage.mutation_delta.social_tag_x
-                    ),
-                    social_tag_y=(
-                        creature.lineage.mutation_delta.social_tag_y
-                    ),
-                ),
-            ),
+        self._trait_archive_by_genome_id[genome_id] = (
+            ArchivedCreatureTraits.from_creature(creature)
         )
 
     def _initial_total_biomass_energy(self) -> float:
@@ -6948,6 +6934,19 @@ class World:
         return counts
 
     def _recover_extinct_population(self) -> None:
+        """Repopulate an empty world from retained neural and genotype archives.
+
+        Parameters
+        ----------
+        None
+            This method receives no external parameters.
+
+        Returns
+        -------
+        None
+            Recovery offspring are materialized up to configured capacity.
+        """
+        # Select archived neural parents before consuming any simulation RNG.
         parent_pool_size = max(
             1,
             self.config.population.extinction_recovery_parent_pool,
@@ -6981,7 +6980,7 @@ class World:
             parent_color = (
                 archived_traits.color
                 if archived_traits is not None
-                else self._initial_creature_color(0)
+                else self.genotype_manager.initial_color(0)
             )
             child = self._spawn_creature(
                 child_id,
@@ -6989,7 +6988,7 @@ class World:
                 color=(
                     child_traits.color
                     if child_traits is not None
-                    else self._initial_creature_color(0)
+                    else self.genotype_manager.initial_color(0)
                 ),
                 vision=child_traits.vision if child_traits is not None else None,
                 physical_traits=(
@@ -7000,23 +6999,37 @@ class World:
                 ),
                 lineage=child_traits.lineage if child_traits is not None else None,
             )
-            child_brain, speciation_result = (
-                self.neat_controller.create_mutated_brain_from_genome(
+            evolution = getattr(self, "evolution", None)
+            if evolution is not None:
+                recovery_plan = evolution.finalize_from_genome(
                     parent_genome,
+                    parent_color,
                     child_id,
-                    parent_species_id,
-                    child.physical_traits,
-                    child.vision,
-                    child.flocking_traits,
+                    child.genotype,
+                    child.lineage,
+                    self.rng,
                 )
-            )
+                child_brain = recovery_plan.brain
+                speciation_result = recovery_plan.speciation_result
+            else:
+                child_brain, speciation_result = (
+                    self.neat_controller.create_mutated_brain_from_genome(
+                        parent_genome,
+                        child_id,
+                        parent_species_id,
+                        child.physical_traits,
+                        child.vision,
+                        child.flocking_traits,
+                    )
+                )
             if child_brain is None:
                 self._unindex_creature_shape(child)
                 self.space.remove(child.body, child.shape)
                 continue
             child.lineage.species_id = speciation_result.species_id
+            if speciation_result.is_new_species and evolution is None:
+                child.color = self.genotype_manager.new_species_color(parent_color, self.rng)
             if speciation_result.is_new_species:
-                child.color = self._new_species_color(parent_color)
                 self._record_new_species(child, speciation_result)
 
             self.creatures.append(child)
@@ -7122,6 +7135,19 @@ class World:
         )
 
     def _try_reproduce(self) -> bool:
+        """Attempt one immediate reproduction outside the batched scheduler path.
+
+        Parameters
+        ----------
+        None
+            This method receives no external parameters.
+
+        Returns
+        -------
+        bool
+            Whether one offspring was fully evolved and registered.
+        """
+        # Capacity and resource guards run before allocating a stable identity.
         if len(self.creatures) >= self.config.population.max_creatures:
             return False
 
@@ -7165,25 +7191,41 @@ class World:
             lineage=child_traits.lineage,
         )
 
-        child_brain, speciation_result = self.neat_controller.create_child_brain(
-            parent.creature_id,
-            child_id,
-            parent.lineage.species_id,
-            child.physical_traits,
-            child.vision,
-            child.flocking_traits,
-        )
-        if child_brain is None:
+        evolution = getattr(self, "evolution", None)
+        if evolution is not None:
+            offspring_plan = evolution.finalize_child(
+                parent,
+                child_id,
+                child.genotype,
+                child.lineage,
+                self.rng,
+            )
+            child_brain = None if offspring_plan is None else offspring_plan.brain
+            speciation_result = (
+                None
+                if offspring_plan is None
+                else offspring_plan.speciation_result
+            )
+        else:
+            child_brain, speciation_result = self.neat_controller.create_child_brain(
+                parent.creature_id,
+                child_id,
+                parent.lineage.species_id,
+                child.physical_traits,
+                child.vision,
+                child.flocking_traits,
+            )
+        if child_brain is None or speciation_result is None:
             self._unindex_creature_shape(child)
             self.space.remove(child.body, child.shape)
             self._log_parent_selection_attempts(
                 [(request, "resource_rejected")]
             )
             return False
-        assert speciation_result is not None
         child.lineage.species_id = speciation_result.species_id
+        if speciation_result.is_new_species and evolution is None:
+            child.color = self.genotype_manager.new_species_color(parent.color, self.rng)
         if speciation_result.is_new_species:
-            child.color = self._new_species_color(parent.color)
             self._record_new_species(child, speciation_result)
 
         self.creatures.append(child)

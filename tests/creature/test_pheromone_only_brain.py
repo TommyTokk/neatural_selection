@@ -26,7 +26,19 @@ PHEROMONE_SENSOR_NAMES = tuple(
 
 
 def pheromone_only_brain(genome_id: int) -> NeatBrain:
-    """Build a NEAT brain driven only by trail and alarm concentrations."""
+    """Build a NEAT brain driven only by trail and alarm concentrations.
+    
+    Parameters
+    ----------
+    genome_id
+        Value supplied to ``genome_id`` by the test scenario.
+    
+    Returns
+    -------
+    None
+        Result produced by this test helper.
+    """
+    # Keep the pheromone only brain test intent explicit.
     config = neat.Config(
         neat.DefaultGenome,
         neat.DefaultReproduction,
@@ -81,6 +93,19 @@ def pheromone_only_brain(genome_id: int) -> NeatBrain:
 
 
 def probe_creature() -> Creature:
+    """Exercise probe creature behavior.
+    
+    Parameters
+    ----------
+    None
+        This callable receives no external parameters.
+    
+    Returns
+    -------
+    None
+        The test completes through assertions.
+    """
+    # Keep the probe creature test intent explicit.
     radius = 12.0
     body = pymunk.Body(1.0, pymunk.moment_for_circle(1.0, 0.0, radius))
     body.position = (0.0, 0.0)
@@ -99,6 +124,19 @@ def probe_creature() -> Creature:
 
 class PheromoneOnlyBrainTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.config = SimConfig()
         self.config.action.max_forward_force = 20.0
         self.config.action.action_smoothing_alpha = 1.0
@@ -119,6 +157,19 @@ class PheromoneOnlyBrainTest(unittest.TestCase):
         self.world._motion_commands = {}
 
     def make_field(self, *, trail: bool) -> PheromoneSystem:
+        """Exercise make field behavior.
+        
+        Parameters
+        ----------
+        trail
+            Value supplied to ``trail`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the make field test intent explicit.
         field = PheromoneSystem(
             self.config.communication,
             grid_width=61,
@@ -141,6 +192,21 @@ class PheromoneOnlyBrainTest(unittest.TestCase):
         creature: Creature,
         field: PheromoneSystem,
     ):
+        """Exercise snapshot for behavior.
+        
+        Parameters
+        ----------
+        creature
+            Value supplied to ``creature`` by the test scenario.
+        field
+            Value supplied to ``field`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the snapshot for test intent explicit.
         snapshot = self.vision.sense(
             creature,
             foods=[],
@@ -159,6 +225,23 @@ class PheromoneOnlyBrainTest(unittest.TestCase):
         field: PheromoneSystem,
         brain: NeatBrain,
     ) -> None:
+        """Exercise simulate behavior.
+        
+        Parameters
+        ----------
+        creature
+            Value supplied to ``creature`` by the test scenario.
+        field
+            Value supplied to ``field`` by the test scenario.
+        brain
+            Value supplied to ``brain`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the simulate test intent explicit.
         space = pymunk.Space()
         space.gravity = (0.0, 0.0)
         space.damping = 0.9
@@ -178,6 +261,19 @@ class PheromoneOnlyBrainTest(unittest.TestCase):
             self.world._limit_creature_motion()
 
     def test_only_pheromone_sensors_reach_accelerate_and_rotate(self) -> None:
+        """Exercise test only pheromone sensors reach accelerate and rotate behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test only pheromone sensors reach accelerate and rotate test intent explicit.
         brain = pheromone_only_brain(1)
         genome_config = neat.Config(
             neat.DefaultGenome,
@@ -208,6 +304,19 @@ class PheromoneOnlyBrainTest(unittest.TestCase):
         )
 
     def test_trail_attracts_while_alarm_on_same_side_repels(self) -> None:
+        """Exercise test trail attracts while alarm on same side repels behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test trail attracts while alarm on same side repels test intent explicit.
         creature = probe_creature()
         brain = pheromone_only_brain(1)
         trail_snapshot = self.snapshot_for(creature, self.make_field(trail=True))
@@ -240,6 +349,19 @@ class PheromoneOnlyBrainTest(unittest.TestCase):
             )
 
     def test_creature_moves_toward_trail_band(self) -> None:
+        """Exercise test creature moves toward trail band behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test creature moves toward trail band test intent explicit.
         creature = probe_creature()
         initial_distance = abs(creature.position[1] - 48.0)
 
@@ -249,6 +371,19 @@ class PheromoneOnlyBrainTest(unittest.TestCase):
         self.assertLess(abs(creature.position[1] - 48.0), initial_distance)
 
     def test_creature_moves_away_from_alarm_band(self) -> None:
+        """Exercise test creature moves away from alarm band behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test creature moves away from alarm band test intent explicit.
         creature = probe_creature()
         initial_distance = abs(creature.position[1] - 48.0)
 

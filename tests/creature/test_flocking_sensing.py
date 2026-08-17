@@ -31,11 +31,24 @@ from src.vision import (
     VisionSystem,
 )
 from src.world import World
-from tests.test_vision import creature_at
+from tests.creature.test_vision import creature_at
 
 
 class SchemaSevenSensingTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.config = build_sim_config()
         self.config.flocking.long_range.enabled = True
         self.vision = VisionSystem(
@@ -44,10 +57,36 @@ class SchemaSevenSensingTest(unittest.TestCase):
         )
 
     def test_contract_has_exact_count(self) -> None:
+        """Exercise test contract has exact count behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test contract has exact count test intent explicit.
         self.assertEqual(SENSOR_CONTRACT.input_count, 43)
         self.assertEqual(SENSOR_CONTRACT.schema_version, 7)
 
     def test_write_inputs_matches_allocating_compatibility_api(self) -> None:
+        """Exercise test write inputs matches allocating compatibility api behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test write inputs matches allocating compatibility api test intent explicit.
         observer = creature_at((0.0, 0.0), vision_range=100.0)
         neighbor = creature_at((40.0, 0.0), creature_id=2)
         snapshot = self.vision.sense(
@@ -68,6 +107,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
             snapshot.write_inputs(output[:-1])
 
     def test_presence_distinguishes_centered_flock_from_absence(self) -> None:
+        """Exercise test presence distinguishes centered flock from absence behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test presence distinguishes centered flock from absence test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -94,6 +146,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
     def test_center_and_relative_velocity_are_in_the_observer_body_frame(
         self,
     ) -> None:
+        """Exercise test center and relative velocity are in the observer body frame behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test center and relative velocity are in the observer body frame test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             heading=pi / 2.0,
@@ -121,6 +186,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         self.assertAlmostEqual(inputs[27], 0.0, places=12)
 
     def test_incompatible_neighbor_does_not_enter_personal_space(self) -> None:
+        """Exercise test incompatible neighbor does not enter personal space behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test incompatible neighbor does not enter personal space test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -143,6 +221,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         self.assertEqual(snapshot.flock.crowd_separation_strength, 0.0)
 
     def test_boid_perception_is_omnidirectional(self) -> None:
+        """Exercise test boid perception is omnidirectional behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test boid perception is omnidirectional test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -166,10 +257,38 @@ class SchemaSevenSensingTest(unittest.TestCase):
         self.assertLess(snapshot.flock.center_forward, 0.0)
 
     def test_boid_radius_uses_squared_center_distance(self) -> None:
+        """Exercise test boid radius uses squared center distance behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test boid radius uses squared center distance test intent explicit.
         self.config.flocking.long_range.enabled = False
         compatibility_calls: list[int] = []
 
         def compatibility(_observer, neighbor):
+            """Exercise compatibility behavior.
+            
+            Parameters
+            ----------
+            _observer
+                Value supplied to ``_observer`` by the test scenario.
+            neighbor
+                Value supplied to ``neighbor`` by the test scenario.
+            
+            Returns
+            -------
+            None
+                The test completes through assertions.
+            """
+            # Keep the compatibility test intent explicit.
             compatibility_calls.append(neighbor.creature_id)
             return 1.0
 
@@ -194,6 +313,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
     def test_boid_aggregation_is_single_pass_with_strict_compatibility_gate(
         self,
     ) -> None:
+        """Exercise test boid aggregation is single pass with strict compatibility gate behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test boid aggregation is single pass with strict compatibility gate test intent explicit.
         self.config.flocking.long_range.enabled = False
         observer = creature_at((0.0, 0.0), creature_id=1)
         accepted = creature_at((10.0, 0.0), creature_id=2)
@@ -203,6 +335,21 @@ class SchemaSevenSensingTest(unittest.TestCase):
         compatibility_calls: list[int] = []
 
         def compatibility(_observer, neighbor):
+            """Exercise compatibility behavior.
+            
+            Parameters
+            ----------
+            _observer
+                Value supplied to ``_observer`` by the test scenario.
+            neighbor
+                Value supplied to ``neighbor`` by the test scenario.
+            
+            Returns
+            -------
+            None
+                The test completes through assertions.
+            """
+            # Keep the compatibility test intent explicit.
             compatibility_calls.append(neighbor.creature_id)
             return {2: 0.5, 3: 0.0, 4: -0.5}[neighbor.creature_id]
 
@@ -211,6 +358,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         linear_distance = self.vision._linear_distance
 
         def counted_distance(distance_squared: float) -> float:
+            """Exercise counted distance behavior.
+            
+            Parameters
+            ----------
+            distance_squared
+                Value supplied to ``distance_squared`` by the test scenario.
+            
+            Returns
+            -------
+            None
+                The test completes through assertions.
+            """
+            # Keep the counted distance test intent explicit.
             distance_calls.append(distance_squared)
             return linear_distance(distance_squared)
 
@@ -218,10 +378,41 @@ class SchemaSevenSensingTest(unittest.TestCase):
 
         class SinglePassNeighbors:
             def __init__(self, values) -> None:
+                """Exercise init behavior.
+                
+                Parameters
+                ----------
+                values
+                    Value supplied to ``values`` by the test scenario.
+                
+                Returns
+                -------
+                None
+                    The test completes through assertions.
+                """
+                # Keep the init test intent explicit.
                 self.values = values
                 self.iterations = 0
 
             def __iter__(self):
+                """Exercise iter behavior.
+                
+                Parameters
+                ----------
+                None
+                    This callable receives no external parameters.
+                
+                Returns
+                -------
+                None
+                    The test completes through assertions.
+                
+                Raises
+                ------
+                AssertionError
+                    If the domain operation cannot be completed.
+                """
+                # Keep the iter test intent explicit.
                 self.iterations += 1
                 if self.iterations > 1:
                     raise AssertionError("Boid candidates were rescanned.")
@@ -250,6 +441,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         )
 
     def test_any_positive_compatibility_enters_boid_accumulators(self) -> None:
+        """Exercise test any positive compatibility enters boid accumulators behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test any positive compatibility enters boid accumulators test intent explicit.
         self.config.flocking.long_range.enabled = False
         self.vision.flock_compatibility_resolver = (
             lambda _observer, _neighbor: 1e-15
@@ -270,6 +474,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         self.assertGreater(snapshot.flock.crowd_separation_strength, 0.0)
 
     def test_left_and_right_centres_have_opposite_local_signs(self) -> None:
+        """Exercise test left and right centres have opposite local signs behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test left and right centres have opposite local signs test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -278,6 +495,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         )
 
         def right_component(y: float) -> float:
+            """Exercise right component behavior.
+            
+            Parameters
+            ----------
+            y
+                Value supplied to ``y`` by the test scenario.
+            
+            Returns
+            -------
+            None
+                The test completes through assertions.
+            """
+            # Keep the right component test intent explicit.
             neighbor = creature_at(
                 (40.0, y),
                 creature_id=2,
@@ -295,6 +525,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         self.assertGreater(right_component(-20.0), 0.0)
 
     def test_target_scaled_count_is_bounded(self) -> None:
+        """Exercise test target scaled count is bounded behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test target scaled count is bounded test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -322,6 +565,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         self.assertEqual(value, 1.0)
 
     def test_long_range_observation_does_not_require_fov(self) -> None:
+        """Exercise test long range observation does not require fov behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test long range observation does not require fov test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -345,6 +601,19 @@ class SchemaSevenSensingTest(unittest.TestCase):
         self.assertLess(snapshot.flock.long_range.direction_forward, 0.0)
 
     def test_world_uses_one_expanded_creature_query(self) -> None:
+        """Exercise test world uses one expanded creature query behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test world uses one expanded creature query test intent explicit.
         self.config.persistence.enable_telemetry = False
         self.config.population.initial_creatures = 2
         self.config.food.initial_food_items = 0
@@ -362,6 +631,21 @@ class SchemaSevenSensingTest(unittest.TestCase):
             original = world._nearby_creatures_for
 
             def counted(observer, query_range):
+                """Exercise counted behavior.
+                
+                Parameters
+                ----------
+                observer
+                    Value supplied to ``observer`` by the test scenario.
+                query_range
+                    Value supplied to ``query_range`` by the test scenario.
+                
+                Returns
+                -------
+                None
+                    The test completes through assertions.
+                """
+                # Keep the counted test intent explicit.
                 calls.append(query_range)
                 return original(observer, query_range)
 
@@ -401,6 +685,23 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         tag: tuple[float, float],
         species: int = 1,
     ):
+        """Exercise creature behavior.
+        
+        Parameters
+        ----------
+        creature_id
+            Value supplied to ``creature_id`` by the test scenario.
+        tag
+            Value supplied to ``tag`` by the test scenario.
+        species
+            Value supplied to ``species`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the creature test intent explicit.
         return SimpleNamespace(
             creature_id=creature_id,
             flocking_traits=FlockingTraits(
@@ -411,6 +712,19 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         )
 
     def test_social_tag_is_symmetric_and_monotonic(self) -> None:
+        """Exercise test social tag is symmetric and monotonic behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test social tag is symmetric and monotonic test intent explicit.
         config = build_sim_config().flocking.compatibility
         config.mode = SocialCompatibilityMode.SOCIAL_TAG
         resolver = SocialCompatibilityResolver(config, lambda _a, _b: 0.0)
@@ -427,6 +741,19 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         )
 
     def test_species_mode_is_independent_of_tags(self) -> None:
+        """Exercise test species mode is independent of tags behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test species mode is independent of tags test intent explicit.
         config = build_sim_config().flocking.compatibility
         config.mode = SocialCompatibilityMode.SPECIES
         resolver = SocialCompatibilityResolver(config, lambda _a, _b: 0.0)
@@ -439,6 +766,19 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         )
 
     def test_social_tag_cache_is_invalidated_when_creature_dies(self) -> None:
+        """Exercise test social tag cache is invalidated when creature dies behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test social tag cache is invalidated when creature dies test intent explicit.
         config = build_sim_config().flocking.compatibility
         config.mode = SocialCompatibilityMode.SOCIAL_TAG
         resolver = SocialCompatibilityResolver(config, lambda _a, _b: 0.0)
@@ -454,6 +794,19 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         self.assertLess(resolver.compatibility(first, second), 0.01)
 
     def test_social_tags_ignore_adaptive_threshold_and_controller_genome(self) -> None:
+        """Exercise test social tags ignore adaptive threshold and controller genome behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test social tags ignore adaptive threshold and controller genome test intent explicit.
         config = build_sim_config().flocking.compatibility
         config.mode = SocialCompatibilityMode.SOCIAL_TAG
         threshold = {"value": 1.0}
@@ -473,6 +826,19 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         self.assertEqual(before, after)
 
     def test_social_tags_do_not_enter_reproductive_trait_distance(self) -> None:
+        """Exercise test social tags do not enter reproductive trait distance behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test social tags do not enter reproductive trait distance test intent explicit.
         first = FlockingTraits(
             separation_gene=0.1,
             alignment_gene=0.2,
@@ -493,6 +859,19 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         )
 
     def test_social_tags_inherit_exactly_when_mutation_is_disabled(self) -> None:
+        """Exercise test social tags inherit exactly when mutation is disabled behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test social tags inherit exactly when mutation is disabled test intent explicit.
         config = build_sim_config()
         config.flocking.compatibility.mode = (
             SocialCompatibilityMode.SOCIAL_TAG
@@ -517,6 +896,19 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         self.assertEqual(delta.social_tag_y, 0.0)
 
     def test_trait_archive_preserves_social_tags_and_deltas(self) -> None:
+        """Exercise test trait archive preserves social tags and deltas behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test trait archive preserves social tags and deltas test intent explicit.
         world = object.__new__(World)
         world.neat_controller = SimpleNamespace(
             genome_id_for=lambda _creature_id: 99
@@ -550,6 +942,19 @@ class SocialTagCompatibilityTest(unittest.TestCase):
 
 class CheckpointContractPolicyTest(unittest.TestCase):
     def test_cross_contract_fails_without_explicit_opt_in(self) -> None:
+        """Exercise test cross contract fails without explicit opt in behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test cross contract fails without explicit opt in test intent explicit.
         legacy = build_sim_config()
         legacy.persistence.enable_telemetry = False
         legacy.population.initial_creatures = 2
@@ -595,6 +1000,19 @@ class CheckpointContractPolicyTest(unittest.TestCase):
     def test_schema_seven_round_trip_preserves_contract_not_transient_vectors(
         self,
     ) -> None:
+        """Exercise test schema seven round trip preserves contract not transient vectors behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test schema seven round trip preserves contract not transient vectors test intent explicit.
         config = build_sim_config()
         config.flocking.compatibility.mode = (
             SocialCompatibilityMode.SOCIAL_TAG
@@ -617,6 +1035,19 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             serialized_keys: set[str] = set()
 
             def collect_keys(value) -> None:
+                """Exercise collect keys behavior.
+                
+                Parameters
+                ----------
+                value
+                    Value supplied to ``value`` by the test scenario.
+                
+                Returns
+                -------
+                None
+                    The test completes through assertions.
+                """
+                # Keep the collect keys test intent explicit.
                 if isinstance(value, dict):
                     serialized_keys.update(str(key) for key in value)
                     for child in value.values():
@@ -673,6 +1104,19 @@ class CheckpointContractPolicyTest(unittest.TestCase):
     def test_older_schema_three_checkpoint_receives_neutral_social_tags(
         self,
     ) -> None:
+        """Exercise test older schema three checkpoint receives neutral social tags behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test older schema three checkpoint receives neutral social tags test intent explicit.
         config = build_sim_config()
         config.persistence.enable_telemetry = False
         config.population.initial_creatures = 1

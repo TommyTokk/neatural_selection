@@ -10,11 +10,41 @@ from unittest.mock import patch
 
 class _Body:
     def __init__(self, *args: object, **kwargs: object) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        args
+            Value supplied to ``args`` by the test scenario.
+        kwargs
+            Value supplied to ``kwargs`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.position = types.SimpleNamespace(x=0.0, y=0.0)
 
 
 class _Circle:
     def __init__(self, body: _Body, radius: float) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        body
+            Value supplied to ``body`` by the test scenario.
+        radius
+            Value supplied to ``radius`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.body = body
         self.radius = radius
 
@@ -56,6 +86,19 @@ class FakeCreature:
 
     @property
     def body(self) -> types.SimpleNamespace:
+        """Exercise body behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the body test intent explicit.
         return types.SimpleNamespace(
             velocity=types.SimpleNamespace(
                 x=self.velocity[0],
@@ -83,6 +126,35 @@ def creature_at(
     creature_id: int = 1,
     species_id: int = 1,
 ) -> FakeCreature:
+    """Exercise creature at behavior.
+    
+    Parameters
+    ----------
+    position
+        Value supplied to ``position`` by the test scenario.
+    radius
+        Value supplied to ``radius`` by the test scenario.
+    heading
+        Value supplied to ``heading`` by the test scenario.
+    energy
+        Value supplied to ``energy`` by the test scenario.
+    vision_range
+        Value supplied to ``vision_range`` by the test scenario.
+    vision_angle
+        Value supplied to ``vision_angle`` by the test scenario.
+    velocity
+        Value supplied to ``velocity`` by the test scenario.
+    creature_id
+        Value supplied to ``creature_id`` by the test scenario.
+    species_id
+        Value supplied to ``species_id`` by the test scenario.
+    
+    Returns
+    -------
+    None
+        The test completes through assertions.
+    """
+    # Keep the creature at test intent explicit.
     return FakeCreature(
         position=position,
         radius=radius,
@@ -97,9 +169,35 @@ def creature_at(
 
 class VisionVisibilityTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.vision = VisionSystem(VisionConfig())
 
     def test_signed_angle_wraps_large_accumulated_headings(self) -> None:
+        """Exercise test signed angle wraps large accumulated headings behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test signed angle wraps large accumulated headings test intent explicit.
         full_turns = 10_000 * 2.0 * pi
 
         self.assertAlmostEqual(
@@ -121,6 +219,25 @@ class VisionVisibilityTest(unittest.TestCase):
         creatures: list[FakeCreature] | None = None,
         own_infants: list[FakeCreature] | None = None,
     ):
+        """Exercise sense snapshot behavior.
+        
+        Parameters
+        ----------
+        creature
+            Value supplied to ``creature`` by the test scenario.
+        foods
+            Value supplied to ``foods`` by the test scenario.
+        creatures
+            Value supplied to ``creatures`` by the test scenario.
+        own_infants
+            Value supplied to ``own_infants`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the sense snapshot test intent explicit.
         return self.vision.sense(
             creature,
             foods=[] if foods is None else foods,
@@ -131,6 +248,19 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
     def test_creature_directly_behind_creature_is_occluded(self) -> None:
+        """Exercise test creature directly behind creature is occluded behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test creature directly behind creature is occluded test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         front = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         behind = creature_at((60.0, 0.0), radius=10.0, creature_id=3)
@@ -150,6 +280,19 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
     def test_partly_exposed_creature_remains_visible(self) -> None:
+        """Exercise test partly exposed creature remains visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test partly exposed creature remains visible test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         front = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         offset = creature_at((60.0, 25.0), radius=10.0, creature_id=3)
@@ -166,6 +309,19 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
     def test_food_behind_creature_is_occluded(self) -> None:
+        """Exercise test food behind creature is occluded behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test food behind creature is occluded test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         hidden_food = FakeFood(id=1, position=(60.0, 0.0), radius=5.0)
@@ -183,6 +339,19 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
     def test_partly_exposed_food_behind_creature_remains_visible(self) -> None:
+        """Exercise test partly exposed food behind creature remains visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test partly exposed food behind creature remains visible test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         exposed_food = FakeFood(id=1, position=(60.0, 20.0), radius=5.0)
@@ -200,6 +369,19 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
     def test_occluded_food_is_excluded_from_visible_food_ids(self) -> None:
+        """Exercise test occluded food is excluded from visible food ids behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test occluded food is excluded from visible food ids test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         hidden_food = FakeFood(id=1, position=(60.0, 0.0), radius=5.0)
@@ -234,6 +416,19 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
     def test_own_infant_behind_creature_is_occluded(self) -> None:
+        """Exercise test own infant behind creature is occluded behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test own infant behind creature is occluded test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker = creature_at((30.0, 0.0), radius=10.0, creature_id=2)
         hidden_infant = creature_at((60.0, 0.0), radius=5.0, creature_id=3)
@@ -249,6 +444,19 @@ class VisionVisibilityTest(unittest.TestCase):
         self.assertEqual(snapshot.flock.flockmate_count, 2)
 
     def test_visible_own_infant_is_not_occluded_by_its_creature_entry(self) -> None:
+        """Exercise test visible own infant is not occluded by its creature entry behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test visible own infant is not occluded by its creature entry test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         infant = creature_at((40.0, 0.0), radius=5.0, creature_id=2)
 
@@ -263,6 +471,19 @@ class VisionVisibilityTest(unittest.TestCase):
         self.assertEqual(snapshot.flock.flockmate_count, 1)
 
     def test_own_infant_snapshot_uses_target_proximity_and_angle(self) -> None:
+        """Exercise test own infant snapshot uses target proximity and angle behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test own infant snapshot uses target proximity and angle test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         infant = creature_at((46.75, 0.0), radius=5.0, creature_id=2)
 
@@ -273,6 +494,19 @@ class VisionVisibilityTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.own_infants.angle, 0.0)
 
     def test_own_infant_snapshot_ignores_unlisted_infants(self) -> None:
+        """Exercise test own infant snapshot ignores unlisted infants behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test own infant snapshot ignores unlisted infants test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         unrelated_infant = creature_at((45.0, 0.0), radius=5.0, creature_id=2)
 
@@ -284,6 +518,19 @@ class VisionVisibilityTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.own_infants.angle, 0.0)
 
     def test_creature_behind_food_remains_visible(self) -> None:
+        """Exercise test creature behind food remains visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test creature behind food remains visible test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker_food = FakeFood(id=1, position=(30.0, 0.0), radius=10.0)
         hidden_creature = creature_at((60.0, 0.0), radius=5.0, creature_id=2)
@@ -305,6 +552,19 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
     def test_food_behind_food_remains_visible(self) -> None:
+        """Exercise test food behind food remains visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test food behind food remains visible test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         blocker_food = FakeFood(id=1, position=(30.0, 0.0), radius=10.0)
         hidden_food = FakeFood(id=2, position=(60.0, 0.0), radius=5.0)
@@ -318,6 +578,19 @@ class VisionVisibilityTest(unittest.TestCase):
         )
 
     def test_ignored_food_is_not_reported(self) -> None:
+        """Exercise test ignored food is not reported behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test ignored food is not reported test intent explicit.
         observer = creature_at((0.0, 0.0), radius=5.0)
         carried_food = FakeFood(id=1, position=(30.0, 0.0), radius=10.0)
         visible_food = FakeFood(id=2, position=(60.0, 0.0), radius=5.0)
@@ -344,6 +617,19 @@ class VisionVisibilityTest(unittest.TestCase):
 
 class VisionEyeOriginTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.metabolism_config = MetabolismConfig()
         self.vision = VisionSystem(
             VisionConfig(),
@@ -356,6 +642,21 @@ class VisionEyeOriginTest(unittest.TestCase):
         creature: FakeCreature,
         foods: list[FakeFood],
     ):
+        """Exercise sense snapshot behavior.
+        
+        Parameters
+        ----------
+        creature
+            Value supplied to ``creature`` by the test scenario.
+        foods
+            Value supplied to ``foods`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the sense snapshot test intent explicit.
         return self.vision.sense(
             creature,
             foods=foods,
@@ -365,6 +666,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         )
 
     def test_side_body_food_inside_cone_is_visible(self) -> None:
+        """Exercise test side body food inside cone is visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test side body food inside cone is visible test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         side_food = FakeFood(id=1, position=(10.0, 8.0), radius=3.0)
 
@@ -374,6 +688,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertEqual(self.vision.visible_foods(creature, [side_food]), [side_food])
 
     def test_food_directly_in_mouth_path_remains_visible(self) -> None:
+        """Exercise test food directly in mouth path remains visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test food directly in mouth path remains visible test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         mouth_food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
 
@@ -391,6 +718,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertEqual(self.vision.visible_foods(creature, [mouth_food]), [mouth_food])
 
     def test_food_at_mouth_threshold_remains_visible(self) -> None:
+        """Exercise test food at mouth threshold remains visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test food at mouth threshold remains visible test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         mouth_food = FakeFood(id=1, position=(10.0, 0.0), radius=3.0)
 
@@ -407,6 +747,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
     def test_touch_exemption_matches_metabolism_mouth_overlap(self) -> None:
+        """Exercise test touch exemption matches metabolism mouth overlap behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test touch exemption matches metabolism mouth overlap test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         positions = [
             (10.0, 0.0),
@@ -430,6 +783,19 @@ class VisionEyeOriginTest(unittest.TestCase):
                 )
 
     def test_lateral_mouth_contact_drives_straight(self) -> None:
+        """Exercise test lateral mouth contact drives straight behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test lateral mouth contact drives straight test intent explicit.
         creature = creature_at(
             (0.0, 0.0),
             radius=16.0,
@@ -446,6 +812,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
     def test_narrow_fov_mouth_contact_drives_straight(self) -> None:
+        """Exercise test narrow fov mouth contact drives straight behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test narrow fov mouth contact drives straight test intent explicit.
         creature = creature_at(
             (0.0, 0.0),
             radius=22.0,
@@ -462,6 +841,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
     def test_mouth_contact_food_does_not_hide_farther_food(self) -> None:
+        """Exercise test mouth contact food does not hide farther food behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test mouth contact food does not hide farther food test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         mouth_food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
         farther_food = FakeFood(id=2, position=(40.0, 0.0), radius=4.0)
@@ -477,6 +869,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         )
 
     def test_mouth_contact_food_does_not_hide_farther_creature(self) -> None:
+        """Exercise test mouth contact food does not hide farther creature behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test mouth contact food does not hide farther creature test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         mouth_food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
         farther_creature = creature_at((40.0, 0.0), radius=5.0, creature_id=2)
@@ -501,6 +906,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         )
 
     def test_zero_vision_range_returns_empty_targets(self) -> None:
+        """Exercise test zero vision range returns empty targets behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test zero vision range returns empty targets test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, vision_range=0.0)
         food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
         other = creature_at((10.0, 0.0), radius=3.0, creature_id=2)
@@ -517,6 +935,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertEqual(snapshot.creatures.count, 0)
 
     def test_zero_vision_angle_returns_empty_targets(self) -> None:
+        """Exercise test zero vision angle returns empty targets behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test zero vision angle returns empty targets test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, vision_angle=0.0)
         food = FakeFood(id=1, position=(13.0, 0.0), radius=3.0)
         other = creature_at((10.0, 0.0), radius=3.0, creature_id=2)
@@ -533,6 +964,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertEqual(snapshot.creatures.count, 0)
 
     def test_forward_food_near_mouth_remains_visible(self) -> None:
+        """Exercise test forward food near mouth remains visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test forward food near mouth remains visible test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         forward_food = FakeFood(id=1, position=(17.0, 0.0), radius=3.0)
 
@@ -547,6 +991,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         )
 
     def test_food_farther_in_eye_cone_remains_visible(self) -> None:
+        """Exercise test food farther in eye cone remains visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test food farther in eye cone remains visible test intent explicit.
         creature = creature_at((0.0, 0.0), radius=10.0, heading=0.0)
         front_food = FakeFood(id=1, position=(24.0, 0.0), radius=3.0)
 
@@ -558,6 +1015,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertEqual(self.vision.visible_foods(creature, [front_food]), [front_food])
 
     def test_centered_food_reports_proximity_and_zero_angle(self) -> None:
+        """Exercise test centered food reports proximity and zero angle behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test centered food reports proximity and zero angle test intent explicit.
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         center_food = FakeFood(
             id=1,
@@ -572,6 +1042,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
     def test_left_food_reports_positive_counterclockwise_angle(self) -> None:
+        """Exercise test left food reports positive counterclockwise angle behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test left food reports positive counterclockwise angle test intent explicit.
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         left_food = FakeFood(
             id=1,
@@ -586,6 +1069,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.angle, 0.35 / (pi / 4))
 
     def test_right_food_reports_negative_clockwise_angle(self) -> None:
+        """Exercise test right food reports negative clockwise angle behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test right food reports negative clockwise angle test intent explicit.
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         right_food = FakeFood(
             id=1,
@@ -600,6 +1096,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.angle, -0.35 / (pi / 4))
 
     def test_nearest_target_supplies_both_proximity_and_angle(self) -> None:
+        """Exercise test nearest target supplies both proximity and angle behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test nearest target supplies both proximity and angle test intent explicit.
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         left_food = FakeFood(
             id=1,
@@ -626,6 +1135,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.relative_angle, 0.4)
 
     def test_close_food_reports_max_proximity_and_center_angle(self) -> None:
+        """Exercise test close food reports max proximity and center angle behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test close food reports max proximity and center angle test intent explicit.
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         close_food = FakeFood(id=1, position=(10.0, 0.0), radius=10.0)
 
@@ -636,6 +1158,19 @@ class VisionEyeOriginTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.food.angle, 0.0)
 
     def test_food_angle_is_continuous_near_old_sector_boundary(self) -> None:
+        """Exercise test food angle is continuous near old sector boundary behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test food angle is continuous near old sector boundary test intent explicit.
         creature = creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2)
         food = FakeFood(
             id=1,
@@ -652,6 +1187,19 @@ class VisionEyeOriginTest(unittest.TestCase):
 
 class VisionWallSensorTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.vision = VisionSystem(
             VisionConfig(),
             flocking_config=FlockingConfig(
@@ -666,6 +1214,21 @@ class VisionWallSensorTest(unittest.TestCase):
         creature: FakeCreature,
         bounds: tuple[float, float, float, float],
     ) -> list[float]:
+        """Exercise sense inputs behavior.
+        
+        Parameters
+        ----------
+        creature
+            Value supplied to ``creature`` by the test scenario.
+        bounds
+            Value supplied to ``bounds`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the sense inputs test intent explicit.
         return self.sense_snapshot(creature, bounds).as_inputs()
 
     def sense_snapshot(
@@ -673,6 +1236,21 @@ class VisionWallSensorTest(unittest.TestCase):
         creature: FakeCreature,
         bounds: tuple[float, float, float, float],
     ):
+        """Exercise sense snapshot behavior.
+        
+        Parameters
+        ----------
+        creature
+            Value supplied to ``creature`` by the test scenario.
+        bounds
+            Value supplied to ``bounds`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the sense snapshot test intent explicit.
         return self.vision.sense(
             creature,
             foods=[],
@@ -682,6 +1260,19 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
     def test_wall_directly_ahead_within_range_is_visible(self) -> None:
+        """Exercise test wall directly ahead within range is visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test wall directly ahead within range is visible test intent explicit.
         snapshot = self.sense_snapshot(
             creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
             (0.0, 0.0, 100.0, 100.0),
@@ -692,6 +1283,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.walls.angle, 0.0)
 
     def test_wall_outside_vision_cone_is_not_visible(self) -> None:
+        """Exercise test wall outside vision cone is not visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test wall outside vision cone is not visible test intent explicit.
         snapshot = self.sense_snapshot(
             creature_at(
                 (90.0, 50.0),
@@ -706,6 +1310,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.walls.angle, 0.0)
 
     def test_wall_below_heading_reports_negative_angle(self) -> None:
+        """Exercise test wall below heading reports negative angle behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test wall below heading reports negative angle test intent explicit.
         snapshot = self.sense_snapshot(
             creature_at((50.0, 50.0), vision_range=100.0),
             (0.0, 0.0, 150.0, 300.0),
@@ -715,6 +1332,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertLess(snapshot.walls.angle, 0.0)
 
     def test_wall_above_heading_reports_positive_angle(self) -> None:
+        """Exercise test wall above heading reports positive angle behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test wall above heading reports positive angle test intent explicit.
         snapshot = self.sense_snapshot(
             creature_at((50.0, 50.0), vision_range=100.0),
             (0.0, -200.0, 150.0, 100.0),
@@ -724,6 +1354,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertGreater(snapshot.walls.angle, 0.0)
 
     def test_wall_angle_is_continuous_near_old_sector_boundary(self) -> None:
+        """Exercise test wall angle is continuous near old sector boundary behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test wall angle is continuous near old sector boundary test intent explicit.
         snapshot = self.sense_snapshot(
             creature_at((0.0, 0.0), vision_range=100.0, vision_angle=pi / 2),
             (50.0, 13.0, 51.0, 14.0),
@@ -733,6 +1376,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertGreater(snapshot.walls.angle, 0.0)
 
     def test_wall_farther_than_vision_range_is_not_visible(self) -> None:
+        """Exercise test wall farther than vision range is not visible behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test wall farther than vision range is not visible test intent explicit.
         snapshot = self.sense_snapshot(
             creature_at((50.0, 50.0), vision_range=40.0),
             (0.0, 0.0, 200.0, 200.0),
@@ -742,6 +1398,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.walls.angle, 0.0)
 
     def test_sensor_input_contract_includes_wall_grabbing_and_biome_inputs(self) -> None:
+        """Exercise test sensor input contract includes wall grabbing and biome inputs behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test sensor input contract includes wall grabbing and biome inputs test intent explicit.
         inputs = self.sense_inputs(
             creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
             (0.0, 0.0, 100.0, 100.0),
@@ -779,6 +1448,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(inputs[42], 1.0)
 
     def test_stomach_fullness_is_the_32nd_input_and_clamps(self) -> None:
+        """Exercise test stomach fullness is the 32nd input and clamps behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test stomach fullness is the 32nd input and clamps test intent explicit.
         creature = creature_at((50.0, 50.0), radius=10.0)
         creature.stomach_energy = 0.5
         inputs = self.sense_inputs(creature, (0.0, 0.0, 100.0, 100.0))
@@ -789,6 +1471,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(inputs[31], 1.0)
 
     def test_feeding_drive_requires_low_energy_and_stomach_capacity(self) -> None:
+        """Exercise test feeding drive requires low energy and stomach capacity behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test feeding drive requires low energy and stomach capacity test intent explicit.
         creature = creature_at((50.0, 50.0), radius=10.0, energy=0.1)
         creature.stomach_energy = 0.25
 
@@ -806,6 +1501,19 @@ class VisionWallSensorTest(unittest.TestCase):
     def test_cohesion_and_alignment_use_only_same_species_creatures(
         self,
     ) -> None:
+        """Exercise test cohesion and alignment use only same species creatures behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test cohesion and alignment use only same species creatures test intent explicit.
         observer = creature_at((0.0, 0.0), radius=10.0, vision_range=100.0)
         flockmate = creature_at(
             (40.0, 10.0),
@@ -846,6 +1554,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.flock.average_flockmate_velocity, (0.0, 10.0))
 
     def test_symmetric_neighbors_cancel_separation_field(self) -> None:
+        """Exercise test symmetric neighbors cancel separation field behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test symmetric neighbors cancel separation field test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=5.0,
@@ -867,6 +1588,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.flock.crowd_separation_absolute_angle, 0.0)
 
     def test_crowded_left_side_produces_rightward_separation(self) -> None:
+        """Exercise test crowded left side produces rightward separation behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test crowded left side produces rightward separation test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=5.0,
@@ -898,6 +1632,19 @@ class VisionWallSensorTest(unittest.TestCase):
     def test_separation_ignores_visible_neighbors_outside_personal_space(
         self,
     ) -> None:
+        """Exercise test separation ignores visible neighbors outside personal space behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test separation ignores visible neighbors outside personal space test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -934,6 +1681,19 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
     def test_personal_space_boundary_is_strictly_excluded(self) -> None:
+        """Exercise test personal space boundary is strictly excluded behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test personal space boundary is strictly excluded test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -954,6 +1714,19 @@ class VisionWallSensorTest(unittest.TestCase):
     def test_crowd_separation_falls_continuously_to_zero_at_four_radii(
         self,
     ) -> None:
+        """Exercise test crowd separation falls continuously to zero at four radii behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test crowd separation falls continuously to zero at four radii test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -987,6 +1760,19 @@ class VisionWallSensorTest(unittest.TestCase):
     def test_multiple_neighbors_accumulate_crowd_separation_before_clamping(
         self,
     ) -> None:
+        """Exercise test multiple neighbors accumulate crowd separation before clamping behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test multiple neighbors accumulate crowd separation before clamping test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -1020,6 +1806,19 @@ class VisionWallSensorTest(unittest.TestCase):
     def test_compatibility_weights_all_flock_means_and_effective_count(
         self,
     ) -> None:
+        """Exercise test compatibility weights all flock means and effective count behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test compatibility weights all flock means and effective count test intent explicit.
         self.vision.flock_compatibility_resolver = (
             lambda _observer, neighbor: {2: 0.25, 3: 0.75}[neighbor.creature_id]
         )
@@ -1057,6 +1856,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.flock.cohesion_absolute_angle, atan2(5.0, 20.0))
 
     def test_zero_average_velocity_falls_back_to_observer_velocity(self) -> None:
+        """Exercise test zero average velocity falls back to observer velocity behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test zero average velocity falls back to observer velocity test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             vision_range=100.0,
@@ -1085,6 +1897,19 @@ class VisionWallSensorTest(unittest.TestCase):
     def test_close_other_species_creature_does_not_contribute_soft_force(
         self,
     ) -> None:
+        """Exercise test close other species creature does not contribute soft force behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test close other species creature does not contribute soft force test intent explicit.
         observer = creature_at(
             (0.0, 0.0),
             radius=10.0,
@@ -1112,6 +1937,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.flock.average_flockmate_velocity, (0.0, 0.0))
 
     def test_alignment_uses_flockmate_velocity_instead_of_heading(self) -> None:
+        """Exercise test alignment uses flockmate velocity instead of heading behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test alignment uses flockmate velocity instead of heading test intent explicit.
         observer = creature_at((0.0, 0.0), vision_range=100.0)
         flockmates = [
             creature_at(
@@ -1140,6 +1978,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.flock.average_relative_heading, 0.0)
 
     def test_average_flockmate_proximity_uses_distance_falloff(self) -> None:
+        """Exercise test average flockmate proximity uses distance falloff behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test average flockmate proximity uses distance falloff test intent explicit.
         observer = creature_at((0.0, 0.0), vision_range=100.0)
 
         far_snapshot = self.vision.sense(
@@ -1167,6 +2018,19 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
     def test_flock_inputs_are_zero_without_same_species_flockmates(self) -> None:
+        """Exercise test flock inputs are zero without same species flockmates behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test flock inputs are zero without same species flockmates test intent explicit.
         observer = creature_at((0.0, 0.0), vision_range=100.0)
         stranger = creature_at(
             (20.0, 0.0),
@@ -1188,6 +2052,19 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertEqual(snapshot.flock.average_flockmate_proximity, 0.0)
 
     def test_grabbing_input_is_binary_and_appended_to_sensor_contract(self) -> None:
+        """Exercise test grabbing input is binary and appended to sensor contract behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test grabbing input is binary and appended to sensor contract test intent explicit.
         snapshot = self.vision.sense(
             creature_at((55.0, 50.0), radius=5.0, vision_range=50.0),
             foods=[],

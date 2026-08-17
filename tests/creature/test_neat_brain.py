@@ -12,11 +12,41 @@ from unittest.mock import patch
 
 class _Body:
     def __init__(self, *args: object, **kwargs: object) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        args
+            Value supplied to ``args`` by the test scenario.
+        kwargs
+            Value supplied to ``kwargs`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.position = SimpleNamespace(x=0.0, y=0.0)
 
 
 class _Circle:
     def __init__(self, body: _Body, radius: float) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        body
+            Value supplied to ``body`` by the test scenario.
+        radius
+            Value supplied to ``radius`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.body = body
         self.radius = radius
 
@@ -55,12 +85,38 @@ from src.vision import (
 
 class FakeNetwork:
     def __init__(self, outputs: object) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        outputs
+            Value supplied to ``outputs`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.outputs = outputs
         self.activate_count = 0
         self.input_references: list[list[float]] = []
         self.input_values: list[list[float]] = []
 
     def activate(self, inputs: list[float]) -> object:
+        """Exercise activate behavior.
+        
+        Parameters
+        ----------
+        inputs
+            Value supplied to ``inputs`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the activate test intent explicit.
         self.activate_count += 1
         self.input_references.append(inputs)
         self.input_values.append(list(inputs))
@@ -68,6 +124,19 @@ class FakeNetwork:
 
 
 def empty_target() -> VisionTargetSnapshot:
+    """Exercise empty target behavior.
+    
+    Parameters
+    ----------
+    None
+        This callable receives no external parameters.
+    
+    Returns
+    -------
+    None
+        The test completes through assertions.
+    """
+    # Keep the empty target test intent explicit.
     return VisionTargetSnapshot(
         visible=0.0,
         proximity=0.0,
@@ -78,6 +147,19 @@ def empty_target() -> VisionTargetSnapshot:
 
 
 def sensor_snapshot() -> SensorSnapshot:
+    """Exercise sensor snapshot behavior.
+    
+    Parameters
+    ----------
+    None
+        This callable receives no external parameters.
+    
+    Returns
+    -------
+    None
+        The test completes through assertions.
+    """
+    # Keep the sensor snapshot test intent explicit.
     return SensorSnapshot(
         food=empty_target(),
         creatures=empty_target(),
@@ -100,6 +182,19 @@ def sensor_snapshot() -> SensorSnapshot:
 
 class NeatBrainActionMappingTest(unittest.TestCase):
     def test_shipped_config_matches_runtime_sensor_contract(self) -> None:
+        """Exercise test shipped config matches runtime sensor contract behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test shipped config matches runtime sensor contract test intent explicit.
         controller = NeatBrainController(Path("configs/neat_herbivore.ini"))
 
         self.assertEqual(
@@ -108,6 +203,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         )
 
     def test_runtime_input_count_mismatch_fails_before_activation(self) -> None:
+        """Exercise test runtime input count mismatch fails before activation behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test runtime input count mismatch fails before activation test intent explicit.
         network = FakeNetwork([0.0] * ACTION_OUTPUT_COUNT)
         network.input_nodes = list(range(SENSOR_CONTRACT.input_count - 1))
         brain = NeatBrain(
@@ -122,6 +230,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(network.activate_count, 0)
 
     def test_startup_contract_rejects_mismatched_config_input_count(self) -> None:
+        """Exercise test startup contract rejects mismatched config input count behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test startup contract rejects mismatched config input count test intent explicit.
         controller = NeatBrainController.__new__(NeatBrainController)
         controller.config = SimpleNamespace(
             genome_config=SimpleNamespace(
@@ -135,6 +256,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             controller._validate_network_contract()
 
     def test_output_schema_is_contiguous_and_named(self) -> None:
+        """Exercise test output schema is contiguous and named behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test output schema is contiguous and named test intent explicit.
         self.assertEqual(
             [int(output) for output in BrainOutputIndex],
             list(range(15)),
@@ -150,6 +284,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         ))
 
     def test_rest_uses_positive_centered_evidence_only(self) -> None:
+        """Exercise test rest uses positive centered evidence only behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test rest uses positive centered evidence only test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[BrainOutputIndex.REST] = 0.75
 
@@ -158,6 +305,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.rest, 0.75)
 
     def test_transaction_shadow_does_not_advance_live_genome_allocator(self) -> None:
+        """Exercise test transaction shadow does not advance live genome allocator behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test transaction shadow does not advance live genome allocator test intent explicit.
         controller = NeatBrainController(Path("configs/neat_herbivore.ini"))
         live_next = controller._next_genome_id_value
 
@@ -168,6 +328,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(controller._next_genome_id_value, live_next)
 
     def test_transaction_shadow_reuses_unmodified_live_objects(self) -> None:
+        """Exercise test transaction shadow reuses unmodified live objects behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test transaction shadow reuses unmodified live objects test intent explicit.
         controller = NeatBrainController(Path("configs/neat_herbivore.ini"))
 
         shadow = controller.transaction_shadow()
@@ -215,6 +388,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
     def test_new_brain_has_legacy_rate_and_zero_transient_herding_state(
         self,
     ) -> None:
+        """Exercise test new brain has legacy rate and zero transient herding state behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test new brain has legacy rate and zero transient herding state test intent explicit.
         brain = self.make_brain([0.0] * ACTION_OUTPUT_COUNT)
 
         self.assertEqual(brain.herding_decay_rate, 1.0)
@@ -224,6 +410,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
     def test_activation_buffer_is_reused_without_publishing_inspector_state(
         self,
     ) -> None:
+        """Exercise test activation buffer is reused without publishing inspector state behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test activation buffer is reused without publishing inspector state test intent explicit.
         brain = self.make_brain([0.0] * ACTION_OUTPUT_COUNT)
         snapshot = sensor_snapshot()
         buffer_id = id(brain._input_buffer)
@@ -243,6 +442,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
     def test_captured_inputs_remain_stable_until_intentional_recapture(
         self,
     ) -> None:
+        """Exercise test captured inputs remain stable until intentional recapture behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test captured inputs remain stable until intentional recapture test intent explicit.
         brain = self.make_brain([0.0] * ACTION_OUTPUT_COUNT)
         snapshot = sensor_snapshot()
 
@@ -260,6 +472,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(captured, captured_values)
 
     def test_live_decision_returns_an_already_clamped_action(self) -> None:
+        """Exercise test live decision returns an already clamped action behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test live decision returns an already clamped action test intent explicit.
         outputs = [-2.0, 2.0] * 8
         brain = self.make_brain(outputs)
 
@@ -295,6 +520,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action, action.clamped())
 
     def test_invalid_brain_decay_rates_fail(self) -> None:
+        """Exercise test invalid brain decay rates fail behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test invalid brain decay rates fail test intent explicit.
         for rate in (0.0, -0.1, float("nan"), float("inf"), 1.01):
             with self.subTest(rate=rate):
                 with self.assertRaises(ValueError):
@@ -311,6 +549,23 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         activations: list[str] | None = None,
         herding_decay_rate: float = 1.0,
     ) -> NeatBrain:
+        """Exercise make brain behavior.
+        
+        Parameters
+        ----------
+        outputs
+            Value supplied to ``outputs`` by the test scenario.
+        activations
+            Value supplied to ``activations`` by the test scenario.
+        herding_decay_rate
+            Value supplied to ``herding_decay_rate`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the make brain test intent explicit.
         return NeatBrain(
             genome_id=1,
             genome=SimpleNamespace(),
@@ -328,10 +583,38 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         outputs: object,
         activations: list[str] | None = None,
     ):
+        """Exercise decide with outputs behavior.
+        
+        Parameters
+        ----------
+        outputs
+            Value supplied to ``outputs`` by the test scenario.
+        activations
+            Value supplied to ``activations`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the decide with outputs test intent explicit.
         brain = self.make_brain(outputs, activations)
         return brain.decide(sensor_snapshot())
 
     def test_neutral_centered_outputs_produce_neutral_action(self) -> None:
+        """Exercise test neutral centered outputs produce neutral action behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test neutral centered outputs produce neutral action test intent explicit.
         brain = self.make_brain([0.0] * ACTION_OUTPUT_COUNT)
 
         action = brain.decide(sensor_snapshot())
@@ -340,6 +623,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertTrue(all(value == 0.0 for value in astuple(action)))
 
     def test_signed_controls_use_centered_values_directly(self) -> None:
+        """Exercise test signed controls use centered values directly behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test signed controls use centered values directly test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[0] = -1.0
         outputs[1] = 0.4
@@ -352,6 +648,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.sound_tone, 1.0)
 
     def test_positive_outputs_discard_negative_evidence(self) -> None:
+        """Exercise test positive outputs discard negative evidence behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test positive outputs discard negative evidence test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[2:6] = [-1.0, 0.0, 0.4, 1.0]
 
@@ -363,6 +672,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.want_grab, 1.0)
 
     def test_herding_uses_positive_centered_evidence_only(self) -> None:
+        """Exercise test herding uses positive centered evidence only behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test herding uses positive centered evidence only test intent explicit.
         for centered, expected in (
             (-1.0, 0.0),
             (0.0, 0.0),
@@ -380,6 +702,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
     def test_herding_pulse_is_integrated_instead_of_applied_instantly(
         self,
     ) -> None:
+        """Exercise test herding pulse is integrated instead of applied instantly behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test herding pulse is integrated instead of applied instantly test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[BrainOutputIndex.HERDING] = 1.0
         brain = self.make_brain(outputs, herding_decay_rate=0.15)
@@ -392,6 +727,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertAlmostEqual(action.herding, 0.15)
 
     def test_sustained_herding_rises_monotonically_toward_one(self) -> None:
+        """Exercise test sustained herding rises monotonically toward one behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test sustained herding rises monotonically toward one test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[BrainOutputIndex.HERDING] = 1.0
         brain = self.make_brain(outputs, herding_decay_rate=0.15)
@@ -408,6 +756,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertGreater(values[-1], 0.999)
 
     def test_herding_decays_geometrically_after_raw_input_stops(self) -> None:
+        """Exercise test herding decays geometrically after raw input stops behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test herding decays geometrically after raw input stops test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[BrainOutputIndex.HERDING] = 1.0
         brain = self.make_brain(outputs, herding_decay_rate=0.15)
@@ -427,6 +788,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertAlmostEqual(values[-1], initial_state * 0.85**4)
 
     def test_legacy_rate_follows_raw_herding_exactly(self) -> None:
+        """Exercise test legacy rate follows raw herding exactly behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test legacy rate follows raw herding exactly test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         brain = self.make_brain(outputs, herding_decay_rate=1.0)
 
@@ -438,6 +812,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             self.assertEqual(action.herding, raw)
 
     def test_invalid_raw_herding_evidence_remains_bounded(self) -> None:
+        """Exercise test invalid raw herding evidence remains bounded behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test invalid raw herding evidence remains bounded test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         brain = self.make_brain(outputs, herding_decay_rate=0.15)
 
@@ -450,6 +837,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             self.assertLessEqual(action.herding, 1.0)
 
     def test_all_action_fields_remain_within_their_documented_ranges(self) -> None:
+        """Exercise test all action fields remain within their documented ranges behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test all action fields remain within their documented ranges test intent explicit.
         outputs = [-2.0, 2.0] * 8
 
         action = self.decide_with_outputs(outputs)
@@ -479,6 +879,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             self.assertLessEqual(value, 1.0, field_name)
 
     def test_missing_outputs_are_filled_with_centered_neutral_values(self) -> None:
+        """Exercise test missing outputs are filled with centered neutral values behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test missing outputs are filled with centered neutral values test intent explicit.
         brain = self.make_brain([0.4, -0.4])
 
         action = brain.decide(sensor_snapshot())
@@ -493,6 +906,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.emit_alarm_pheromone, 0.0)
 
     def test_exactly_fourteen_outputs_are_preserved(self) -> None:
+        """Exercise test exactly fourteen outputs are preserved behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test exactly fourteen outputs are preserved test intent explicit.
         outputs = [index / 20.0 for index in range(ACTION_OUTPUT_COUNT)]
         brain = self.make_brain(outputs)
 
@@ -501,6 +927,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(brain.last_outputs, outputs)
 
     def test_excess_outputs_are_ignored(self) -> None:
+        """Exercise test excess outputs are ignored behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test excess outputs are ignored test intent explicit.
         brain = self.make_brain(
             [0.0] * ACTION_OUTPUT_COUNT + [1.0, -1.0]
         )
@@ -510,6 +949,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(brain.last_outputs, [0.0] * ACTION_OUTPUT_COUNT)
 
     def test_non_iterable_network_result_produces_neutral_action(self) -> None:
+        """Exercise test non iterable network result produces neutral action behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test non iterable network result produces neutral action test intent explicit.
         brain = self.make_brain(1.0)
 
         action = brain.decide(sensor_snapshot())
@@ -518,6 +970,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertTrue(all(value == 0.0 for value in astuple(action)))
 
     def test_communication_outputs_use_centered_action_semantics(self) -> None:
+        """Exercise test communication outputs use centered action semantics behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test communication outputs use centered action semantics test intent explicit.
         neutral = self.decide_with_outputs([0.0] * ACTION_OUTPUT_COUNT)
         active = self.decide_with_outputs(
             [0.0] * 10 + [0.5, -0.5, 1.0, 0.2]
@@ -532,6 +997,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(active.emit_alarm_pheromone, 0.2)
 
     def test_relu_signed_outputs_are_intentionally_one_sided(self) -> None:
+        """Exercise test relu signed outputs are intentionally one sided behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test relu signed outputs are intentionally one sided test intent explicit.
         outputs = [0.0] * ACTION_OUTPUT_COUNT
         outputs[1] = 0.4
         outputs[BrainOutputIndex.ACOUSTIC_TONE] = 1.2
@@ -546,6 +1024,19 @@ class NeatBrainActionMappingTest(unittest.TestCase):
 
 class NeatBrainOutputNormalizationTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         brain = NeatBrain(
             genome_id=1,
             genome=SimpleNamespace(),
@@ -554,37 +1045,128 @@ class NeatBrainOutputNormalizationTest(unittest.TestCase):
         self.brain = brain
 
     def test_sigmoid_is_remapped_to_centered_range(self) -> None:
+        """Exercise test sigmoid is remapped to centered range behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test sigmoid is remapped to centered range test intent explicit.
         self.assertEqual(self.brain._center_output(0.0, "sigmoid"), -1.0)
         self.assertEqual(self.brain._center_output(0.5, "sigmoid"), 0.0)
         self.assertEqual(self.brain._center_output(1.0, "sigmoid"), 1.0)
 
     def test_tanh_is_clamped_as_centered(self) -> None:
+        """Exercise test tanh is clamped as centered behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test tanh is clamped as centered test intent explicit.
         self.assertEqual(self.brain._center_output(-1.0, "tanh"), -1.0)
         self.assertEqual(self.brain._center_output(0.0, "tanh"), 0.0)
         self.assertEqual(self.brain._center_output(1.0, "tanh"), 1.0)
 
     def test_clamped_zero_remains_centered_neutral(self) -> None:
+        """Exercise test clamped zero remains centered neutral behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test clamped zero remains centered neutral test intent explicit.
         self.assertEqual(self.brain._center_output(-1.0, "clamped"), -1.0)
         self.assertEqual(self.brain._center_output(0.0, "clamped"), 0.0)
         self.assertEqual(self.brain._center_output(1.0, "clamped"), 1.0)
 
     def test_relu_is_bounded_without_a_half_range_shift(self) -> None:
+        """Exercise test relu is bounded without a half range shift behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test relu is bounded without a half range shift test intent explicit.
         self.assertEqual(self.brain._center_output(0.0, "relu"), 0.0)
         self.assertEqual(self.brain._center_output(0.2, "relu"), 0.2)
         self.assertEqual(self.brain._center_output(2.0, "relu"), 1.0)
 
     def test_lelu_uses_a_symmetric_squash(self) -> None:
+        """Exercise test lelu uses a symmetric squash behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test lelu uses a symmetric squash test intent explicit.
         self.assertAlmostEqual(self.brain._center_output(-0.2, "lelu"), tanh(-0.2))
         self.assertEqual(self.brain._center_output(0.0, "lelu"), 0.0)
         self.assertAlmostEqual(self.brain._center_output(0.2, "lelu"), tanh(0.2))
 
     def test_invalid_outputs_are_centered_neutral(self) -> None:
+        """Exercise test invalid outputs are centered neutral behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test invalid outputs are centered neutral test intent explicit.
         invalid_values = [float("nan"), float("inf"), float("-inf"), object()]
         for value in invalid_values:
             with self.subTest(value=value):
                 self.assertEqual(self.brain._center_output(value, "sigmoid"), 0.0)
 
     def test_unsupported_activation_uses_finite_tanh_fallback(self) -> None:
+        """Exercise test unsupported activation uses finite tanh fallback behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test unsupported activation uses finite tanh fallback test intent explicit.
         self.assertAlmostEqual(
             self.brain._center_output(0.4, "custom_activation"),
             tanh(0.4),
@@ -593,12 +1175,40 @@ class NeatBrainOutputNormalizationTest(unittest.TestCase):
 
 class NeatBrainNetworkCachingTest(unittest.TestCase):
     def test_from_genome_compiles_network_once_and_reuses_it(self) -> None:
+        """Exercise test from genome compiles network once and reuses it behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test from genome compiles network once and reuses it test intent explicit.
         created_networks: list[FakeNetwork] = []
         fake_network = FakeNetwork([0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
 
         class FakeFeedForwardNetwork:
             @staticmethod
             def create(genome: object, config: object) -> FakeNetwork:
+                """Exercise create behavior.
+                
+                Parameters
+                ----------
+                genome
+                    Value supplied to ``genome`` by the test scenario.
+                config
+                    Value supplied to ``config`` by the test scenario.
+                
+                Returns
+                -------
+                None
+                    The test completes through assertions.
+                """
+                # Keep the create test intent explicit.
                 created_networks.append(fake_network)
                 return fake_network
 
@@ -628,9 +1238,37 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         self.assertEqual(fake_network.activate_count, 3)
 
     def test_from_genome_propagates_rate_and_resets_transient_state(self) -> None:
+        """Exercise test from genome propagates rate and resets transient state behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test from genome propagates rate and resets transient state test intent explicit.
         class FakeFeedForwardNetwork:
             @staticmethod
             def create(genome: object, config: object) -> FakeNetwork:
+                """Exercise create behavior.
+                
+                Parameters
+                ----------
+                genome
+                    Value supplied to ``genome`` by the test scenario.
+                config
+                    Value supplied to ``config`` by the test scenario.
+                
+                Returns
+                -------
+                None
+                    The test completes through assertions.
+                """
+                # Keep the create test intent explicit.
                 del genome, config
                 return FakeNetwork([])
 
@@ -658,6 +1296,19 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         self.assertEqual(brain.last_raw_herding, 0.0)
 
     def test_controller_factory_propagates_rate_to_rebuilt_brains(self) -> None:
+        """Exercise test controller factory propagates rate to rebuilt brains behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test controller factory propagates rate to rebuilt brains test intent explicit.
         controller = NeatBrainController.__new__(NeatBrainController)
         controller.config = object()
         controller.sensor_contract = SimpleNamespace(input_names=("constant",))
@@ -684,9 +1335,37 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         )
 
     def test_rebuild_reads_activations_in_configured_output_key_order(self) -> None:
+        """Exercise test rebuild reads activations in configured output key order behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test rebuild reads activations in configured output key order test intent explicit.
         class FakeFeedForwardNetwork:
             @staticmethod
             def create(genome: object, config: object) -> FakeNetwork:
+                """Exercise create behavior.
+                
+                Parameters
+                ----------
+                genome
+                    Value supplied to ``genome`` by the test scenario.
+                config
+                    Value supplied to ``config`` by the test scenario.
+                
+                Returns
+                -------
+                None
+                    The test completes through assertions.
+                """
+                # Keep the create test intent explicit.
                 del genome, config
                 return FakeNetwork([])
 
@@ -728,6 +1407,19 @@ class NeatConfigurationTest(unittest.TestCase):
     def test_herbivore_config_enables_supported_activation_and_aggregation_modes(
         self,
     ) -> None:
+        """Exercise test herbivore config enables supported activation and aggregation modes behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test herbivore config enables supported activation and aggregation modes test intent explicit.
         if not hasattr(neat, "Config"):
             self.skipTest("neat-python is not installed")
         config_path = (
@@ -760,7 +1452,37 @@ class NeatConfigurationTest(unittest.TestCase):
 
 class SensorUsageTest(unittest.TestCase):
     def test_direct_hidden_disabled_and_disconnected_paths(self) -> None:
+        """Exercise test direct hidden disabled and disconnected paths behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test direct hidden disabled and disconnected paths test intent explicit.
         def gene(source: int, target: int, enabled: bool = True) -> SimpleNamespace:
+            """Exercise gene behavior.
+            
+            Parameters
+            ----------
+            source
+                Value supplied to ``source`` by the test scenario.
+            target
+                Value supplied to ``target`` by the test scenario.
+            enabled
+                Value supplied to ``enabled`` by the test scenario.
+            
+            Returns
+            -------
+            None
+                The test completes through assertions.
+            """
+            # Keep the gene test intent explicit.
             return SimpleNamespace(key=(source, target), enabled=enabled)
 
         genome = SimpleNamespace(
@@ -792,7 +1514,35 @@ class SensorUsageTest(unittest.TestCase):
         self.assertFalse(usage[3].has_enabled_path)
 
     def test_one_sensor_reaches_multiple_outputs_in_action_order(self) -> None:
+        """Exercise test one sensor reaches multiple outputs in action order behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test one sensor reaches multiple outputs in action order test intent explicit.
         def gene(source: int, target: int) -> SimpleNamespace:
+            """Exercise gene behavior.
+            
+            Parameters
+            ----------
+            source
+                Value supplied to ``source`` by the test scenario.
+            target
+                Value supplied to ``target`` by the test scenario.
+            
+            Returns
+            -------
+            None
+                The test completes through assertions.
+            """
+            # Keep the gene test intent explicit.
             return SimpleNamespace(key=(source, target), enabled=True)
 
         genome = SimpleNamespace(
@@ -818,7 +1568,37 @@ class SensorUsageTest(unittest.TestCase):
         )
 
     def test_disabled_connections_are_not_passed_to_neat_graph_helper(self) -> None:
+        """Exercise test disabled connections are not passed to neat graph helper behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test disabled connections are not passed to neat graph helper test intent explicit.
         def gene(source: int, target: int, enabled: bool) -> SimpleNamespace:
+            """Exercise gene behavior.
+            
+            Parameters
+            ----------
+            source
+                Value supplied to ``source`` by the test scenario.
+            target
+                Value supplied to ``target`` by the test scenario.
+            enabled
+                Value supplied to ``enabled`` by the test scenario.
+            
+            Returns
+            -------
+            None
+                The test completes through assertions.
+            """
+            # Keep the gene test intent explicit.
             return SimpleNamespace(key=(source, target), enabled=enabled)
 
         genome = SimpleNamespace(
@@ -849,6 +1629,19 @@ class SensorUsageTest(unittest.TestCase):
 
 class NeatArchivePruningTest(unittest.TestCase):
     def test_population_archive_keeps_live_and_highest_fitness_genomes(self) -> None:
+        """Exercise test population archive keeps live and highest fitness genomes behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test population archive keeps live and highest fitness genomes test intent explicit.
         controller = NeatBrainController.__new__(NeatBrainController)
         genomes = {
             genome_id: SimpleNamespace(key=genome_id, fitness=float(genome_id))
@@ -866,6 +1659,19 @@ class NeatArchivePruningTest(unittest.TestCase):
         self.assertEqual(set(controller.population.population), retained)
 
     def test_monotonic_genome_ids_do_not_depend_on_retained_population(self) -> None:
+        """Exercise test monotonic genome ids do not depend on retained population behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test monotonic genome ids do not depend on retained population test intent explicit.
         controller = NeatBrainController.__new__(NeatBrainController)
         controller.population = SimpleNamespace(population={2: object()})
         controller.brains = {}
@@ -879,6 +1685,19 @@ class NeatArchivePruningTest(unittest.TestCase):
 
 class EvolutionAllocatorPersistenceTest(unittest.TestCase):
     def test_restore_reconstructs_allocators_above_every_loaded_gene(self) -> None:
+        """Exercise test restore reconstructs allocators above every loaded gene behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test restore reconstructs allocators above every loaded gene test intent explicit.
         low_genome = SimpleNamespace(
             nodes={12: object()},
             connections={

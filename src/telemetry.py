@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from src.speciation import (
+from src.creature.speciation import (
     NeatChangeSummary,
     NeuralShift,
     SpeciesDistanceBreakdown,

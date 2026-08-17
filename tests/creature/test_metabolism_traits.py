@@ -19,15 +19,54 @@ class FakeCreature:
 
 class FakeVision:
     def __init__(self, cost: float) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        cost
+            Value supplied to ``cost`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.cost = cost
 
     def energy_cost_per_second(self, creature: FakeCreature) -> float:
+        """Exercise energy cost per second behavior.
+        
+        Parameters
+        ----------
+        creature
+            Value supplied to ``creature`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the energy cost per second test intent explicit.
         del creature
         return self.cost
 
 
 class MetabolismTraitCostTest(unittest.TestCase):
     def test_default_and_maximum_digestive_upkeep_are_bounded(self) -> None:
+        """Exercise test default and maximum digestive upkeep are bounded behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test default and maximum digestive upkeep are bounded test intent explicit.
         config = MetabolismConfig(
             basic_metabolism_rate=0.0,
             movement_energy_cost_factor=0.0,
@@ -73,6 +112,19 @@ class MetabolismTraitCostTest(unittest.TestCase):
         self.assertLessEqual(maximum_cost, 0.012)
 
     def test_invalid_digestive_configuration_is_rejected(self) -> None:
+        """Exercise test invalid digestive configuration is rejected behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test invalid digestive configuration is rejected test intent explicit.
         with self.assertRaises(ValueError):
             Metabolism(
                 MetabolismConfig(),
@@ -97,6 +149,19 @@ class MetabolismTraitCostTest(unittest.TestCase):
             )
 
     def test_communication_costs_are_charged_and_reported_as_trait_cost(self) -> None:
+        """Exercise test communication costs are charged and reported as trait cost behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test communication costs are charged and reported as trait cost test intent explicit.
         metabolism = Metabolism(
             MetabolismConfig(
                 basic_metabolism_rate=0.0,
@@ -127,6 +192,19 @@ class MetabolismTraitCostTest(unittest.TestCase):
         self.assertAlmostEqual(cost.total, 0.0045)
         self.assertAlmostEqual(cost.trait, 0.0045)
     def test_large_body_and_movement_multiplier_increase_energy_cost(self) -> None:
+        """Exercise test large body and movement multiplier increase energy cost behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test large body and movement multiplier increase energy cost test intent explicit.
         metabolism = Metabolism(
             MetabolismConfig(
                 basic_metabolism_rate=0.0,
@@ -171,6 +249,19 @@ class MetabolismTraitCostTest(unittest.TestCase):
         self.assertGreater(costly_cost.trait, efficient_cost.trait)
 
     def test_full_sprint_adds_configured_energy_cost(self) -> None:
+        """Exercise test full sprint adds configured energy cost behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test full sprint adds configured energy cost test intent explicit.
         metabolism = Metabolism(
             MetabolismConfig(
                 basic_metabolism_rate=0.0,
@@ -203,6 +294,19 @@ class MetabolismTraitCostTest(unittest.TestCase):
         self.assertAlmostEqual(sprinting.total - normal.total, 0.04)
 
     def test_energy_cost_multiplier_scales_complete_energy_drain(self) -> None:
+        """Exercise test energy cost multiplier scales complete energy drain behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test energy cost multiplier scales complete energy drain test intent explicit.
         metabolism = Metabolism(
             MetabolismConfig(
                 basic_metabolism_rate=0.1,
@@ -232,6 +336,19 @@ class MetabolismTraitCostTest(unittest.TestCase):
     def test_brain_complexity_increases_basal_upkeep_before_multiplier(
         self,
     ) -> None:
+        """Exercise test brain complexity increases basal upkeep before multiplier behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test brain complexity increases basal upkeep before multiplier test intent explicit.
         genomes = {
             1: SimpleGenome(node_count=2, connection_count=3),
             2: SimpleGenome(node_count=20, connection_count=30),
@@ -277,6 +394,19 @@ class MetabolismTraitCostTest(unittest.TestCase):
         self.assertLess(complex_creature.energy, simple.energy)
 
     def test_infant_brain_tax_holiday_skips_complexity_upkeep(self) -> None:
+        """Exercise test infant brain tax holiday skips complexity upkeep behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test infant brain tax holiday skips complexity upkeep test intent explicit.
         genomes = {
             1: SimpleGenome(node_count=0, connection_count=0),
             2: SimpleGenome(node_count=20, connection_count=0),
@@ -342,6 +472,21 @@ class MetabolismTraitCostTest(unittest.TestCase):
 
 class SimpleGenome:
     def __init__(self, node_count: int, connection_count: int) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        node_count
+            Value supplied to ``node_count`` by the test scenario.
+        connection_count
+            Value supplied to ``connection_count`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.nodes = {node_id: object() for node_id in range(node_count)}
         self.connections = {
             connection_id: object()

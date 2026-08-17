@@ -28,6 +28,19 @@ class FakeCreature:
 
 class FakeBrainController:
     def __init__(self) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.brains = {
             1: SimpleNamespace(
                 genome=SimpleNamespace(
@@ -51,11 +64,37 @@ class FakeBrainController:
         }
 
     def brain_for(self, creature_id: int) -> object | None:
+        """Exercise brain for behavior.
+        
+        Parameters
+        ----------
+        creature_id
+            Value supplied to ``creature_id`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the brain for test intent explicit.
         return self.brains.get(creature_id)
 
 
 class RtNeatFitnessRankingTest(unittest.TestCase):
     def test_update_stats_keeps_non_ranked_eligible_parent_snapshot(self) -> None:
+        """Exercise test update stats keeps non ranked eligible parent snapshot behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test update stats keeps non ranked eligible parent snapshot test intent explicit.
         manager = RtNeatManager(brain_controller=None)
         population_config = PopulationConfig(
             min_reproduction_age=0.0,
@@ -81,6 +120,19 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
         self.assertAlmostEqual(manager.stats.worst_fitness, 1.0)
 
     def test_update_stats_does_not_share_fitness_across_species(self) -> None:
+        """Exercise test update stats does not share fitness across species behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test update stats does not share fitness across species test intent explicit.
         manager = RtNeatManager(brain_controller=None)
         population_config = PopulationConfig(
             min_reproduction_age=0.0,
@@ -120,11 +172,37 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
         self.assertAlmostEqual(manager.stats.best_fitness, 100.0)
 
     def test_select_parent_returns_none_for_empty_pool(self) -> None:
+        """Exercise test select parent returns none for empty pool behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test select parent returns none for empty pool test intent explicit.
         manager = RtNeatManager(brain_controller=None, rng=Random(7))
 
         self.assertIsNone(manager.select_parent([]))
 
     def test_noneligible_creatures_are_never_selected(self) -> None:
+        """Exercise test noneligible creatures are never selected behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test noneligible creatures are never selected test intent explicit.
         manager = RtNeatManager(brain_controller=None, rng=Random(7))
         config = PopulationConfig(
             min_reproduction_age=20.0,
@@ -152,6 +230,19 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
         self.assertEqual(manager.select_parent(eligible).creature_id, 2)
 
     def test_parsimony_round_prefers_smaller_enabled_network(self) -> None:
+        """Exercise test parsimony round prefers smaller enabled network behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test parsimony round prefers smaller enabled network test intent explicit.
         controller = FakeBrainController()
         manager = RtNeatManager(brain_controller=controller)
         manager.rng = SimpleNamespace(sample=lambda pool, count: pool[:count])
@@ -168,6 +259,19 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
         self.assertEqual(selected.creature_id, 1)
 
     def test_small_pool_breaks_energy_ties_by_complexity(self) -> None:
+        """Exercise test small pool breaks energy ties by complexity behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test small pool breaks energy ties by complexity test intent explicit.
         manager = RtNeatManager(
             brain_controller=FakeBrainController(),
             rng=Random(7),
@@ -182,12 +286,38 @@ class RtNeatFitnessRankingTest(unittest.TestCase):
         self.assertEqual(selected.creature_id, 1)
 
     def test_tournament_sizes_must_be_positive_and_ordered(self) -> None:
+        """Exercise test tournament sizes must be positive and ordered behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test tournament sizes must be positive and ordered test intent explicit.
         with self.assertRaises(ValueError):
             PopulationConfig(tournament_k1=0)
         with self.assertRaises(ValueError):
             PopulationConfig(tournament_k1=2, tournament_k2=3)
 
     def test_update_stats_tracks_trend_metrics(self) -> None:
+        """Exercise test update stats tracks trend metrics behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test update stats tracks trend metrics test intent explicit.
         manager = RtNeatManager(brain_controller=FakeBrainController())
         manager.record_normal_replacement()
         manager.record_extinction_replacements(2)

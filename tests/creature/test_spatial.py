@@ -7,6 +7,27 @@ from src.spatial import BroadPhaseGeometry, CandidateBuffer, CreatureSpatialInde
 
 
 def creature(creature_id: int, x: float, y: float, radius: float, parent=None):
+    """Exercise creature behavior.
+    
+    Parameters
+    ----------
+    creature_id
+        Value supplied to ``creature_id`` by the test scenario.
+    x
+        Value supplied to ``x`` by the test scenario.
+    y
+        Value supplied to ``y`` by the test scenario.
+    radius
+        Value supplied to ``radius`` by the test scenario.
+    parent
+        Value supplied to ``parent`` by the test scenario.
+    
+    Returns
+    -------
+    None
+        The test completes through assertions.
+    """
+    # Keep the creature test intent explicit.
     return SimpleNamespace(
         creature_id=creature_id,
         body=SimpleNamespace(position=SimpleNamespace(x=x, y=y)),
@@ -17,6 +38,19 @@ def creature(creature_id: int, x: float, y: float, radius: float, parent=None):
 
 class BroadPhaseGeometryTest(unittest.TestCase):
     def test_formulas_include_only_the_specified_radius_padding(self) -> None:
+        """Exercise test formulas include only the specified radius padding behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test formulas include only the specified radius padding test intent explicit.
         geometry = BroadPhaseGeometry.calculate(
             observer_radius=12.0,
             maximum_target_radius=22.0,
@@ -33,6 +67,19 @@ class BroadPhaseGeometryTest(unittest.TestCase):
         self.assertEqual(geometry.scheduled, 400.0)
 
     def test_disabled_long_range_does_not_expand_scheduled_query(self) -> None:
+        """Exercise test disabled long range does not expand scheduled query behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test disabled long range does not expand scheduled query test intent explicit.
         geometry = BroadPhaseGeometry.calculate(
             observer_radius=20.0,
             maximum_target_radius=30.0,
@@ -46,6 +93,19 @@ class BroadPhaseGeometryTest(unittest.TestCase):
         self.assertEqual(geometry.scheduled, 117.0)
 
     def test_minimum_radii_and_exact_vision_origin_padding(self) -> None:
+        """Exercise test minimum radii and exact vision origin padding behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test minimum radii and exact vision origin padding test intent explicit.
         geometry = BroadPhaseGeometry.calculate(
             observer_radius=0.0,
             maximum_target_radius=0.0,
@@ -58,6 +118,19 @@ class BroadPhaseGeometryTest(unittest.TestCase):
         self.assertEqual(geometry.scheduled, 25.0)
 
     def test_large_target_padding_does_not_leak_into_flock_ranges(self) -> None:
+        """Exercise test large target padding does not leak into flock ranges behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test large target padding does not leak into flock ranges test intent explicit.
         geometry = BroadPhaseGeometry.calculate(
             observer_radius=40.0,
             maximum_target_radius=120.0,
@@ -75,6 +148,19 @@ class BroadPhaseGeometryTest(unittest.TestCase):
 
 class CreatureSpatialIndexTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.first = creature(1, 0.0, 0.0, 10.0)
         self.second = creature(2, 64.0, 0.0, 22.0, parent=1)
         self.registry = {1: self.first, 2: self.second}
@@ -84,6 +170,19 @@ class CreatureSpatialIndexTest(unittest.TestCase):
         )
 
     def test_query_traverses_scan_edge_cells_and_is_a_broad_superset(self) -> None:
+        """Exercise test query traverses scan edge cells and is a broad superset behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test query traverses scan edge cells and is a broad superset test intent explicit.
         self.index.rebuild([self.first, self.second])
         output = CandidateBuffer(self.index)
         self.index.query_into(0.0, 0.0, 64.0, output)
@@ -93,6 +192,19 @@ class CreatureSpatialIndexTest(unittest.TestCase):
         )
 
     def test_exact_zero_envelope_and_negative_cell_edge_are_inclusive(self) -> None:
+        """Exercise test exact zero envelope and negative cell edge are inclusive behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test exact zero envelope and negative cell edge are inclusive test intent explicit.
         edge = creature(3, -64.0, -64.0, 3.0)
         self.registry[3] = edge
         self.index.rebuild([self.first, edge])
@@ -104,6 +216,19 @@ class CreatureSpatialIndexTest(unittest.TestCase):
         self.assertEqual([item.creature_id for item in at_edge], [3])
 
     def test_generation_and_registry_invalidate_stale_slots(self) -> None:
+        """Exercise test generation and registry invalidate stale slots behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test generation and registry invalidate stale slots test intent explicit.
         self.index.rebuild([self.first, self.second])
         output = CandidateBuffer(self.index)
         self.index.query_into(0.0, 0.0, 128.0, output)
@@ -118,6 +243,19 @@ class CreatureSpatialIndexTest(unittest.TestCase):
             len(tuple(output))
 
     def test_failed_rebuild_publishes_no_partial_generation(self) -> None:
+        """Exercise test failed rebuild publishes no partial generation behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test failed rebuild publishes no partial generation test intent explicit.
         self.index.rebuild([self.first, self.second])
         generation = self.index.generation
         duplicate = creature(1, 10.0, 10.0, 5.0)
@@ -130,6 +268,19 @@ class CreatureSpatialIndexTest(unittest.TestCase):
             self.index.query_into(0.0, 0.0, 10.0, CandidateBuffer())
 
     def test_family_view_preserves_world_order_without_result_list(self) -> None:
+        """Exercise test family view preserves world order without result list behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test family view preserves world order without result list test intent explicit.
         third = creature(3, 20.0, 0.0, 8.0, parent=1)
         self.registry[3] = third
         self.index.rebuild([self.first, third, self.second])
@@ -140,6 +291,19 @@ class CreatureSpatialIndexTest(unittest.TestCase):
         )
 
     def test_only_previously_active_cells_are_reset_and_buffers_are_reused(self) -> None:
+        """Exercise test only previously active cells are reset and buffers are reused behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test only previously active cells are reset and buffers are reused test intent explicit.
         self.index.rebuild([self.first, self.second])
         growth = self.index.counters.cell_buffer_growth
         active = len(self.index._active_cells)
@@ -148,6 +312,19 @@ class CreatureSpatialIndexTest(unittest.TestCase):
         self.assertEqual(self.index.counters.cell_buffer_growth, growth)
 
     def test_newborn_is_registered_now_but_indexed_on_the_next_rebuild(self) -> None:
+        """Exercise test newborn is registered now but indexed on the next rebuild behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test newborn is registered now but indexed on the next rebuild test intent explicit.
         self.index.rebuild([self.first])
         child = creature(3, 1.0, 0.0, 4.0, parent=1)
         self.registry[3] = child

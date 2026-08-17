@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import arcade
 
 from configs.sim_config import SimConfig
-from src.action import ACTION_OUTPUT_NAMES
+from src.creature.action import ACTION_OUTPUT_NAMES
 from src.analysis import (
     BEHAVIOR_RADAR_LABELS,
     InspectorReport,
@@ -19,7 +19,7 @@ from src.analysis import (
     generate_radar_chart_image,
     profile_morphology,
 )
-from src.speciation import SpeciesRecord
+from src.creature.speciation import SpeciesRecord
 from src.ui.common.interaction import rect_contains
 from src.ui.components.state import (
     SpeciesInspectorRow as _SpeciesInspectorRow,
@@ -42,7 +42,7 @@ from src.ui.layouts.species_tree import (
     TreeViewportSlice,
     species_tree_line_width,
 )
-from src.vision import SENSOR_INPUT_NAMES
+from src.creature.vision import SENSOR_INPUT_NAMES
 from src.world import World
 
 _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}

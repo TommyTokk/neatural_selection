@@ -15,18 +15,18 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from configs.sim_config import LiveFoodConfig, PersistenceConfig, SimConfig
-from src.action import (
+from src.creature.action import (
     ACTION_OUTPUT_COUNT,
     ACTION_OUTPUT_NAMES,
     ACTION_SCHEMA_VERSION,
     Action,
 )
 from src.creature import FlockingTraits
-from src.flocking import SocialRuntime
-from src.vision import SENSOR_INPUT_COUNT, SENSING_SCHEMA_VERSION
+from src.creature.flocking import SocialRuntime
+from src.creature.vision import SENSOR_INPUT_COUNT, SENSING_SCHEMA_VERSION
 
 if TYPE_CHECKING:
-    from src.neat_controller import NeatBrainController
+    from src.creature.neat.controller import NeatBrainController
     from src.world import World
 
 
@@ -1032,15 +1032,13 @@ class PersistenceManager:
         *,
         up_to_time: float | None = None,
     ) -> dict[int, Any]:
-        from src.neat_controller import (
-            calculate_flocking_trait_distance,
-            calculate_phenotypic_distance_components,
-        )
-        from src.speciation import (
+        from src.creature.speciation import (
             NeatChangeSummary,
             SpeciesDistanceBreakdown,
             SpeciesRecord,
             SpeciesTraitSnapshot,
+            calculate_flocking_trait_distance,
+            calculate_phenotypic_distance_components,
             extract_neural_shifts,
         )
 
@@ -1313,7 +1311,7 @@ class PersistenceManager:
 
     @staticmethod
     def _normalize_species_record(record: Any) -> Any:
-        from src.speciation import (
+        from src.creature.speciation import (
             NeatChangeSummary,
             SpeciesDistanceBreakdown,
             SpeciesRecord,
@@ -1490,7 +1488,7 @@ class PersistenceManager:
         history: dict[int, Any],
         neat_controller: NeatBrainController,
     ) -> dict[int, Any]:
-        from src.speciation import (
+        from src.creature.speciation import (
             SpeciesRecord,
             extract_neural_shifts,
         )
@@ -1537,7 +1535,7 @@ class PersistenceManager:
         neat_controller: NeatBrainController,
     ) -> dict[int, Any]:
         """Recover canonical tree colors missing from legacy checkpoints."""
-        from src.speciation import SpeciesRecord
+        from src.creature.speciation import SpeciesRecord
 
         living_by_id = {
             int(creature.creature_id): creature
@@ -1663,7 +1661,7 @@ class PersistenceManager:
 
         missing_living_ids = living_species_ids - recovered.keys()
         if missing_living_ids:
-            from src.speciation import (
+            from src.creature.speciation import (
                 SpeciesDistanceBreakdown,
                 SpeciesRecord,
                 SpeciesTraitSnapshot,
@@ -1753,6 +1751,35 @@ class PersistenceManager:
         *,
         allow_brain_contract_reset: bool = False,
     ) -> World:
+        """Restore a versioned checkpoint into the composed runtime model.
+
+        Parameters
+        ----------
+        state
+            Deserialized version-23 flat checkpoint state.
+        config
+            Runtime configuration used to normalize legacy fallback values.
+        simulation_paths
+            Filesystem paths attached to the restored world.
+        allow_brain_contract_reset
+            Whether incompatible neural sensor contracts may be regenerated.
+
+        Returns
+        -------
+        World
+            Restored world with genotype aggregates and rebound runtime services.
+
+        Raises
+        ------
+        ValueError
+            If checkpoint data violates required persistence invariants.
+
+        Notes
+        -----
+        Legacy normalization intentionally remains separate from live genotype
+        validation because old checkpoints have different fallback semantics.
+        """
+        # Import compatibility symbols locally so old pickle paths remain valid.
         from src.creature import LineageInfo, PhysicalTraits, TraitMutationDelta
         from src.food import Food
         from src.world import ArchivedCreatureTraits, World
@@ -2565,6 +2592,8 @@ class PersistenceManager:
                     int(final_allocator_state["innovation_number"]),
                     final_allocator_state.get("innovation_history"),
                 )
+            # Atomic restoration replaces containers; reconnect composed services.
+            world.rebind_creature_services()
             world._refresh_stats()
             return world
         except BaseException:

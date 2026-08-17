@@ -32,15 +32,58 @@ from src.speciation import extract_neural_shifts, summarize_neat_changes
 
 class FakeGenome:
     def __init__(self, distance: float = 0.0, key: int = 1) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        distance
+            Value supplied to ``distance`` by the test scenario.
+        key
+            Value supplied to ``key`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.reported_distance = distance
         self.key = key
         self.fitness: float | None = None
 
     def distance(self, other: object, genome_config: object) -> float:
+        """Exercise distance behavior.
+        
+        Parameters
+        ----------
+        other
+            Value supplied to ``other`` by the test scenario.
+        genome_config
+            Value supplied to ``genome_config`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the distance test intent explicit.
         del other, genome_config
         return self.reported_distance
 
     def mutate(self, genome_config: object) -> None:
+        """Exercise mutate behavior.
+        
+        Parameters
+        ----------
+        genome_config
+            Value supplied to ``genome_config`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the mutate test intent explicit.
         del genome_config
 
 
@@ -54,6 +97,27 @@ class FakeGene:
         activation: str = "sigmoid",
         aggregation: str = "sum",
     ) -> None:
+        """Exercise init behavior.
+        
+        Parameters
+        ----------
+        weight
+            Value supplied to ``weight`` by the test scenario.
+        enabled
+            Value supplied to ``enabled`` by the test scenario.
+        bias
+            Value supplied to ``bias`` by the test scenario.
+        activation
+            Value supplied to ``activation`` by the test scenario.
+        aggregation
+            Value supplied to ``aggregation`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the init test intent explicit.
         self.weight = weight
         self.enabled = enabled
         self.bias = bias
@@ -70,6 +134,27 @@ def physical(
     digestion_rate: float = 0.2,
     digestion_efficiency: float = 0.9,
 ) -> PhysicalTraits:
+    """Exercise physical behavior.
+    
+    Parameters
+    ----------
+    radius
+        Value supplied to ``radius`` by the test scenario.
+    movement
+        Value supplied to ``movement`` by the test scenario.
+    stomach_capacity
+        Value supplied to ``stomach_capacity`` by the test scenario.
+    digestion_rate
+        Value supplied to ``digestion_rate`` by the test scenario.
+    digestion_efficiency
+        Value supplied to ``digestion_efficiency`` by the test scenario.
+    
+    Returns
+    -------
+    None
+        The test completes through assertions.
+    """
+    # Keep the physical test intent explicit.
     return PhysicalTraits(
         radius=radius,
         movement_cost_multiplier=movement,
@@ -80,11 +165,39 @@ def physical(
 
 
 def vision(range_: float = 100.0, angle: float = 1.0) -> VisionTraits:
+    """Exercise vision behavior.
+    
+    Parameters
+    ----------
+    range_
+        Value supplied to ``range_`` by the test scenario.
+    angle
+        Value supplied to ``angle`` by the test scenario.
+    
+    Returns
+    -------
+    None
+        The test completes through assertions.
+    """
+    # Keep the vision test intent explicit.
     return VisionTraits(range=range_, angle=angle)
 
 
 class PhenotypicDistanceTest(unittest.TestCase):
     def test_digestive_traits_contribute_one_combined_component(self) -> None:
+        """Exercise test digestive traits contribute one combined component behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test digestive traits contribute one combined component test intent explicit.
         trait_config = TraitConfig()
         vision_config = VisionConfig()
         representative = physical(
@@ -110,6 +223,19 @@ class PhenotypicDistanceTest(unittest.TestCase):
         self.assertAlmostEqual(distance, 1.0)
 
     def test_radius_and_vision_range_are_normalized_by_configured_ranges(self) -> None:
+        """Exercise test radius and vision range are normalized by configured ranges behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test radius and vision range are normalized by configured ranges test intent explicit.
         trait_config = TraitConfig()
         vision_config = VisionConfig()
         representative_physical = physical(radius=trait_config.min_radius)
@@ -144,6 +270,19 @@ class PhenotypicDistanceTest(unittest.TestCase):
         )
 
     def test_values_are_clamped_and_custom_ranges_are_used(self) -> None:
+        """Exercise test values are clamped and custom ranges are used behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test values are clamped and custom ranges are used test intent explicit.
         trait_config = TraitConfig(
             min_radius=10.0,
             max_radius=20.0,
@@ -191,6 +330,19 @@ class PhenotypicDistanceTest(unittest.TestCase):
 
 class ContinuousSpeciesManagerTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.trait_config = TraitConfig()
         self.vision_config = VisionConfig()
         self.manager = ContinuousSpeciesManager(
@@ -221,6 +373,25 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         child_vision: VisionTraits | None = None,
         parent_species_id: int = 1,
     ) -> object:
+        """Exercise evaluate behavior.
+        
+        Parameters
+        ----------
+        child
+            Value supplied to ``child`` by the test scenario.
+        child_physical
+            Value supplied to ``child_physical`` by the test scenario.
+        child_vision
+            Value supplied to ``child_vision`` by the test scenario.
+        parent_species_id
+            Value supplied to ``parent_species_id`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the evaluate test intent explicit.
         return self.manager.evaluate_species(
             child,
             child_physical or self.representative_physical,
@@ -230,12 +401,38 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         )
 
     def test_distance_below_threshold_keeps_parent_species(self) -> None:
+        """Exercise test distance below threshold keeps parent species behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test distance below threshold keeps parent species test intent explicit.
         result = self.evaluate(FakeGenome(distance=2.99))
         self.assertEqual(result.species_id, 1)
         self.assertFalse(result.is_new_species)
         self.assertEqual(set(self.manager.representatives), {1})
 
     def test_distance_equal_to_threshold_keeps_parent_species(self) -> None:
+        """Exercise test distance equal to threshold keeps parent species behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test distance equal to threshold keeps parent species test intent explicit.
         with patch(
             "src.neat_controller.extract_neural_shifts",
             side_effect=AssertionError("diff must remain lazy"),
@@ -245,11 +442,37 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertFalse(result.is_new_species)
 
     def test_brain_only_change_creates_species(self) -> None:
+        """Exercise test brain only change creates species behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test brain only change creates species test intent explicit.
         result = self.evaluate(FakeGenome(distance=3.5))
         self.assertEqual(result.species_id, 2)
         self.assertTrue(result.is_new_species)
 
     def test_evaluation_reads_runtime_threshold_changes(self) -> None:
+        """Exercise test evaluation reads runtime threshold changes behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test evaluation reads runtime threshold changes test intent explicit.
         self.manager.compatibility_threshold = 3.1
 
         result = self.evaluate(FakeGenome(distance=3.05))
@@ -259,6 +482,19 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(result.distances.compatibility_threshold, 3.1)
 
     def test_body_only_change_creates_species(self) -> None:
+        """Exercise test body only change creates species behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test body only change creates species test intent explicit.
         result = self.evaluate(
             FakeGenome(distance=0.0),
             physical(
@@ -271,6 +507,19 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertTrue(result.is_new_species)
 
     def test_composite_change_creates_species(self) -> None:
+        """Exercise test composite change creates species behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test composite change creates species test intent explicit.
         result = self.evaluate(
             FakeGenome(distance=1.8),
             physical(radius=19.0, movement=0.75),
@@ -288,6 +537,19 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertAlmostEqual(result.trait_deltas.radius, 7.0)
 
     def test_new_species_store_complete_founder_representatives(self) -> None:
+        """Exercise test new species store complete founder representatives behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test new species store complete founder representatives test intent explicit.
         first_founder = FakeGenome(distance=3.01)
         first_physical = physical(radius=14.0)
         first_vision = vision(range_=95.0)
@@ -320,6 +582,19 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(self.manager.next_species_id, 4)
 
     def test_initial_brain_assignment_uses_first_creature_as_luca(self) -> None:
+        """Exercise test initial brain assignment uses first creature as luca behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test initial brain assignment uses first creature as luca test intent explicit.
         controller = object.__new__(NeatBrainController)
         controller.brains = {}
         controller.config = SimpleNamespace()
@@ -360,6 +635,19 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
         self.assertEqual(set(controller.brains), {1, 2})
 
     def test_child_brain_creation_returns_species_result(self) -> None:
+        """Exercise test child brain creation returns species result behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test child brain creation returns species result test intent explicit.
         controller = object.__new__(NeatBrainController)
         genome_config = object()
         controller.config = SimpleNamespace(genome_config=genome_config)
@@ -407,6 +695,19 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
     def test_flocking_gene_distance_contributes_to_species_compatibility(
         self,
     ) -> None:
+        """Exercise test flocking gene distance contributes to species compatibility behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test flocking gene distance contributes to species compatibility test intent explicit.
         self.manager.compatibility_threshold = 0.49
         self.manager.flocking_trait_distance_coefficient = 1.0
 
@@ -426,6 +727,19 @@ class ContinuousSpeciesManagerTest(unittest.TestCase):
 
 class LiveFlockingCompatibilityTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.controller = object.__new__(NeatBrainController)
         self.controller.config = SimpleNamespace(genome_config=object())
         self.controller.species_manager = ContinuousSpeciesManager(
@@ -456,6 +770,19 @@ class LiveFlockingCompatibilityTest(unittest.TestCase):
         }
 
     def test_live_weight_uses_composite_distance(self) -> None:
+        """Exercise test live weight uses composite distance behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test live weight uses composite distance test intent explicit.
         self.second.flocking_traits = FlockingTraits(1.0, 1.0, 1.0)
 
         distance = self.controller.species_manager.composite_distance(
@@ -477,6 +804,19 @@ class LiveFlockingCompatibilityTest(unittest.TestCase):
         )
 
     def test_cached_raw_distance_uses_current_threshold_immediately(self) -> None:
+        """Exercise test cached raw distance uses current threshold immediately behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test cached raw distance uses current threshold immediately test intent explicit.
         self.assertAlmostEqual(
             self.controller.flocking_compatibility(self.first, self.second),
             0.75,
@@ -493,6 +833,19 @@ class LiveFlockingCompatibilityTest(unittest.TestCase):
         )
 
     def test_missing_brain_falls_back_to_binary_species_compatibility(self) -> None:
+        """Exercise test missing brain falls back to binary species compatibility behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test missing brain falls back to binary species compatibility test intent explicit.
         self.controller.brains.pop(20)
         self.assertEqual(
             self.controller.flocking_compatibility(self.first, self.second),
@@ -505,6 +858,19 @@ class LiveFlockingCompatibilityTest(unittest.TestCase):
         )
 
     def test_removing_a_brain_discards_its_pairwise_cache_entries(self) -> None:
+        """Exercise test removing a brain discards its pairwise cache entries behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test removing a brain discards its pairwise cache entries test intent explicit.
         self.controller.flocking_compatibility(self.first, self.second)
 
         self.controller.remove_brain(10)
@@ -514,6 +880,19 @@ class LiveFlockingCompatibilityTest(unittest.TestCase):
 
 class NeatChangeSummaryTest(unittest.TestCase):
     def test_neural_shifts_filter_jitter_and_keep_structural_changes(self) -> None:
+        """Exercise test neural shifts filter jitter and keep structural changes behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test neural shifts filter jitter and keep structural changes test intent explicit.
         parent = FakeGenome()
         parent.connections = {
             (-1, 0): FakeGene(weight=0.2),
@@ -544,6 +923,19 @@ class NeatChangeSummaryTest(unittest.TestCase):
         self.assertEqual((added.change_type, added.child_weight), ("added", -0.9))
 
     def test_neural_shifts_treat_enabled_state_transitions_as_add_remove(self) -> None:
+        """Exercise test neural shifts treat enabled state transitions as add remove behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test neural shifts treat enabled state transitions as add remove test intent explicit.
         parent = FakeGenome()
         parent.connections = {
             (-1, 0): FakeGene(weight=0.4, enabled=False),
@@ -577,6 +969,19 @@ class NeatChangeSummaryTest(unittest.TestCase):
         )
 
     def test_summarizes_structural_and_parameter_changes(self) -> None:
+        """Exercise test summarizes structural and parameter changes behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test summarizes structural and parameter changes test intent explicit.
         parent = FakeGenome()
         parent.nodes = {0: FakeGene(bias=0.1), 1: FakeGene()}
         parent.connections = {
@@ -615,6 +1020,19 @@ class NeatChangeSummaryTest(unittest.TestCase):
         )
 
     def test_key_changes_are_bounded_and_unchanged_genomes_are_empty(self) -> None:
+        """Exercise test key changes are bounded and unchanged genomes are empty behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test key changes are bounded and unchanged genomes are empty test intent explicit.
         genome = FakeGenome()
         genome.nodes = {0: FakeGene()}
         genome.connections = {
@@ -640,6 +1058,19 @@ class NeatChangeSummaryTest(unittest.TestCase):
     def test_large_genome_summary_keeps_exact_counts_and_bounded_details(
         self,
     ) -> None:
+        """Exercise test large genome summary keeps exact counts and bounded details behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test large genome summary keeps exact counts and bounded details test intent explicit.
         parent = FakeGenome()
         parent.nodes = {0: FakeGene()}
         parent.connections = {

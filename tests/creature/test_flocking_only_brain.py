@@ -33,7 +33,19 @@ FLOCK_SENSOR_NAMES = (
 
 
 def flocking_only_brain(genome_id: int) -> NeatBrain:
-    """Build a real NEAT network whose only evidence is social flock data."""
+    """Build a real NEAT network whose only evidence is social flock data.
+    
+    Parameters
+    ----------
+    genome_id
+        Value supplied to ``genome_id`` by the test scenario.
+    
+    Returns
+    -------
+    None
+        Result produced by this test helper.
+    """
+    # Keep the flocking only brain test intent explicit.
     config = neat.Config(
         neat.DefaultGenome,
         neat.DefaultReproduction,
@@ -90,6 +102,25 @@ def creature(
     *,
     separation_gene: float = 0.0,
 ) -> Creature:
+    """Exercise creature behavior.
+    
+    Parameters
+    ----------
+    creature_id
+        Value supplied to ``creature_id`` by the test scenario.
+    position
+        Value supplied to ``position`` by the test scenario.
+    heading
+        Value supplied to ``heading`` by the test scenario.
+    separation_gene
+        Value supplied to ``separation_gene`` by the test scenario.
+    
+    Returns
+    -------
+    None
+        The test completes through assertions.
+    """
+    # Keep the creature test intent explicit.
     radius = 12.0
     body = pymunk.Body(1.0, pymunk.moment_for_circle(1.0, 0.0, radius))
     body.position = position
@@ -115,6 +146,19 @@ def creature(
 
 class FlockingOnlyBrainTest(unittest.TestCase):
     def setUp(self) -> None:
+        """Exercise setUp behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the setUp test intent explicit.
         self.config = SimConfig()
         self.config.action.max_forward_force = 20.0
         self.config.action.action_smoothing_alpha = 1.0
@@ -135,6 +179,21 @@ class FlockingOnlyBrainTest(unittest.TestCase):
         observer: Creature,
         creatures: list[Creature],
     ):
+        """Exercise snapshot for behavior.
+        
+        Parameters
+        ----------
+        observer
+            Value supplied to ``observer`` by the test scenario.
+        creatures
+            Value supplied to ``creatures`` by the test scenario.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the snapshot for test intent explicit.
         return self.vision.sense(
             observer,
             foods=[],
@@ -144,6 +203,19 @@ class FlockingOnlyBrainTest(unittest.TestCase):
         )
 
     def test_only_flock_sensors_can_reach_rotate_and_herding(self) -> None:
+        """Exercise test only flock sensors can reach rotate and herding behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test only flock sensors can reach rotate and herding test intent explicit.
         brain = flocking_only_brain(1)
         genome_config = neat.Config(
             neat.DefaultGenome,
@@ -173,6 +245,19 @@ class FlockingOnlyBrainTest(unittest.TestCase):
         self.assertEqual(connected_outputs, expected_outputs)
 
     def test_flock_sensors_activate_opposite_turns_and_herding(self) -> None:
+        """Exercise test flock sensors activate opposite turns and herding behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test flock sensors activate opposite turns and herding test intent explicit.
         lower = creature(1, (0.0, -70.0), 0.0)
         upper = creature(2, (0.0, 70.0), 0.0)
         creatures = [lower, upper]
@@ -199,6 +284,19 @@ class FlockingOnlyBrainTest(unittest.TestCase):
             )
 
     def test_flocking_only_brains_turn_toward_and_pull_the_pair_together(self) -> None:
+        """Exercise test flocking only brains turn toward and pull the pair together behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test flocking only brains turn toward and pull the pair together test intent explicit.
         lower = creature(1, (0.0, -70.0), 0.0)
         upper = creature(2, (0.0, 70.0), 0.0)
         creatures = [lower, upper]
@@ -251,6 +349,19 @@ class FlockingOnlyBrainTest(unittest.TestCase):
     def test_separation_keeps_flockmates_apart_without_collision_avoidance(
         self,
     ) -> None:
+        """Exercise test separation keeps flockmates apart without collision avoidance behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test separation keeps flockmates apart without collision avoidance test intent explicit.
         radius = 12.0
         lower = creature(
             1,

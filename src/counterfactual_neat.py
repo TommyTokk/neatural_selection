@@ -15,7 +15,7 @@ from statistics import median
 from time import monotonic
 from typing import Any
 
-from src.action import ACTION_OUTPUT_NAMES, BrainOutputIndex
+from src.creature.action import ACTION_OUTPUT_NAMES, BrainOutputIndex
 from src.behavior_observer import BehaviorKind, BoutStatus
 from src.behavior_history import (
     BoundedMetricAccumulator,
@@ -24,9 +24,9 @@ from src.behavior_history import (
     CompletedWhyExplanation,
     EffectDirectionCounts,
 )
-from src.communication import AcousticObservation, PheromoneSnapshot
-from src.neat_brain import NeatBrain
-from src.vision import (
+from src.creature.communication import AcousticObservation, PheromoneSnapshot
+from src.creature.neat.brain import NeatBrain
+from src.creature.vision import (
     BiomeSensorSnapshot,
     FlockSensorSnapshot,
     SENSOR_CONTRACT,

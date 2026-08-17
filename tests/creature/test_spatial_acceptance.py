@@ -10,6 +10,19 @@ from benchmarks.benchmark_multirate_scheduler import (
 
 class StaticSpatialCounterAcceptanceTest(unittest.TestCase):
     def test_sixty_step_static_population_counts_and_warm_allocations(self) -> None:
+        """Exercise test sixty step static population counts and warm allocations behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test sixty step static population counts and warm allocations test intent explicit.
         counters = collect_counters(warmup_steps=30, measured_steps=60)
         self.assertEqual(counters["physics_steps"], 60)
         self.assertEqual(counters["spatial_rebuilds"], 60)
@@ -32,6 +45,19 @@ class StaticSpatialCounterAcceptanceTest(unittest.TestCase):
         self.assertEqual(counters["new_motion_commands"], 0)
 
     def test_churn_counts_follow_recorded_living_ids_and_phase_membership(self) -> None:
+        """Exercise test churn counts follow recorded living ids and phase membership behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test churn counts follow recorded living ids and phase membership test intent explicit.
         counters = collect_churn_counters()
         self.assertEqual(counters["initial_population"], 55)
         self.assertEqual(counters["final_population"], 55)

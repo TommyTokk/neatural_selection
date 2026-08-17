@@ -9,7 +9,7 @@ import re
 import arcade
 
 from configs.sim_config import SimConfig
-from src.action import ACTION_OUTPUT_NAMES
+from src.creature.action import ACTION_OUTPUT_NAMES
 from src.analysis import (
     BEHAVIOR_RADAR_LABELS,
     InspectorReport,
@@ -21,7 +21,7 @@ from src.analysis import (
     profile_morphology,
     sensory_node_label,
 )
-from src.speciation import NeuralShift, SpeciesRecord
+from src.creature.speciation import NeuralShift, SpeciesRecord
 from src.ui.common.interaction import rect_contains
 from src.ui.components.state import (
     BrainChangeGroupView,
@@ -49,7 +49,7 @@ from src.ui.layouts.species_tree import (
     TreeViewportSlice,
     species_tree_line_width,
 )
-from src.vision import SENSOR_INPUT_NAMES
+from src.creature.vision import SENSOR_INPUT_NAMES
 from src.world import World
 
 _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}

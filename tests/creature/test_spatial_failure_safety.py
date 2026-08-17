@@ -10,6 +10,19 @@ from src.world import World
 
 class SpatialFailureSafetyTest(unittest.TestCase):
     def make_world(self) -> World:
+        """Exercise make world behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the make world test intent explicit.
         config = build_sim_config()
         config.persistence.enable_telemetry = False
         config.persistence.quick_save_interval_seconds = 0.0
@@ -27,6 +40,19 @@ class SpatialFailureSafetyTest(unittest.TestCase):
         )
 
     def test_hot_path_failures_clear_leases_and_retry_cleanly(self) -> None:
+        """Exercise test hot path failures clear leases and retry cleanly behavior.
+        
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        
+        Returns
+        -------
+        None
+            The test completes through assertions.
+        """
+        # Keep the test hot path failures clear leases and retry cleanly test intent explicit.
         for failure_point in (
             "grid.rebuild",
             "grid.query",
@@ -40,6 +66,24 @@ class SpatialFailureSafetyTest(unittest.TestCase):
                 hits = []
 
                 def inject(point: str) -> None:
+                    """Exercise inject behavior.
+                    
+                    Parameters
+                    ----------
+                    point
+                        Value supplied to ``point`` by the test scenario.
+                    
+                    Returns
+                    -------
+                    None
+                        The test completes through assertions.
+                    
+                    Raises
+                    ------
+                    RuntimeError
+                        If runtime state violates the callable invariant.
+                    """
+                    # Keep the inject test intent explicit.
                     if point == failure_point:
                         hits.append(point)
                         raise RuntimeError(failure_point)

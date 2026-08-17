@@ -9,14 +9,14 @@ from typing import Any, Iterable, Sequence
 from PIL import Image
 
 from configs.sim_config import SimConfig
-from src.action import ACTION_OUTPUT_NAMES
-from src.speciation import (
+from src.creature.action import ACTION_OUTPUT_NAMES
+from src.creature.speciation import (
     NeuralShift,
     SpeciesRecord,
     SpeciesTraitSnapshot,
     normalize_neural_shifts,
 )
-from src.vision import SENSOR_INPUT_NAMES
+from src.creature.vision import SENSOR_INPUT_NAMES
 
 
 BEHAVIOR_RADAR_LABELS = (
