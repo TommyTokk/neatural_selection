@@ -7,7 +7,7 @@ from math import floor
 import numpy as np
 from opensimplex import OpenSimplex
 
-from configs.sim_config import BiomeConfig
+from configs.sim_config import BiomeConfig, FoodClusterConfig
 
 
 class Biome(IntEnum):
@@ -33,6 +33,8 @@ class BiomeMap:
     spawn_weights: dict[Biome, float]
     uniform_spawn_chance: float
     max_spawn_attempts: int
+    prairie_max: float = 0.0
+    bush_max: float = 1.0
     _expected_density_grid: np.ndarray = field(
         init=False,
         repr=False,
@@ -141,15 +143,20 @@ class BiomeMap:
 
 
 class BiomeGenerationHandler:
-    def __init__(self, config: BiomeConfig) -> None:
+    def __init__(
+        self,
+        config: BiomeConfig,
+        cluster_config: FoodClusterConfig | None = None,
+    ) -> None:
         self.config = config
+        self.cluster_config = cluster_config
 
     def generate(
         self,
         world_bounds: tuple[float, float, float, float],
     ) -> BiomeMap:
         noise_field = self._fractal_noise(world_bounds)
-        biome_ids = self._classify_biomes(noise_field)
+        biome_ids, prairie_max, bush_max = self._classify_biomes(noise_field)
         return BiomeMap(
             biome_ids=biome_ids,
             render_rgba=self._render_rgba_for(biome_ids),
@@ -165,6 +172,8 @@ class BiomeGenerationHandler:
                 min(1.0, self.config.uniform_spawn_chance),
             ),
             max_spawn_attempts=max(1, self.config.max_spawn_attempts),
+            prairie_max=float(prairie_max),
+            bush_max=float(bush_max),
         )
 
     def _fractal_noise(
@@ -199,7 +208,16 @@ class BiomeGenerationHandler:
             return total
         return total / max_value
 
-    def _classify_biomes(self, noise_field: np.ndarray) -> np.ndarray:
+    def _classify_biomes(
+        self,
+        noise_field: np.ndarray,
+    ) -> tuple[np.ndarray, float, float]:
+        minimum = float(noise_field.min())
+        maximum = float(noise_field.max())
+        if maximum - minimum <= 1e-12:
+            normalized_noise = np.zeros_like(noise_field)
+        else:
+            normalized_noise = (noise_field - minimum) / (maximum - minimum)
         prairie_share = max(0.0, self.config.prairie_target_share)
         bushes_share = max(0.0, self.config.bushes_target_share)
         forest_share = max(0.0, self.config.forest_target_share)
@@ -207,18 +225,34 @@ class BiomeGenerationHandler:
         prairie_quantile = prairie_share / total_share
         bushes_quantile = (prairie_share + bushes_share) / total_share
 
-        prairie_threshold, bushes_threshold = np.quantile(
-            noise_field,
-            [prairie_quantile, bushes_quantile],
+        cluster_config = self.cluster_config
+        prairie_threshold = (
+            None if cluster_config is None else cluster_config.prairie_max
         )
+        bushes_threshold = (
+            None if cluster_config is None else cluster_config.bush_max
+        )
+        if prairie_threshold is None:
+            prairie_threshold = float(
+                np.quantile(normalized_noise, prairie_quantile)
+            )
+        if bushes_threshold is None:
+            bushes_threshold = float(
+                np.quantile(normalized_noise, bushes_quantile)
+            )
+        if prairie_threshold >= bushes_threshold:
+            raise ValueError(
+                "Resolved prairie_max must be smaller than bush_max."
+            )
 
         biome_ids = np.empty(noise_field.shape, dtype=np.uint8)
-        biome_ids[noise_field < prairie_threshold] = int(Biome.PRAIRIE)
+        biome_ids[normalized_noise < prairie_threshold] = int(Biome.PRAIRIE)
         biome_ids[
-            (noise_field >= prairie_threshold) & (noise_field < bushes_threshold)
+            (normalized_noise >= prairie_threshold)
+            & (normalized_noise < bushes_threshold)
         ] = int(Biome.BUSHES)
-        biome_ids[noise_field >= bushes_threshold] = int(Biome.FOREST)
-        return biome_ids
+        biome_ids[normalized_noise >= bushes_threshold] = int(Biome.FOREST)
+        return biome_ids, float(prairie_threshold), float(bushes_threshold)
 
     def _render_rgba_for(self, biome_ids: np.ndarray) -> np.ndarray:
         colors = np.array(

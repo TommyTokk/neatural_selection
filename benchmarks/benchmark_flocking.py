@@ -56,6 +56,8 @@ def main() -> None:
     config.persistence.enable_telemetry = False
     config.persistence.quick_save_interval_seconds = 0.0
     config.persistence.archive_save_interval_seconds = 0.0
+    # Food clustering is benchmarked separately from flocking throughput.
+    config.food_clusters.cluster_spawn_share = 0.0
     # The physical cap is 55, while the shipped NEAT population contains 50
     # genomes. Fifty is therefore the largest valid fully controlled starting
     # population (the remaining five slots are reserved for runtime births).

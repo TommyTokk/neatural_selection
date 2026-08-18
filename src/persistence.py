@@ -30,10 +30,10 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 23
+CHECKPOINT_VERSION = 24
 LEGACY_CHECKPOINT_VERSIONS = {
     2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-    22,
+    22, 23,
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -598,6 +598,10 @@ class PersistenceManager:
                     "energy_value": food.energy_value,
                     "original_energy_value": food.original_energy_value,
                     "original_radius": food.original_radius,
+                    "cluster_id": getattr(food, "cluster_id", None),
+                    "bite_capacity": int(getattr(food, "bite_capacity", 1)),
+                    "max_energy": float(food.original_energy_value),
+                    "energy_remaining": float(food.energy_value),
                 }
             )
 
@@ -819,6 +823,11 @@ class PersistenceManager:
                     spawner._pending_low_food_burst_items
                 ),
             },
+            "food_clusters": copy.deepcopy(
+                getattr(world, "food_cluster_manager", None).state_dict()
+                if getattr(world, "food_cluster_manager", None) is not None
+                else None
+            ),
             "population": {
                 "genomes": evolution_state["genomes"],
                 "generation": neat_controller.population.generation,
@@ -1756,7 +1765,7 @@ class PersistenceManager:
         Parameters
         ----------
         state
-            Deserialized version-23 flat checkpoint state.
+            Deserialized version-24 flat checkpoint state.
         config
             Runtime configuration used to normalize legacy fallback values.
         simulation_paths
@@ -2413,6 +2422,20 @@ class PersistenceManager:
                     y=food_state["position"][1],
                     radius=food_state["radius"],
                     energy_density=food_state["energy_density"],
+                    cluster_id=food_state.get("cluster_id"),
+                    bite_capacity=int(food_state.get("bite_capacity", 1)),
+                    max_energy=float(
+                        food_state.get(
+                            "max_energy",
+                            food_state["original_energy_value"],
+                        )
+                    ),
+                    energy_remaining=float(
+                        food_state.get(
+                            "energy_remaining",
+                            food_state["energy_value"],
+                        )
+                    ),
                 )
                 food.energy_value = food_state["energy_value"]
                 food.original_energy_value = food_state["original_energy_value"]
@@ -2446,6 +2469,9 @@ class PersistenceManager:
             spawner._pending_low_food_burst_items = spawner_state.get(
                 "pending_low_food_burst_items",
                 0,
+            )
+            world.food_cluster_manager.restore_state(
+                state.get("food_clusters")
             )
 
             world._held_food_by_creature_id = runtime["held_foods"]

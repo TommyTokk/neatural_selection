@@ -62,6 +62,7 @@ from src.creature.flocking import (
     configured_social_influence,
 )
 from src.food import Food
+from src.food_clustering import FoodClusterManager
 from src.food_spawner import FoodSpawner
 from src.creature.metabolism import (
     ActivityResult,
@@ -605,7 +606,10 @@ class World:
             creature.creature_id: CreatureFitness() for creature in self.creatures
         }
         self.fitness_archive: dict[int, CreatureFitness] = {}
-        self.biome_map = BiomeGenerationHandler(config.biome).generate(
+        self.biome_map = BiomeGenerationHandler(
+            config.biome,
+            config.food_clusters,
+        ).generate(
             self.environment_world_bounds
         )
         self.acoustics = AcousticSystem(config.communication)
@@ -618,6 +622,7 @@ class World:
         self._live_food_config = LiveFoodConfig.from_configs(
             config.biome,
             config.food,
+            config.food_clusters,
         )
         # Runtime editing must not mutate the configuration shared with the
         # start menu and subsequently created simulations.
@@ -625,6 +630,16 @@ class World:
             replace(config.food),
             self.rng,
             self.biome_map,
+        )
+        self.food_cluster_manager = FoodClusterManager(
+            replace(config.food_clusters),
+            self.food_spawner.config,
+            self.biome_map,
+            (
+                int(config.random_seed)
+                ^ (int(config.biome.seed) << 1)
+                ^ 0xF00D_C1A5_7E2
+            ),
         )
         self.foods: list[Food] = []
         self._held_food_by_creature_id: dict[int, int] = {}
@@ -638,12 +653,28 @@ class World:
                 config.metabolism.eating_distance,
             )
             + config.food.max_food_radius
+            * (
+                sqrt(config.food_clusters.forest.energy_multiplier[1])
+                if config.food_clusters.cluster_spawn_share > 0.0
+                else 1.0
+            )
             + config.trait.max_radius
         )
         if bootstrap:
-            self._add_foods(
-                self.food_spawner.create_initial_foods(self.environment_world_bounds)
+            independent_items, cluster_items = FoodClusterManager.mode_targets(
+                min(config.food.initial_food_items, config.food.max_food_items),
+                config.food_clusters.cluster_spawn_share,
             )
+            self._add_foods(
+                self.food_spawner.create_initial_foods(
+                    self.environment_world_bounds,
+                    independent_items,
+                    required_biomes=(Biome.BUSHES, Biome.FOREST)
+                    if independent_items >= 2
+                    else (),
+                )
+            )
+            self.food_cluster_manager.initialize_patches(self, cluster_items)
         self.total_biomass_energy = self._initial_total_biomass_energy()
         self.selected_creature_id: int | None = None
         self.stats = WorldStats(
@@ -3153,20 +3184,49 @@ class World:
         return creature_id
 
     def _spawn_foods(self, delta_time: float) -> None:
+        independent_target, _cluster_target = FoodClusterManager.mode_targets(
+            self.food_spawner.config.max_food_items,
+            self.live_food_config.cluster_spawn_share,
+        )
+        independent_count = sum(
+            food.cluster_id is None for food in self.foods
+        )
+        global_slots = max(
+            0,
+            self.food_spawner.config.max_food_items - len(self.foods),
+        )
         spawned_foods = self.food_spawner.update(
             delta_time,
             self.environment_world_bounds,
-            len(self.foods),
+            independent_count,
             self._active_species_count(),
             self._available_biomass(),
+            capacity_override=independent_target,
+            spawn_rate_scale=(1.0 - self.live_food_config.cluster_spawn_share),
+            max_spawn_count=global_slots,
         )
         self._add_foods(spawned_foods)
+        self.food_cluster_manager.update(self, delta_ticks=1)
 
     def _add_foods(self, foods: list[Food]) -> None:
         for food in foods:
             self.foods.append(food)
             self.space.add(food.body, food.shape)
             self._index_food(food)
+
+    def _remove_food(self, food: Food) -> None:
+        """Remove one live food from every authoritative world index."""
+        if food not in self.foods:
+            return
+        self._clear_food_carry(food)
+        self.foods.remove(food)
+        self._unindex_food(food)
+        body_space = getattr(food.body, "space", None)
+        if body_space is None or body_space is self.space:
+            self.space.remove(food.body, food.shape)
+        manager = getattr(self, "food_cluster_manager", None)
+        if manager is not None:
+            manager.on_food_removed(food.id)
 
     def _rebuild_boundaries(self) -> None:
         if self._boundary_shapes:
@@ -5842,7 +5902,7 @@ class World:
         touched_ids: set[int] = set()
         depleted_foods: list[Food] = []
         depleted_ids: set[int] = set()
-        claimed_food_step: set[tuple[int, int]] = set()
+        claimed_food_step: dict[tuple[int, int], int] = {}
         claimed_creature_step: set[tuple[int, int]] = set()
         consumptions: list[FoodConsumption] = []
         try:
@@ -5864,7 +5924,8 @@ class World:
                     or creature.life <= 0.0
                     or food is None
                     or food_id in depleted_ids
-                    or food_step in claimed_food_step
+                    or claimed_food_step.get(food_step, 0)
+                    >= max(1, int(getattr(food, "bite_capacity", 1)))
                     or creature_step in claimed_creature_step
                 ):
                     continue
@@ -5887,7 +5948,9 @@ class World:
                     and not consumption.depleted
                 ):
                     continue
-                claimed_food_step.add(food_step)
+                claimed_food_step[food_step] = (
+                    claimed_food_step.get(food_step, 0) + 1
+                )
                 claimed_creature_step.add(creature_step)
                 if food_id not in touched_ids:
                     touched_ids.add(food_id)
@@ -6068,10 +6131,7 @@ class World:
 
         for food in eating_report.depleted_foods:
             if food in self.foods:
-                self._clear_food_carry(food)
-                self.foods.remove(food)
-                self._unindex_food(food)
-                self.space.remove(food.body, food.shape)
+                self._remove_food(food)
 
         if not self.creatures:
             self._recover_extinct_population()
@@ -6174,10 +6234,7 @@ class World:
                 reindex_shape(food.shape)
         for food in report.depleted_foods:
             if food in self.foods:
-                self._clear_food_carry(food)
-                self.foods.remove(food)
-                self._unindex_food(food)
-                self.space.remove(food.body, food.shape)
+                self._remove_food(food)
         for creature in report.dead_creatures:
             death_reason = (
                 "old_age" if self._is_senescent(creature) else "starvation"
@@ -6890,6 +6947,9 @@ class World:
                 },
             )
             self.food_spawner.biome_map = self.biome_map
+            cluster_manager = getattr(self, "food_cluster_manager", None)
+            if cluster_manager is not None:
+                cluster_manager.biome_map = self.biome_map
         if burst_changed:
             self.food_spawner.reset_low_food_burst_state()
         self._live_food_config = settings

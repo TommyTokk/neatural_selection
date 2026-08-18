@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from configs.sim_config import BiomeConfig, FoodConfig
+from configs.sim_config import BiomeConfig, FoodClusterConfig, FoodConfig
 from src.biome import Biome, BiomeGenerationHandler, BiomeMap
 from src.food_spawner import FoodSpawner
 
@@ -16,6 +16,17 @@ WORLD_BOUNDS = (-1600.0, -1100.0, 1600.0, 1100.0)
 
 
 class BiomeGenerationHandlerTest(unittest.TestCase):
+    def test_explicit_normalized_thresholds_are_exposed(self) -> None:
+        cluster_config = FoodClusterConfig(prairie_max=0.2, bush_max=0.8)
+
+        biome_map = BiomeGenerationHandler(
+            BiomeConfig(seed=7),
+            cluster_config,
+        ).generate(WORLD_BOUNDS)
+
+        self.assertEqual(biome_map.prairie_max, 0.2)
+        self.assertEqual(biome_map.bush_max, 0.8)
+
     @staticmethod
     def _reference_density(biome_map: BiomeMap, x: float, y: float) -> float:
         weights = [

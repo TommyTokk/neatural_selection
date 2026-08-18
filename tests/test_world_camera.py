@@ -139,12 +139,17 @@ class CapturingFoodSpawner:
     captured_bounds: tuple[float, float, float, float] | None = None
 
     def __init__(self, config: object, rng: object, biome_map: object = None) -> None:
-        del config, rng, biome_map
+        self.config = config
+        del rng, biome_map
 
     def create_initial_foods(
         self,
         bounds: tuple[float, float, float, float],
+        count: int | None = None,
+        *,
+        required_biomes: object = (),
     ) -> list[object]:
+        del count, required_biomes
         CapturingFoodSpawner.captured_bounds = bounds
         return []
 

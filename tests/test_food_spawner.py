@@ -6,6 +6,8 @@ import types
 import unittest
 from random import Random
 
+import numpy as np
+
 
 class _Position:
     def __init__(self, x: float = 0.0, y: float = 0.0) -> None:
@@ -56,11 +58,34 @@ except ModuleNotFoundError:
     )
 
 from configs.sim_config import FoodConfig
+from src.biome import Biome, BiomeMap
 from src.food import Food
 from src.food_spawner import FoodSpawner
 
 
 BOUNDS = (0.0, 0.0, 1000.0, 1000.0)
+
+
+def mixed_biome_map() -> BiomeMap:
+    ids = np.full((4, 4), int(Biome.BUSHES), dtype=np.uint8)
+    ids[:, 2:] = int(Biome.FOREST)
+    return BiomeMap(
+        biome_ids=ids,
+        render_rgba=np.zeros((4, 4, 4), dtype=np.uint8),
+        world_bounds=BOUNDS,
+        area_shares={
+            Biome.PRAIRIE: 0.0,
+            Biome.BUSHES: 0.5,
+            Biome.FOREST: 0.5,
+        },
+        spawn_weights={
+            Biome.PRAIRIE: 0.25,
+            Biome.BUSHES: 1.25,
+            Biome.FOREST: 2.75,
+        },
+        uniform_spawn_chance=0.0,
+        max_spawn_attempts=32,
+    )
 
 
 def low_food_config(**overrides: object) -> FoodConfig:
@@ -366,6 +391,62 @@ class FoodSpawnerLowFoodRecoveryTest(unittest.TestCase):
 
         self.assertGreater(half_capacity_pressure, high_food_pressure)
         self.assertGreater(half_capacity_pressure, low_food_pressure)
+
+
+class BiomeConstrainedInitialFoodTest(unittest.TestCase):
+    def test_required_biomes_seed_independent_food_without_id_gaps(self) -> None:
+        map_ = mixed_biome_map()
+        config = FoodConfig(initial_food_items=20, max_food_items=20)
+        spawner = FoodSpawner(config, Random(41), map_)
+
+        foods = spawner.create_initial_foods(
+            BOUNDS,
+            20,
+            required_biomes=(Biome.BUSHES, Biome.FOREST),
+        )
+
+        represented = {map_.biome_at(*food.position) for food in foods}
+        self.assertEqual(len(foods), 20)
+        self.assertIn(Biome.BUSHES, represented)
+        self.assertIn(Biome.FOREST, represented)
+        self.assertTrue(all(food.cluster_id is None for food in foods))
+        self.assertEqual([food.id for food in foods], list(range(1, 21)))
+
+    def test_unavailable_required_biome_falls_back_without_claiming_an_id(self) -> None:
+        ids = np.full((4, 4), int(Biome.BUSHES), dtype=np.uint8)
+        map_ = BiomeMap(
+            biome_ids=ids,
+            render_rgba=np.zeros((4, 4, 4), dtype=np.uint8),
+            world_bounds=BOUNDS,
+            area_shares={
+                Biome.PRAIRIE: 0.0,
+                Biome.BUSHES: 1.0,
+                Biome.FOREST: 0.0,
+            },
+            spawn_weights={
+                Biome.PRAIRIE: 0.0,
+                Biome.BUSHES: 1.0,
+                Biome.FOREST: 1.0,
+            },
+            uniform_spawn_chance=0.0,
+            max_spawn_attempts=32,
+        )
+        spawner = FoodSpawner(
+            FoodConfig(initial_food_items=2, max_food_items=2),
+            Random(43),
+            map_,
+        )
+
+        foods = spawner.create_initial_foods(
+            BOUNDS,
+            2,
+            required_biomes=(Biome.FOREST,),
+        )
+
+        self.assertEqual([food.id for food in foods], [1, 2])
+        self.assertTrue(
+            all(map_.biome_at(*food.position) is Biome.BUSHES for food in foods)
+        )
 
 
 if __name__ == "__main__":

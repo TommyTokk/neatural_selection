@@ -47,6 +47,8 @@ def make_world() -> World:
     config.persistence.enable_telemetry = False
     config.persistence.quick_save_interval_seconds = 0.0
     config.persistence.archive_save_interval_seconds = 0.0
+    # Keep scheduler baselines comparable with the pre-clustering workload.
+    config.food_clusters.cluster_spawn_share = 0.0
     config.population.initial_creatures = min(
         config.population.max_creatures,
         50,

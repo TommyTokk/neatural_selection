@@ -19,16 +19,29 @@ class Food:
     y: float
     radius: float
     energy_density: float
+    cluster_id: int | None = None
+    bite_capacity: int = 1
+    max_energy: float | None = None
+    energy_remaining: float | None = None
 
     body: pymunk.Body = field(init=False)
     shape: pymunk.Circle = field(init=False)
-    energy_value: float = field(init=False)
-    original_energy_value: float = field(init=False)
     original_radius: float = field(init=False)
 
     def __post_init__(self) -> None:
-        self.energy_value = pi * self.radius**2 * self.energy_density
-        self.original_energy_value = self.energy_value
+        calculated_energy = pi * self.radius**2 * self.energy_density
+        if self.max_energy is None:
+            self.max_energy = calculated_energy
+        else:
+            self.max_energy = max(0.0, float(self.max_energy))
+        if self.energy_remaining is None:
+            self.energy_remaining = self.max_energy
+        else:
+            self.energy_remaining = max(
+                0.0,
+                min(self.max_energy, float(self.energy_remaining)),
+            )
+        self.bite_capacity = max(1, int(self.bite_capacity))
         self.original_radius = self.radius
         mass = self._mass_for_radius(self.radius)
         moment = pymunk.moment_for_circle(mass, 0.0, self.radius)
@@ -48,6 +61,22 @@ class Food:
     @property
     def position(self) -> tuple[float, float]:
         return self.body.position.x, self.body.position.y
+
+    @property
+    def energy_value(self) -> float:
+        return float(self.energy_remaining or 0.0)
+
+    @energy_value.setter
+    def energy_value(self, value: float) -> None:
+        self.energy_remaining = max(0.0, float(value))
+
+    @property
+    def original_energy_value(self) -> float:
+        return float(self.max_energy or 0.0)
+
+    @original_energy_value.setter
+    def original_energy_value(self, value: float) -> None:
+        self.max_energy = max(0.0, float(value))
 
     def consume_energy(
         self,

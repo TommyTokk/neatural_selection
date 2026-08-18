@@ -545,6 +545,133 @@ class FoodConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BiomeFoodClusterProfile:
+    """Spawn characteristics for one biome's food patches.
+
+    ``cluster_count_weight`` is a relative patch-frequency weight.  It is
+    intentionally independent from biome area and ordinary pellet fertility.
+    A zero weight disables newly-created patches for that biome.
+    """
+
+    cluster_count_weight: float
+    pellets_per_cluster: tuple[int, int]
+    spread_radius: tuple[float, float]
+    energy_multiplier: tuple[float, float]
+    bite_capacity: tuple[int, int]
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.cluster_count_weight, bool)
+            or not isfinite(self.cluster_count_weight)
+            or self.cluster_count_weight < 0.0
+        ):
+            raise ValueError("cluster_count_weight must be finite and nonnegative.")
+        self._validate_range("pellets_per_cluster", self.pellets_per_cluster, 1)
+        self._validate_range("spread_radius", self.spread_radius, 0.0)
+        self._validate_range("energy_multiplier", self.energy_multiplier, 0.000001)
+        self._validate_range("bite_capacity", self.bite_capacity, 1)
+
+    @staticmethod
+    def _validate_range(name: str, values: tuple[object, object], minimum: float) -> None:
+        if len(values) != 2:
+            raise ValueError(f"{name} must contain exactly two values.")
+        low, high = values
+        if name in ("pellets_per_cluster", "bite_capacity"):
+            if type(low) is not int or type(high) is not int:
+                raise ValueError(f"{name} values must be integers.")
+        elif any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(value)
+            for value in values
+        ):
+            raise ValueError(f"{name} values must be finite numbers.")
+        if low < minimum or high < low:
+            raise ValueError(
+                f"{name} must be ordered and no smaller than {minimum}."
+            )
+
+
+@dataclass(slots=True)
+class FoodClusterConfig:
+    """Configuration for the clustered portion of mixed food spawning."""
+
+    cluster_spawn_share: float = 0.30
+    prairie_max: float | None = None
+    bush_max: float | None = None
+    depletion_ratio: float = 0.10
+    cooldown_ticks: tuple[int, int] = (600, 1200)
+    minimum_relocation_distance: float = 1.0
+    max_sampling_attempts: int = 96
+    radius_shrink_factor: float = 0.80
+    minimum_radius_ratio: float = 0.25
+    center_sampling_attempts: int = 32
+    prairie: BiomeFoodClusterProfile = field(
+        default_factory=lambda: BiomeFoodClusterProfile(
+            0.0, (1, 1), (0.0, 0.0), (1.0, 1.0), (1, 1)
+        )
+    )
+    bushes: BiomeFoodClusterProfile = field(
+        default_factory=lambda: BiomeFoodClusterProfile(
+            3.0, (3, 6), (20.0, 40.0), (1.0, 1.0), (1, 2)
+        )
+    )
+    forest: BiomeFoodClusterProfile = field(
+        default_factory=lambda: BiomeFoodClusterProfile(
+            1.0, (12, 25), (50.0, 100.0), (2.0, 5.0), (2, 6)
+        )
+    )
+
+    def __post_init__(self) -> None:
+        for name in ("cluster_spawn_share", "depletion_ratio", "minimum_radius_ratio"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(f"{name} must be finite and within [0, 1].")
+        for name in ("prairie_max", "bush_max"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(f"{name} must be None or finite within [0, 1].")
+        if (
+            self.prairie_max is not None
+            and self.bush_max is not None
+            and self.prairie_max >= self.bush_max
+        ):
+            raise ValueError("prairie_max must be smaller than bush_max.")
+        low_cooldown, high_cooldown = self.cooldown_ticks
+        if (
+            type(low_cooldown) is not int
+            or type(high_cooldown) is not int
+            or low_cooldown < 0
+            or high_cooldown < low_cooldown
+        ):
+            raise ValueError("cooldown_ticks must be ordered nonnegative integers.")
+        if type(self.max_sampling_attempts) is not int or self.max_sampling_attempts < 1:
+            raise ValueError("max_sampling_attempts must be a positive integer.")
+        if type(self.center_sampling_attempts) is not int or self.center_sampling_attempts < 1:
+            raise ValueError("center_sampling_attempts must be a positive integer.")
+        if not 0.0 < self.radius_shrink_factor < 1.0:
+            raise ValueError("radius_shrink_factor must be within (0, 1).")
+        if self.minimum_radius_ratio <= 0.0:
+            raise ValueError("minimum_radius_ratio must be positive.")
+        if self.minimum_relocation_distance < 0.0:
+            raise ValueError("minimum_relocation_distance must be nonnegative.")
+
+    @property
+    def independent_spawn_share(self) -> float:
+        return 1.0 - self.cluster_spawn_share
+
+
+@dataclass(frozen=True, slots=True)
 class LiveFoodConfig:
     """Food and biome-richness values that may change during a run."""
 
@@ -556,6 +683,7 @@ class LiveFoodConfig:
     critical_food_ratio: float
     low_food_burst_items: int
     low_food_burst_interval: float
+    cluster_spawn_share: float = 0.30
 
     def __post_init__(self) -> None:
         for name in (
@@ -577,7 +705,11 @@ class LiveFoodConfig:
             if type(value) is not int or value < 0:
                 raise ValueError(f"{name} must be a nonnegative integer.")
 
-        for name in ("low_food_pressure_threshold", "critical_food_ratio"):
+        for name in (
+            "low_food_pressure_threshold",
+            "critical_food_ratio",
+            "cluster_spawn_share",
+        ):
             value = getattr(self, name)
             if (
                 isinstance(value, bool)
@@ -608,6 +740,7 @@ class LiveFoodConfig:
         cls,
         biome: BiomeConfig,
         food: FoodConfig,
+        clusters: FoodClusterConfig | None = None,
     ) -> LiveFoodConfig:
         return cls(
             forest_spawn_weight=float(biome.forest_spawn_weight),
@@ -620,6 +753,9 @@ class LiveFoodConfig:
             critical_food_ratio=float(food.critical_food_ratio),
             low_food_burst_items=int(food.low_food_burst_items),
             low_food_burst_interval=float(food.low_food_burst_interval),
+            cluster_spawn_share=float(
+                (clusters or FoodClusterConfig()).cluster_spawn_share
+            ),
         )
 
     def to_primitive(self) -> dict[str, int | float]:
@@ -632,6 +768,7 @@ class LiveFoodConfig:
             "critical_food_ratio": self.critical_food_ratio,
             "low_food_burst_items": self.low_food_burst_items,
             "low_food_burst_interval": self.low_food_burst_interval,
+            "cluster_spawn_share": self.cluster_spawn_share,
         }
 
     @classmethod
@@ -658,6 +795,7 @@ class LiveFoodConfig:
             low_food_burst_interval=float(
                 defaults["low_food_burst_interval"]
             ),
+            cluster_spawn_share=float(defaults["cluster_spawn_share"]),
         )
 
 
@@ -1015,6 +1153,7 @@ class SimConfig:
 
     # Food config
     food: FoodConfig = field(default_factory=FoodConfig)
+    food_clusters: FoodClusterConfig = field(default_factory=FoodClusterConfig)
 
     # Biome smell sensor config
     biome_sensor: BiomeSensorConfig = field(default_factory=BiomeSensorConfig)

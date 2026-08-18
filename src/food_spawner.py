@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from math import ceil, exp, pi
 from random import Random
 
 from configs.sim_config import FoodConfig
-from src.biome import BiomeMap
+from src.biome import Biome, BiomeMap
 from src.food import Food
 
 
@@ -24,10 +25,25 @@ class FoodSpawner:
         self._pending_low_food_burst_items = 0
 
     def create_initial_foods(
-        self, bounds: tuple[float, float, float, float]
+        self,
+        bounds: tuple[float, float, float, float],
+        count: int | None = None,
+        *,
+        required_biomes: Iterable[Biome] = (),
     ) -> list[Food]:
-        count = min(self.config.initial_food_items, self.config.max_food_items)
-        return [self.create_food(bounds) for _ in range(count)]
+        requested = self.config.initial_food_items if count is None else count
+        spawn_count = min(max(0, requested), self.config.max_food_items)
+        foods: list[Food] = []
+        for biome in required_biomes:
+            if len(foods) >= spawn_count:
+                break
+            food = self.create_food_in_biome(bounds, biome)
+            if food is not None:
+                foods.append(food)
+        foods.extend(
+            self.create_food(bounds) for _ in range(spawn_count - len(foods))
+        )
+        return foods
 
     def update(
         self,
@@ -36,8 +52,16 @@ class FoodSpawner:
         current_food_count: int,
         active_species_count: int,
         available_biomass: float,
+        *,
+        capacity_override: int | None = None,
+        spawn_rate_scale: float = 1.0,
+        max_spawn_count: int | None = None,
     ) -> list[Food]:
-        food_capacity = self.food_capacity()
+        food_capacity = (
+            self.food_capacity()
+            if capacity_override is None
+            else max(0, int(capacity_override))
+        )
         if current_food_count >= food_capacity:
             self._reset_spawn_credits()
             return []
@@ -53,13 +77,15 @@ class FoodSpawner:
         available_slots = food_capacity - current_food_count
         biomass_slots = int(spawnable_biomass // plant_energy_value)
         allowed_spawns = min(biomass_slots, available_slots)
+        if max_spawn_count is not None:
+            allowed_spawns = min(allowed_spawns, max(0, int(max_spawn_count)))
         if allowed_spawns <= 0:
             return []
 
         spawn_rate = self._spawn_rate_per_second(
             active_species_count,
             spawn_pressure,
-        )
+        ) * max(0.0, float(spawn_rate_scale))
 
         self._spawn_credit += max(0.0, delta_time) * spawn_rate
         regular_spawn_count = min(allowed_spawns, int(self._spawn_credit))
@@ -101,6 +127,72 @@ class FoodSpawner:
             radius=radius,
             energy_density=self.config.energy_density,
         )
+
+    def create_food_in_biome(
+        self,
+        bounds: tuple[float, float, float, float],
+        biome: Biome,
+    ) -> Food | None:
+        """Create one ordinary pellet in ``biome`` or fail without claiming an ID."""
+        radius = self.rng.uniform(
+            self.config.min_food_radius,
+            self.config.max_food_radius,
+        )
+        position = self._spawn_position_in_biome(bounds, radius, biome)
+        if position is None:
+            return None
+        return Food(
+            id=self._claim_food_id(),
+            x=position[0],
+            y=position[1],
+            radius=radius,
+            energy_density=self.config.energy_density,
+        )
+
+    def _spawn_position_in_biome(
+        self,
+        bounds: tuple[float, float, float, float],
+        radius: float,
+        biome: Biome,
+    ) -> tuple[float, float] | None:
+        biome_map = self.biome_map
+        if biome_map is None:
+            return None
+        rows, columns = (biome_map.biome_ids == int(biome)).nonzero()
+        cell_count = len(rows)
+        if cell_count == 0:
+            return None
+
+        map_left, map_bottom, map_right, map_top = biome_map.world_bounds
+        cell_width = (map_right - map_left) / biome_map.grid_width
+        cell_height = (map_top - map_bottom) / biome_map.grid_height
+        left, bottom, right, top = bounds
+        inner_left = left + radius
+        inner_bottom = bottom + radius
+        inner_right = right - radius
+        inner_top = top - radius
+        if inner_left >= inner_right or inner_bottom >= inner_top:
+            return None
+
+        # Visit every cached biome cell at most once, starting from a seeded
+        # random offset. This is bounded but does not make narrow biomes lose
+        # their bootstrap guarantee through rejection-sampling bad luck.
+        start = self.rng.randrange(cell_count)
+        for offset in range(cell_count):
+            index = (start + offset) % cell_count
+            row = int(rows[index])
+            column = int(columns[index])
+            x_low = max(inner_left, map_left + column * cell_width)
+            x_high = min(inner_right, map_left + (column + 1) * cell_width)
+            y_low = max(inner_bottom, map_bottom + row * cell_height)
+            y_high = min(inner_top, map_bottom + (row + 1) * cell_height)
+            if x_low >= x_high or y_low >= y_high:
+                continue
+            x = x_low + self.rng.random() * (x_high - x_low)
+            y = y_low + self.rng.random() * (y_high - y_low)
+            if biome_map.biome_at(x, y) is biome:
+                return x, y
+        return None
 
     def _spawn_position(
         self,

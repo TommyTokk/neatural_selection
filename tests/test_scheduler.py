@@ -1166,6 +1166,7 @@ class FakeExposureCreature:
 class FakeExposureFood:
     id: int
     energy_value: float = 1.0
+    bite_capacity: int = 1
 
 
 class FakeExposureMetabolism:
@@ -1190,6 +1191,22 @@ class FakeExposureMetabolism:
 
 
 class MouthExposureBufferTest(unittest.TestCase):
+    def test_shared_food_accepts_multiple_creatures_up_to_bite_capacity(self) -> None:
+        world = object.__new__(World)
+        creatures = [FakeExposureCreature(index) for index in (1, 2, 3)]
+        food = FakeExposureFood(10, bite_capacity=2)
+        world.creatures = creatures
+        world.foods = [food]
+        world.metabolism = FakeExposureMetabolism()
+        world._mouth_exposures = _MouthExposureBuffer()
+        for creature in creatures:
+            world._mouth_exposures.append(0, creature.creature_id, food.id, 0.1)
+
+        report = world._resolve_accumulated_mouth_exposures()
+
+        self.assertEqual([item.creature_id for item in report.food_consumptions], [1, 2])
+        self.assertAlmostEqual(food.energy_value, 0.8)
+
     def test_interrupted_resolution_retains_active_records(self) -> None:
         world = object.__new__(World)
         creature = FakeExposureCreature(1)

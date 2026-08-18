@@ -166,6 +166,9 @@ def validation_config(
     config.counterfactual_why.enabled = behavior_enabled
     config.population.initial_creatures = creatures
     config.food.initial_food_items = foods
+    # Scheduler determinism fixtures exercise ordinary-pellet behavior. Cluster
+    # lifecycle and shared grazing have dedicated focused tests.
+    config.food_clusters.cluster_spawn_share = 0.0
     return config
 
 
