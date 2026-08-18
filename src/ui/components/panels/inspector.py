@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from math import ceil, cos, floor, hypot, isfinite, log1p, log10, pi, sin
 from pathlib import Path
 import re
@@ -17,7 +18,6 @@ from src.analysis import (
     calculate_behavior_scores,
     generate_inspector_report,
     generate_radar_chart_image,
-    profile_morphology,
 )
 from src.creature.speciation import SpeciesRecord
 from src.ui.common.interaction import rect_contains
@@ -46,6 +46,29 @@ from src.creature.vision import SENSOR_INPUT_NAMES
 from src.world import World
 
 _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class _InspectorCardField:
+    """One vertically stacked, fully labelled inspector value."""
+
+    key: str
+    label: str
+    value: str
+    detail: str | None = None
+    detail_tone: str = "muted"
+    progress_ratio: float | None = None
+    progress_color: arcade.Color | tuple[int, ...] | None = None
+    value_color: arcade.Color | tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _InspectorCardSection:
+    """A measured group of stacked inspector fields."""
+
+    key: str
+    title: str
+    fields: tuple[_InspectorCardField, ...]
 
 class InspectorPanelComponent:
     """Group related behavior extracted from ``UiRenderer``."""
@@ -180,43 +203,139 @@ class InspectorPanelComponent:
             color,
         )
     def _draw_inspector_content(self, world: World, viewport: arcade.Rect) -> None:
-        """Draw inspector content.
-
-        Parameters
-        ----------
-        world
-            Simulation world providing current state.
-        viewport
-            Rectangle defining the relevant UI area.
-        """
+        """Draw the selected creature as a measured, scrollable ID card."""
         selected = world.selected_creature
         if selected is None:
             return
 
+        sections, species_id, species_color = self._inspector_card_sections(
+            world,
+            selected,
+        )
+        horizontal_padding = 16.0
+        content_left = viewport.left + horizontal_padding
+        content_width = max(24.0, viewport.width - horizontal_padding * 2.0)
+        header_height = 86.0 if species_id is not None else 62.0
+        section_gap = 14.0
+        action_gap = 10.0
+        action_height = 40.0
+        actions_height = action_height * 3.0 + action_gap * 2.0
+        section_heights = tuple(
+            self._inspector_card_section_height(section, content_width)
+            for section in sections
+        )
+        total_height = (
+            12.0
+            + header_height
+            + section_gap
+            + sum(section_heights)
+            + section_gap * len(sections)
+            + 18.0
+            + actions_height
+            + 16.0
+        )
+        scroll_limit = max(0.0, total_height - viewport.height)
+        scroll_offset = max(
+            0.0,
+            min(scroll_limit, self._scroll_offsets.get("inspector", 0.0)),
+        )
+        self._inspector_content_height = total_height
+        self._scroll_offsets["inspector"] = scroll_offset
+        self._scroll_limits["inspector"] = scroll_limit
+        self._scroll_regions["inspector"] = viewport
+
+        cursor = viewport.top - 12.0 + scroll_offset
+        self._draw_inspector_identity_header(
+            viewport,
+            selected,
+            species_id,
+            species_color,
+            content_left,
+            cursor,
+            content_width,
+        )
+        cursor -= header_height + section_gap
+
+        for section, height in zip(sections, section_heights):
+            bounds = arcade.LBWH(
+                content_left,
+                cursor - height,
+                content_width,
+                height,
+            )
+            self._draw_inspector_card_section(viewport, section, bounds)
+            cursor -= height + section_gap
+
+        cursor -= 18.0
+        brain_button = arcade.LBWH(
+            content_left,
+            cursor - action_height,
+            content_width,
+            action_height,
+        )
+        report_button = arcade.LBWH(
+            content_left,
+            brain_button.bottom - action_gap - action_height,
+            content_width,
+            action_height,
+        )
+        kill_button = arcade.LBWH(
+            content_left,
+            report_button.bottom - action_gap - action_height,
+            content_width,
+            action_height,
+        )
+        self._draw_inspector_actions(
+            viewport,
+            brain_button,
+            report_button,
+            kill_button,
+        )
+        if scroll_limit > 0.0:
+            self._draw_scrollbar(viewport, scroll_offset, scroll_limit)
+
+    def _inspector_card_sections(
+        self,
+        world: World,
+        selected: object,
+    ) -> tuple[
+        tuple[_InspectorCardSection, ...],
+        int | None,
+        arcade.Color | tuple[int, ...],
+    ]:
+        """Build the complete, presentation-only creature ID-card model."""
         snapshot = self._cached_inspector_snapshot(world, selected)
         fitness = world.fitness_for(selected)
-        genome_id = world.neat_controller.genome_id_for(selected.creature_id)
-        vision_cost = world.vision.energy_cost_per_second(selected)
-        physical_traits = getattr(selected, "physical_traits", None)
+        creature_id = int(getattr(selected, "creature_id", 0))
+        genome_id = world.neat_controller.genome_id_for(creature_id)
         lineage = getattr(selected, "lineage", None)
+        parent_id = getattr(lineage, "parent_id", None)
+        generation = int(getattr(lineage, "generation", 0))
         mutation_delta = getattr(lineage, "mutation_delta", None)
-        radius = (
-            getattr(physical_traits, "radius", None)
-            if physical_traits is not None
-            else getattr(selected, "radius", 0.0)
+        species_id, species_color = self._selected_species_identity(
+            world,
+            selected,
         )
-        movement_cost_multiplier = (
+
+        physical_traits = getattr(selected, "physical_traits", None)
+        radius = float(
+            getattr(
+                physical_traits,
+                "radius",
+                getattr(selected, "radius", 0.0),
+            )
+        )
+        movement_cost = float(
             getattr(physical_traits, "movement_cost_multiplier", 1.0)
-            if physical_traits is not None
-            else 1.0
         )
+        trait_config = getattr(world.config, "trait", None)
         stomach_capacity = max(
             0.0,
             float(
                 getattr(
                     physical_traits,
                     "stomach_capacity",
-                    float(radius or 0.0)
+                    radius
                     * float(
                         getattr(
                             world.config.metabolism,
@@ -227,11 +346,6 @@ class InspectorPanelComponent:
                 )
             ),
         )
-        stomach_energy = max(
-            0.0,
-            float(getattr(selected, "stomach_energy", 0.0)),
-        )
-        trait_config = getattr(world.config, "trait", None)
         digestion_rate = float(
             getattr(
                 physical_traits,
@@ -246,6 +360,26 @@ class InspectorPanelComponent:
                 getattr(trait_config, "default_digestion_efficiency", 0.9),
             )
         )
+        flocking_traits = getattr(selected, "flocking_traits", None)
+
+        energy_ratio = self._inspector_energy_ratio(world)
+        stomach_ratio = max(
+            0.0,
+            min(1.0, float(getattr(snapshot, "stomach_fullness", 0.0))),
+        )
+        max_life = max(
+            1e-12,
+            float(getattr(world.config.metabolism, "max_life", 1.0)),
+        )
+        life_ratio = max(
+            0.0,
+            min(1.0, float(getattr(selected, "life", max_life)) / max_life),
+        )
+        stomach_energy = max(
+            0.0,
+            float(getattr(selected, "stomach_energy", 0.0)),
+        )
+
         metabolism_model = getattr(world, "metabolism", None)
         upkeep_calculator = getattr(
             metabolism_model,
@@ -262,57 +396,25 @@ class InspectorPanelComponent:
                 world,
                 "_last_digestion_processing_costs_per_second",
                 {},
-            ).get(selected.creature_id, 0.0)
+            ).get(creature_id, 0.0)
         )
-        flocking_traits = getattr(selected, "flocking_traits", None)
+
         current_action = getattr(selected, "last_action", None)
         effective_herding = float(getattr(current_action, "herding", 0.0))
-        panic = float(
-            getattr(current_action, "flee_panic_intensity", 0.0)
+        panic = float(getattr(current_action, "flee_panic_intensity", 0.0))
+        flock_runtime = getattr(world, "_last_flocking_runtime", {}).get(
+            creature_id
         )
-        flock_runtime = getattr(
-            world,
-            "_last_flocking_runtime",
-            {},
-        ).get(selected.creature_id)
         raw_neural_herding = float(
-            getattr(
-                flock_runtime,
-                "raw_neural_herding",
-                effective_herding,
-            )
+            getattr(flock_runtime, "raw_neural_herding", effective_herding)
         )
         effective_herding = float(
-            getattr(
-                flock_runtime,
-                "effective_herding",
-                effective_herding,
-            )
+            getattr(flock_runtime, "effective_herding", effective_herding)
         )
-        parent_id = getattr(lineage, "parent_id", None)
-        generation = getattr(lineage, "generation", 0)
-        fitness_score = (
-            fitness.score(selected) if fitness is not None else None
-        )
-        species_id, species_color = self._selected_species_identity(
-            world,
-            selected,
-        )
-        energy_ratio = self._inspector_energy_ratio(world)
-        max_life = max(
-            1e-12,
-            float(getattr(world.config.metabolism, "max_life", 1.0)),
-        )
-        life_ratio = max(
-            0.0,
-            min(1.0, float(getattr(selected, "life", max_life)) / max_life),
-        )
-        ledger = getattr(selected, "ledger_diagnostics", None)
-        activity_diagnostics = getattr(ledger, "activity", None)
-        stomach_ratio = max(
-            0.0,
-            min(1.0, float(getattr(snapshot, "stomach_fullness", 0.0))),
-        )
+        observation = getattr(flock_runtime, "observation", None)
+        intent = getattr(flock_runtime, "intent", None)
+        weights = getattr(intent, "weights", None)
+
         flock_snapshot = getattr(snapshot, "flock", None)
         effective_flockmate_count = max(
             0.0,
@@ -321,320 +423,8 @@ class InspectorPanelComponent:
         normalized_flockmate_count = effective_flockmate_count / (
             effective_flockmate_count + 3.0
         )
-        padding = 18.0
-        section_gap = 18.0
-        species_row_height = 28.0 if species_id is not None else 0.0
-        estimated_total_height = (
-            (1199.0 if fitness_score is not None else 1167.0)
-            + species_row_height
-        )
-        total_height = max(
-            estimated_total_height,
-            self._inspector_content_height,
-        )
-        scroll_limit = max(0.0, total_height - viewport.height)
-        scroll_offset = max(
-            0.0,
-            min(scroll_limit, self._scroll_offsets.get("inspector", 0.0)),
-        )
-        self._scroll_offsets["inspector"] = scroll_offset
-        self._scroll_limits["inspector"] = scroll_limit
-        self._scroll_regions["inspector"] = viewport
-
-        left = viewport.left + padding
-        right = viewport.right - padding
-        width = max(0.0, right - left)
-        y = viewport.top - 28.0 + scroll_offset
-        content_top = y
-
-        self._draw_text_in_viewport(
-            viewport,
-            "inspector_label",
-            "SELECTED CREATURE",
-            left,
-            y,
-            self.theme.text_primary,
-            10,
-            bold=True,
-        )
-        self._draw_status_chip_in_viewport(
-            viewport, arcade.LBWH(right - 50, y - 14, 50, 25), "LIVE"
-        )
-        y -= 26.0
-        self._draw_text_in_viewport(
-            viewport,
-            "inspector_name",
-            self._fit_line(selected.name, width - 64),
-            left,
-            y,
-            self.theme.text_primary,
-            17,
-            bold=True,
-        )
-
-        if species_id is not None:
-            y -= 29.0
-            marker_x = left + 9.0
-            marker_y = y + 5.0
-            marker_radius = 8.0
-            marker_bounds = arcade.LBWH(
-                marker_x - marker_radius,
-                marker_y - marker_radius,
-                marker_radius * 2.0,
-                marker_radius * 2.0,
-            )
-            if self._rect_intersects(marker_bounds, viewport):
-                arcade.draw_circle_filled(
-                    marker_x,
-                    marker_y,
-                    marker_radius,
-                    species_color,
-                )
-                arcade.draw_circle_outline(
-                    marker_x,
-                    marker_y,
-                    marker_radius,
-                    self.theme.selected_outline,
-                    2.5,
-                )
-            self._draw_text_in_viewport(
-                viewport,
-                "inspector_species",
-                f"Species #{species_id}",
-                left + 25.0,
-                y,
-                self.theme.text_muted,
-                11,
-                bold=True,
-            )
-            y -= 15.0
-
-        y -= 44.0
-        self._draw_inspector_section_label(
-            viewport, "inspector_energy_section", "ENERGY", left, y
-        )
-        self._draw_text_in_viewport(
-            viewport,
-            "inspector_energy_value",
-            f"{energy_ratio:.0%}",
-            right,
-            y,
-            self._inspector_energy_color(energy_ratio),
-            13,
-            bold=True,
-            anchor_x="right",
-        )
-        y -= 18.0
-        energy_bar = arcade.LBWH(left, y - 4, width, 8)
-        if self._rect_intersects(energy_bar, viewport):
-            self._draw_progress_bar(
-                energy_bar,
-                energy_ratio,
-                fill_color=self._inspector_energy_color(energy_ratio),
-            )
-
-        y -= 24.0
-        self._draw_inspector_section_label(
-            viewport, "inspector_stomach_section", "STOMACH", left, y
-        )
-        self._draw_text_in_viewport(
-            viewport,
-            "inspector_stomach_value",
-            f"{stomach_ratio:.0%}",
-            right,
-            y,
-            (236, 153, 45),
-            13,
-            bold=True,
-            anchor_x="right",
-        )
-        y -= 18.0
-        stomach_bar = arcade.LBWH(left, y - 4, width, 8)
-        if self._rect_intersects(stomach_bar, viewport):
-            self._draw_progress_bar(
-                stomach_bar,
-                stomach_ratio,
-                fill_color=(236, 153, 45),
-            )
-
-        y -= 22.0
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_stomach_storage",
-            "Stored / capacity",
-            f"{stomach_energy:.3f} / {stomach_capacity:.3f}",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_stomach_fullness",
-            "Fullness",
-            f"{stomach_ratio:.1%}",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_digestion_traits",
-            "Rate / efficiency",
-            f"{digestion_rate:.3f}/s / {digestion_efficiency:.1%}",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_digestive_upkeep",
-            "Digestive upkeep",
-            f"{digestive_upkeep:.4f}/s",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_processing_cost",
-            "Recent processing cost",
-            f"{processing_cost:.4f}/s",
-            left,
-            y,
-            width,
-        )
-
-        y -= section_gap
-        self._draw_inspector_section_label(
-            viewport, "inspector_stats_section", "STATS", left, y
-        )
-        y -= 26.0
-        tile_gap = 10.0
-        tile_width = (width - tile_gap) / 2.0
-        self._draw_inspector_stat_tile_in_viewport(
-            viewport,
-            "inspector_speed",
-            "Speed",
-            f"{selected.speed:.1f} px/s",
-            arcade.LBWH(left, y - 45.0, tile_width, 46.0),
-        )
-        self._draw_inspector_stat_tile_in_viewport(
-            viewport,
-            "inspector_heading",
-            "Heading",
-            f"{selected.heading:.2f} rad",
-            arcade.LBWH(left + tile_width + tile_gap, y - 45.0, tile_width, 46.0),
-        )
-        y -= 56.0
-        self._draw_inspector_stat_tile_in_viewport(
-            viewport,
-            "inspector_genome",
-            "Genome",
-            f"#{genome_id}" if genome_id is not None else "None",
-            arcade.LBWH(left, y - 45.0, tile_width, 46.0),
-        )
-        fitness_label = (
-            self._format_decimal(fitness_score) if fitness_score is not None else "None"
-        )
-        self._draw_inspector_stat_tile_in_viewport(
-            viewport,
-            "inspector_fitness",
-            "Fitness",
-            fitness_label,
-            arcade.LBWH(left + tile_width + tile_gap, y - 45.0, tile_width, 46.0),
-        )
-
-        y -= 64.0 + section_gap
-        self._draw_inspector_section_label(
-            viewport, "inspector_senses_section", "SENSES", left, y
-        )
-        y -= 24.0
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_vision_range",
-            "Vision",
-            f"{selected.vision.range:.0f}px / {selected.vision.angle:.2f} rad",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_flockmate_count",
-            "Flockmates (eff/net)",
-            f"{effective_flockmate_count:.2f} / {normalized_flockmate_count:.2f}",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_vision_cost",
-            "Cost",
-            f"{vision_cost:.3f}/s",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_body",
-            "Body",
-            f"{radius:.1f}px / {movement_cost_multiplier:.2f}x move",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_flocking_genes",
-            "Flocking genes (inherited)",
-            (
-                "Unavailable"
-                if flocking_traits is None
-                else (
-                    f"S {flocking_traits.separation_gene:.2f} / "
-                    f"A {flocking_traits.alignment_gene:.2f} / "
-                    f"C {flocking_traits.cohesion_gene:.2f}"
-                )
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_herding",
-            "Herding raw / effective",
-            f"{raw_neural_herding:.2f} / {effective_herding:.2f}",
-            left,
-            y,
-            width,
-        )
-        observation = (
-            None if flock_runtime is None else flock_runtime.observation
-        )
-        intent = None if flock_runtime is None else flock_runtime.intent
-        weights = None if intent is None else intent.weights
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_social_presence",
-            "Presence (personal/social)",
-            (
-                "Unavailable"
-                if observation is None
-                else (
-                    f"{observation.personal_space_presence:.2f} / "
-                    f"{observation.social_presence:.2f}"
-                )
-            ),
-            left,
-            y,
-            width,
-        )
-        flocking_config = getattr(world.config, "flocking", None)
         compatibility_config = getattr(
-            flocking_config,
+            getattr(world.config, "flocking", None),
             "compatibility",
             None,
         )
@@ -643,296 +433,876 @@ class InspectorPanelComponent:
             "mode",
             "legacy",
         )
-        compatibility_mode = getattr(
-            raw_compatibility_mode,
-            "value",
-            raw_compatibility_mode,
+        compatibility_mode = str(
+            getattr(raw_compatibility_mode, "value", raw_compatibility_mode)
         )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_social_compatibility",
-            "Social compatibility",
-            (
-                f"{compatibility_mode} / tag "
-                f"({getattr(flocking_traits, 'social_tag_x', 0.5):.2f}, "
-                f"{getattr(flocking_traits, 'social_tag_y', 0.5):.2f})"
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_effective_flocking_weights",
-            "Effective weights",
-            (
-                "Unavailable"
-                if weights is None
-                else (
-                    f"S {weights.separation:.2f} / "
-                    f"A {weights.alignment:.2f} / "
-                    f"C {weights.cohesion:.2f}"
-                )
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_social_engagement",
-            "Engagement / panic attenuation",
-            (
-                f"{effective_herding:.2f} / {1.0 - panic:.2f}"
-                if weights is None
-                else (
-                    f"{weights.engagement:.2f} / "
-                    f"{weights.panic_attenuation:.2f}"
-                )
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_desired_velocities",
-            "Desired velocity N / S / blend",
-            (
-                "Recomputing"
-                if flock_runtime is None
-                else (
-                    f"{hypot(*flock_runtime.neural_desired_velocity):.1f} / "
-                    f"{hypot(*intent.desired_velocity):.1f} / "
-                    f"{hypot(*flock_runtime.blended_desired_velocity):.1f}"
-                )
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_social_force_contribution",
-            "Counterfactual Δ requested / accepted",
-            (
-                "Recomputing"
-                if flock_runtime is None
-                else (
-                    f"{hypot(*flock_runtime.requested_social_contribution):.2f} / "
-                    f"{hypot(*flock_runtime.accepted_counterfactual_delta):.2f}"
-                )
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_social_blend",
-            "Social blend",
-            (
-                "Recomputing"
-                if flock_runtime is None
-                else f"{flock_runtime.social_influence:.1%}"
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_local_group",
-            "Persistent local group",
-            (
-                "None"
-                if flock_runtime is None
-                or flock_runtime.local_group_id is None
-                else (
-                    f"#{flock_runtime.local_group_id} / "
-                    f"{flock_runtime.local_group_size} members"
-                )
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_flocking_benchmark",
-            "Benchmark fitness",
-            (
-                "0.000"
-                if fitness is None
-                else f"{fitness.flocking_benchmark_reward:.3f}"
-            ),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_collision_avoidance",
-            "Collision avoidance",
-            "Universal / automatic",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_lineage",
-            "Lineage",
-            f"Parent {parent_id if parent_id is not None else 'None'} / Gen {generation}",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_mutations",
-            "Mutations",
-            self._format_mutation_delta(mutation_delta),
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_food",
-            "Food",
-            f"{snapshot.food.visible:.0f} seen / {snapshot.food.density:.2f}",
-            left,
-            y,
-            width,
-        )
-        y -= self._draw_metric_row_in_viewport(
-            viewport,
-            "inspector_near",
-            "Near",
-            f"{snapshot.creatures.visible:.0f} seen / {snapshot.creatures.density:.2f}",
-            left,
-            y,
-            width,
-        )
+        ledger = getattr(selected, "ledger_diagnostics", None)
+        activity = getattr(ledger, "activity", None)
+        fitness_score = fitness.score(selected) if fitness is not None else None
 
-        y -= section_gap
-        self._draw_inspector_section_label(
-            viewport, "inspector_ledger_section", "REST & LEDGER", left, y
-        )
-        y -= 22.0
-        for key, label, value in (
-            ("life", "Life reserve", f"{life_ratio:.1%}"),
-            (
-                "rest_stages",
-                "Rest intent / smooth / effective",
-                f"{getattr(selected, 'rest_intent', 0.0):.2f} / "
-                f"{getattr(selected, 'smoothed_rest', 0.0):.2f} / "
-                f"{getattr(selected, 'effective_rest', 0.0):.2f}",
-            ),
-            (
-                "activity_components",
-                "Activity M/S/T/C/R/N",
-                f"{getattr(activity_diagnostics, 'voluntary_motor_effort', 0.0):.2f}/"
-                f"{getattr(activity_diagnostics, 'normalized_speed', 0.0):.2f}/"
-                f"{getattr(activity_diagnostics, 'turn', 0.0):.2f}/"
-                f"{getattr(activity_diagnostics, 'communication', 0.0):.2f}/"
-                f"{getattr(activity_diagnostics, 'reproduction', 0.0):.0f}/"
-                f"{getattr(activity_diagnostics, 'nursing', 0.0):.0f}",
-            ),
-            (
-                "activity_total",
-                "Weighted activity",
-                f"{getattr(selected, 'activity', 0.0):.3f}",
-            ),
-            (
-                "digestion_ledger",
-                "Consumed / gross / net",
-                f"{getattr(ledger, 'stomach_consumed', 0.0):.4f} / "
-                f"{getattr(ledger, 'gross_energy', 0.0):.4f} / "
-                f"{getattr(ledger, 'net_energy', 0.0):.4f}",
-            ),
-            (
-                "energy_ledger",
-                "Demand / deficit",
-                f"{getattr(ledger, 'total_energy_demand', 0.0):.4f} / "
-                f"{getattr(ledger, 'unmet_energy_demand', 0.0):.4f}",
-            ),
-            (
-                "rest_recovery",
-                "Rest gain / healing spend",
-                f"{getattr(ledger, 'rest_energy_recovered', 0.0):.4f} / "
-                f"{getattr(ledger, 'healing_energy_spent', 0.0):.4f}",
-            ),
-            (
-                "life_damage",
-                "Deficit / direct / healed",
-                f"{getattr(ledger, 'life_damage_from_deficit', 0.0):.4f} / "
-                f"{getattr(ledger, 'direct_life_damage', 0.0):.4f} / "
-                f"{getattr(ledger, 'life_healed', 0.0):.4f}",
-            ),
-            (
-                "transaction_status",
-                "Final transaction",
-                str(getattr(ledger, "transaction_status", "not_evaluated")),
-            ),
-        ):
-            y -= self._draw_metric_row_in_viewport(
-                viewport,
-                f"inspector_{key}",
+        def trait_field(
+            key: str,
+            label: str,
+            value: str,
+            delta_name: str,
+            delta_format: str,
+            *,
+            delta_scale: float = 1.0,
+            delta_suffix: str = "",
+        ) -> _InspectorCardField:
+            detail, tone = self._inspector_trait_delta_detail(
+                mutation_delta,
+                parent_id,
+                delta_name,
+                delta_format,
+                delta_scale=delta_scale,
+                delta_suffix=delta_suffix,
+            )
+            return _InspectorCardField(
+                key,
                 label,
                 value,
-                left,
-                y,
-                width,
+                detail,
+                tone,
             )
 
-        if fitness_score is not None:
-            y -= self._draw_metric_row_in_viewport(
-                viewport,
-                "inspector_age",
-                "Age",
-                f"{fitness.age_seconds:.1f}s",
-                left,
-                y,
-                width,
+        def runtime_value(value: object | None, formatter: str) -> str:
+            if value is None:
+                return "Recomputing"
+            return format(float(value), formatter)
+
+        identity = _InspectorCardSection(
+            "identity",
+            "IDENTITY & LINEAGE",
+            (
+                _InspectorCardField(
+                    "inspector_creature_id",
+                    "Creature ID",
+                    f"#{creature_id}",
+                ),
+                _InspectorCardField(
+                    "inspector_species_identity",
+                    "Species",
+                    "Unassigned" if species_id is None else f"Species #{species_id}",
+                ),
+                _InspectorCardField(
+                    "inspector_parent",
+                    "Parent creature",
+                    "None (founder)" if parent_id is None else f"#{parent_id}",
+                ),
+                _InspectorCardField(
+                    "inspector_generation",
+                    "Generation",
+                    str(generation),
+                ),
+                _InspectorCardField(
+                    "inspector_neat_genome",
+                    "NEAT genome ID",
+                    "None" if genome_id is None else f"#{genome_id}",
+                ),
+            ),
+        )
+        vital = _InspectorCardSection(
+            "vital",
+            "VITAL STATUS",
+            (
+                _InspectorCardField(
+                    "inspector_energy",
+                    "Energy reserve",
+                    f"{energy_ratio:.1%}",
+                    progress_ratio=energy_ratio,
+                    progress_color=self._inspector_energy_color(energy_ratio),
+                    value_color=self._inspector_energy_color(energy_ratio),
+                ),
+                _InspectorCardField(
+                    "inspector_stomach",
+                    "Stomach fullness",
+                    f"{stomach_ratio:.1%}",
+                    progress_ratio=stomach_ratio,
+                    progress_color=(236, 153, 45),
+                    value_color=(236, 153, 45),
+                ),
+                _InspectorCardField(
+                    "inspector_stomach_storage",
+                    "Stored stomach energy",
+                    f"{stomach_energy:.3f} energy",
+                ),
+                _InspectorCardField(
+                    "inspector_life",
+                    "Life reserve",
+                    f"{life_ratio:.1%}",
+                    progress_ratio=life_ratio,
+                    progress_color=self.theme.accent,
+                ),
+            ),
+        )
+        inherited_anatomy = _InspectorCardSection(
+            "inherited_anatomy",
+            "NON-NEAT GENOME · ANATOMY",
+            (
+                trait_field(
+                    "inspector_radius",
+                    "Body radius",
+                    f"{radius:.1f} px",
+                    "radius",
+                    "+.1f",
+                    delta_suffix=" px",
+                ),
+                trait_field(
+                    "inspector_movement_cost",
+                    "Movement cost multiplier",
+                    f"{movement_cost:.3f}×",
+                    "movement_cost_multiplier",
+                    "+.3f",
+                    delta_suffix="×",
+                ),
+            ),
+        )
+        inherited_vision = _InspectorCardSection(
+            "inherited_vision",
+            "NON-NEAT GENOME · VISION",
+            (
+                trait_field(
+                    "inspector_vision_range",
+                    "Vision range",
+                    f"{selected.vision.range:.1f} px",
+                    "vision_range",
+                    "+.1f",
+                    delta_suffix=" px",
+                ),
+                trait_field(
+                    "inspector_vision_angle",
+                    "Vision angle",
+                    f"{selected.vision.angle:.3f} rad",
+                    "vision_angle",
+                    "+.3f",
+                    delta_suffix=" rad",
+                ),
+            ),
+        )
+        inherited_digestion = _InspectorCardSection(
+            "inherited_digestion",
+            "NON-NEAT GENOME · DIGESTION",
+            (
+                trait_field(
+                    "inspector_stomach_capacity",
+                    "Stomach capacity",
+                    f"{stomach_capacity:.3f} energy",
+                    "stomach_capacity",
+                    "+.3f",
+                    delta_suffix=" energy",
+                ),
+                trait_field(
+                    "inspector_digestion_rate",
+                    "Digestion rate",
+                    f"{digestion_rate:.3f} energy/s",
+                    "digestion_rate",
+                    "+.3f",
+                    delta_suffix=" energy/s",
+                ),
+                trait_field(
+                    "inspector_digestion_efficiency",
+                    "Digestion efficiency",
+                    f"{digestion_efficiency:.1%}",
+                    "digestion_efficiency",
+                    "+.1f",
+                    delta_scale=100.0,
+                    delta_suffix=" percentage points",
+                ),
+            ),
+        )
+
+        def flock_value(name: str) -> str:
+            if flocking_traits is None:
+                return "Unavailable"
+            return f"{float(getattr(flocking_traits, name, 0.0)):.3f}"
+
+        inherited_social = _InspectorCardSection(
+            "inherited_social",
+            "NON-NEAT GENOME · SOCIAL TRAITS",
+            (
+                trait_field(
+                    "inspector_separation_gene",
+                    "Separation gene",
+                    flock_value("separation_gene"),
+                    "separation_gene",
+                    "+.3f",
+                ),
+                trait_field(
+                    "inspector_alignment_gene",
+                    "Alignment gene",
+                    flock_value("alignment_gene"),
+                    "alignment_gene",
+                    "+.3f",
+                ),
+                trait_field(
+                    "inspector_cohesion_gene",
+                    "Cohesion gene",
+                    flock_value("cohesion_gene"),
+                    "cohesion_gene",
+                    "+.3f",
+                ),
+                trait_field(
+                    "inspector_social_tag_x",
+                    "Social identity tag X",
+                    flock_value("social_tag_x"),
+                    "social_tag_x",
+                    "+.3f",
+                ),
+                trait_field(
+                    "inspector_social_tag_y",
+                    "Social identity tag Y",
+                    flock_value("social_tag_y"),
+                    "social_tag_y",
+                    "+.3f",
+                ),
+            ),
+        )
+        movement_fitness_fields = [
+            _InspectorCardField(
+                "inspector_speed",
+                "Current speed",
+                f"{float(getattr(selected, 'speed', 0.0)):.1f} px/s",
+            ),
+            _InspectorCardField(
+                "inspector_heading",
+                "Heading",
+                f"{float(getattr(selected, 'heading', 0.0)):.3f} rad",
+            ),
+            _InspectorCardField(
+                "inspector_fitness",
+                "Fitness score",
+                "Unavailable"
+                if fitness_score is None
+                else self._format_decimal(fitness_score),
+            ),
+            _InspectorCardField(
+                "inspector_flocking_benchmark",
+                "Flocking benchmark fitness",
+                "Unavailable"
+                if fitness is None
+                else f"{fitness.flocking_benchmark_reward:.3f}",
+            ),
+            _InspectorCardField(
+                "inspector_collision_avoidance",
+                "Collision avoidance",
+                "Universal and automatic",
+            ),
+        ]
+        if fitness is not None:
+            movement_fitness_fields.append(
+                _InspectorCardField(
+                    "inspector_age",
+                    "Age",
+                    f"{fitness.age_seconds:.1f} s",
+                )
+            )
+        movement_fitness = _InspectorCardSection(
+            "movement_fitness",
+            "MOVEMENT & FITNESS",
+            tuple(movement_fitness_fields),
+        )
+        perception = _InspectorCardSection(
+            "perception",
+            "PERCEPTION",
+            (
+                _InspectorCardField(
+                    "inspector_vision_cost",
+                    "Vision energy cost",
+                    f"{world.vision.energy_cost_per_second(selected):.3f} energy/s",
+                ),
+                _InspectorCardField(
+                    "inspector_food_visible",
+                    "Visible food items",
+                    f"{snapshot.food.visible:.0f}",
+                ),
+                _InspectorCardField(
+                    "inspector_food_density",
+                    "Food density",
+                    f"{snapshot.food.density:.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_creatures_visible",
+                    "Visible creatures",
+                    f"{snapshot.creatures.visible:.0f}",
+                ),
+                _InspectorCardField(
+                    "inspector_creature_density",
+                    "Creature density",
+                    f"{snapshot.creatures.density:.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_flockmate_count",
+                    "Effective flockmate count",
+                    f"{effective_flockmate_count:.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_normalized_flockmate_count",
+                    "Normalized flockmate count",
+                    f"{normalized_flockmate_count:.2f}",
+                ),
+            ),
+        )
+        social_fields = [
+            _InspectorCardField(
+                "inspector_social_compatibility",
+                "Compatibility mode",
+                compatibility_mode,
+            ),
+            _InspectorCardField(
+                "inspector_raw_herding",
+                "Raw neural herding",
+                f"{raw_neural_herding:.2f}",
+            ),
+            _InspectorCardField(
+                "inspector_herding",
+                "Effective herding",
+                f"{effective_herding:.2f}",
+            ),
+            _InspectorCardField(
+                "inspector_personal_presence",
+                "Personal-space presence",
+                runtime_value(
+                    getattr(observation, "personal_space_presence", None),
+                    ".2f",
+                ),
+            ),
+            _InspectorCardField(
+                "inspector_social_presence",
+                "Social presence",
+                runtime_value(
+                    getattr(observation, "social_presence", None),
+                    ".2f",
+                ),
+            ),
+            _InspectorCardField(
+                "inspector_effective_separation",
+                "Effective separation weight",
+                runtime_value(getattr(weights, "separation", None), ".2f"),
+            ),
+            _InspectorCardField(
+                "inspector_effective_alignment",
+                "Effective alignment weight",
+                runtime_value(getattr(weights, "alignment", None), ".2f"),
+            ),
+            _InspectorCardField(
+                "inspector_effective_cohesion",
+                "Effective cohesion weight",
+                runtime_value(getattr(weights, "cohesion", None), ".2f"),
+            ),
+            _InspectorCardField(
+                "inspector_social_engagement",
+                "Social engagement",
+                (
+                    f"{effective_herding:.2f}"
+                    if weights is None
+                    else f"{weights.engagement:.2f}"
+                ),
+            ),
+            _InspectorCardField(
+                "inspector_panic_attenuation",
+                "Panic attenuation",
+                (
+                    f"{1.0 - panic:.2f}"
+                    if weights is None
+                    else f"{weights.panic_attenuation:.2f}"
+                ),
+            ),
+        ]
+        if flock_runtime is None:
+            social_fields.extend(
+                (
+                    _InspectorCardField(
+                        "inspector_neural_desired_speed",
+                        "Neural desired speed",
+                        "Recomputing",
+                    ),
+                    _InspectorCardField(
+                        "inspector_social_desired_speed",
+                        "Social desired speed",
+                        "Recomputing",
+                    ),
+                    _InspectorCardField(
+                        "inspector_blended_desired_speed",
+                        "Blended desired speed",
+                        "Recomputing",
+                    ),
+                    _InspectorCardField(
+                        "inspector_requested_social_force",
+                        "Requested social contribution",
+                        "Recomputing",
+                    ),
+                    _InspectorCardField(
+                        "inspector_accepted_social_force",
+                        "Accepted counterfactual contribution",
+                        "Recomputing",
+                    ),
+                    _InspectorCardField(
+                        "inspector_social_blend",
+                        "Social influence",
+                        "Recomputing",
+                    ),
+                    _InspectorCardField(
+                        "inspector_local_group",
+                        "Persistent local group",
+                        "None",
+                    ),
+                )
+            )
+        else:
+            social_fields.extend(
+                (
+                    _InspectorCardField(
+                        "inspector_neural_desired_speed",
+                        "Neural desired speed",
+                        f"{hypot(*flock_runtime.neural_desired_velocity):.1f} px/s",
+                    ),
+                    _InspectorCardField(
+                        "inspector_social_desired_speed",
+                        "Social desired speed",
+                        (
+                            "Recomputing"
+                            if intent is None
+                            else f"{hypot(*intent.desired_velocity):.1f} px/s"
+                        ),
+                    ),
+                    _InspectorCardField(
+                        "inspector_blended_desired_speed",
+                        "Blended desired speed",
+                        f"{hypot(*flock_runtime.blended_desired_velocity):.1f} px/s",
+                    ),
+                    _InspectorCardField(
+                        "inspector_requested_social_force",
+                        "Requested social contribution",
+                        f"{hypot(*flock_runtime.requested_social_contribution):.2f}",
+                    ),
+                    _InspectorCardField(
+                        "inspector_accepted_social_force",
+                        "Accepted counterfactual contribution",
+                        f"{hypot(*flock_runtime.accepted_counterfactual_delta):.2f}",
+                    ),
+                    _InspectorCardField(
+                        "inspector_social_blend",
+                        "Social influence",
+                        f"{flock_runtime.social_influence:.1%}",
+                    ),
+                    _InspectorCardField(
+                        "inspector_local_group",
+                        "Persistent local group",
+                        (
+                            "None"
+                            if flock_runtime.local_group_id is None
+                            else f"Group #{flock_runtime.local_group_id}"
+                        ),
+                        (
+                            None
+                            if flock_runtime.local_group_id is None
+                            else f"{flock_runtime.local_group_size} members"
+                        ),
+                    ),
+                )
+            )
+        social_runtime = _InspectorCardSection(
+            "social_runtime",
+            "SOCIAL & FLOCKING RUNTIME",
+            tuple(social_fields),
+        )
+        rest_ledger = _InspectorCardSection(
+            "rest_ledger",
+            "REST, METABOLISM & LEDGER",
+            (
+                _InspectorCardField(
+                    "inspector_digestive_upkeep",
+                    "Digestive upkeep",
+                    f"{digestive_upkeep:.4f} energy/s",
+                ),
+                _InspectorCardField(
+                    "inspector_processing_cost",
+                    "Recent digestion processing cost",
+                    f"{processing_cost:.4f} energy/s",
+                ),
+                _InspectorCardField(
+                    "inspector_rest_intent",
+                    "Rest intent",
+                    f"{float(getattr(selected, 'rest_intent', 0.0)):.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_smoothed_rest",
+                    "Smoothed rest",
+                    f"{float(getattr(selected, 'smoothed_rest', 0.0)):.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_effective_rest",
+                    "Effective rest",
+                    f"{float(getattr(selected, 'effective_rest', 0.0)):.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_activity_motor",
+                    "Voluntary motor effort",
+                    f"{float(getattr(activity, 'voluntary_motor_effort', 0.0)):.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_activity_speed",
+                    "Normalized speed activity",
+                    f"{float(getattr(activity, 'normalized_speed', 0.0)):.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_activity_turn",
+                    "Turning activity",
+                    f"{float(getattr(activity, 'turn', 0.0)):.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_activity_communication",
+                    "Communication activity",
+                    f"{float(getattr(activity, 'communication', 0.0)):.2f}",
+                ),
+                _InspectorCardField(
+                    "inspector_activity_reproduction",
+                    "Reproduction activity",
+                    f"{float(getattr(activity, 'reproduction', 0.0)):.0f}",
+                ),
+                _InspectorCardField(
+                    "inspector_activity_nursing",
+                    "Nursing activity",
+                    f"{float(getattr(activity, 'nursing', 0.0)):.0f}",
+                ),
+                _InspectorCardField(
+                    "inspector_activity_total",
+                    "Weighted activity",
+                    f"{float(getattr(selected, 'activity', 0.0)):.3f}",
+                ),
+                _InspectorCardField(
+                    "inspector_stomach_consumed",
+                    "Stomach energy consumed",
+                    f"{float(getattr(ledger, 'stomach_consumed', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_gross_energy",
+                    "Gross digested energy",
+                    f"{float(getattr(ledger, 'gross_energy', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_net_energy",
+                    "Net digested energy",
+                    f"{float(getattr(ledger, 'net_energy', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_energy_demand",
+                    "Total energy demand",
+                    f"{float(getattr(ledger, 'total_energy_demand', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_energy_deficit",
+                    "Unmet energy demand",
+                    f"{float(getattr(ledger, 'unmet_energy_demand', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_rest_recovery",
+                    "Energy recovered through rest",
+                    f"{float(getattr(ledger, 'rest_energy_recovered', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_healing_spend",
+                    "Energy spent on healing",
+                    f"{float(getattr(ledger, 'healing_energy_spent', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_deficit_damage",
+                    "Life damage from energy deficit",
+                    f"{float(getattr(ledger, 'life_damage_from_deficit', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_direct_damage",
+                    "Direct life damage",
+                    f"{float(getattr(ledger, 'direct_life_damage', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_life_damage",
+                    "Life healed",
+                    f"{float(getattr(ledger, 'life_healed', 0.0)):.4f}",
+                ),
+                _InspectorCardField(
+                    "inspector_transaction_status",
+                    "Final transaction status",
+                    str(getattr(ledger, "transaction_status", "not_evaluated")),
+                ),
+            ),
+        )
+        return (
+            (
+                identity,
+                vital,
+                inherited_anatomy,
+                inherited_vision,
+                inherited_digestion,
+                inherited_social,
+                movement_fitness,
+                perception,
+                social_runtime,
+                rest_ledger,
+            ),
+            species_id,
+            species_color,
+        )
+
+    @staticmethod
+    def _inspector_trait_delta_detail(
+        mutation_delta: object | None,
+        parent_id: int | None,
+        attribute: str,
+        number_format: str,
+        *,
+        delta_scale: float = 1.0,
+        delta_suffix: str = "",
+    ) -> tuple[str, str]:
+        """Format one explicit parent delta without compact abbreviations."""
+        if parent_id is None:
+            return "Change from parent: not applicable (founder)", "muted"
+        if mutation_delta is None or not hasattr(mutation_delta, attribute):
+            return "Change from parent: unavailable", "muted"
+        try:
+            delta = float(getattr(mutation_delta, attribute)) * delta_scale
+        except (TypeError, ValueError):
+            return "Change from parent: unavailable", "muted"
+        if not isfinite(delta):
+            return "Change from parent: unavailable", "muted"
+        tone = "positive" if delta > 0.0 else "negative" if delta < 0.0 else "muted"
+        return (
+            f"Change from parent: {format(delta, number_format)}{delta_suffix}",
+            tone,
+        )
+
+    def _inspector_card_field_height(
+        self,
+        field: _InspectorCardField,
+        width: float,
+    ) -> float:
+        """Measure one nested field, including wrapping and progress bars."""
+        text_width = max(24.0, width - 22.0)
+        label_lines = self._wrap_line(field.label, text_width, font_size=9.0)
+        value_lines = self._wrap_line(field.value, text_width, font_size=12.0)
+        height = (
+            11.0
+            + max(1, len(label_lines)) * 12.0
+            + 4.0
+            + max(1, len(value_lines)) * 15.0
+        )
+        if field.detail is not None:
+            detail_lines = self._wrap_line(
+                field.detail,
+                text_width,
+                font_size=10.0,
+            )
+            height += 4.0 + max(1, len(detail_lines)) * 13.0
+        if field.progress_ratio is not None:
+            height += 16.0
+        return height + 11.0
+
+    def _inspector_card_section_height(
+        self,
+        section: _InspectorCardSection,
+        width: float,
+    ) -> float:
+        """Measure a complete section before scroll limits are calculated."""
+        field_width = max(24.0, width - 28.0)
+        field_heights = (
+            self._inspector_card_field_height(field, field_width)
+            for field in section.fields
+        )
+        return 42.0 + sum(field_heights) + max(0, len(section.fields) - 1) * 8.0 + 14.0
+
+    def _draw_inspector_identity_header(
+        self,
+        viewport: arcade.Rect,
+        selected: object,
+        species_id: int | None,
+        species_color: arcade.Color | tuple[int, ...],
+        left: float,
+        top: float,
+        width: float,
+    ) -> None:
+        """Draw the padded name, status, and species marker."""
+        self._draw_text_in_viewport(
+            viewport,
+            "inspector_label",
+            "SELECTED CREATURE",
+            left,
+            top - 10.0,
+            self.theme.text_muted,
+            9,
+            bold=True,
+        )
+        self._draw_status_chip_in_viewport(
+            viewport,
+            arcade.LBWH(left + width - 52.0, top - 27.0, 52.0, 24.0),
+            "LIVE",
+        )
+        self._draw_text_in_viewport(
+            viewport,
+            "inspector_name",
+            self._fit_line(str(getattr(selected, "name", "Creature")), width),
+            left,
+            top - 39.0,
+            self.theme.text_primary,
+            17,
+            bold=True,
+        )
+        if species_id is None:
+            return
+        marker_x = left + 8.0
+        marker_y = top - 72.0
+        marker_bounds = arcade.LBWH(marker_x - 8.0, marker_y - 8.0, 16.0, 16.0)
+        if self._rect_intersects(marker_bounds, viewport):
+            arcade.draw_circle_filled(marker_x, marker_y, 8.0, species_color)
+            arcade.draw_circle_outline(
+                marker_x,
+                marker_y,
+                8.0,
+                self.theme.selected_outline,
+                2.5,
+            )
+        self._draw_text_in_viewport(
+            viewport,
+            "inspector_species",
+            f"Species #{species_id}",
+            left + 24.0,
+            top - 77.0,
+            self.theme.text_muted,
+            11,
+            bold=True,
+        )
+
+    def _draw_inspector_card_section(
+        self,
+        viewport: arcade.Rect,
+        section: _InspectorCardSection,
+        bounds: arcade.Rect,
+    ) -> None:
+        """Draw one padded section and its vertically stacked field cards."""
+        if self._rect_intersects(bounds, viewport):
+            self._draw_rounded_rect(
+                bounds,
+                self.theme.panel_background,
+                self.theme.panel_border,
+                9.0,
+                1.0,
+            )
+            self._draw_text(
+                f"inspector_section_{section.key}",
+                section.title,
+                bounds.left + 14.0,
+                bounds.top - 14.0,
+                self.theme.text_muted,
+                9,
+                bold=True,
+                anchor_y="top",
+                width=max(24.0, bounds.width - 28.0),
+            )
+        field_width = max(24.0, bounds.width - 28.0)
+        cursor = bounds.top - 42.0
+        for field in section.fields:
+            height = self._inspector_card_field_height(field, field_width)
+            field_bounds = arcade.LBWH(
+                bounds.left + 14.0,
+                cursor - height,
+                field_width,
+                height,
+            )
+            self._draw_inspector_card_field(viewport, field, field_bounds)
+            cursor -= height + 8.0
+
+    def _draw_inspector_card_field(
+        self,
+        viewport: arcade.Rect,
+        field: _InspectorCardField,
+        bounds: arcade.Rect,
+    ) -> None:
+        """Draw a field with guaranteed padding on every text edge."""
+        if not self._rect_intersects(bounds, viewport):
+            return
+        self._draw_rounded_rect(
+            bounds,
+            self.theme.card_background,
+            self.theme.panel_border,
+            7.0,
+            0.8,
+        )
+        text_left = bounds.left + 11.0
+        text_width = max(24.0, bounds.width - 22.0)
+        label_lines = self._wrap_line(field.label, text_width, font_size=9.0)
+        value_lines = self._wrap_line(field.value, text_width, font_size=12.0)
+        cursor = bounds.top - 11.0
+        self._draw_text(
+            f"{field.key}_label",
+            "\n".join(label_lines),
+            text_left,
+            cursor,
+            self.theme.text_muted,
+            9,
+            width=text_width,
+            multiline=True,
+            anchor_y="top",
+        )
+        cursor -= max(1, len(label_lines)) * 12.0 + 4.0
+        self._draw_text(
+            f"{field.key}_value",
+            "\n".join(value_lines),
+            text_left,
+            cursor,
+            field.value_color or self.theme.text_primary,
+            12,
+            bold=True,
+            width=text_width,
+            multiline=True,
+            anchor_y="top",
+        )
+        cursor -= max(1, len(value_lines)) * 15.0
+        if field.detail is not None:
+            detail_lines = self._wrap_line(
+                field.detail,
+                text_width,
+                font_size=10.0,
+            )
+            cursor -= 4.0
+            self._draw_text(
+                f"{field.key}_detail",
+                "\n".join(detail_lines),
+                text_left,
+                cursor,
+                self._inspector_detail_tone_color(field.detail_tone),
+                10,
+                width=text_width,
+                multiline=True,
+                anchor_y="top",
+            )
+            cursor -= max(1, len(detail_lines)) * 13.0
+        if field.progress_ratio is not None:
+            bar = arcade.LBWH(text_left, cursor - 12.0, text_width, 8.0)
+            self._draw_progress_bar(
+                bar,
+                field.progress_ratio,
+                fill_color=field.progress_color,
             )
 
-        y -= 56.0
-        button_gap = 10.0
-        button_height = 40.0
-        brain_button = arcade.LBWH(
-            left,
-            y - button_height,
-            width,
-            button_height,
-        )
-        report_button = arcade.LBWH(
-            left,
-            brain_button.bottom - button_gap - button_height,
-            width,
-            button_height,
-        )
-        kill_button = arcade.LBWH(
-            left,
-            report_button.bottom - button_gap - button_height,
-            width,
-            button_height,
-        )
-        measured_content_height = max(
-            0.0,
-            content_top - kill_button.bottom + 28.0,
-        )
-        self._inspector_content_height = measured_content_height
-        measured_scroll_limit = max(
-            0.0,
-            measured_content_height - viewport.height,
-        )
-        self._scroll_limits["inspector"] = measured_scroll_limit
-        self._scroll_offsets["inspector"] = min(
-            scroll_offset,
-            measured_scroll_limit,
-        )
+    def _inspector_detail_tone_color(
+        self,
+        tone: str,
+    ) -> arcade.Color | tuple[int, ...]:
+        """Resolve mutation-detail emphasis without changing value colours."""
+        if tone == "positive":
+            return self.theme.accent
+        if tone == "negative":
+            return self.theme.selected_outline
+        return self.theme.text_muted
+
+    def _draw_inspector_actions(
+        self,
+        viewport: arcade.Rect,
+        brain_button: arcade.Rect,
+        report_button: arcade.Rect,
+        kill_button: arcade.Rect,
+    ) -> None:
+        """Draw and register only the action buttons currently in view."""
         self._control_hitboxes.pop("open_brain_window", None)
         self._control_hitboxes.pop("open_behavior_report_selected", None)
         self._control_hitboxes.pop("kill_selected_creature", None)
@@ -947,9 +1317,7 @@ class InspectorPanelComponent:
                 text_color=self.theme.accent,
             )
         if self._rect_intersects(report_button, viewport):
-            self._control_hitboxes[
-                "open_behavior_report_selected"
-            ] = report_button
+            self._control_hitboxes["open_behavior_report_selected"] = report_button
             self._draw_action_button(
                 report_button,
                 "Report",
@@ -968,12 +1336,7 @@ class InspectorPanelComponent:
                 fill_color=(255, 218, 214),
                 text_color=self.theme.selected_outline,
             )
-        if measured_scroll_limit > 0.0:
-            self._draw_scrollbar(
-                viewport,
-                self._scroll_offsets["inspector"],
-                measured_scroll_limit,
-            )
+
     def _draw_selected_creature(self, world: World, bounds: arcade.Rect) -> None:
         """Draw selected creature.
 
@@ -1467,192 +1830,6 @@ class InspectorPanelComponent:
         """
         if self._rect_intersects(bounds, viewport):
             self._draw_status_chip(bounds, label)
-    def _draw_inspector_section_label(
-        self,
-        viewport: arcade.Rect,
-        key: str,
-        label: str,
-        x: float,
-        y: float,
-    ) -> None:
-        """Draw inspector section label.
-
-        Parameters
-        ----------
-        viewport
-            Rectangle defining the relevant UI area.
-        key
-            Stable identifier used by the UI.
-        label
-            Text displayed by the UI.
-        x
-            Logical screen coordinate.
-        y
-            Logical screen coordinate.
-        """
-        self._draw_text_in_viewport(
-            viewport,
-            key,
-            label,
-            x,
-            y,
-            self.theme.text_muted,
-            9,
-            bold=True,
-        )
-    def _draw_inspector_stat_tile_in_viewport(
-        self,
-        viewport: arcade.Rect,
-        key: str,
-        label: str,
-        value: str,
-        bounds: arcade.Rect,
-    ) -> None:
-        """Draw inspector stat tile in viewport.
-
-        Parameters
-        ----------
-        viewport
-            Rectangle defining the relevant UI area.
-        key
-            Stable identifier used by the UI.
-        label
-            Text displayed by the UI.
-        value
-            Value used by the operation.
-        bounds
-            Rectangle defining the relevant UI area.
-        """
-        if not self._rect_intersects(bounds, viewport):
-            return
-        self._draw_rounded_rect(
-            bounds,
-            self.theme.panel_background,
-            self.theme.panel_border,
-            7,
-            1,
-        )
-        self._draw_text(
-            f"{key}_tile_label",
-            label,
-            bounds.left + 10,
-            bounds.top - 15,
-            self.theme.text_muted,
-            9,
-        )
-        self._draw_text(
-            f"{key}_tile_value",
-            self._fit_line(value, bounds.width - 20),
-            bounds.left + 10,
-            bounds.bottom + 12,
-            self.theme.text_primary,
-            12,
-            bold=True,
-        )
-    def _draw_metric_row_in_viewport(
-        self,
-        viewport: arcade.Rect,
-        key: str,
-        label: str,
-        value: str,
-        x: float,
-        y: float,
-        width: float,
-        *,
-        value_color: arcade.Color | tuple[int, ...] | None = None,
-    ) -> float:
-        """Draw metric row in viewport.
-
-        Parameters
-        ----------
-        viewport
-            Rectangle defining the relevant UI area.
-        key
-            Stable identifier used by the UI.
-        label
-            Text displayed by the UI.
-        value
-            Value used by the operation.
-        x
-            Logical screen coordinate.
-        y
-            Logical screen coordinate.
-        width
-            Requested logical size.
-        value_color
-            Value used by the operation.
-
-        Returns
-        -------
-        float
-            Vertical space consumed by the responsive row.
-        """
-        row_height = self._metric_row_layout(
-            label,
-            value,
-            x,
-            y,
-            width,
-        )[-1]
-        row_bounds = arcade.LBWH(
-            x,
-            y - row_height,
-            width,
-            row_height,
-        )
-        if self._rect_intersects(row_bounds, viewport):
-            return self._draw_metric_row(
-                key,
-                label,
-                value,
-                x,
-                y,
-                width,
-                value_color=value_color,
-            )
-        return row_height
-    def _draw_compact_value(
-        self,
-        key: str,
-        label: str,
-        value: str,
-        x: float,
-        y: float,
-        width: float,
-    ) -> None:
-        """Draw compact value.
-
-        Parameters
-        ----------
-        key
-            Stable identifier used by the UI.
-        label
-            Text displayed by the UI.
-        value
-            Value used by the operation.
-        x
-            Logical screen coordinate.
-        y
-            Logical screen coordinate.
-        width
-            Requested logical size.
-        """
-        self._draw_text(
-            f"{key}_label",
-            label,
-            x,
-            y,
-            self.theme.text_muted,
-            9,
-        )
-        self._draw_text(
-            f"{key}_value",
-            self._fit_line(value, width),
-            x,
-            y - 16,
-            self.theme.text_primary,
-            12,
-        )
     def _format_decimal(self, value: float) -> str:
         """Format decimal.
 
@@ -1671,55 +1848,6 @@ class InspectorPanelComponent:
         if abs(value) >= 100.0:
             return f"{value:.2f}"
         return f"{value:.2f}".rstrip("0").rstrip(".")
-    def _format_mutation_delta(self, mutation_delta: object | None) -> str:
-        """Format mutation delta.
-
-        Parameters
-        ----------
-        mutation_delta
-            Value used by the operation.
-
-        Returns
-        -------
-        str
-            Formatted or resolved value.
-        """
-        if mutation_delta is None:
-            return "None"
-
-        vision_range = getattr(mutation_delta, "vision_range", 0.0)
-        vision_angle = getattr(mutation_delta, "vision_angle", 0.0)
-        radius = getattr(mutation_delta, "radius", 0.0)
-        movement_cost = getattr(mutation_delta, "movement_cost_multiplier", 0.0)
-        separation = getattr(mutation_delta, "separation_gene", 0.0)
-        alignment = getattr(mutation_delta, "alignment_gene", 0.0)
-        cohesion = getattr(mutation_delta, "cohesion_gene", 0.0)
-        stomach_capacity = getattr(mutation_delta, "stomach_capacity", 0.0)
-        digestion_rate = getattr(mutation_delta, "digestion_rate", 0.0)
-        digestion_efficiency = getattr(
-            mutation_delta,
-            "digestion_efficiency",
-            0.0,
-        )
-        digestive_delta = (
-            f"D {stomach_capacity:+.2f}/{digestion_rate:+.2f}/"
-            f"{digestion_efficiency:+.2f}, "
-            if any(
-                hasattr(mutation_delta, name)
-                for name in (
-                    "stomach_capacity",
-                    "digestion_rate",
-                    "digestion_efficiency",
-                )
-            )
-            else ""
-        )
-        return (
-            f"R {radius:+.1f}, V {vision_range:+.1f}/"
-            f"{vision_angle:+.2f}, M {movement_cost:+.2f}, "
-            f"{digestive_delta}"
-            f"F {separation:+.2f}/{alignment:+.2f}/{cohesion:+.2f}"
-        )
     def _format_genome_fitness(self, fitness: object) -> str:
         """Format genome fitness.
 

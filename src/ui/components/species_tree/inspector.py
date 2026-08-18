@@ -2196,75 +2196,79 @@ class SpeciesTreeInspectorComponent:
             )
         else:
             anatomy_rows = (
-                _SpeciesInspectorRow("Radius", f"{traits.radius:.2f} px"),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
+                    "Radius",
+                    "radius",
+                    traits.radius,
+                    f"{traits.radius:.2f} px",
+                ),
+                self._species_trait_comparison_row(
+                    record,
                     "Vision range",
+                    "vision_range",
+                    traits.vision_range,
                     f"{traits.vision_range:.2f} px",
                 ),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
                     "Vision angle",
+                    "vision_angle",
+                    traits.vision_angle,
                     f"{traits.vision_angle:.3f} rad",
                 ),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
                     "Movement cost",
+                    "movement_cost_multiplier",
+                    traits.movement_cost_multiplier,
                     f"{traits.movement_cost_multiplier:.3f}x",
                 ),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
                     "Stomach capacity",
+                    "stomach_capacity",
+                    traits.stomach_capacity,
                     f"{traits.stomach_capacity:.3f} energy",
                 ),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
                     "Digestion rate",
+                    "digestion_rate",
+                    traits.digestion_rate,
                     f"{traits.digestion_rate:.3f} energy/s",
                 ),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
                     "Digestion efficiency",
+                    "digestion_efficiency",
+                    traits.digestion_efficiency,
                     f"{traits.digestion_efficiency:.1%}",
                 ),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
                     "Separation gene",
+                    "separation_gene",
+                    traits.separation_gene,
                     f"{traits.separation_gene:.3f}",
                 ),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
                     "Alignment gene",
+                    "alignment_gene",
+                    traits.alignment_gene,
                     f"{traits.alignment_gene:.3f}",
                 ),
-                _SpeciesInspectorRow(
+                self._species_trait_comparison_row(
+                    record,
                     "Cohesion gene",
+                    "cohesion_gene",
+                    traits.cohesion_gene,
                     f"{traits.cohesion_gene:.3f}",
                 ),
             )
         sections.append(
             _SpeciesInspectorSection("ANATOMY & MORPHOLOGY", anatomy_rows)
-        )
-
-        if report.morphology:
-            parent_rows = tuple(
-                _SpeciesInspectorRow(
-                    insight.description,
-                    f"{insight.percent_change:+.1f}%",
-                    (
-                        "positive"
-                        if insight.percent_change > 0.0
-                        else "negative"
-                    ),
-                )
-                for insight in report.morphology
-            )
-        else:
-            parent_rows = (
-                _SpeciesInspectorRow(
-                    None,
-                    (
-                        "No parent comparison"
-                        if report.parent_species_id is None
-                        else "No measurable morphology change"
-                    ),
-                    "muted",
-                ),
-            )
-        sections.append(
-            _SpeciesInspectorSection("PARENT COMPARISON", parent_rows)
         )
 
         metabolism = report.metabolism
@@ -2357,6 +2361,60 @@ class SpeciesTreeInspectorComponent:
             )
         )
         return tuple(sections)
+
+    def _species_trait_comparison_row(
+        self,
+        record: SpeciesRecord | None,
+        label: str,
+        trait_name: str,
+        child_value: float,
+        formatted_value: str,
+    ) -> _SpeciesInspectorRow:
+        """Return one trait value with its parent-relative percentage."""
+        if record is None:
+            return _SpeciesInspectorRow(
+                label,
+                f"{formatted_value} · change unavailable",
+                "muted",
+            )
+        if record.parent_species_id is None:
+            return _SpeciesInspectorRow(
+                label,
+                f"{formatted_value} · Root species",
+            )
+        if record.data_quality.lower() != "exact" or record.trait_deltas is None:
+            return _SpeciesInspectorRow(
+                label,
+                f"{formatted_value} · change unavailable",
+                "muted",
+            )
+        try:
+            numeric_child = float(child_value)
+            delta = float(getattr(record.trait_deltas, trait_name))
+            parent_value = numeric_child - delta
+        except (AttributeError, TypeError, ValueError):
+            return _SpeciesInspectorRow(
+                label,
+                f"{formatted_value} · change unavailable",
+                "muted",
+            )
+        if (
+            not isfinite(numeric_child)
+            or not isfinite(delta)
+            or not isfinite(parent_value)
+            or abs(parent_value) <= 1e-12
+        ):
+            return _SpeciesInspectorRow(
+                label,
+                f"{formatted_value} · change unavailable",
+                "muted",
+            )
+        percent_change = delta / abs(parent_value) * 100.0
+        return _SpeciesInspectorRow(
+            label,
+            f"{formatted_value} · {percent_change:+.1f}% vs parent",
+            self._species_inspector_change_tone(percent_change),
+        )
     @staticmethod
     def _species_inspector_change_tone(value: float | None) -> str:
         """Return species inspector change tone.

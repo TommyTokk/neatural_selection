@@ -2893,13 +2893,25 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self,
     ) -> None:
         world = self.make_inspector_world()
-        self.renderer._panel_bounds["inspector"] = arcade.LBWH(100, 100, 368, 700)
-
-        self.renderer._draw_inspector_panel(world)
+        sections, _species_id, _species_color = (
+            self.renderer._inspector_card_sections(
+                world,
+                world.selected_creature,
+            )
+        )
+        fields = {
+            field.key: field
+            for section in sections
+            for field in section.fields
+        }
 
         self.assertEqual(
-            self.renderer._text_cache["inspector_flockmate_count_value"].text,
-            "1.50 / 0.33",
+            fields["inspector_flockmate_count"].value,
+            "1.50",
+        )
+        self.assertEqual(
+            fields["inspector_normalized_flockmate_count"].value,
+            "0.33",
         )
 
     def test_inspector_scroll_region_uses_inner_card_viewport(self) -> None:
@@ -3007,7 +3019,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
         )
         self.assertNotIn("kill_selected_creature", self.renderer._control_hitboxes)
 
-    def test_inspector_progress_bars_use_energy_and_stomach_ratios(self) -> None:
+    def test_inspector_progress_bars_use_vital_status_ratios(self) -> None:
         world = self.make_inspector_world(energy=0.5, max_energy=2.0, vision_range=160.0)
         ratios = []
         original_draw_progress_bar = self.renderer._draw_progress_bar
@@ -3018,11 +3030,24 @@ class FloatingSimulationUiTest(unittest.TestCase):
 
         self.renderer._draw_progress_bar = capture_progress_bar
         try:
-            self.renderer._draw_inspector_panel(world)
+            sections, _species_id, _species_color = (
+                self.renderer._inspector_card_sections(
+                    world,
+                    world.selected_creature,
+                )
+            )
+            vital = next(section for section in sections if section.key == "vital")
+            bounds = arcade.LBWH(
+                100.0,
+                100.0,
+                300.0,
+                self.renderer._inspector_card_section_height(vital, 300.0),
+            )
+            self.renderer._draw_inspector_card_section(bounds, vital, bounds)
         finally:
             self.renderer._draw_progress_bar = original_draw_progress_bar
 
-        self.assertEqual(ratios, [0.25, 0.6])
+        self.assertEqual(ratios, [0.25, 0.6, 1.0])
 
     def test_creature_inspector_marker_matches_selected_creature(self) -> None:
         selected = SimpleNamespace(
@@ -3114,7 +3139,9 @@ class FloatingSimulationUiTest(unittest.TestCase):
             (210, 40, 90),
         )
 
-    def test_inspector_draws_trait_and_lineage_rows(self) -> None:
+    def test_inspector_builds_explicit_identity_and_non_neat_genome_fields(
+        self,
+    ) -> None:
         selected = SimpleNamespace(
             creature_id=938,
             name="Herbivore 938",
@@ -3151,56 +3178,74 @@ class FloatingSimulationUiTest(unittest.TestCase):
                 effective_herding=0.70,
             )
         }
-        rows: dict[str, tuple[str, str]] = {}
-        original_metric_row = self.renderer._draw_metric_row_in_viewport
+        sections, species_id, _species_color = (
+            self.renderer._inspector_card_sections(world, selected)
+        )
+        self.assertEqual(species_id, 1)
+        fields = {
+            field.key: field
+            for section in sections
+            for field in section.fields
+        }
 
-        def capture_metric_row(
-            viewport: object,
-            key: str,
-            label: str,
-            value: str,
-            *args: object,
-        ) -> float:
-            del viewport, args
-            rows[key] = (label, value)
-            return 25.0
-
-        self.renderer._draw_metric_row_in_viewport = capture_metric_row
-        try:
-            self.renderer._draw_inspector_panel(world)
-        finally:
-            self.renderer._draw_metric_row_in_viewport = original_metric_row
-
-        self.assertEqual(rows["inspector_body"], ("Body", "18.0px / 1.12x move"))
-        self.assertEqual(rows["inspector_lineage"], ("Lineage", "Parent 12 / Gen 3"))
+        self.assertEqual(fields["inspector_creature_id"].value, "#938")
+        self.assertEqual(fields["inspector_parent"].value, "#12")
+        self.assertEqual(fields["inspector_generation"].value, "3")
+        self.assertEqual(fields["inspector_neat_genome"].value, "#938")
+        self.assertEqual(fields["inspector_radius"].label, "Body radius")
+        self.assertEqual(fields["inspector_radius"].value, "18.0 px")
         self.assertEqual(
-            rows["inspector_mutations"],
-            (
-                "Mutations",
-                "R +1.0, V +2.0/-0.03, M +0.04, "
-                "D +0.00/+0.00/+0.00, F +0.00/+0.00/+0.00",
-            ),
+            fields["inspector_radius"].detail,
+            "Change from parent: +1.0 px",
         )
         self.assertEqual(
-            rows["inspector_flocking_genes"],
-            ("Flocking genes (inherited)", "S 0.80 / A 0.30 / C 0.60"),
+            fields["inspector_vision_angle"].detail,
+            "Change from parent: -0.030 rad",
         )
         self.assertEqual(
-            rows["inspector_herding"],
-            ("Herding raw / effective", "0.90 / 0.70"),
+            fields["inspector_digestion_efficiency"].detail,
+            "Change from parent: +0.0 percentage points",
+        )
+        self.assertEqual(fields["inspector_separation_gene"].value, "0.800")
+        self.assertEqual(fields["inspector_alignment_gene"].value, "0.300")
+        self.assertEqual(fields["inspector_cohesion_gene"].value, "0.600")
+        self.assertEqual(fields["inspector_social_tag_x"].value, "0.500")
+        self.assertEqual(fields["inspector_social_tag_y"].value, "0.500")
+        inherited_keys = {
+            field.key
+            for section in sections
+            if section.key.startswith("inherited_")
+            for field in section.fields
+        }
+        self.assertEqual(len(inherited_keys), 12)
+        for key in inherited_keys:
+            self.assertIsNotNone(fields[key].detail)
+            self.assertIn("Change from parent:", fields[key].detail)
+        self.assertEqual(
+            fields["inspector_social_tag_x"].detail,
+            "Change from parent: +0.000",
+        )
+        self.assertEqual(fields["inspector_raw_herding"].value, "0.90")
+        self.assertEqual(fields["inspector_herding"].value, "0.70")
+        self.assertEqual(
+            fields["inspector_rest_recovery"].value,
+            "0.0400",
         )
         self.assertEqual(
-            rows["inspector_rest_recovery"],
-            ("Rest gain / healing spend", "0.0400 / 0.0100"),
+            fields["inspector_healing_spend"].value,
+            "0.0100",
         )
         self.assertEqual(
-            rows["inspector_life_damage"],
-            ("Deficit / direct / healed", "0.0000 / 0.0000 / 0.0100"),
+            fields["inspector_life_damage"].value,
+            "0.0100",
         )
         self.assertEqual(
-            rows["inspector_collision_avoidance"],
-            ("Collision avoidance", "Universal / automatic"),
+            fields["inspector_collision_avoidance"].value,
+            "Universal and automatic",
         )
+        for field in fields.values():
+            self.assertNotIn("R +", field.value)
+            self.assertNotIn("S ", field.value)
 
     def test_shared_card_metric_row_wraps_within_available_width(self) -> None:
         width = 260.0
@@ -3291,7 +3336,7 @@ class FloatingSimulationUiTest(unittest.TestCase):
                     self.assertGreaterEqual(bounds.left, 20.0)
                     self.assertLessEqual(bounds.right, 20.0 + width)
 
-    def test_creature_inspector_wraps_long_card_rows_without_clipping(
+    def test_creature_inspector_stacked_fields_keep_text_inside_padding(
         self,
     ) -> None:
         world = self.make_inspector_world()
@@ -3309,24 +3354,32 @@ class FloatingSimulationUiTest(unittest.TestCase):
                 cohesion_gene=0.2,
             )
         )
-        self.renderer._panel_bounds["inspector"] = arcade.LBWH(
-            100,
-            100,
-            310,
-            330,
+        sections, _species_id, _species_color = (
+            self.renderer._inspector_card_sections(
+                world,
+                world.selected_creature,
+            )
         )
-
-        self.renderer._draw_inspector_panel(world)
-        self.renderer._scroll_offsets["inspector"] = (
-            self.renderer._scroll_limits["inspector"] * 0.6
+        social = next(
+            section for section in sections if section.key == "inherited_social"
         )
-        self.renderer._draw_inspector_panel(world)
+        bounds = arcade.LBWH(
+            100.0,
+            100.0,
+            230.0,
+            self.renderer._inspector_card_section_height(social, 230.0),
+        )
+        self.renderer._draw_inspector_card_section(bounds, social, bounds)
 
-        value = self.renderer._text_cache["inspector_mutations_value"]
-        body = self.renderer._control_hitboxes["inspector_body"]
-        self.assertTrue(value.multiline)
-        self.assertIn("\n", value.text)
-        self.assertLessEqual(value.x + value.width, body.right)
+        rendered = [
+            text
+            for key, text in self.renderer._text_cache.items()
+            if key.startswith("inspector_social_tag")
+        ]
+        self.assertTrue(rendered)
+        for text in rendered:
+            self.assertGreaterEqual(text.x, bounds.left + 25.0)
+            self.assertLessEqual(text.x + text.width, bounds.right - 25.0)
 
     def test_progress_bar_zero_ratio_skips_fill(self) -> None:
         fills = []
@@ -5231,6 +5284,7 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         sections = self.renderer._species_inspector_sections(report, record)
         section_titles = {section.title for section in sections}
         self.assertIn("ANATOMY & MORPHOLOGY", section_titles)
+        self.assertNotIn("PARENT COMPARISON", section_titles)
         self.assertIn("METABOLIC PROFILE", section_titles)
         self.assertIn("NEURO-INTEGRATION HUBS", section_titles)
         self.assertIn("BRAIN CHANGES FROM PARENT", section_titles)
@@ -5240,11 +5294,147 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             for row in section.rows
             if row.label is not None
         }
-        self.assertEqual(rows["Radius"], "18.00 px")
-        self.assertEqual(rows["Vision range"], "100.00 px")
-        self.assertEqual(rows["Vision angle"], "0.900 rad")
+        self.assertEqual(rows["Radius"], "18.00 px · +5.9% vs parent")
+        self.assertEqual(rows["Vision range"], "100.00 px · +2.0% vs parent")
+        self.assertEqual(rows["Vision angle"], "0.900 rad · +12.5% vs parent")
         self.assertIn("energy/s", rows["Basal metabolic BMR"])
         self.assertIn(" / ", rows["Parent BMR / active"])
+
+    def test_species_anatomy_rows_cover_every_parent_relative_trait(self) -> None:
+        parent = self.make_record(1, None)
+        record = replace(
+            self.make_record(2, 1),
+            founder_traits=SpeciesTraitSnapshot(
+                radius=20.0,
+                vision_range=120.0,
+                vision_angle=1.2,
+                movement_cost_multiplier=1.2,
+                separation_gene=0.6,
+                alignment_gene=0.4,
+                cohesion_gene=0.8,
+                stomach_capacity=2.0,
+                digestion_rate=0.3,
+                digestion_efficiency=0.9,
+            ),
+            trait_deltas=SpeciesTraitSnapshot(
+                radius=2.0,
+                vision_range=-10.0,
+                vision_angle=0.0,
+                movement_cost_multiplier=0.2,
+                separation_gene=0.1,
+                alignment_gene=-0.1,
+                cohesion_gene=0.2,
+                stomach_capacity=0.5,
+                digestion_rate=0.05,
+                digestion_efficiency=-0.05,
+            ),
+        )
+        report = generate_inspector_report(
+            record,
+            parent,
+            None,
+            self.renderer.config,
+            range(12),
+        )
+
+        anatomy = next(
+            section
+            for section in self.renderer._species_inspector_sections(
+                report,
+                record,
+            )
+            if section.title == "ANATOMY & MORPHOLOGY"
+        )
+        rows = {row.label: row for row in anatomy.rows}
+
+        self.assertEqual(len(rows), 10)
+        self.assertIn("+11.1% vs parent", rows["Radius"].value)
+        self.assertIn("-7.7% vs parent", rows["Vision range"].value)
+        self.assertIn("+0.0% vs parent", rows["Vision angle"].value)
+        self.assertIn("+33.3% vs parent", rows["Stomach capacity"].value)
+        self.assertIn("-5.3% vs parent", rows["Digestion efficiency"].value)
+        self.assertIn("+20.0% vs parent", rows["Separation gene"].value)
+        self.assertIn("-20.0% vs parent", rows["Alignment gene"].value)
+        self.assertEqual(rows["Vision range"].tone, "negative")
+        self.assertEqual(rows["Vision angle"].tone, "default")
+
+    def test_species_anatomy_parent_comparison_fallbacks_are_explicit(self) -> None:
+        root = self.make_record(1, None)
+        root_report = generate_inspector_report(
+            root,
+            None,
+            None,
+            self.renderer.config,
+            range(12),
+        )
+        root_anatomy = next(
+            section
+            for section in self.renderer._species_inspector_sections(
+                root_report,
+                root,
+            )
+            if section.title == "ANATOMY & MORPHOLOGY"
+        )
+        self.assertTrue(
+            all("Root species" in row.value for row in root_anatomy.rows)
+        )
+
+        reconstructed = replace(
+            self.make_record(2, 1),
+            data_quality="reconstructed",
+        )
+        reconstructed_report = generate_inspector_report(
+            reconstructed,
+            root,
+            None,
+            self.renderer.config,
+            range(12),
+        )
+        reconstructed_anatomy = next(
+            section
+            for section in self.renderer._species_inspector_sections(
+                reconstructed_report,
+                reconstructed,
+            )
+            if section.title == "ANATOMY & MORPHOLOGY"
+        )
+        self.assertTrue(
+            all(
+                "change unavailable" in row.value
+                for row in reconstructed_anatomy.rows
+            )
+        )
+
+        zero_parent = replace(
+            self.make_record(2, 1),
+            founder_traits=replace(
+                self.make_record(2, 1).founder_traits,
+                radius=1.0,
+            ),
+            trait_deltas=replace(
+                self.make_record(2, 1).trait_deltas,
+                radius=1.0,
+            ),
+        )
+        zero_parent_report = generate_inspector_report(
+            zero_parent,
+            root,
+            None,
+            self.renderer.config,
+            range(12),
+        )
+        zero_parent_anatomy = next(
+            section
+            for section in self.renderer._species_inspector_sections(
+                zero_parent_report,
+                zero_parent,
+            )
+            if section.title == "ANATOMY & MORPHOLOGY"
+        )
+        radius_row = next(
+            row for row in zero_parent_anatomy.rows if row.label == "Radius"
+        )
+        self.assertIn("change unavailable", radius_row.value)
 
     def test_species_inspector_uses_neutral_frame_and_structured_scroll(self) -> None:
         parent = self.make_record(1, None)
