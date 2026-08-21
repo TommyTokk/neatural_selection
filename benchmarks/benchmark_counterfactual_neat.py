@@ -188,7 +188,9 @@ def run(
         world.update(World.FIXED_TIMESTEP)
         brain = next(iter(world.neat_controller.brains.values()))
         evaluator = PureNeatEvaluator.from_brain(brain)
-        inputs = tuple(brain.last_inputs)
+        inputs = tuple(brain.last_inputs) or tuple(
+            0.0 for _ in range(SENSOR_CONTRACT.input_count)
+        )
         started = time.perf_counter()
         for _ in range(activations):
             evaluator.evaluate(inputs)
@@ -201,8 +203,8 @@ def run(
             f"Representative nodes/connections: "
             f"{len(brain.genome.nodes)}/{len(brain.genome.connections)}"
         )
-        factual_inputs = tuple(brain.last_inputs)
-        factual_outputs = tuple(brain.last_outputs)
+        factual_inputs = inputs
+        factual_outputs = tuple(brain.last_outputs) or evaluator.evaluate(inputs)
     finally:
         world.close()
 

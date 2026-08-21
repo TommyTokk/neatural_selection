@@ -38,6 +38,11 @@ class _WhyObserver:
         return True
 
 
+class _FixedNetwork:
+    def activate(self, _inputs):
+        return [0.2] * ACTION_OUTPUT_COUNT
+
+
 def _state(
     behavior: BehaviorKind,
     *,
@@ -77,6 +82,13 @@ def world_shell(behavior: BehaviorKind) -> World:
         brain_revision=7,
         last_inputs=[0.1] * SENSOR_INPUT_COUNT,
         last_outputs=[0.2] * ACTION_OUTPUT_COUNT,
+        output_activations=["clamped"] * ACTION_OUTPUT_COUNT,
+        has_captured_activation_state=True,
+        clone_network=lambda **_kwargs: _FixedNetwork(),
+        captured_activation_network_state=lambda: {
+            "active": 0,
+            "values": [{0: 0.0}, {0: 0.0}],
+        },
     )
     world.neat_controller = SimpleNamespace(
         brain_for=lambda creature_id: brain if creature_id == 4 else None
@@ -127,6 +139,10 @@ class WorldCounterfactualTest(unittest.TestCase):
         self.assertEqual(probe.food_target_id, 5)
         self.assertEqual(probe.food_relative_angle, -0.25)
         self.assertEqual(probe.behaviors[0].target_id, 5)
+        self.assertEqual(
+            probe.network_state,
+            {"active": 0, "values": [{0: 0.0}, {0: 0.0}]},
+        )
 
     def test_resting_alone_never_submits_a_neural_probe(self) -> None:
         world = world_shell(BehaviorKind.RESTING)

@@ -1823,6 +1823,49 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertEqual(curves[0][0], (100, 100))
         self.assertEqual(curves[0][-1], (500, 240))
 
+    def test_recurrent_and_self_loop_edges_render_without_dag_assumptions(self) -> None:
+        recurrent = BrainGraphEdge(
+            source=0,
+            target=1,
+            weight=0.8,
+            enabled=True,
+            kind=BrainEdgeKind.RECURRENT,
+        )
+        self_loop = BrainGraphEdge(
+            source=0,
+            target=0,
+            weight=-0.4,
+            enabled=True,
+            kind=BrainEdgeKind.SELF_LOOP,
+        )
+        curves: list[object] = []
+        loops: list[object] = []
+        original_curve = self.renderer._draw_brain_solid_curve
+        original_loop = self.renderer._draw_self_loop
+        self.renderer._draw_brain_solid_curve = (
+            lambda *args, **kwargs: curves.append(args)
+        )
+        self.renderer._draw_self_loop = (
+            lambda *args, **kwargs: loops.append(args)
+        )
+        try:
+            self.renderer._draw_brain_graph_edge(
+                recurrent,
+                {0: (500, 240), 1: (300, 100)},
+                arcade.LBWH(0, 0, 600, 300),
+            )
+            self.renderer._draw_brain_graph_edge(
+                self_loop,
+                {0: (500, 240)},
+                arcade.LBWH(0, 0, 600, 300),
+            )
+        finally:
+            self.renderer._draw_brain_solid_curve = original_curve
+            self.renderer._draw_self_loop = original_loop
+
+        self.assertEqual(len(curves), 1)
+        self.assertEqual(len(loops), 1)
+
     def test_brain_curve_geometry_is_cached_and_drawn_as_one_strip(
         self,
     ) -> None:

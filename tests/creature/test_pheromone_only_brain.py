@@ -17,7 +17,7 @@ from src.world import World
 
 
 CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "configs" / "neat_herbivore.ini"
+        Path(__file__).resolve().parents[2] / "configs" / "neat_herbivore.ini"
 )
 WORLD_BOUNDS = (-300.0, -300.0, 300.0, 300.0)
 PHEROMONE_SENSOR_NAMES = tuple(

@@ -270,6 +270,11 @@ def authoritative_state(world: World) -> dict[str, Any]:
                 "brain_herding_state": float(
                     getattr(brain, "herding_state", 0.0)
                 ),
+                "brain_network_state": _canonical(
+                    None
+                    if brain is None
+                    else brain.export_network_state()
+                ),
                 "decision_phase": world._decision_phase(creature_id),
             }
         )

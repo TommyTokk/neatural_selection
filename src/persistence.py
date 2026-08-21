@@ -30,10 +30,10 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 25
+CHECKPOINT_VERSION = 26
 LEGACY_CHECKPOINT_VERSIONS = {
     2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-    22, 23, 24,
+    22, 23, 24, 25,
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -553,6 +553,14 @@ class PersistenceManager:
                         ),
                         "brain_herding_state": float(
                             getattr(brain, "herding_state", 0.0)
+                        ),
+                        "brain_network_state": (
+                            brain.export_network_state()
+                            if brain is not None
+                            and callable(
+                                getattr(brain, "export_network_state", None)
+                            )
+                            else None
                         ),
                         "smoothed_rotation": float(
                             getattr(creature, "smoothed_rotation", 0.0)
@@ -2436,6 +2444,22 @@ class PersistenceManager:
                         brain.herding_state = float(
                             continuation.get("brain_herding_state", 0.0)
                         )
+                        network_state = continuation.get(
+                            "brain_network_state"
+                        )
+                        if network_state is not None:
+                            try:
+                                brain.restore_network_state(network_state)
+                            except (TypeError, ValueError) as error:
+                                raise CheckpointError(
+                                    "Cannot restore recurrent state for creature "
+                                    f"{creature.creature_id}: {error}"
+                                ) from error
+                        elif state.get("version") == CHECKPOINT_VERSION:
+                            raise CheckpointError(
+                                "Current checkpoint is missing recurrent state "
+                                f"for creature {creature.creature_id}."
+                            )
                         for attribute in (
                             "smoothed_rotation",
                             "smoothed_acceleration",

@@ -221,6 +221,26 @@ class BrainGraphLayoutTest(unittest.TestCase):
             {(1, 2), (2, 1), (1, 1), (2, 0)},
         )
 
+    def test_output_feedback_and_output_self_loop_are_cycle_safe(self) -> None:
+        layout = layout_for(
+            genome_with_connections(
+                [1],
+                [(-1, 1), (1, 0), (0, 1), (0, 0)],
+            )
+        )
+
+        edge_kinds = {
+            (edge.source, edge.target): edge.kind
+            for edge in layout.edges
+        }
+        self.assertEqual(edge_kinds[(1, 0)], BrainEdgeKind.FORWARD)
+        self.assertEqual(edge_kinds[(0, 1)], BrainEdgeKind.RECURRENT)
+        self.assertEqual(edge_kinds[(0, 0)], BrainEdgeKind.SELF_LOOP)
+        self.assertEqual(
+            highlighted_path_through_node(layout, 0).edges,
+            {(-1, 1), (1, 0), (0, 1), (0, 0)},
+        )
+
     def test_highlighted_path_for_isolated_or_unknown_node(self) -> None:
         layout = layout_for(genome_with_connections([1], [(-1, 0)]))
 

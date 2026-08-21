@@ -541,6 +541,11 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertEqual(original_brain.herding_decay_rate, 0.15)
             original_brain.herding_state = 0.8
             original_brain.last_raw_herding = 0.9
+            recurrent_inputs = [0.25] * len(
+                original_brain.network.input_nodes
+            )
+            original_brain.network.activate(recurrent_inputs)
+            saved_network_state = original_brain.export_network_state()
             saved_member_color = (77, 88, 199)
             world.creatures[0].color = saved_member_color
             world._physics_accumulator = 0.007
@@ -615,6 +620,14 @@ class PersistenceManagerTest(unittest.TestCase):
             metadata = captured["communication"]["pheromone_metadata"]
             self.assertEqual(metadata, world.pheromones.state_metadata())
             self.assertEqual(captured["version"], CHECKPOINT_VERSION)
+            captured_network_state = captured["creatures"][0][
+                "scheduler_continuation"
+            ]["brain_network_state"]
+            self.assertEqual(captured_network_state, saved_network_state)
+            self.assertIsNot(
+                captured_network_state["values"][0],
+                original_brain.network.values[0],
+            )
             self.assertEqual(
                 captured["world"]["behavior_history"],
                 world.behavior_history.state_dict(),
@@ -762,7 +775,10 @@ class PersistenceManagerTest(unittest.TestCase):
             )
             founder = restored.creatures[0]
             founder.lineage.species_id = result.species_id
-            founder.color = restored._new_species_color(founder.color)
+            founder.color = restored.genotype_manager.new_species_color(
+                founder.color,
+                restored.rng,
+            )
             restored._record_new_species(founder, result)
             post_load_layout = build_species_tree_layout(
                 restored.species_history
@@ -775,6 +791,18 @@ class PersistenceManagerTest(unittest.TestCase):
                 saved_food_original_radius,
             )
             self.assertIsNot(restored_brain, original_brain)
+            self.assertEqual(
+                restored_brain.export_network_state(),
+                saved_network_state,
+            )
+            self.assertEqual(
+                restored_brain.network.activate(recurrent_inputs),
+                original_brain.network.activate(recurrent_inputs),
+            )
+            self.assertEqual(
+                restored_brain.export_network_state(),
+                original_brain.export_network_state(),
+            )
             self.assertEqual(restored_brain.herding_decay_rate, 0.15)
             self.assertEqual(restored_brain.herding_state, 0.8)
             self.assertEqual(restored_brain.last_raw_herding, 0.0)
@@ -820,6 +848,53 @@ class PersistenceManagerTest(unittest.TestCase):
                 hasattr(
                     restored.creatures[0],
                     "biome_fertility_ema_updated_at",
+                )
+            )
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
+
+    def test_legacy_checkpoint_starts_with_clean_recurrent_state(self) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 1
+        self.config.food.initial_food_items = 0
+        world = World(self.config, simulation_paths=self.simulation_paths)
+        restored = None
+        try:
+            brain = world.neat_controller.brain_for(
+                world.creatures[0].creature_id
+            )
+            brain.network.activate(
+                [0.5] * len(brain.network.input_nodes)
+            )
+            self.assertEqual(brain.network.active, 1)
+            state = PersistenceManager._capture_state(
+                world,
+                world.neat_controller,
+            )
+            state["version"] = 25
+            state["creatures"][0]["scheduler_continuation"].pop(
+                "brain_network_state"
+            )
+
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+            )
+            restored_brain = restored.neat_controller.brain_for(
+                restored.creatures[0].creature_id
+            )
+            restored_state = restored_brain.export_network_state()
+            self.assertEqual(restored_state["active"], 0)
+            self.assertTrue(
+                all(
+                    value == 0.0
+                    for buffer in restored_state["values"]
+                    for value in buffer.values()
                 )
             )
         finally:

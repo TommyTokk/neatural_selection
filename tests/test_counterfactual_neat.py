@@ -8,6 +8,8 @@ import time
 import unittest
 from types import SimpleNamespace
 
+import neat
+
 from configs.sim_config import (
     BehaviorObserverConfig,
     CounterfactualWhyConfig,
@@ -152,6 +154,46 @@ class PureEvaluationTest(unittest.TestCase):
         self.assertIs(brain.last_action, action)
         self.assertEqual(brain.herding_state, 0.45)
         self.assertEqual(brain.last_raw_herding, 0.55)
+
+
+class RecurrentPureEvaluationTest(unittest.TestCase):
+    @staticmethod
+    def identity(value: float) -> float:
+        return value
+
+    def test_interventions_clone_the_same_pre_activation_state(self) -> None:
+        network = neat.nn.RecurrentNetwork(
+            [-1],
+            [0],
+            [
+                (1, self.identity, sum, 0.0, 1.0, [(-1, 1.0)]),
+                (2, self.identity, sum, 0.0, 1.0, [(1, 1.0)]),
+                (0, self.identity, sum, 0.0, 1.0, [(2, 1.0)]),
+            ],
+        )
+        brain = NeatBrain(
+            genome_id=1,
+            genome=SimpleNamespace(),
+            network=network,
+            output_activations=["clamped"],
+        )
+        network.activate([1.0])
+        network.activate([1.0])
+        brain._last_activation_network_state = brain.export_network_state()
+        network.activate([0.0])
+        live_state = brain.export_network_state()
+        evaluator = PureNeatEvaluator.from_brain(brain)
+        evaluator_state = NeatBrain._export_network_state(evaluator.network)
+
+        first = evaluator.evaluate((0.0,))
+        second = evaluator.evaluate((0.0,))
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            evaluator.network_state,
+            evaluator_state,
+        )
+        self.assertEqual(brain.export_network_state(), live_state)
 
 
 class CounterfactualScoringTest(unittest.TestCase):

@@ -23,7 +23,7 @@ from src.world import World
 
 
 CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "configs" / "neat_herbivore.ini"
+        Path(__file__).resolve().parents[2] / "configs" / "neat_herbivore.ini"
 )
 FLOCK_SENSOR_NAMES = (
     "flock_presence",

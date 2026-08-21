@@ -1,4 +1,4 @@
-"""Local counterfactual explanations for one focal feed-forward NEAT brain.
+"""Local counterfactual explanations for one focal recurrent NEAT brain.
 
 This module is deliberately independent from Arcade and mutable world objects.
 It probes the real evolved network with semantically coherent input
@@ -93,20 +93,43 @@ class CounterfactualProbeInput:
     food_relative_angle: float | None = None
     group_visible: bool = False
     group_relative_angle: float | None = None
+    network_state: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PureNeatEvaluator:
-    """Picklable functional snapshot of a focal feed-forward network."""
+    """Picklable functional snapshot of a focal recurrent network."""
 
     network: Any
     output_activations: tuple[str, ...]
+    network_state: dict[str, Any] | None = None
 
     @classmethod
     def from_brain(cls, brain: NeatBrain) -> PureNeatEvaluator:
-        return cls(brain.network, tuple(brain.output_activations))
+        state = brain.captured_activation_network_state()
+        if state is None:
+            state = brain.export_network_state()
+        return cls(
+            NeatBrain._clone_network(brain.network, state),
+            tuple(brain.output_activations),
+            state,
+        )
 
-    def evaluate(self, inputs: tuple[float, ...]) -> tuple[float, ...]:
+    def evaluate(
+        self,
+        inputs: tuple[float, ...],
+        network_state: dict[str, Any] | None = None,
+    ) -> tuple[float, ...]:
+        """Evaluate from a state-matched buffer snapshot.
+
+        The evaluator owns its compiled network, so restoring its two buffers
+        before activation is sufficient to keep interventions independent. It
+        avoids constructing and initializing another RecurrentNetwork for every
+        semantic intervention.
+        """
+        state = self.network_state if network_state is None else network_state
+        if state is not None:
+            NeatBrain._restore_network_state(self.network, state)
         raw_outputs = self.network.activate(inputs)
         return NeatBrain.normalize_outputs_pure(
             raw_outputs,
@@ -828,7 +851,10 @@ class CounterfactualProbeJob:
             return True
         intervention = self.interventions[self._next_index]
         inputs = apply_intervention(intervention, self.probe.actual_inputs)
-        self.outputs[intervention] = self.evaluator.evaluate(inputs)
+        self.outputs[intervention] = self.evaluator.evaluate(
+            inputs,
+            self.probe.network_state,
+        )
         self._next_index += 1
         return self.complete
 

@@ -2820,10 +2820,14 @@ class World:
             brain is None
             or len(brain.last_inputs) != SENSOR_CONTRACT.input_count
             or not brain.last_outputs
+            or not brain.has_captured_activation_state
         ):
             return
         submit_why = getattr(observer, "submit_why", None)
         if not callable(submit_why):
+            return
+        network_state = brain.captured_activation_network_state()
+        if network_state is None:
             return
         submit_why(
             CounterfactualProbeInput(
@@ -2859,6 +2863,7 @@ class World:
                     if group_context_valid
                     else None
                 ),
+                network_state=network_state,
             )
         )
 

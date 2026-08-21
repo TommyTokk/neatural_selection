@@ -1191,7 +1191,7 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         created_networks: list[FakeNetwork] = []
         fake_network = FakeNetwork([0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
 
-        class FakeFeedForwardNetwork:
+        class FakeRecurrentNetwork:
             @staticmethod
             def create(genome: object, config: object) -> FakeNetwork:
                 """Exercise create behavior.
@@ -1213,7 +1213,7 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
                 return fake_network
 
         original_nn = getattr(neat, "nn", None)
-        neat.nn = SimpleNamespace(FeedForwardNetwork=FakeFeedForwardNetwork)
+        neat.nn = SimpleNamespace(RecurrentNetwork=FakeRecurrentNetwork)
 
         try:
             config = SimpleNamespace(
@@ -1251,7 +1251,7 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
             The test completes through assertions.
         """
         # Keep the test from genome propagates rate and resets transient state test intent explicit.
-        class FakeFeedForwardNetwork:
+        class FakeRecurrentNetwork:
             @staticmethod
             def create(genome: object, config: object) -> FakeNetwork:
                 """Exercise create behavior.
@@ -1273,7 +1273,7 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
                 return FakeNetwork([])
 
         original_nn = getattr(neat, "nn", None)
-        neat.nn = SimpleNamespace(FeedForwardNetwork=FakeFeedForwardNetwork)
+        neat.nn = SimpleNamespace(RecurrentNetwork=FakeRecurrentNetwork)
 
         try:
             config = SimpleNamespace(
@@ -1310,7 +1310,9 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         """
         # Keep the test controller factory propagates rate to rebuilt brains test intent explicit.
         controller = NeatBrainController.__new__(NeatBrainController)
-        controller.config = object()
+        controller.config = SimpleNamespace(
+            genome_config=SimpleNamespace(output_keys=[])
+        )
         controller.sensor_contract = SimpleNamespace(input_names=("constant",))
         controller.herding_decay_rate = 0.15
         rebuilt_brain = SimpleNamespace(
@@ -1320,7 +1322,7 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
         genome = SimpleNamespace()
 
         with patch(
-            "src.neat_controller.NeatBrain.from_genome",
+            "src.creature.neat.controller.NeatBrain.from_genome",
             return_value=rebuilt_brain,
         ) as from_genome:
             result = controller._brain_from_genome(7, genome)
@@ -1348,7 +1350,7 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
             The test completes through assertions.
         """
         # Keep the test rebuild reads activations in configured output key order test intent explicit.
-        class FakeFeedForwardNetwork:
+        class FakeRecurrentNetwork:
             @staticmethod
             def create(genome: object, config: object) -> FakeNetwork:
                 """Exercise create behavior.
@@ -1370,7 +1372,7 @@ class NeatBrainNetworkCachingTest(unittest.TestCase):
                 return FakeNetwork([])
 
         original_nn = getattr(neat, "nn", None)
-        neat.nn = SimpleNamespace(FeedForwardNetwork=FakeFeedForwardNetwork)
+        neat.nn = SimpleNamespace(RecurrentNetwork=FakeRecurrentNetwork)
 
         try:
             config = SimpleNamespace(
@@ -1423,7 +1425,7 @@ class NeatConfigurationTest(unittest.TestCase):
         if not hasattr(neat, "Config"):
             self.skipTest("neat-python is not installed")
         config_path = (
-            Path(__file__).resolve().parents[1] / "configs" / "neat_herbivore.ini"
+            Path(__file__).resolve().parents[2] / "configs" / "neat_herbivore.ini"
         )
 
         config = neat.Config(
@@ -1440,14 +1442,237 @@ class NeatConfigurationTest(unittest.TestCase):
         self.assertEqual(genome_config.activation_mutate_rate, 0.01)
         self.assertEqual(
             genome_config.activation_options,
-            ["sigmoid", "tanh", "clamped", "relu", "lelu"],
+            ["sigmoid", "tanh", "clamped"],
         )
+        self.assertFalse(genome_config.feed_forward)
         self.assertEqual(genome_config.aggregation_default, "sum")
         self.assertEqual(genome_config.aggregation_mutate_rate, 0.005)
         self.assertEqual(
             genome_config.aggregation_options,
             ["sum", "mean", "maxabs"],
         )
+
+    def test_configured_genomes_create_distinct_43_by_15_recurrent_networks(
+        self,
+    ) -> None:
+        """Compile configured genomes into isolated recurrent networks.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            Assertions verify network type, dimensions, and clean state.
+        """
+        # Exercise the real neat-python phenotype factory used by every agent.
+        if not hasattr(neat, "Config"):
+            self.skipTest("neat-python is not installed")
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "configs"
+            / "neat_herbivore.ini"
+        )
+        config = neat.Config(
+            neat.DefaultGenome,
+            neat.DefaultReproduction,
+            neat.DefaultSpeciesSet,
+            neat.DefaultStagnation,
+            str(config_path),
+        )
+        population = neat.Population(config)
+        genome_id, genome = next(iter(population.population.items()))
+
+        first = NeatBrain.from_genome(genome_id, genome, config)
+        second = NeatBrain.from_genome(genome_id, genome, config)
+
+        self.assertIsInstance(first.network, neat.nn.RecurrentNetwork)
+        self.assertIsNot(first.network, second.network)
+        self.assertEqual(len(first.network.input_nodes), SENSOR_CONTRACT.input_count)
+        self.assertEqual(
+            len(first.network.activate([0.0] * SENSOR_CONTRACT.input_count)),
+            ACTION_OUTPUT_COUNT,
+        )
+        self.assertEqual(second.network.active, 0)
+        self.assertTrue(
+            all(
+                value == 0.0
+                for buffer in second.network.values
+                for value in buffer.values()
+            )
+        )
+
+
+@unittest.skipUnless(
+    hasattr(getattr(neat, "nn", None), "RecurrentNetwork"),
+    "neat-python is not installed",
+)
+class RecurrentNetworkStateTest(unittest.TestCase):
+    @staticmethod
+    def identity(value: float) -> float:
+        """Return an input unchanged for deterministic recurrent tests.
+
+        Parameters
+        ----------
+        value
+            Scalar node input.
+        Returns
+        -------
+        float
+            Unchanged node value.
+        """
+        # Avoid nonlinear activation effects in propagation assertions.
+        return value
+
+    @classmethod
+    def make_network(cls):
+        """Build a three-hop discrete recurrent test network.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        neat.nn.RecurrentNetwork
+            Deterministic input-hidden-hidden-output chain.
+        """
+        # Construct node evaluations directly to control every hop.
+        return neat.nn.RecurrentNetwork(
+            [-1],
+            [0],
+            [
+                (1, cls.identity, sum, 0.0, 1.0, [(-1, 1.0)]),
+                (2, cls.identity, sum, 0.0, 1.0, [(1, 1.0)]),
+                (0, cls.identity, sum, 0.0, 1.0, [(2, 1.0)]),
+            ],
+        )
+
+    @classmethod
+    def make_brain(cls) -> NeatBrain:
+        """Wrap a deterministic recurrent network in a brain.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        NeatBrain
+            Brain suitable for state snapshot and cloning tests.
+        """
+        # Keep the fixture independent from genome compilation randomness.
+        return NeatBrain(
+            genome_id=1,
+            genome=SimpleNamespace(),
+            network=cls.make_network(),
+            output_activations=["clamped"],
+        )
+
+    def test_multi_hop_signal_advances_one_connection_per_tick(self) -> None:
+        """Verify synchronous recurrent propagation latency.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            Assertions confirm one connection is crossed per activation.
+        """
+        # Three connections require three consecutive activation ticks.
+        network = self.make_network()
+
+        self.assertEqual(network.activate([1.0]), [0.0])
+        self.assertEqual(network.activate([1.0]), [0.0])
+        self.assertEqual(network.activate([1.0]), [1.0])
+
+    def test_state_export_is_shallow_isolated_and_restorable(self) -> None:
+        """Verify shallow state copies are isolated and restorable.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            Assertions validate copied dictionary identities and values.
+        """
+        # Advance first so both the active index and node buffers are meaningful.
+        brain = self.make_brain()
+        brain.network.activate([1.0])
+        exported = brain.export_network_state()
+
+        self.assertIsNotNone(exported)
+        self.assertEqual(exported["active"], brain.network.active)
+        self.assertEqual(exported["values"], brain.network.values)
+        self.assertIsNot(exported["values"], brain.network.values)
+        self.assertIsNot(exported["values"][0], brain.network.values[0])
+        self.assertIsNot(exported["values"][1], brain.network.values[1])
+
+        brain.network.activate([0.0])
+        brain.restore_network_state(exported)
+        self.assertEqual(brain.export_network_state(), exported)
+
+    def test_restore_rejects_missing_and_extra_node_ids(self) -> None:
+        """Reject recurrent state whose node IDs differ from topology.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            Both missing and unexpected node IDs raise validation errors.
+        """
+        # Mutate copies so failed restores cannot affect the live buffers.
+        brain = self.make_brain()
+        exported = brain.export_network_state()
+        missing = {
+            "active": exported["active"],
+            "values": [dict(exported["values"][0]), dict(exported["values"][1])],
+        }
+        missing["values"][0].pop(next(iter(missing["values"][0])))
+        with self.assertRaisesRegex(ValueError, "node IDs do not match"):
+            brain.restore_network_state(missing)
+
+        extra = {
+            "active": exported["active"],
+            "values": [dict(exported["values"][0]), dict(exported["values"][1])],
+        }
+        extra["values"][1][999] = 0.0
+        with self.assertRaisesRegex(ValueError, "node IDs do not match"):
+            brain.restore_network_state(extra)
+
+    def test_clone_and_agents_have_isolated_recurrent_buffers(self) -> None:
+        """Verify clones and creature brains do not share state buffers.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            State changes remain local to one cloned or creature network.
+        """
+        # Create independent brains from identical test topology.
+        first = self.make_brain()
+        second = self.make_brain()
+        first.network.activate([1.0])
+        clone = first.clone_network()
+
+        self.assertIsNot(clone, first.network)
+        self.assertEqual(clone.values, first.network.values)
+        self.assertIsNot(clone.values[0], first.network.values[0])
+        clone.activate([0.0])
+        self.assertNotEqual(clone.active, first.network.active)
+        self.assertEqual(second.network.activate([0.0]), [0.0])
+        self.assertEqual(second.network.values[0][1], 0.0)
 
 
 class SensorUsageTest(unittest.TestCase):
@@ -1615,7 +1840,7 @@ class SensorUsageTest(unittest.TestCase):
         )
 
         with patch(
-            "src.neat_brain.required_for_output",
+            "src.creature.neat.brain.required_for_output",
             wraps=neat.graphs.required_for_output,
         ) as graph_helper:
             usage = brain.sensor_usage([-1, -2], [0, 1])

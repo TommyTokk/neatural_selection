@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This project models a population of autonomous herbivorous creatures whose morphology, metabolism, perception, social tendencies, and neural controllers change through continuous asexual reproduction and mutation. A creature is not represented by a single state vector alone: the implementation separates inherited genotype, transient physiological state, rigid-body dynamics, neural decision state, ancestry, and observational records. Behaviour emerges from perception, feed-forward NEAT activation, action execution, and thermodynamic resource accounting. There is no explicit parent ranking: a lineage propagates only when an individual survives long enough, accumulates sufficient post-upkeep energy, expresses reproductive intent, and funds its child directly.
+This project models a population of autonomous herbivorous creatures whose morphology, metabolism, perception, social tendencies, and neural controllers change through continuous asexual reproduction and mutation. A creature is not represented by a single state vector alone: the implementation separates inherited genotype, transient physiological state, rigid-body dynamics, recurrent neural decision state, ancestry, and observational records. Behaviour emerges from perception, recurrent NEAT activation, action execution, and thermodynamic resource accounting. There is no explicit parent ranking: a lineage propagates only when an individual survives long enough, accumulates sufficient post-upkeep energy, expresses reproductive intent, and funds its child directly.
 
 This report describes the current computational model, its principal mathematical formulations, and the mechanisms used to analyse emergent behaviour. Environmental quantities are considered only where they enter a creature's sensors, motion, resource balance, communication, reproduction, or survival.
 
@@ -40,7 +40,7 @@ _Implementation: [common numerical helpers](src/creature/common.py) · [configur
 
 ### 1.1 Artificial-life formulation
 
-Each creature is an embodied, autonomous agent. Its body occupies continuous two-dimensional space; its sensors transform local physical and biological conditions into a fixed neural input vector; its feed-forward neural genome maps that vector to action intensities; and the resulting motion and biological transactions alter both the creature and its surroundings. Reproduction is asexual: any physiologically eligible creature may fund a child from its own post-upkeep energy, after which inherited traits and the neural genome mutate. The population therefore implements a continuous evolutionary process rather than a sequence of isolated generations.
+Each creature is an embodied, autonomous agent. Its body occupies continuous two-dimensional space; its sensors transform local physical and biological conditions into a fixed neural input vector; its recurrent neural genome combines that vector with its private activation history to produce action intensities; and the resulting motion and biological transactions alter both the creature and its surroundings. Reproduction is asexual: any physiologically eligible creature may fund a child from its own post-upkeep energy, after which inherited traits and the neural genome mutate. The population therefore implements a continuous evolutionary process rather than a sequence of isolated generations.
 
 _Implementation: [creature entity](src/creature/model.py) · [evolution coordinator](src/creature/evolution.py) · [real-time NEAT manager](src/creature/neat/rt_neat.py)_
 
@@ -183,7 +183,7 @@ Thus a low-energy creature with no stomach space cannot obtain a strong feeding-
 
 _Implementation: [sensor input formulation](src/creature/vision.py) · [stomach fullness](src/creature/vision.py) · [flocking defaults](configs/sim_config.py)_
 
-Reproductive readiness is computed from biological eligibility rather than from the raw neural wish to reproduce. Post-upkeep energy, minimum age, cooldown, and available population capacity remain authoritative external gates; food abundance and comparative performance do not. Internal time is represented through an alternating signal, a resettable chronometer, and normalized age, allowing networks to evolve periodic or interval-dependent behaviour without recurrent connections.
+Reproductive readiness is computed from biological eligibility rather than from the raw neural wish to reproduce. Post-upkeep energy, minimum age, cooldown, and available population capacity remain authoritative external gates; food abundance and comparative performance do not. Internal time is represented through an alternating signal, a resettable chronometer, normalized age, and the network's recurrent activation state, allowing networks to evolve periodic or interval-dependent behaviour.
 
 _Implementation: [sensor snapshot assembly](src/world.py) · [reproductive eligibility](src/creature/neat/rt_neat.py) · [chronometer update](src/world.py)_
 
@@ -229,7 +229,7 @@ _Implementation: [acoustic and pheromone observations](src/creature/communicatio
 
 ### 4.1 Feed-forward NEAT controller
 
-Each creature owns a NEAT genome and a feed-forward network instantiated from it. Founder genomes begin without hidden nodes and with a sparse random sample—currently $15\%$—of direct input-to-output connections. Evolution may add or delete nodes and connections, change connection weights, toggle connections, and occasionally change activation or aggregation functions. Feed-forward topology guarantees that a decision depends on the current sensor vector and explicit controller state, not on an unbounded recurrent activation history.
+Each creature owns a NEAT genome and a discrete recurrent network instantiated from it. Founder genomes begin without hidden nodes and with a sparse random sample—currently $15\%$—of direct and eligible recurrent connections. Evolution may add or delete nodes and connections, including cycles and self-loops, change connection weights, toggle connections, and occasionally change activation or aggregation functions. Every creature retains its own two-buffer activation state across decision ticks; newly created brains start at zero. Activation mutation is restricted to bounded `sigmoid`, `tanh`, and `clamped` functions so evolved feedback cannot select unbounded activations.
 
 _Implementation: [brain representation](src/creature/neat/brain.py) · [brain controller](src/creature/neat/controller.py) · [NEAT genome parameters](configs/neat_herbivore.ini)_
 
@@ -734,7 +734,7 @@ _Implementation: [creature and species history reports](src/behavior_history.py)
 
 ### 10.3 Counterfactual NEAT explanations
 
-Counterfactual analysis evaluates an immutable copy of the focal network. Starting from the factual sensor vector $\mathbf{x}$, one semantic group of inputs is replaced by neutral values to obtain $\mathbf{x}^{(-I)}$. The same network is evaluated without mutating live state:
+Counterfactual analysis evaluates an isolated copy of the focal recurrent network. Starting from the factual sensor vector $\mathbf{x}$ and the exact pre-decision recurrent state, one semantic group of inputs is replaced by neutral values to obtain $\mathbf{x}^{(-I)}$. The worker retains one compiled evaluator per focal brain, queues only shallow-copied state buffers with each probe, and restores fresh buffer dictionaries before every intervention. This preserves intervention independence without repeatedly cloning or serializing the compiled topology, and never mutates the live brain:
 
 $$
 \mathbf{y}=N(\mathbf{x}),\qquad
@@ -785,6 +785,6 @@ The model couples evolution across several levels. Inherited radius, vision, dig
 
 _Implementation synthesis: [genotype](src/creature/genotype.py) · [brain](src/creature/neat/brain.py) · [metabolism](src/creature/metabolism.py) · [evolution and speciation](src/creature/evolution.py)_
 
-Several limitations follow from the formulation. The world is planar; bodies are circular and have equal mass; reproduction is asexual; sensory channels are engineered summaries rather than raw physical receptor arrays; the neural controller is feed-forward; and compatibility and species thresholds are computational constructs. Passive energy and behavioural measurements describe outcomes but do not define a selection objective. Behavioural rules and counterfactual probes improve interpretability but remain operational definitions, not proof of subjective intention. These simplifications are deliberate: they create a tractable experimental system in which morphology, physiology, neural structure, social interaction, and evolutionary history can be measured under one deterministic simulation contract.
+Several limitations follow from the formulation. The world is planar; bodies are circular and have equal mass; reproduction is asexual; sensory channels are engineered summaries rather than raw physical receptor arrays; recurrent updates are discrete and synchronous rather than continuous-time; and compatibility and species thresholds are computational constructs. Passive energy and behavioural measurements describe outcomes but do not define a selection objective. Behavioural rules and counterfactual probes improve interpretability but remain operational definitions, not proof of subjective intention. These simplifications are deliberate: they create a tractable experimental system in which morphology, physiology, neural structure, social interaction, and evolutionary history can be measured under one deterministic simulation contract.
 
 _Sources and validation: [creature architecture tests](tests/creature/test_architecture.py) · [genotype determinism tests](tests/creature/test_genotype_determinism.py) · [scheduler validation](tests/test_scheduler_validation.py) · [behaviour observer tests](tests/test_behavior_observer.py)_

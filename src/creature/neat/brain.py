@@ -34,7 +34,7 @@ class NeatBrain:
     """
     genome_id: int  # Genome ID for the NEAT brain
     genome: Any  # Genome object representing the neural network structure
-    network: neat.nn.FeedForwardNetwork  # Network created from the genome
+    network: neat.nn.RecurrentNetwork  # Stateful network created from the genome
     brain_revision: int = 0
     herding_decay_rate: float = 1.0
     output_activations: list[str] = field(default_factory=list)
@@ -47,6 +47,12 @@ class NeatBrain:
     last_raw_herding: float = field(default=0.0, init=False)
     _input_buffer: list[float] = field(
         default_factory=lambda: [0.0] * SENSOR_INPUT_COUNT,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _last_activation_network_state: dict[str, Any] | None = field(
+        default=None,
         init=False,
         repr=False,
         compare=False,
@@ -105,7 +111,7 @@ Returns
 NeatBrain
     Result produced by this creature-domain operation."""
         # Keep from genome behavior explicit in its owning subsystem.
-        network = neat.nn.FeedForwardNetwork.create(genome, config)
+        network = neat.nn.RecurrentNetwork.create(genome, config)
         output_activations = cls._output_activations_for(genome, config)
         return cls(
             genome_id=genome_id,
@@ -167,6 +173,7 @@ NeatBrain
             )
         if capture_inputs:
             self.capture_input_snapshot()
+            self._last_activation_network_state = self.export_network_state()
         self.last_input_names = snapshot.sensor_contract.input_names
         raw_outputs = self.network.activate(self._input_buffer)
         centered_outputs = self._normalize_outputs(raw_outputs)
@@ -277,11 +284,232 @@ Returns
 tuple[float, ...]
     Result produced by this creature-domain operation."""
         # Keep evaluate pure behavior explicit in its owning subsystem.
-        raw_outputs = self.network.activate(inputs)
+        network = self.clone_network()
+        raw_outputs = network.activate(inputs)
         return self.normalize_outputs_pure(
             raw_outputs,
             tuple(self.output_activations),
         )
+
+    def export_network_state(self) -> dict[str, Any] | None:
+        """Return an isolated shallow copy of recurrent activation state.
+
+Parameters
+----------
+None
+    This callable receives no external parameters.
+Returns
+-------
+dict[str, Any] | None
+    Active buffer and two copied value dictionaries when state is available.
+"""
+        # Delegate shape checks and copying to the network-level helper.
+        return self._export_network_state(self.network)
+
+    @staticmethod
+    def _export_network_state(network: Any) -> dict[str, Any] | None:
+        """Copy recurrent state from one compiled network.
+
+Parameters
+----------
+network
+    Network whose active index and value buffers are copied.
+Returns
+-------
+dict[str, Any] | None
+    Primitive recurrent state, or ``None`` for a stateless network.
+"""
+        # Copy only scalar state and the two flat node-value dictionaries.
+        values = getattr(network, "values", None)
+        active = getattr(network, "active", None)
+        if (
+            isinstance(active, bool)
+            or active not in (0, 1)
+            or not isinstance(values, list)
+            or len(values) != 2
+            or not all(isinstance(buffer, dict) for buffer in values)
+        ):
+            return None
+        return {
+            "active": int(active),
+            "values": [dict(values[0]), dict(values[1])],
+        }
+
+    def restore_network_state(self, state: object) -> None:
+        """Restore recurrent buffers after validating exact node IDs.
+
+Parameters
+----------
+state
+    Serialized active index and two node-value buffers.
+Returns
+-------
+None
+    The live network receives isolated state dictionaries.
+Raises
+------
+ValueError
+    If the state shape or node IDs do not match the network.
+"""
+        # Restore only through the shared strict validation path.
+        self._restore_network_state(self.network, state)
+
+    @property
+    def has_captured_activation_state(self) -> bool:
+        """Return whether counterfactual replay has exact pre-tick state.
+
+Parameters
+----------
+None
+    This callable receives no external parameters.
+Returns
+-------
+bool
+    Whether a captured decision has published its pre-activation buffers.
+"""
+        # A missing snapshot means diagnostic replay must wait for a decision.
+        return self._last_activation_network_state is not None
+
+    def captured_activation_network_state(self) -> dict[str, Any] | None:
+        """Return an isolated copy of the latest pre-decision RNN state.
+
+Parameters
+----------
+None
+    This callable receives no external parameters.
+Returns
+-------
+dict[str, Any] | None
+    Copied active index and value buffers, or ``None`` before capture.
+"""
+        # Publish fresh dictionaries so queued probes cannot alias live state.
+        state = self._last_activation_network_state
+        if state is None:
+            return None
+        values = state["values"]
+        return {
+            "active": int(state["active"]),
+            "values": [dict(values[0]), dict(values[1])],
+        }
+
+    def clone_network(
+        self,
+        *,
+        before_last_activation: bool = False,
+    ) -> neat.nn.RecurrentNetwork:
+        """Build an independent network with shallow-copied recurrent state.
+
+Parameters
+----------
+before_last_activation
+    Whether to use the latest captured pre-decision buffers.
+Returns
+-------
+neat.nn.RecurrentNetwork
+    Independent recurrent evaluator with the same compiled topology.
+"""
+        # Select either the diagnostic pre-state or the current live state.
+        state = (
+            self._last_activation_network_state
+            if before_last_activation
+            and self._last_activation_network_state is not None
+            else self.export_network_state()
+        )
+        return self._clone_network(self.network, state)
+
+    @staticmethod
+    def _clone_network(
+        network: Any,
+        state: object,
+    ) -> neat.nn.RecurrentNetwork:
+        """Clone compiled topology and buffers without deep copying.
+
+Parameters
+----------
+network
+    Compiled recurrent network supplying immutable topology data.
+state
+    Recurrent state to install in the clone.
+Returns
+-------
+neat.nn.RecurrentNetwork
+    Independent network, or the original stateless test evaluator.
+"""
+        # Reuse node-evaluation objects while allocating fresh state dictionaries.
+        input_nodes = getattr(network, "input_nodes", None)
+        output_nodes = getattr(network, "output_nodes", None)
+        node_evals = getattr(network, "node_evals", None)
+        if input_nodes is None or output_nodes is None or node_evals is None:
+            # Lightweight stateless test/debug networks can safely be shared.
+            return network
+        clone = neat.nn.RecurrentNetwork(
+            list(input_nodes),
+            list(output_nodes),
+            list(node_evals),
+        )
+        if state is not None:
+            NeatBrain._restore_network_state(clone, state)
+        return clone
+
+    @staticmethod
+    def _restore_network_state(network: Any, state: object) -> None:
+        """Validate and install recurrent state on a compiled network.
+
+Parameters
+----------
+network
+    Target recurrent network with initialized node dictionaries.
+state
+    Candidate active index and pair of node-value dictionaries.
+Returns
+-------
+None
+    Validated state is installed using fresh shallow dictionaries.
+Raises
+------
+ValueError
+    If buffer count, active index, or expected node IDs do not match.
+"""
+        # Reject malformed or topology-incompatible checkpoint state.
+        if not isinstance(state, dict):
+            raise ValueError("Recurrent network state must be a dictionary.")
+        active = state.get("active")
+        values = state.get("values")
+        if isinstance(active, bool) or active not in (0, 1):
+            raise ValueError("Recurrent network active buffer must be 0 or 1.")
+        if (
+            not isinstance(values, (list, tuple))
+            or len(values) != 2
+            or not all(isinstance(buffer, dict) for buffer in values)
+        ):
+            raise ValueError(
+                "Recurrent network state must contain exactly two dictionaries."
+            )
+        expected_values = getattr(network, "values", None)
+        if (
+            not isinstance(expected_values, list)
+            or len(expected_values) != 2
+            or not all(isinstance(buffer, dict) for buffer in expected_values)
+        ):
+            raise ValueError("Target network does not expose recurrent buffers.")
+        for index, (restored, expected) in enumerate(
+            zip(values, expected_values)
+        ):
+            if set(restored) != set(expected):
+                missing = sorted(
+                    set(expected) - set(restored),
+                    key=repr,
+                )
+                extra = sorted(
+                    set(restored) - set(expected),
+                    key=repr,
+                )
+                raise ValueError(
+                    "Recurrent network buffer node IDs do not match "
+                    f"for buffer {index}; missing={missing}, extra={extra}."
+                )
+        network.active = int(active)
+        network.values = [dict(values[0]), dict(values[1])]
 
     def sensor_usage(
         self,

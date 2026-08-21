@@ -633,7 +633,11 @@ class FailureInjectionValidationTest(unittest.TestCase):
 class PopulationChurnValidationTest(unittest.TestCase):
     @staticmethod
     def _scripted_churn(world, step: int) -> None:
-        if step > 0 and step % 15 == 0 and world.creatures:
+        # Hold an explicit reproduction intent throughout the churn run. A
+        # scheduled recurrent decision may replace this cached action on its
+        # own phase, so a one-frame injection is no longer guaranteed to reach
+        # the next biological transaction boundary.
+        if step > 0 and world.creatures:
             parent = min(world.creatures, key=lambda item: item.creature_id)
             parent.energy = max(parent.energy, 1.0)
             parent.age_seconds = max(
