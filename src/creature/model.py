@@ -70,6 +70,9 @@ class Creature:
     stomach_energy: float
     stomach_difficulty_load: float
     total_energy_gathered: float
+    age_seconds: float
+    last_birth_time: float
+    lifetime_offspring_count: int
     lineage: LineageInfo
     render_sprite: object | None
     last_action: object | None
@@ -100,6 +103,9 @@ class Creature:
         stomach_energy: float = 0.0,
         stomach_difficulty_load: float = 0.0,
         total_energy_gathered: float = 0.0,
+        age_seconds: float = 0.0,
+        last_birth_time: float = -1_000_000.0,
+        lifetime_offspring_count: int = 0,
         lineage: LineageInfo | None = None,
         render_sprite: object | None = None,
         last_action: object | None = None,
@@ -143,7 +149,13 @@ stomach_energy
 stomach_difficulty_load
     Initial weighted digestive load.
 total_energy_gathered
-    Lifetime gathered energy used by fitness.
+    Legacy lifetime gathered-energy diagnostic.
+age_seconds
+    Physiological age used by maturity and senescence gates.
+last_birth_time
+    Physiological age at the most recent committed birth.
+lifetime_offspring_count
+    Number of successfully committed offspring.
 lineage
     Ancestry and species metadata.
 render_sprite
@@ -207,6 +219,9 @@ ValueError
         self.stomach_energy = stomach_energy
         self.stomach_difficulty_load = stomach_difficulty_load
         self.total_energy_gathered = total_energy_gathered
+        self.age_seconds = max(0.0, float(age_seconds))
+        self.last_birth_time = float(last_birth_time)
+        self.lifetime_offspring_count = max(0, int(lifetime_offspring_count))
         self.lineage = lineage or LineageInfo()
         self.render_sprite = render_sprite
         self.last_action = last_action

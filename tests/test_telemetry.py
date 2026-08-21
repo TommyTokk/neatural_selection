@@ -134,7 +134,7 @@ class TelemetryDatabaseTest(unittest.TestCase):
                 "creatures",
                 "population_metrics",
                 "species_history",
-                "parent_selection_events",
+                "reproduction_events",
             ),
         ).fetchall()
 
@@ -146,7 +146,7 @@ class TelemetryDatabaseTest(unittest.TestCase):
                 "creatures",
                 "population_metrics",
                 "species_history",
-                "parent_selection_events",
+                "reproduction_events",
             },
         )
 
@@ -166,7 +166,7 @@ class TelemetryDatabaseTest(unittest.TestCase):
         ).fetchone()
         metrics = self.database.connection.execute(
             """
-            SELECT alive_count, food_count, best_fitness
+            SELECT alive_count, food_count, best_net_energy_balance
             FROM population_metrics WHERE sim_time = ?
             """,
             (8.0,),
@@ -180,20 +180,15 @@ class TelemetryDatabaseTest(unittest.TestCase):
         self.assertEqual(metrics, (3, 40, 12.5))
         self.assertEqual(creatures_table, ("creatures",))
 
-    def test_parent_selection_events_store_complexity_and_outcome(self) -> None:
-        self.database.log_parent_selection_events(
+    def test_reproduction_events_store_energy_transfer_and_outcome(self) -> None:
+        self.database.log_reproduction_events(
             [
                 {
                     "sim_time": 3.5,
                     "parent_creature_id": 9,
                     "species_id": 2,
-                    "total_energy_gathered": 12.0,
-                    "node_count": 4,
-                    "enabled_connection_count": 3,
-                    "network_complexity": 7.0,
-                    "eligible_pool_size": 5,
-                    "tournament_k1": 3,
-                    "tournament_k2": 2,
+                    "parent_investment": 0.36,
+                    "child_endowment": 0.324,
                     "outcome": "committed",
                 }
             ]
@@ -201,22 +196,21 @@ class TelemetryDatabaseTest(unittest.TestCase):
 
         row = self.database.connection.execute(
             """
-            SELECT parent_creature_id, species_id, total_energy_gathered,
-                   node_count, enabled_connection_count, network_complexity,
-                   eligible_pool_size, tournament_k1, tournament_k2, outcome
-            FROM parent_selection_events
+            SELECT parent_creature_id, species_id, parent_investment,
+                   child_endowment, outcome
+            FROM reproduction_events
             """
         ).fetchone()
-        average_complexity = self.database.connection.execute(
+        total_investment = self.database.connection.execute(
             """
-            SELECT AVG(network_complexity)
-            FROM parent_selection_events
+            SELECT SUM(parent_investment)
+            FROM reproduction_events
             WHERE outcome = 'committed'
             """
         ).fetchone()
 
-        self.assertEqual(row, (9, 2, 12.0, 4, 3, 7.0, 5, 3, 2, "committed"))
-        self.assertEqual(average_complexity, (7.0,))
+        self.assertEqual(row, (9, 2, 0.36, 0.324, "committed"))
+        self.assertEqual(total_investment, (0.36,))
 
     def test_load_species_end_times_respects_checkpoint_time(self) -> None:
         self.database.log_creature_birth(1, 1, 0.0, 100.0, 15.0)
@@ -293,7 +287,7 @@ class TelemetryDatabaseTest(unittest.TestCase):
                 """
                 SELECT name FROM sqlite_master
                 WHERE type = 'table'
-                  AND name IN ('species_history', 'parent_selection_events')
+                  AND name IN ('species_history', 'reproduction_events')
                 """
             ).fetchall()
         finally:
@@ -301,7 +295,7 @@ class TelemetryDatabaseTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in tables},
-            {"species_history", "parent_selection_events"},
+            {"species_history", "reproduction_events"},
         )
 
     def test_existing_history_table_gains_neat_changes_column(self) -> None:

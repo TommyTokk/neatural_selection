@@ -71,6 +71,7 @@ from src.creature.metabolism import (
     Metabolism,
     MetabolismReport,
     ResourceCandidate,
+    calculate_reproduction_energy_transfer,
     calculate_weighted_activity,
     is_energy_depleted,
 )
@@ -357,12 +358,8 @@ class _FlockSteeringDebug:
 @dataclass(frozen=True, slots=True)
 class ReproductionRequest:
     parent: Creature
-    eligibility_rank: int
-    reserved_energy_cost: float
-    selection_pool_size: int = 0
-    node_count: int = 0
-    enabled_connection_count: int = 0
-    network_complexity: float = 0.0
+    parent_investment: float
+    child_endowment: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,6 +754,7 @@ class World:
             communication_config=config.communication,
             food_config=config.food,
         )
+        self._validate_infant_runway()
         self.rt_neat = RtNeatManager(self.neat_controller, self.rng)
         # Composed services become the debuggable owners of creature-domain state.
         self.perception = CreaturePerceptionService(self.vision)
@@ -891,7 +889,7 @@ class World:
         The speciation threshold retains its historical pre-intention hook.
         Creature decisions and cached motion precede physics; contact exposure
         and direct-death removal follow physics. On completion boundaries, the
-        preserved survival/age, flocking fitness, chronometer, reproduction,
+        preserved survival/age, flocking diagnostics, chronometer, reproduction,
         and resource/biology sequence runs before ancillary simulated-time
         systems. ``update`` increments ``_simulation_step`` only after this
         method returns successfully.
@@ -1130,7 +1128,7 @@ class World:
             self.elapsed_time,
             len(self.creatures),
             len(self.foods),
-            self.rt_neat.stats.best_fitness,
+            self.rt_neat.stats.best_net_energy_balance,
         )
 
     def _flocking_capture_deadline(self) -> float:
@@ -2125,12 +2123,12 @@ class World:
         if own_infants is None:
             own_infants = self._own_infant_children_for(creature)
 
-        fitness = self.fitness.get(creature.creature_id)
-        age_seconds = 0.0 if fitness is None else fitness.age_seconds
+        age_seconds = creature.age_seconds
         chronometer = self._chronometers.get(creature.creature_id, 0.0)
 
         reproductive_readiness = min(
-            age_seconds / max(self.config.population.min_reproduction_age, 0.0001),
+            age_seconds
+            / max(self.config.population.maturity_age_seconds, 0.0001),
             1.0,
         )
 
@@ -3100,7 +3098,8 @@ class World:
         self,
         parent: Creature,
         child_radius: float,
-    ) -> tuple[float, float]:
+        reserved_positions: tuple[tuple[float, float, float], ...] = (),
+    ) -> tuple[float, float] | None:
         """
         Calculate a suitable spawn position for a child creature based on the parent's
         position, heading, and the child's radius. The spawn position is determined by
@@ -3118,36 +3117,45 @@ class World:
             tuple[float, float]: The calculated spawn position (x, y) for the child creature.
         """
 
-        # Calculate the distance at which the child should spawn from the parent, ensuring it is at least the configured child spawn distance and accounting for the parent's and child's radii.
-        distance = max(
+        minimum_distance = max(
             self.config.population.child_spawn_distance,
             parent.radius + child_radius + 2.0,
         )
-
-        # Calculate the raw spawn position based on the parent's position and heading, moving backward along the parent's heading by the calculated distance.
         parent_x, parent_y = parent.position
-        angle = parent.heading + self.rng.choice((-pi / 4, pi / 4))
-        raw_x = (
-            parent_x + cos(angle) * distance
-        )  # Calculate the x-coordinate of the spawn position based on the parent's heading and distance.
-        raw_y = (
-            parent_y + sin(angle) * distance
-        )  # Calculate the y-coordinate of the spawn position based on the parent's heading and distance.
+        left, bottom, right, top = self.environment_world_bounds
+        clearance = child_radius + 2.0
 
-        # Get the bounds of the environment to ensure the child spawns within these limits.
-        left, bottom, right, top = (
-            self.environment_world_bounds
-        )  # Get the bounds of the environment to ensure the child spawns within these limits.
-        radius = (
-            child_radius + 2.0
-        )  # Calculate the effective radius to ensure the child does not spawn too close to the environment boundaries.
-        spawn_x = max(
-            left + radius, min(right - radius, raw_x)
-        )  # Clamp the x-coordinate of the spawn position to ensure it is within the environment bounds, accounting for the effective radius.
-        spawn_y = max(
-            bottom + radius, min(top - radius, raw_y)
-        )  # Clamp the y-coordinate of the spawn position to ensure it is within the environment bounds, accounting for the effective radius.
-        return spawn_x, spawn_y
+        def overlaps(x: float, y: float) -> bool:
+            """Return whether a candidate intersects live or reserved bodies."""
+            for creature in self.creatures:
+                dx = creature.position[0] - x
+                dy = creature.position[1] - y
+                if hypot(dx, dy) < creature.radius + child_radius + 2.0:
+                    return True
+            for food in self.foods:
+                dx = food.position[0] - x
+                dy = food.position[1] - y
+                if hypot(dx, dy) < food.radius + child_radius + 2.0:
+                    return True
+            return any(
+                hypot(reserved_x - x, reserved_y - y)
+                < reserved_radius + child_radius + 2.0
+                for reserved_x, reserved_y, reserved_radius in reserved_positions
+            )
+
+        for attempt in range(self.config.population.child_spawn_max_attempts):
+            angle = parent.heading + self.rng.uniform(-pi, pi)
+            distance = minimum_distance * (1.0 + 0.15 * (attempt // 4))
+            spawn_x = parent_x + cos(angle) * distance
+            spawn_y = parent_y + sin(angle) * distance
+            if not (
+                left + clearance <= spawn_x <= right - clearance
+                and bottom + clearance <= spawn_y <= top - clearance
+            ):
+                continue
+            if not overlaps(spawn_x, spawn_y):
+                return spawn_x, spawn_y
+        return None
 
     def _next_creature_id(self) -> int:
         """Reserve the next stable creature identity through lifecycle state.
@@ -5044,9 +5052,10 @@ class World:
 
     def _update_fitness_survival(self, delta_time: float) -> None:
         for creature in self.creatures:
+            previous_age = creature.age_seconds
+            creature.age_seconds += max(0.0, delta_time)
             fitness = self.fitness.get(creature.creature_id)
             if fitness is not None:
-                previous_age = fitness.age_seconds
                 fitness.record_tick(delta_time, creature.speed)
                 self._record_maturity_if_crossed(creature, previous_age, fitness)
 
@@ -5154,116 +5163,114 @@ class World:
                 return food
         return None
 
-    def _prepare_reproduction_requests(self) -> list[ReproductionRequest]:
-        due = bool(getattr(self, "_reproduction_due_this_step", False))
-        self._reproduction_due_this_step = False
-        if not due or not self._has_reproduction_resources():
+    def _prepare_reproduction_requests(
+        self,
+        baseline_candidates: dict[int, ResourceCandidate],
+    ) -> list[ReproductionRequest]:
+        """Build autonomous requests from post-digestion, post-upkeep energy.
+
+        Parameters
+        ----------
+        baseline_candidates
+            Pure resource candidates evaluated before any birth reservation.
+
+        Returns
+        -------
+        list[ReproductionRequest]
+            Uniformly ordered physiological requests with immutable transfers.
+        """
+        # A full world rejects requests before scanning parents or cloning RNG.
+        if len(self.creatures) >= self.config.population.max_creatures:
             return []
-        eligible_pool = self._eligible_reproduction_parents()
-        population_config = getattr(
-            getattr(self, "config", None),
-            "population",
-            None,
-        )
-        tournament_k1 = getattr(population_config, "tournament_k1", 3)
-        tournament_k2 = getattr(population_config, "tournament_k2", 2)
-        remaining = list(eligible_pool)
         requests: list[ReproductionRequest] = []
-        while remaining:
-            selection_pool_size = len(remaining)
-            selector = getattr(self.rt_neat, "select_parent", None)
-            parent = (
-                selector(
-                    remaining,
-                    tournament_k1,
-                    tournament_k2,
-                )
-                if callable(selector)
-                else remaining[0]
-            )
-            if parent is None:
-                break
-            remaining.remove(parent)
-            rank = len(requests)
+        for parent in self._eligible_reproduction_parents(baseline_candidates):
+            post_upkeep_energy = baseline_candidates[
+                parent.creature_id
+            ].final_energy
             requests.append(
-                self._reproduction_request_for(
-                    parent,
-                    rank,
-                    selection_pool_size,
-                )
+                self._reproduction_request_for(parent, post_upkeep_energy)
             )
-        return sorted(
-            requests,
-            key=lambda request: (
-                request.eligibility_rank,
-                request.parent.creature_id,
-            ),
-        )
+        # Capacity allocation is deliberately independent from fitness,
+        # complexity, age ranking, and stable creature identity.
+        allocation_rng = Random()
+        allocation_rng.setstate(self.rng.getstate())
+        allocation_rng.shuffle(requests)
+        return requests
 
     def _reproduction_request_for(
         self,
         parent: Creature,
-        rank: int,
-        selection_pool_size: int,
+        post_upkeep_energy: float | None = None,
     ) -> ReproductionRequest:
-        network_size = getattr(self.rt_neat, "network_size", None)
-        node_count, enabled_connection_count = (
-            network_size(parent)
-            if callable(network_size)
-            else (0, 0)
+        usable_energy = (
+            parent.energy
+            if post_upkeep_energy is None
+            else post_upkeep_energy
         )
-        complexity_for = getattr(
-            self.rt_neat,
-            "network_complexity",
-            None,
-        )
-        network_complexity = (
-            complexity_for(parent)
-            if callable(complexity_for)
-            else float(node_count + enabled_connection_count)
+        transfer = calculate_reproduction_energy_transfer(
+            usable_energy,
+            self.config.population.child_energy_investment_fraction,
+            self.config.population.birth_conversion_efficiency,
         )
         return ReproductionRequest(
             parent=parent,
-            eligibility_rank=rank,
-            reserved_energy_cost=self._reproduction_cost_for(parent),
-            selection_pool_size=selection_pool_size,
-            node_count=node_count,
-            enabled_connection_count=enabled_connection_count,
-            network_complexity=network_complexity,
+            parent_investment=transfer.parent_investment,
+            child_endowment=transfer.child_endowment,
         )
 
-    def _eligible_reproduction_parents(self) -> list[Creature]:
-        """Return live adults that are eligible and currently want offspring."""
-        legacy_ids = set(getattr(self.rt_neat, "eligible_parent_ids", ()))
-        checker = getattr(self.rt_neat, "is_reproduction_eligible", None)
+    def _eligible_reproduction_parents(
+        self,
+        baseline_candidates: dict[int, ResourceCandidate] | None = None,
+    ) -> list[Creature]:
+        """Return autonomous parents eligible on post-upkeep state."""
         candidates: list[Creature] = []
         for parent in self.creatures:
-            fitness = self.fitness.get(parent.creature_id)
-            if fitness is None:
+            if (
+                baseline_candidates is not None
+                and not baseline_candidates[parent.creature_id].survives
+            ):
                 continue
-            if callable(checker):
-                if not checker(parent, fitness, self.config.population):
-                    continue
-            elif parent.creature_id not in legacy_ids:
+            post_upkeep_energy = (
+                parent.energy
+                if baseline_candidates is None
+                else baseline_candidates[parent.creature_id].final_energy
+            )
+            if not self._parent_is_reproduction_eligible(
+                parent,
+                post_upkeep_energy=post_upkeep_energy,
+            ):
                 continue
             action = self._action_for_execution(parent.creature_id)
-            if action is None or not is_active_intent(action.want_reproduce):
+            if (
+                action is None
+                or action.want_reproduce
+                <= self.config.population.reproduction_intent_threshold
+            ):
                 continue
             candidates.append(parent)
         return candidates
 
-    def _parent_is_reproduction_eligible(self, parent: Creature) -> bool:
+    def _parent_is_reproduction_eligible(
+        self,
+        parent: Creature,
+        *,
+        post_upkeep_energy: float | None = None,
+    ) -> bool:
         """Revalidate a queued parent against authoritative current state."""
-        if not hasattr(self, "fitness") or not hasattr(self, "rt_neat"):
-            return True
-        fitness = self.fitness.get(parent.creature_id)
-        if fitness is None:
+        if parent not in self.creatures or parent.life <= 0.0:
             return False
-        checker = getattr(self.rt_neat, "is_reproduction_eligible", None)
-        if callable(checker):
-            return bool(checker(parent, fitness, self.config.population))
-        return parent.creature_id in set(
-            getattr(self.rt_neat, "eligible_parent_ids", ())
+        population = self.config.population
+        energy = parent.energy if post_upkeep_energy is None else post_upkeep_energy
+        if energy < (
+            self.config.metabolism.max_energy
+            * population.reproduction_energy_fraction
+        ):
+            return False
+        if parent.age_seconds < population.maturity_age_seconds:
+            return False
+        return (
+            parent.age_seconds - parent.last_birth_time
+            >= population.birth_cooldown_seconds
         )
 
     def _prepare_nursing_requests(
@@ -5361,14 +5368,6 @@ class World:
         self._scheduler_validation_failure_point(
             "biology.resource_candidate_preparation"
         )
-        self._scheduler_validation_failure_point(
-            "biology.reproduction_preparation"
-        )
-        reproduction_requests = self._prepare_reproduction_requests()
-        self._scheduler_validation_failure_point(
-            "biology.nursing_preparation"
-        )
-        nursing_requests = self._prepare_nursing_requests(delta_time)
         upkeep_demands, powered_movement_demands = self._energy_demands_for(
             delta_time
         )
@@ -5397,69 +5396,42 @@ class World:
                 )
             )
 
-        reproduction_capacity = min(
-            1,
-            max(
-                0,
-                self.config.population.max_creatures - len(self.creatures),
-            ),
+        self._scheduler_validation_failure_point(
+            "biology.reproduction_preparation"
         )
-        banned: set[int] = set()
-        attempted: dict[int, tuple[ReproductionRequest, str]] = {}
-        selected = reproduction_requests[:reproduction_capacity]
+        reproduction_requests = self._prepare_reproduction_requests(
+            baseline_candidates
+        )
+        capacity = max(
+            0,
+            self.config.population.max_creatures - len(self.creatures),
+        )
+        selected = reproduction_requests[:capacity]
+        self._scheduler_validation_failure_point(
+            "biology.nursing_preparation"
+        )
+        nursing_requests = self._prepare_nursing_requests(delta_time)
         if not selected and not nursing_requests:
             return TransactionResolution(
                 candidates=baseline_candidates,
                 activities=baseline_activities,
                 reproductions=[],
                 nursing_transfers=[],
+                reproduction_attempts=[],
             )
-        while True:
-            for request in selected:
-                attempted.setdefault(
-                    request.parent.creature_id,
-                    (request, "committed"),
-                )
-            resolution, failed = self._resolve_transaction_pass(
-                delta_time,
-                selected,
-                nursing_requests,
-                upkeep_demands,
-                baseline_candidates,
-                baseline_activities,
-                powered_movement_demands=powered_movement_demands,
-            )
-            banned.update(failed)
-            for creature_id, outcome in failed.items():
-                request = attempted[creature_id][0]
-                attempted[creature_id] = (request, outcome)
-            survivors = [
-                request
-                for request in selected
-                if request.parent.creature_id not in banned
-            ]
-            promoted = [
-                request
-                for request in reproduction_requests
-                if request.parent.creature_id not in banned
-                and request not in survivors
-            ]
-            next_selected = [
-                *survivors,
-                *promoted[: max(0, reproduction_capacity - len(survivors))],
-            ]
-            next_selected.sort(
-                key=lambda request: (
-                    request.eligibility_rank,
-                    request.parent.creature_id,
-                )
-            )
-            if [r.parent.creature_id for r in next_selected] == [
-                r.parent.creature_id for r in selected
-            ]:
-                resolution.reproduction_attempts = list(attempted.values())
-                return resolution
-            selected = next_selected
+        resolution, _failed = self._resolve_transaction_pass(
+            delta_time,
+            selected,
+            nursing_requests,
+            upkeep_demands,
+            baseline_candidates,
+            baseline_activities,
+            powered_movement_demands=powered_movement_demands,
+        )
+        resolution.reproduction_attempts = [
+            (request, "committed") for request in resolution.reproductions
+        ]
+        return resolution
 
     def _resolve_transaction_pass(
         self,
@@ -5472,78 +5444,34 @@ class World:
         *,
         powered_movement_demands: dict[int, float] | None = None,
     ) -> tuple[TransactionResolution, dict[int, str]]:
-        powered_demands = powered_movement_demands or {
-            creature_id: 0.0 for creature_id in upkeep_demands
-        }
-        selected_by_id = {
-            request.parent.creature_id: request
-            for request in selected_reproductions
-        }
-        failed_reproductions: dict[int, str] = {}
-        chosen_candidates: dict[int, ResourceCandidate] = {}
-        chosen_activities: dict[int, ActivityResult] = {}
+        del delta_time, upkeep_demands, powered_movement_demands
+        chosen_candidates = dict(baseline_candidates)
+        chosen_activities = dict(baseline_activities)
         accepted: list[AcceptedNursingTransfer] = []
 
-        def choose(
-            creature: Creature,
-            nursing_transfer: float = 0.0,
-        ) -> tuple[ResourceCandidate, bool]:
+        for request in selected_reproductions:
+            creature = request.parent
             creature_id = creature.creature_id
-            reproduction = selected_by_id.get(creature_id)
-            if (
-                reproduction is not None
-                and creature_id not in failed_reproductions
-                and not self._parent_is_reproduction_eligible(creature)
-            ):
-                failed_reproductions[creature_id] = "eligibility_rejected"
-            reproduction_cost = (
-                0.0
-                if reproduction is None
-                or creature_id in failed_reproductions
-                else reproduction.reserved_energy_cost
-            )
-            has_action = reproduction_cost > 0.0 or nursing_transfer > 0.0
-            if not has_action:
-                candidate = baseline_candidates[creature_id]
-                activity = baseline_activities[creature_id]
-                chosen_candidates[creature_id] = candidate
-                chosen_activities[creature_id] = activity
-                return candidate, candidate.survives
-            activity = self._activity_for(
-                creature,
-                reproduction_selected=reproduction_cost > 0.0,
-                nursing_transfer=nursing_transfer,
-            )
-            candidate = self.metabolism.evaluate_candidate(
-                creature,
-                delta_time,
+            baseline = chosen_candidates[creature_id]
+            # Investment is reserved only after digestion and ordinary upkeep.
+            chosen_candidates[creature_id] = replace(
+                baseline,
                 total_energy_demand=(
-                    upkeep_demands[creature_id]
-                    + reproduction_cost
-                    + nursing_transfer
+                    baseline.total_energy_demand + request.parent_investment
                 ),
-                powered_movement_energy_demand=powered_demands.get(
-                    creature_id,
+                remaining_energy=max(
                     0.0,
+                    baseline.remaining_energy - request.parent_investment,
                 ),
-                effective_rest=(
-                    creature.smoothed_rest * (1.0 - activity.total)
+                final_energy=max(
+                    0.0,
+                    baseline.final_energy - request.parent_investment,
                 ),
             )
-            if not candidate.survives:
-                if (
-                    reproduction is not None
-                    and creature_id not in failed_reproductions
-                ):
-                    failed_reproductions[creature_id] = "resource_rejected"
-                candidate = baseline_candidates[creature_id]
-                activity = baseline_activities[creature_id]
-                chosen_candidates[creature_id] = candidate
-                chosen_activities[creature_id] = activity
-                return candidate, False
-            chosen_candidates[creature_id] = candidate
-            chosen_activities[creature_id] = activity
-            return candidate, True
+            chosen_activities[creature_id] = self._activity_for(
+                creature,
+                reproduction_selected=True,
+            )
 
         grouped: dict[int, list[NursingRequest]] = {}
         targets: dict[int, Creature] = {}
@@ -5559,9 +5487,7 @@ class World:
             ),
         )
         for target in target_order:
-            target_candidate = chosen_candidates.get(target.creature_id)
-            if target_candidate is None:
-                target_candidate, _ = choose(target)
+            target_candidate = chosen_candidates[target.creature_id]
             if not target_candidate.survives:
                 continue
             remaining_headroom = max(
@@ -5579,32 +5505,45 @@ class World:
                 )
                 if allocation <= 1e-12:
                     continue
-                donor_candidate, action_survives = choose(
-                    request.donor,
-                    allocation,
-                )
-                if not action_survives or not donor_candidate.survives:
+                donor_id = request.donor.creature_id
+                donor_candidate = chosen_candidates[donor_id]
+                if (
+                    not donor_candidate.survives
+                    or donor_candidate.final_energy + 1e-12 < allocation
+                ):
                     continue
+                chosen_candidates[donor_id] = replace(
+                    donor_candidate,
+                    total_energy_demand=(
+                        donor_candidate.total_energy_demand + allocation
+                    ),
+                    remaining_energy=max(
+                        0.0,
+                        donor_candidate.remaining_energy - allocation,
+                    ),
+                    final_energy=max(
+                        0.0,
+                        donor_candidate.final_energy - allocation,
+                    ),
+                )
+                chosen_activities[donor_id] = self._activity_for(
+                    request.donor,
+                    reproduction_selected=any(
+                        reproduction.parent.creature_id == donor_id
+                        for reproduction in selected_reproductions
+                    ),
+                    nursing_transfer=allocation,
+                )
                 accepted.append(AcceptedNursingTransfer(request, allocation))
                 remaining_headroom = max(0.0, remaining_headroom - allocation)
-
-        for creature in self.creatures:
-            if creature.creature_id not in chosen_candidates:
-                choose(creature)
-
-        surviving_reproductions = [
-            request
-            for request in selected_reproductions
-            if request.parent.creature_id not in failed_reproductions
-        ]
         return (
             TransactionResolution(
                 candidates=chosen_candidates,
                 activities=chosen_activities,
-                reproductions=surviving_reproductions,
+                reproductions=list(selected_reproductions),
                 nursing_transfers=accepted,
             ),
-            failed_reproductions,
+            {},
         )
 
     def _stage_final_reproductions(
@@ -5659,17 +5598,24 @@ class World:
             shadow_state = shadow_controller
         live_rng = self.rng
         staged: list[StagedOffspring] = []
+        reserved_positions: list[tuple[float, float, float]] = []
         first_child_id = self._next_creature_id_value
         try:
             self.rng = shadow_rng
-            for offset, request in enumerate(requests):
+            for request in requests:
                 parent = request.parent
-                child_id = first_child_id + offset
-                traits = self._mutated_child_traits(parent)
+                placement_rng_state = shadow_rng.getstate()
                 position = self._child_spawn_position(
                     parent,
-                    traits.physical_traits.radius,
+                    self.config.trait.max_radius,
+                    tuple(reserved_positions),
                 )
+                if position is None:
+                    # A rejected placement consumes no observable randomness.
+                    shadow_rng.setstate(placement_rng_state)
+                    continue
+                child_id = first_child_id + len(staged)
+                traits = self._mutated_child_traits(parent)
                 if isinstance(shadow_state, EvolutionTransaction):
                     plan = shadow_state.coordinator.finalize_child(
                         parent,
@@ -5717,6 +5663,9 @@ class World:
                         position=position,
                         speciation_result=speciation,
                     )
+                )
+                reserved_positions.append(
+                    (*position, traits.physical_traits.radius)
                 )
         finally:
             self.rng = live_rng
@@ -5775,7 +5724,7 @@ class World:
                 offspring.child_id,
                 position=offspring.position,
                 heading=parent.heading,
-                energy=self.config.population.infant_energy_spawn,
+                energy=offspring.request.child_endowment,
                 color=traits.color,
                 vision=traits.vision,
                 physical_traits=traits.physical_traits,
@@ -5797,6 +5746,8 @@ class World:
             parent_fitness = self.fitness.get(parent.creature_id)
             if parent_fitness is not None:
                 parent_fitness.record_reproduction()
+            parent.last_birth_time = parent.age_seconds
+            parent.lifetime_offspring_count += 1
             self.rt_neat.record_normal_replacement()
         self._next_creature_id_value = staged[-1].child_id + 1
         self.lifecycle.synchronize_allocator(self._next_creature_id_value)
@@ -6037,6 +5988,52 @@ class World:
             self._stage_final_reproductions(resolution.reproductions)
         )
 
+        staged_parent_ids = {
+            offspring.request.parent.creature_id
+            for offspring in staged_offspring
+        }
+        failed_placements = [
+            request
+            for request in resolution.reproductions
+            if request.parent.creature_id not in staged_parent_ids
+        ]
+        for request in failed_placements:
+            creature_id = request.parent.creature_id
+            candidate = resolution.candidates[creature_id]
+            resolution.candidates[creature_id] = replace(
+                candidate,
+                total_energy_demand=max(
+                    0.0,
+                    candidate.total_energy_demand - request.parent_investment,
+                ),
+                remaining_energy=min(
+                    self.config.metabolism.max_energy,
+                    candidate.remaining_energy + request.parent_investment,
+                ),
+                final_energy=min(
+                    self.config.metabolism.max_energy,
+                    candidate.final_energy + request.parent_investment,
+                ),
+            )
+            resolution.activities[creature_id] = self._activity_for(
+                request.parent
+            )
+        resolution.reproductions = [
+            request
+            for request in resolution.reproductions
+            if request.parent.creature_id in staged_parent_ids
+        ]
+        resolution.reproduction_attempts = [
+            *[
+                (request, "committed")
+                for request in resolution.reproductions
+            ],
+            *[
+                (request, "placement_rejected")
+                for request in failed_placements
+            ],
+        ]
+
         reproduction_ids = {
             request.parent.creature_id
             for request in resolution.reproductions
@@ -6067,6 +6064,17 @@ class World:
                 transaction_status=status,
                 record_diagnostics=record_diagnostics,
             )
+            telemetry = self.fitness.get(creature_id)
+            if telemetry is not None:
+                realized_spend = max(
+                    0.0,
+                    candidate.total_energy_demand
+                    - candidate.unmet_energy_demand,
+                ) + candidate.healing_energy_spent
+                telemetry.record_energy_transaction(
+                    ingested=candidate.digestion.net_energy,
+                    spent=realized_spend,
+                )
             self._commit_activity_diagnostics(
                 creature,
                 resolution.activities[creature_id],
@@ -6140,7 +6148,7 @@ class World:
             self.selected_creature_id = None
             self._reset_behavior_focus(None)
 
-        self._log_parent_selection_attempts(resolution.reproduction_attempts)
+        self._log_reproduction_attempts(resolution.reproduction_attempts)
 
     def _update_metabolism_legacy_adapter(self, delta_time: float) -> None:
         """Run the historical monolithic metabolism extension interface.
@@ -6390,8 +6398,7 @@ class World:
         return self._foods_in_world_bounds(left, bottom, right, top)
 
     def _creature_age_seconds(self, creature: Creature) -> float:
-        fitness = self.fitness.get(creature.creature_id)
-        return 0.0 if fitness is None else fitness.age_seconds
+        return max(0.0, float(getattr(creature, "age_seconds", 0.0)))
 
     def _senescence_factor_for(self, creature: Creature) -> float:
         population_config = getattr(
@@ -6427,7 +6434,8 @@ class World:
             return False
 
         return (
-            self._creature_age_seconds(creature) < population_config.infant_maturity_age
+            self._creature_age_seconds(creature)
+            < population_config.maturity_age_seconds
         )
 
     def _own_infant_children_for(self, parent: Creature) -> list[Creature]:
@@ -6458,8 +6466,8 @@ class World:
         previous_age: float,
         fitness: CreatureFitness,
     ) -> None:
-        maturity_age = self.config.population.infant_maturity_age
-        if previous_age >= maturity_age or fitness.age_seconds < maturity_age:
+        maturity_age = self.config.population.maturity_age_seconds
+        if previous_age >= maturity_age or creature.age_seconds < maturity_age:
             return
 
         parent_id = creature.lineage.parent_id
@@ -6693,9 +6701,7 @@ class World:
         self._release_food_for(creature)
         fitness = self.fitness.get(creature.creature_id)
         if fitness is not None:
-            self.neat_controller.archive_brain(
-                creature.creature_id, fitness.score(creature)
-            )
+            self.neat_controller.archive_brain(creature.creature_id)
 
         if creature in self.creatures:
             # Slots become invalid through the registry before any remaining
@@ -6778,7 +6784,7 @@ class World:
             self._trait_archive_by_genome_id = evolution.prune_archives(
                 trait_archive,
                 active_species_ids,
-                population_config.elite_archive_size,
+                population_config.genome_archive_size,
             )
         else:
             # Focused legacy fixtures may provide only controller-level methods.
@@ -6788,7 +6794,7 @@ class World:
                 None,
             )
             retained_genome_ids = (
-                prune_population(population_config.elite_archive_size)
+                prune_population(population_config.genome_archive_size)
                 if prune_population is not None
                 else set(trait_archive)
             )
@@ -7006,15 +7012,11 @@ class World:
         None
             Recovery offspring are materialized up to configured capacity.
         """
-        # Select archived neural parents before consuming any simulation RNG.
+        # Recovery chooses clades before genomes and never consults a score.
         parent_pool_size = max(
             1,
             self.config.population.extinction_recovery_parent_pool,
         )
-        parent_genomes = self.neat_controller.best_genomes(parent_pool_size)
-        if not parent_genomes:
-            return
-
         available_creature_slots = max(
             0,
             self.config.population.max_creatures - len(self.creatures),
@@ -7022,6 +7024,36 @@ class World:
         recovery_count = min(
             self.config.population.extinction_recovery_creatures,
             available_creature_slots,
+        )
+        if recovery_count <= 0:
+            return
+
+        population_genomes = getattr(
+            getattr(self.neat_controller, "population", None),
+            "population",
+            {},
+        )
+        archived_by_species: dict[int, list[object]] = {}
+        for genome_id, archived_traits in getattr(
+            self,
+            "_trait_archive_by_genome_id",
+            {},
+        ).items():
+            genome = population_genomes.get(genome_id)
+            if genome is None:
+                continue
+            archived_by_species.setdefault(
+                int(archived_traits.lineage.species_id),
+                [],
+            ).append(genome)
+
+        if not archived_by_species:
+            self._recover_with_procedural_founders(recovery_count)
+            return
+
+        parent_genomes = self._unranked_recovery_parent_genomes(
+            archived_by_species,
+            parent_pool_size,
         )
 
         recovered_count = 0
@@ -7103,6 +7135,45 @@ class World:
 
         self.rt_neat.record_extinction_replacements(recovered_count)
 
+    def _unranked_recovery_parent_genomes(
+        self,
+        archived_by_species: dict[int, list[object]],
+        parent_pool_size: int,
+    ) -> list[object]:
+        """Sample species uniformly, then one genome within each species."""
+        species_ids = list(archived_by_species)
+        self.rng.shuffle(species_ids)
+        selected_species = species_ids[: max(1, int(parent_pool_size))]
+        return [
+            self.rng.choice(archived_by_species[species_id])
+            for species_id in selected_species
+            if archived_by_species[species_id]
+        ]
+
+    def _recover_with_procedural_founders(self, recovery_count: int) -> None:
+        """Bootstrap a valid root cohort when no species archive exists."""
+        founders: list[Creature] = []
+        for _ in range(max(0, recovery_count)):
+            child_id = self._next_creature_id()
+            founder = self._spawn_creature(
+                child_id,
+                energy=self.config.metabolism.max_energy,
+                color=self.genotype_manager.initial_color(0),
+                lineage=LineageInfo(species_id=1),
+            )
+            self.creatures.append(founder)
+            self._register_living_creature(founder)
+            self._initialize_creature_runtime_state(founder)
+            self.fitness[child_id] = CreatureFitness()
+            self._chronometers[child_id] = 0.0
+            self._log_creature_birth(founder)
+            founders.append(founder)
+        if not founders:
+            return
+        self.evolution.reset_for_new_sensing_epoch(founders, 1)
+        self.species_manager = self.neat_controller.species_manager
+        self.rt_neat.record_extinction_replacements(len(founders))
+
     def _archived_traits_for_genome(
         self,
         genome: object,
@@ -7127,14 +7198,55 @@ class World:
         )
 
     def _update_reproduction(self, delta_time: float) -> None:
-        """Mark whether this fixed step may stage reproduction requests."""
-        self._reproduction_accumulator += delta_time
-        if self._reproduction_accumulator < self.REPRODUCTION_INTERVAL:
-            self._reproduction_due_this_step = False
-            return
-
-        self._reproduction_accumulator %= self.REPRODUCTION_INTERVAL
+        """Mark every biology boundary as an autonomous reproduction pass."""
+        self._reproduction_accumulator = 0.0
         self._reproduction_due_this_step = True
+
+    def _validate_infant_runway(self) -> None:
+        """Reject configurations whose weakest infant cannot reach maturity."""
+        self.config.population.validate()
+        genome_config = self.neat_controller.config.genome_config
+        input_count = int(getattr(genome_config, "num_inputs", 0))
+        output_count = int(getattr(genome_config, "num_outputs", 0))
+        configured_fraction = getattr(
+            genome_config,
+            "connection_fraction",
+            0.15,
+        )
+        try:
+            fraction = float(configured_fraction)
+        except (TypeError, ValueError, OverflowError):
+            initial_connection = str(
+                getattr(genome_config, "initial_connection", "full_direct")
+            ).lower()
+            fraction = 0.0 if "unconnected" in initial_connection else 1.0
+        max_initial_connections = ceil(
+            max(0, input_count) * max(0, output_count) * max(0.0, fraction)
+        )
+        population = self.config.population
+        minimum_endowment = (
+            self.config.metabolism.max_energy
+            * population.reproduction_energy_fraction
+            * population.child_energy_investment_fraction
+            * population.birth_conversion_efficiency
+        )
+        maximum_idle_rate = (
+            self.config.metabolism.basic_metabolism_rate
+            + self.config.trait.body_metabolism_cost_factor
+            + self.config.vision.base_energy_cost
+            + self.config.vision.area_energy_cost_factor
+            + max_initial_connections
+            * self.config.metabolism.brain_upkeep_per_enabled_connection
+        )
+        required_runway = (
+            maximum_idle_rate * population.maturity_age_seconds * 1.20
+        )
+        if minimum_endowment <= required_runway:
+            raise ValueError(
+                "Infant endowment is insufficient for the maturity window: "
+                f"endowment={minimum_endowment:.6f}, required>{required_runway:.6f}, "
+                f"max_initial_connections={max_initial_connections}."
+            )
 
     def _update_speciation_threshold(self, delta_time: float) -> None:
         speciation_config = self.config.speciation
@@ -7169,222 +7281,28 @@ class World:
         brain = brain_for(creature_id)
         return None if brain is None else brain.genome
 
-    def _reproduction_cost_for(self, parent: Creature) -> float:
-        population_config = self.config.population
-        genome = self._genome_for_creature_id(parent.creature_id)
-        nodes = getattr(genome, "nodes", {}) or {}
-        connections = getattr(genome, "connections", {}) or {}
-        calculated_cost = (
-            population_config.reproduction_energy_cost_base
-            + len(nodes) * population_config.reproduction_cost_per_node
-            + len(connections) * population_config.reproduction_cost_per_connection
-        )
-        return min(
-            calculated_cost,
-            population_config.max_dynamic_reproduction_cost,
-        )
-
-    def _spend_reproduction_energy(
-        self,
-        parent: Creature,
-        reproduction_cost: float,
-    ) -> None:
-        parent.energy = max(
-            0.0,
-            parent.energy - reproduction_cost,
-        )
-
-    def _try_reproduce(self) -> bool:
-        """Attempt one immediate reproduction outside the batched scheduler path.
-
-        Parameters
-        ----------
-        None
-            This method receives no external parameters.
-
-        Returns
-        -------
-        bool
-            Whether one offspring was fully evolved and registered.
-        """
-        # Capacity and resource guards run before allocating a stable identity.
-        if len(self.creatures) >= self.config.population.max_creatures:
-            return False
-
-        if not self._has_reproduction_resources():
-            return False
-
-        eligible_pool = self._eligible_reproduction_parents()
-        parent = self._select_reproduction_parent(eligible_pool)
-        if parent is None:
-            return False
-
-        request = self._reproduction_request_for(
-            parent,
-            0,
-            len(eligible_pool),
-        )
-        if not self._parent_is_reproduction_eligible(parent):
-            self._log_parent_selection_attempts(
-                [(request, "eligibility_rejected")]
-            )
-            return False
-
-        reproduction_cost = request.reserved_energy_cost
-        parent_fitness = self.fitness[parent.creature_id]
-        child_id = self._next_creature_id()
-        child_traits = self._mutated_child_traits(parent)
-        child_position = self._child_spawn_position(
-            parent,
-            child_traits.physical_traits.radius,
-        )
-
-        child = self._spawn_creature(
-            child_id,
-            position=child_position,
-            heading=parent.heading,
-            energy=self.config.population.infant_energy_spawn,
-            color=child_traits.color,
-            vision=child_traits.vision,
-            physical_traits=child_traits.physical_traits,
-            flocking_traits=child_traits.flocking_traits,
-            lineage=child_traits.lineage,
-        )
-
-        evolution = getattr(self, "evolution", None)
-        if evolution is not None:
-            offspring_plan = evolution.finalize_child(
-                parent,
-                child_id,
-                child.genotype,
-                child.lineage,
-                self.rng,
-            )
-            child_brain = None if offspring_plan is None else offspring_plan.brain
-            speciation_result = (
-                None
-                if offspring_plan is None
-                else offspring_plan.speciation_result
-            )
-        else:
-            child_brain, speciation_result = self.neat_controller.create_child_brain(
-                parent.creature_id,
-                child_id,
-                parent.lineage.species_id,
-                child.physical_traits,
-                child.vision,
-                child.flocking_traits,
-            )
-        if child_brain is None or speciation_result is None:
-            self._unindex_creature_shape(child)
-            self.space.remove(child.body, child.shape)
-            self._log_parent_selection_attempts(
-                [(request, "resource_rejected")]
-            )
-            return False
-        child.lineage.species_id = speciation_result.species_id
-        if speciation_result.is_new_species and evolution is None:
-            child.color = self.genotype_manager.new_species_color(parent.color, self.rng)
-        if speciation_result.is_new_species:
-            self._record_new_species(child, speciation_result)
-
-        self.creatures.append(child)
-        self._register_living_creature(child)
-        self._initialize_creature_runtime_state(child)
-        self._mark_behavior_cohort_dirty()
-        self.fitness[child_id] = CreatureFitness()
-        self._chronometers[child_id] = 0.0
-        self._log_creature_birth(child)
-
-        self._spend_reproduction_energy(parent, reproduction_cost)
-        parent_fitness.record_reproduction()
-        self.rt_neat.record_normal_replacement()
-        self._log_parent_selection_attempts([(request, "committed")])
-        return True
-
-    def _log_parent_selection_attempts(
+    def _log_reproduction_attempts(
         self,
         attempts: list[tuple[ReproductionRequest, str]],
     ) -> None:
         telemetry = getattr(self, "telemetry", None)
-        log_events = getattr(telemetry, "log_parent_selection_events", None)
+        log_events = getattr(telemetry, "log_reproduction_events", None)
         if not callable(log_events) or not attempts:
             return
-        population_config = self.config.population
         rows: list[dict[str, object]] = []
         for request, outcome in attempts:
             parent = request.parent
-            try:
-                gathered = float(parent.total_energy_gathered)
-            except (AttributeError, TypeError, ValueError, OverflowError):
-                gathered = 0.0
-            complexity = request.network_complexity
             rows.append(
                 {
                     "sim_time": float(getattr(self, "elapsed_time", 0.0)),
                     "parent_creature_id": parent.creature_id,
                     "species_id": parent.lineage.species_id,
-                    "total_energy_gathered": (
-                        gathered if isfinite(gathered) else 0.0
-                    ),
-                    "node_count": request.node_count,
-                    "enabled_connection_count": (
-                        request.enabled_connection_count
-                    ),
-                    "network_complexity": (
-                        complexity if isfinite(complexity) else None
-                    ),
-                    "eligible_pool_size": request.selection_pool_size,
-                    "tournament_k1": population_config.tournament_k1,
-                    "tournament_k2": population_config.tournament_k2,
+                    "parent_investment": request.parent_investment,
+                    "child_endowment": request.child_endowment,
                     "outcome": outcome,
                 }
             )
         log_events(rows)
-
-    def _has_reproduction_resources(self) -> bool:
-        child_energy = self.config.population.reproduction_energy_cost_base
-        available_biomass = self._available_biomass()
-        if available_biomass < child_energy:
-            return False
-
-        food_capacity = self.food_spawner.food_capacity(self._active_species_count())
-        food_ratio = len(self.foods) / max(1, food_capacity)
-        if food_ratio >= self.config.population.reproduction_min_food_ratio:
-            return True
-
-        total_biomass = max(self.total_biomass_energy, child_energy)
-        available_biomass_ratio = available_biomass / total_biomass
-        return (
-            self._plant_spawn_pressure()
-            >= self.config.population.reproduction_recovery_pressure_threshold
-            and available_biomass_ratio
-            >= self.config.population.reproduction_min_available_biomass_ratio
-        )
-
-    def _reproduction_parent(self) -> Creature | None:
-        eligible_pool = self._eligible_reproduction_parents()
-        return self._select_reproduction_parent(eligible_pool)
-
-    def _select_reproduction_parent(
-        self,
-        eligible_pool: list[Creature],
-    ) -> Creature | None:
-        if not eligible_pool:
-            return None
-        selector = getattr(self.rt_neat, "select_parent", None)
-        population_config = getattr(
-            getattr(self, "config", None),
-            "population",
-            None,
-        )
-        if not callable(selector) or population_config is None:
-            return eligible_pool[0]
-        return selector(
-            eligible_pool,
-            population_config.tournament_k1,
-            population_config.tournament_k2,
-        )
 
     def _creature_want_to_eat(self, creature: Creature) -> bool:
         action = self._last_actions.get(creature.creature_id)

@@ -40,7 +40,13 @@ for optional_module in ("neat",):
 
 from configs.sim_config import build_sim_config
 from src.action import Action
-from src.creature import FlockingTraits, LineageInfo, PhysicalTraits, VisionTraits
+from src.creature import (
+    FlockingTraits,
+    GenotypeManager,
+    LineageInfo,
+    PhysicalTraits,
+    VisionTraits,
+)
 from src.fitness import CreatureFitness
 from src.neat_controller import NeatBrainController, SpeciationResult
 from src.rt_neat import RtNeatManager
@@ -52,6 +58,10 @@ from src.world import ArchivedCreatureTraits, World
 class FakeCreature:
     creature_id: int
     energy: float = 1.0
+    age_seconds: float = 30.0
+    last_birth_time: float = -1_000_000.0
+    lifetime_offspring_count: int = 0
+    life: float = 1.0
     total_energy_gathered: float = 0.0
     stomach_energy: float = 0.0
     heading: float = 0.0
@@ -111,10 +121,14 @@ class FakeMetabolism:
 
     def update(self, creatures, *args, **kwargs):
         del args
-        self.movement_multipliers_seen = {
-            creature.creature_id: creature.physical_traits.movement_cost_multiplier
-            for creature in creatures
-        }
+        self.movement_multipliers_seen = dict(
+            kwargs.get("movement_cost_multipliers") or {
+                creature.creature_id: (
+                    creature.physical_traits.movement_cost_multiplier
+                )
+                for creature in creatures
+            }
+        )
         self.energy_cost_multipliers_seen = dict(
             kwargs.get("energy_cost_multipliers") or {}
         )
@@ -153,8 +167,8 @@ class FakeBrainController:
             False,
         )
 
-    def archive_brain(self, creature_id: int, fitness_score: float) -> bool:
-        self.archived.append((creature_id, fitness_score))
+    def archive_brain(self, creature_id: int) -> bool:
+        self.archived.append((creature_id, 0.0))
         return True
 
     def remove_brain(self, creature_id: int) -> None:
@@ -198,6 +212,9 @@ class WorldReproductionTest(unittest.TestCase):
         world = object.__new__(World)
         world.config = build_sim_config()
         world.config.population.initial_creatures = 3
+        world.genotype_manager = SimpleNamespace(
+            initial_color=lambda _index: (86, 156, 214)
+        )
         seen_colors: list[tuple[int, int, int]] = []
 
         def spawn(creature_id: int, **kwargs: object) -> FakeCreature:
@@ -216,10 +233,11 @@ class WorldReproductionTest(unittest.TestCase):
     def test_historical_archives_are_bounded_and_keep_required_records(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
-        world.config.population.elite_archive_size = 2
+        world.config.population.genome_archive_size = 2
         world.config.population.fitness_archive_size = 2
         infant = FakeCreature(
             creature_id=20,
+            age_seconds=1.0,
             lineage=LineageInfo(parent_id=10, species_id=2),
         )
         world.creatures = [infant]
@@ -230,6 +248,7 @@ class WorldReproductionTest(unittest.TestCase):
         }
 
         controller = NeatBrainController.__new__(NeatBrainController)
+        controller._evolution_rng = Random(7)
         controller.population = SimpleNamespace(
             population={
                 genome_id: SimpleNamespace(
@@ -260,11 +279,22 @@ class WorldReproductionTest(unittest.TestCase):
 
         world._prune_historical_archives()
 
-        self.assertEqual(set(controller.population.population), {3, 4, 100})
-        self.assertEqual(set(world._trait_archive_by_genome_id), {3, 4})
+        retained_archives = set(world._trait_archive_by_genome_id)
+        self.assertEqual(len(retained_archives), 2)
+        self.assertEqual(
+            set(controller.population.population),
+            {*retained_archives, 100},
+        )
         self.assertEqual(
             set(controller.species_manager.representatives),
-            {1, 2, 4, 5},
+            {
+                1,
+                2,
+                *(
+                    world._trait_archive_by_genome_id[genome_id].lineage.species_id
+                    for genome_id in retained_archives
+                ),
+            },
         )
         self.assertEqual(set(world.fitness_archive), {10, 12, 13})
 
@@ -356,137 +386,75 @@ class WorldReproductionTest(unittest.TestCase):
             world.config.speciation.max_threshold,
         )
 
-    def test_reproduction_skips_unwilling_top_eligible_parent(self) -> None:
+    def test_reproduction_intent_uses_strict_centered_point_two_threshold(
+        self,
+    ) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
-        world.config.population.max_creatures = 10
-        world.config.population.reproduction_energy_cost_base = 0.4
-        world.creatures = [
-            FakeCreature(creature_id=1),
-            FakeCreature(creature_id=2),
-        ]
-        world.fitness = {
-            1: CreatureFitness(age_seconds=30.0),
-            2: CreatureFitness(age_seconds=30.0),
-        }
-        world.fitness_archive = {}
-        world.foods = [SimpleNamespace(energy_value=0.01) for _ in range(5)]
-        world.food_spawner = FakeFoodSpawner(food_capacity=10)
-        world.total_biomass_energy = 10.0
         world.rng = Random(7)
-        world._last_actions = {
-            1: Action(
-                accelerate=0.0,
-                rotate=0.0,
-                want_reproduce=1.0,
-                want_eat=0.0,
-                reset_chronometer=0.0,
-                want_grab=0.0,
-                want_release=0.0,
-            ),
-            2: Action(
-                accelerate=0.0,
-                rotate=0.0,
-                want_reproduce=0.0,
-                want_eat=0.0,
-                reset_chronometer=0.0,
-                want_grab=0.0,
-                want_release=0.0,
-            ),
-        }
-        world.rt_neat = RtNeatManager(brain_controller=None)
-        world.rt_neat.eligible_parent_ids = [2, 1]
-        world.neat_controller = FakeBrainController()
-        world.species_history = {}
-        world._chronometers = {}
-        world._child_spawn_position = lambda parent, child_radius: (1.0, 1.0)
-        world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
-            creature_id=creature_id,
-            energy=kwargs["energy"],
-            heading=kwargs["heading"],
-            position=kwargs["position"],
-            color=kwargs["color"],
-            vision=kwargs["vision"],
-            physical_traits=kwargs["physical_traits"],
-            lineage=kwargs["lineage"],
-        )
-
-        self.assertTrue(world._try_reproduce())
-
-        self.assertEqual(world.neat_controller.created_children, [(1, 3, 1)])
-        self.assertEqual(
-            world.neat_controller.created_child_traits,
-            [
-                (
-                    world.creatures[-1].physical_traits,
-                    world.creatures[-1].vision,
-                )
-            ],
-        )
-        self.assertEqual(world.rt_neat.stats.births, 1)
-        self.assertEqual(world.rt_neat.stats.normal_replacements, 1)
-        self.assertEqual(len(world.creatures), 3)
-        self.assertEqual(world.creatures[-1].creature_id, 3)
-        self.assertEqual(
-            world.creatures[-1].energy,
-            world.config.population.infant_energy_spawn,
-        )
-        self.assertEqual(world.creatures[-1].total_energy_gathered, 0.0)
-        self.assertEqual(world.creatures[-1].lineage.parent_id, 1)
-        self.assertEqual(world.creatures[-1].lineage.generation, 1)
-        self.assertEqual(world.fitness[1].offspring_count, 1)
-        self.assertEqual(world.creatures[0].energy, 0.6)
-        self.assertEqual(world.species_history, {})
-
-    def test_reproduction_intent_uses_strict_centered_threshold(self) -> None:
-        world = object.__new__(World)
-        parent = FakeCreature(creature_id=1)
+        parent = FakeCreature(creature_id=1, energy=0.8)
         world.creatures = [parent]
-        world.fitness = {1: CreatureFitness(age_seconds=30.0)}
-        world.rt_neat = SimpleNamespace(eligible_parent_ids=[1])
+        baseline = {
+            1: SimpleNamespace(final_energy=0.8, survives=True),
+        }
 
-        for inactive_value in (0.0, 0.1):
+        for inactive_value in (0.0, 0.2):
             world._last_actions = {
                 1: Action(0.0, 0.0, inactive_value, 0.0, 0.0, 0.0, 0.0)
             }
-            self.assertIsNone(world._reproduction_parent())
+            self.assertEqual(
+                world._eligible_reproduction_parents(baseline),
+                [],
+            )
 
         world._last_actions = {
-            1: Action(0.0, 0.0, 0.100001, 0.0, 0.0, 0.0, 0.0)
+            1: Action(0.0, 0.0, 0.200001, 0.0, 0.0, 0.0, 0.0)
         }
-        self.assertIs(world._reproduction_parent(), parent)
+        self.assertEqual(
+            world._eligible_reproduction_parents(baseline),
+            [parent],
+        )
 
-    def test_parent_pool_requires_current_eligibility_and_intent(self) -> None:
+    def test_autonomous_request_ignores_food_pressure_and_preserves_live_rng(
+        self,
+    ) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
-        ineligible = FakeCreature(
-            creature_id=1,
-            energy=0.79,
-            total_energy_gathered=100.0,
-        )
-        unwilling = FakeCreature(
-            creature_id=2,
-            energy=1.0,
-            total_energy_gathered=50.0,
-        )
-        eligible = FakeCreature(
-            creature_id=3,
-            energy=1.0,
-            total_energy_gathered=1.0,
-        )
-        world.creatures = [ineligible, unwilling, eligible]
-        world.fitness = {
-            creature.creature_id: CreatureFitness(age_seconds=30.0)
-            for creature in world.creatures
-        }
-        world.rt_neat = RtNeatManager(brain_controller=None, rng=Random(7))
+        world.rng = Random(7)
+        parent = FakeCreature(creature_id=1, energy=0.8)
+        world.creatures = [parent]
+        world.foods = []
+        world.total_biomass_energy = 0.0
         world._last_actions = {
-            1: Action(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
-            2: Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            3: Action(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
+            1: Action(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0)
         }
+        baseline = {1: SimpleNamespace(final_energy=0.8, survives=True)}
+        rng_state = world.rng.getstate()
 
-        self.assertIs(world._reproduction_parent(), eligible)
+        requests = world._prepare_reproduction_requests(baseline)
+
+        self.assertEqual(len(requests), 1)
+        self.assertAlmostEqual(requests[0].parent_investment, 0.36)
+        self.assertAlmostEqual(requests[0].child_endowment, 0.324)
+        self.assertEqual(world.rng.getstate(), rng_state)
+
+    def test_birth_investment_is_independent_of_neural_complexity(self) -> None:
+        world = object.__new__(World)
+        world.config = build_sim_config()
+        parent = FakeCreature(creature_id=1, energy=0.8)
+        world.neat_controller = SimpleNamespace(
+            brain_for=lambda _creature_id: SimpleNamespace(
+                genome=SimpleNamespace(
+                    nodes={index: object() for index in range(100)},
+                    connections={index: object() for index in range(500)},
+                )
+            )
+        )
+
+        request = world._reproduction_request_for(parent, 0.8)
+
+        self.assertAlmostEqual(request.parent_investment, 0.36)
+        self.assertAlmostEqual(request.child_endowment, 0.324)
 
     def test_eating_intent_uses_strict_centered_threshold(self) -> None:
         world = object.__new__(World)
@@ -518,127 +486,17 @@ class WorldReproductionTest(unittest.TestCase):
 
         self.assertFalse(world._creature_want_to_eat(creature))
 
-    def test_reproduction_cost_scales_with_brain_complexity_and_caps(self) -> None:
-        world = object.__new__(World)
-        world.config = build_sim_config()
-        parent = FakeCreature(creature_id=1)
-
-        small_genome = SimpleNamespace(
-            nodes={node_id: object() for node_id in range(5)},
-            connections={connection_id: object() for connection_id in range(10)},
-        )
-        large_genome = SimpleNamespace(
-            nodes={node_id: object() for node_id in range(20)},
-            connections={connection_id: object() for connection_id in range(30)},
-        )
-        active_genome = small_genome
-        world.neat_controller = SimpleNamespace(
-            brain_for=lambda creature_id: SimpleNamespace(genome=active_genome)
-        )
-
-        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.41)
-        active_genome = large_genome
-        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.57)
-        world.config.population.max_dynamic_reproduction_cost = 0.5
-        self.assertAlmostEqual(world._reproduction_cost_for(parent), 0.5)
-
-    def test_missing_brain_uses_base_reproduction_cost(self) -> None:
-        world = object.__new__(World)
-        world.config = build_sim_config()
-        world.neat_controller = SimpleNamespace(brain_for=lambda creature_id: None)
-
-        self.assertAlmostEqual(
-            world._reproduction_cost_for(FakeCreature(creature_id=1)),
-            world.config.population.reproduction_energy_cost_base,
-        )
-
-    def test_reproduction_resource_gate_uses_base_cost(self) -> None:
-        world = self._world_ready_to_reproduce()
-        used_biomass = sum(creature.energy for creature in world.creatures) + sum(
-            food.energy_value for food in world.foods
-        )
-        world.total_biomass_energy = used_biomass + 0.45
-
-        self.assertTrue(world._has_reproduction_resources())
-
-    def test_failed_child_creation_does_not_spend_reproduction_energy(self) -> None:
-        world = self._world_ready_to_reproduce()
-        parent = world.creatures[0]
-        parent.energy = 1.0
-        genome = SimpleNamespace(
-            nodes={node_id: object() for node_id in range(20)},
-            connections={
-                connection_id: object() for connection_id in range(30)
-            },
-        )
-        world.neat_controller = SimpleNamespace(
-            brain_for=lambda creature_id: SimpleNamespace(genome=genome),
-            create_child_brain=lambda *args: (None, None),
-        )
-        world.space = SimpleNamespace(remove=lambda *args: None)
-
-        self.assertFalse(world._try_reproduce())
-        self.assertEqual(parent.energy, 1.0)
-
-    def test_reproduction_assigns_new_species_and_overwrites_color(self) -> None:
-        world = self._world_ready_to_reproduce()
-        parent = world.creatures[0]
-        parent.lineage.species_id = 7
-        world.neat_controller = SimpleNamespace(
-            create_child_brain=lambda parent_id, child_id, parent_species_id, physical, vision, flocking: (
-                object(),
-                speciation_result(8, parent_species_id, True),
-            ),
-            genome_id_for=lambda creature_id: 80,
-        )
-        founder_color = (240, 48, 180)
-        world._new_species_color = lambda parent_color: founder_color
-        species_records: list[object] = []
-        world.telemetry = SimpleNamespace(
-            log_species_record=species_records.append,
-            log_creature_birth=lambda *args: None,
-        )
-
-        self.assertTrue(world._try_reproduce())
-
-        child = world.creatures[-1]
-        self.assertEqual(child.lineage.species_id, 8)
-        self.assertEqual(child.color, founder_color)
-        record = world.species_history[8]
-        self.assertEqual(record.parent_species_id, 7)
-        self.assertEqual(record.founder_creature_id, child.creature_id)
-        self.assertEqual(record.founder_genome_id, 80)
-        self.assertEqual(record.founder_color, founder_color)
-        self.assertEqual(record.data_quality, "exact")
-        self.assertEqual(record.emergence_food_ratio, 0.5)
-        self.assertEqual(record.emergence_pop_ratio, 0.2)
-        self.assertEqual(record.neural_shifts, ())
-        self.assertEqual(species_records, [record])
-
-    def test_same_species_reproduction_keeps_inherited_color_jitter(self) -> None:
-        world = self._world_ready_to_reproduce()
-        parent = world.creatures[0]
-        parent.lineage.species_id = 4
-
-        self.assertTrue(world._try_reproduce())
-
-        child = world.creatures[-1]
-        parent_hue = rgb_to_hsv(*(channel / 255.0 for channel in parent.color))[0]
-        child_hue = rgb_to_hsv(*(channel / 255.0 for channel in child.color))[0]
-        hue_distance = min(
-            abs(parent_hue - child_hue),
-            1.0 - abs(parent_hue - child_hue),
-        )
-        self.assertEqual(child.lineage.species_id, 4)
-        self.assertLessEqual(hue_distance, 0.04)
-
     def test_new_species_color_is_saturated_bright_and_distinct(self) -> None:
         world = object.__new__(World)
         world.config = build_sim_config()
         world.rng = Random(7)
+        world.genotype_manager = GenotypeManager(
+            world.config,
+            ((86, 156, 214),),
+        )
         parent_color = (86, 156, 214)
 
-        color = world._new_species_color(parent_color)
+        color = world.genotype_manager.new_species_color(parent_color, world.rng)
 
         parent_hue = rgb_to_hsv(*(channel / 255.0 for channel in parent_color))[0]
         hue, saturation, value = rgb_to_hsv(
@@ -649,7 +507,9 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertGreaterEqual(saturation, 0.69)
         self.assertGreaterEqual(value, 0.79)
         self.assertFalse(
-            world._is_food_like_color(tuple(channel / 255.0 for channel in color))
+            world.genotype_manager.is_food_like_color(
+                tuple(channel / 255.0 for channel in color)
+            )
         )
 
     def test_kill_selected_creature_removes_live_state(self) -> None:
@@ -690,14 +550,17 @@ class WorldReproductionTest(unittest.TestCase):
         parent = FakeCreature(creature_id=1)
         own_infant = FakeCreature(
             creature_id=2,
+            age_seconds=1.0,
             lineage=LineageInfo(parent_id=1),
         )
         unrelated_infant = FakeCreature(
             creature_id=3,
+            age_seconds=1.0,
             lineage=LineageInfo(parent_id=99),
         )
         mature_child = FakeCreature(
             creature_id=4,
+            age_seconds=6.0,
             lineage=LineageInfo(parent_id=1),
         )
         world.creatures = [parent, own_infant, unrelated_infant, mature_child]
@@ -715,7 +578,11 @@ class WorldReproductionTest(unittest.TestCase):
         world.config = build_sim_config()
         world.config.population.infant_maturity_age = 5.0
         parent = FakeCreature(creature_id=1)
-        child = FakeCreature(creature_id=2, lineage=LineageInfo(parent_id=1))
+        child = FakeCreature(
+            creature_id=2,
+            age_seconds=4.9,
+            lineage=LineageInfo(parent_id=1),
+        )
         world.creatures = [parent, child]
         world.fitness = {
             1: CreatureFitness(age_seconds=30.0),
@@ -726,6 +593,7 @@ class WorldReproductionTest(unittest.TestCase):
         world._record_maturity_if_crossed(child, 4.9, child_fitness)
         self.assertEqual(world.fitness[1].matured_offspring_ids, [])
 
+        child.age_seconds = 5.0
         child_fitness.age_seconds = 5.0
         world._record_maturity_if_crossed(child, 4.9, child_fitness)
         world._record_maturity_if_crossed(child, 4.9, child_fitness)
@@ -794,6 +662,7 @@ class WorldReproductionTest(unittest.TestCase):
         world.config.population.infant_maturity_age = 5.0
         infant = FakeCreature(
             creature_id=1,
+            age_seconds=1.0,
             physical_traits=PhysicalTraits(
                 radius=16.0,
                 movement_cost_multiplier=1.25,
@@ -801,6 +670,7 @@ class WorldReproductionTest(unittest.TestCase):
         )
         adult = FakeCreature(
             creature_id=2,
+            age_seconds=6.0,
             physical_traits=PhysicalTraits(
                 radius=16.0,
                 movement_cost_multiplier=1.1,
@@ -831,6 +701,7 @@ class WorldReproductionTest(unittest.TestCase):
         creatures = [
             FakeCreature(
                 creature_id=1,
+                age_seconds=119.9,
                 physical_traits=PhysicalTraits(
                     radius=16.0,
                     movement_cost_multiplier=1.2,
@@ -838,6 +709,7 @@ class WorldReproductionTest(unittest.TestCase):
             ),
             FakeCreature(
                 creature_id=2,
+                age_seconds=120.0,
                 physical_traits=PhysicalTraits(
                     radius=16.0,
                     movement_cost_multiplier=1.1,
@@ -845,6 +717,7 @@ class WorldReproductionTest(unittest.TestCase):
             ),
             FakeCreature(
                 creature_id=3,
+                age_seconds=130.0,
                 physical_traits=PhysicalTraits(
                     radius=16.0,
                     movement_cost_multiplier=0.9,
@@ -881,8 +754,8 @@ class WorldReproductionTest(unittest.TestCase):
         world = object.__new__(World)
         world.config = build_sim_config()
         world.config.population.senescence_age_seconds = 120.0
-        at_threshold = FakeCreature(creature_id=1)
-        above_threshold = FakeCreature(creature_id=2)
+        at_threshold = FakeCreature(creature_id=1, age_seconds=120.0)
+        above_threshold = FakeCreature(creature_id=2, age_seconds=120.1)
         world.creatures = [at_threshold, above_threshold]
         world.fitness = {
             1: CreatureFitness(age_seconds=120.0),
@@ -919,291 +792,6 @@ class WorldReproductionTest(unittest.TestCase):
         self.assertFalse(world.kill_selected_creature())
         self.assertEqual(len(world.creatures), 1)
 
-    def test_reproduction_blocks_at_population_cap(self) -> None:
-        world = self._world_ready_to_reproduce()
-        world.config.population.max_creatures = 2
-
-        self.assertFalse(world._try_reproduce())
-        self.assertEqual(world.rt_neat.stats.births, 0)
-
-    def test_reproduction_blocks_without_child_biomass(self) -> None:
-        world = self._world_ready_to_reproduce()
-        world.total_biomass_energy = sum(creature.energy for creature in world.creatures)
-
-        self.assertFalse(world._try_reproduce())
-        self.assertEqual(world.rt_neat.stats.births, 0)
-
-    def test_reproduction_blocks_under_severe_resource_pressure(self) -> None:
-        world = self._world_ready_to_reproduce()
-        world.foods = []
-        world.food_spawner = FakeFoodSpawner(food_capacity=10, pressure=0.1)
-
-        self.assertFalse(world._try_reproduce())
-        self.assertEqual(world.rt_neat.stats.births, 0)
-
-    def test_extinction_recovery_counts_replacements_and_respects_cap(self) -> None:
-        world = object.__new__(World)
-        world.config = build_sim_config()
-        world.config.population.max_creatures = 3
-        world.config.population.extinction_recovery_creatures = 10
-        world.config.population.extinction_recovery_parent_pool = 2
-        world.config.metabolism.max_energy = 1.0
-        world.creatures = []
-        world.fitness = {}
-        world.fitness_archive = {}
-        world._chronometers = {}
-        world.rt_neat = RtNeatManager(brain_controller=None)
-        world.neat_controller = SimpleNamespace(
-            best_genomes=lambda count: [FakeGenome(), FakeGenome()],
-            create_mutated_brain_from_genome=(
-                lambda parent_genome, child_id, parent_species_id, physical, vision, flocking: (
-                    object(),
-                    speciation_result(
-                        parent_species_id,
-                        parent_species_id,
-                        False,
-                    ),
-                )
-            ),
-        )
-        world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
-            creature_id=creature_id,
-            energy=kwargs["energy"],
-            color=kwargs["color"],
-        )
-        world._initial_creature_color = lambda index: (86, 156, 214)
-
-        world._recover_extinct_population()
-
-        self.assertEqual(len(world.creatures), 3)
-        self.assertEqual(world.rt_neat.stats.births, 3)
-        self.assertEqual(world.rt_neat.stats.extinction_replacements, 3)
-
-    def test_extinction_recovery_mutates_archived_parent_traits(self) -> None:
-        world = object.__new__(World)
-        world.config = build_sim_config()
-        world.config.population.max_creatures = 1
-        world.config.population.extinction_recovery_creatures = 1
-        world.config.population.extinction_recovery_parent_pool = 1
-        world.config.metabolism.max_energy = 1.0
-        world.creatures = []
-        world.fitness = {}
-        world.fitness_archive = {}
-        world._chronometers = {}
-        world.rng = Random(7)
-        world.rt_neat = RtNeatManager(brain_controller=None)
-        parent_genome = SimpleNamespace(key=5)
-        forwarded_traits: list[tuple[PhysicalTraits, VisionTraits]] = []
-
-        def create_recovered_brain(
-            parent_genome: object,
-            child_id: int,
-            parent_species_id: int,
-            child_physical_traits: PhysicalTraits,
-            child_vision: VisionTraits,
-            child_flocking_traits: FlockingTraits,
-        ) -> tuple[object, SpeciationResult]:
-            del parent_genome, child_id, child_flocking_traits
-            forwarded_traits.append((child_physical_traits, child_vision))
-            return object(), speciation_result(
-                parent_species_id,
-                parent_species_id,
-                False,
-            )
-
-        world.neat_controller = SimpleNamespace(
-            best_genomes=lambda count: [parent_genome],
-            create_mutated_brain_from_genome=create_recovered_brain,
-        )
-        world._trait_archive_by_genome_id = {
-            5: ArchivedCreatureTraits(
-                creature_id=7,
-                vision=VisionTraits(range=120.0, angle=1.2),
-                physical_traits=PhysicalTraits(
-                    radius=18.0,
-                    movement_cost_multiplier=1.1,
-                ),
-                color=(86, 156, 214),
-                lineage=LineageInfo(parent_id=3, generation=2, species_id=6),
-            )
-        }
-        world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
-            creature_id=creature_id,
-            energy=kwargs["energy"],
-            color=kwargs["color"],
-            vision=kwargs["vision"],
-            physical_traits=kwargs["physical_traits"],
-            lineage=kwargs["lineage"],
-        )
-
-        world._recover_extinct_population()
-
-        recovered = world.creatures[0]
-        self.assertEqual(recovered.lineage.parent_id, 7)
-        self.assertEqual(recovered.lineage.generation, 3)
-        self.assertEqual(recovered.lineage.species_id, 6)
-        self.assertNotEqual(recovered.vision.range, 120.0)
-        self.assertNotEqual(recovered.physical_traits.radius, 18.0)
-        self.assertEqual(
-            forwarded_traits,
-            [(recovered.physical_traits, recovered.vision)],
-        )
-
-    def test_extinction_recovery_can_found_new_species(self) -> None:
-        world = object.__new__(World)
-        world.config = build_sim_config()
-        world.config.population.max_creatures = 1
-        world.config.population.extinction_recovery_creatures = 1
-        world.config.population.extinction_recovery_parent_pool = 1
-        world.config.metabolism.max_energy = 1.0
-        world.creatures = []
-        world.fitness = {}
-        world.fitness_archive = {}
-        world._chronometers = {}
-        world.rng = Random(7)
-        world.rt_neat = RtNeatManager(brain_controller=None)
-        parent_genome = SimpleNamespace(key=5)
-        world.neat_controller = SimpleNamespace(
-            best_genomes=lambda count: [parent_genome],
-            create_mutated_brain_from_genome=lambda parent, child_id, parent_species_id, physical, vision, flocking: (
-                object(),
-                speciation_result(10, parent_species_id, True),
-            ),
-            genome_id_for=lambda creature_id: 100,
-        )
-        world._trait_archive_by_genome_id = {
-            5: ArchivedCreatureTraits(
-                creature_id=7,
-                vision=VisionTraits(range=120.0, angle=1.2),
-                physical_traits=PhysicalTraits(radius=18.0),
-                color=(86, 156, 214),
-                lineage=LineageInfo(species_id=6),
-            )
-        }
-        world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
-            creature_id=creature_id,
-            energy=kwargs["energy"],
-            color=kwargs["color"],
-            vision=kwargs["vision"],
-            physical_traits=kwargs["physical_traits"],
-            lineage=kwargs["lineage"],
-        )
-        world.species_history = {}
-        world.elapsed_time = 0.0
-        world.telemetry = None
-        founder_color = (220, 40, 190)
-        world._new_species_color = lambda parent_color: founder_color
-
-        world._recover_extinct_population()
-
-        self.assertEqual(world.creatures[0].lineage.species_id, 10)
-        self.assertEqual(world.creatures[0].color, founder_color)
-        self.assertEqual(world.species_history[10].parent_species_id, 6)
-
-    def test_extinction_recovery_refresh_does_not_score_newborn_genomes(self) -> None:
-        world = object.__new__(World)
-        world.config = build_sim_config()
-        world.config.population.max_creatures = 1
-        world.config.population.extinction_recovery_creatures = 1
-        world.config.population.extinction_recovery_parent_pool = 1
-        world.config.metabolism.max_energy = 1.0
-        world.creatures = []
-        world.fitness = {}
-        world.fitness_archive = {}
-        world.foods = []
-        world.total_biomass_energy = 1.0
-        world.elapsed_time = 0.0
-        world.stats = SimpleNamespace()
-        world._chronometers = {}
-        world.food_spawner = FakeFoodSpawner(food_capacity=10)
-        world.rt_neat = RtNeatManager(brain_controller=None)
-        world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
-            creature_id=creature_id,
-            energy=kwargs["energy"],
-            color=kwargs["color"],
-        )
-        world._initial_creature_color = lambda index: (86, 156, 214)
-
-        parent_genome = FakeGenome(fitness=12.0)
-        newborn_genomes: dict[int, FakeGenome] = {}
-
-        class RecoveryBrainController:
-            def best_genomes(self, count: int) -> list[FakeGenome]:
-                del count
-                return [parent_genome]
-
-            def create_mutated_brain_from_genome(
-                self,
-                parent: FakeGenome,
-                child_id: int,
-                parent_species_id: int,
-                child_physical_traits: PhysicalTraits,
-                child_vision: VisionTraits,
-                child_flocking_traits: FlockingTraits,
-            ) -> tuple[object, SpeciationResult]:
-                del parent, child_physical_traits, child_vision, child_flocking_traits
-                newborn_genomes[child_id] = FakeGenome(fitness=None)
-                return object(), speciation_result(
-                    parent_species_id,
-                    parent_species_id,
-                    False,
-                )
-
-            def update_genome_fitness(
-                self,
-                creature_id: int,
-                fitness_score: float,
-            ) -> bool:
-                newborn_genomes[creature_id].fitness = fitness_score
-                return True
-
-        world.neat_controller = RecoveryBrainController()
-
-        world._recover_extinct_population()
-        world._refresh_stats()
-
-        recovered_id = world.creatures[0].creature_id
-        self.assertIsNone(newborn_genomes[recovered_id].fitness)
-
-    def _world_ready_to_reproduce(self) -> World:
-        world = object.__new__(World)
-        world.config = build_sim_config()
-        world.config.population.max_creatures = 10
-        world.config.population.reproduction_energy_cost_base = 0.4
-        world.creatures = [FakeCreature(creature_id=1), FakeCreature(creature_id=2)]
-        world.fitness = {
-            1: CreatureFitness(age_seconds=30.0),
-            2: CreatureFitness(age_seconds=30.0),
-        }
-        world.fitness_archive = {}
-        world.foods = [SimpleNamespace(energy_value=0.01) for _ in range(5)]
-        world.food_spawner = FakeFoodSpawner(food_capacity=10)
-        world.total_biomass_energy = 10.0
-        world.rng = Random(7)
-        world._last_actions = {
-            1: Action(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
-            2: Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-        }
-        world.rt_neat = RtNeatManager(brain_controller=None)
-        world.rt_neat.eligible_parent_ids = [1, 2]
-        world.neat_controller = FakeBrainController()
-        world.species_history = {}
-        world.elapsed_time = 0.0
-        world.telemetry = None
-        world._chronometers = {}
-        world._child_spawn_position = lambda parent, child_radius: (1.0, 1.0)
-        world._spawn_creature = lambda creature_id, **kwargs: FakeCreature(
-            creature_id=creature_id,
-            energy=kwargs["energy"],
-            heading=kwargs["heading"],
-            position=kwargs["position"],
-            color=kwargs["color"],
-            vision=kwargs["vision"],
-            physical_traits=kwargs["physical_traits"],
-            lineage=kwargs["lineage"],
-        )
-        return world
-
     def _world_ready_for_parenting(self) -> World:
         world = object.__new__(World)
         world.config = build_sim_config()
@@ -1213,18 +801,21 @@ class WorldReproductionTest(unittest.TestCase):
         own_infant = FakeCreature(
             creature_id=2,
             energy=0.2,
+            age_seconds=1.0,
             position=(10.0, 0.0),
             lineage=LineageInfo(parent_id=1),
         )
         farther_infant = FakeCreature(
             creature_id=3,
             energy=0.2,
+            age_seconds=1.0,
             position=(20.0, 0.0),
             lineage=LineageInfo(parent_id=1),
         )
         unrelated_infant = FakeCreature(
             creature_id=4,
             energy=0.2,
+            age_seconds=1.0,
             position=(5.0, 0.0),
             lineage=LineageInfo(parent_id=99),
         )

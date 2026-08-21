@@ -7,7 +7,6 @@ import unittest
 from configs.sim_config import ActionConfig, MetabolismConfig, TraitConfig, VisionConfig
 from src.action import Action
 from src.creature import LedgerDiagnostics
-from src.fitness import CreatureFitness
 from src.metabolism import (
     ActivityResult,
     DigestionResult,
@@ -20,7 +19,6 @@ from src.metabolism import (
     movement_life_penalty_multiplier,
 )
 from src.vision import VisionSystem
-from src.rt_neat import RtNeatManager
 from src.world import (
     AcceptedNursingTransfer,
     NursingRequest,
@@ -240,7 +238,7 @@ class LifeCandidateTest(unittest.TestCase):
         self.assertFalse(candidate.survives)
         self.assertEqual(candidate.final_life, 0.0)
 
-    def test_effective_rest_recovers_energy_without_stomach_contents(self) -> None:
+    def test_effective_rest_does_not_create_energy(self) -> None:
         self.creature.pending_direct_life_damage = 0.0
 
         candidate = self.metabolism.evaluate_candidate(
@@ -250,10 +248,10 @@ class LifeCandidateTest(unittest.TestCase):
             effective_rest=1.0,
         )
 
-        self.assertAlmostEqual(candidate.rest_energy_recovered, 0.04)
-        self.assertAlmostEqual(candidate.final_energy, 0.04)
+        self.assertEqual(candidate.rest_energy_recovered, 0.0)
+        self.assertEqual(candidate.final_energy, 0.0)
 
-    def test_rest_recovery_stops_at_starvation_threshold(self) -> None:
+    def test_rest_does_not_raise_energy_toward_starvation_threshold(self) -> None:
         self.creature.pending_direct_life_damage = 0.0
         self.creature.energy = 0.29
 
@@ -264,8 +262,8 @@ class LifeCandidateTest(unittest.TestCase):
             effective_rest=1.0,
         )
 
-        self.assertAlmostEqual(candidate.rest_energy_recovered, 0.01)
-        self.assertAlmostEqual(candidate.final_energy, 0.3)
+        self.assertEqual(candidate.rest_energy_recovered, 0.0)
+        self.assertAlmostEqual(candidate.final_energy, 0.29)
 
     def test_digestion_can_raise_energy_above_rest_recovery_cap(self) -> None:
         self.creature.pending_direct_life_damage = 0.0
@@ -298,7 +296,7 @@ class LifeCandidateTest(unittest.TestCase):
         self.assertAlmostEqual(candidate.life_healed, 0.01)
         self.assertAlmostEqual(candidate.healing_energy_spent, 0.01)
         self.assertAlmostEqual(candidate.final_life, 0.51)
-        self.assertAlmostEqual(candidate.final_energy, 0.06)
+        self.assertAlmostEqual(candidate.final_energy, 0.02)
 
     def test_nonlethal_damage_is_applied_before_healing(self) -> None:
         self.creature.energy = 0.05
@@ -344,10 +342,10 @@ class LifeCandidateTest(unittest.TestCase):
             effective_rest=1.0,
         )
 
-        self.assertEqual(candidate.unmet_energy_demand, 0.0)
+        self.assertAlmostEqual(candidate.unmet_energy_demand, 0.04)
         self.assertEqual(candidate.life_healed, 0.0)
         self.assertEqual(candidate.final_energy, 0.0)
-        self.assertEqual(candidate.final_life, 0.5)
+        self.assertAlmostEqual(candidate.final_life, 0.49)
 
 
 class EffectiveActionTest(unittest.TestCase):
@@ -518,7 +516,9 @@ class TransactionPerformanceContractTest(unittest.TestCase):
             SimpleNamespace(creature_id=index, smoothed_rest=0.0)
             for index in (1, 2, 3)
         ]
-        world._prepare_reproduction_requests = lambda: reproduction_requests
+        world._prepare_reproduction_requests = (
+            lambda _baseline: reproduction_requests
+        )
         world._prepare_nursing_requests = lambda _delta: []
         world._energy_demands_for = lambda _delta: (
             {creature.creature_id: 0.0 for creature in world.creatures},
@@ -562,7 +562,7 @@ class TransactionPerformanceContractTest(unittest.TestCase):
         self.assertEqual(resolution.reproductions, [])
         self.assertEqual(resolution.nursing_transfers, [])
 
-    def test_reproduction_capacity_is_one_and_failed_parent_promotes_next(
+    def test_reproduction_capacity_truncates_without_charging_deferred_parents(
         self,
     ) -> None:
         creatures = [
@@ -570,70 +570,44 @@ class TransactionPerformanceContractTest(unittest.TestCase):
             for index in (1, 2, 3)
         ]
         requests = [
-            ReproductionRequest(creature, rank, 0.4)
-            for rank, creature in enumerate(creatures)
+            ReproductionRequest(creature, 0.4, 0.36)
+            for creature in creatures
         ]
         world = self.make_world(requests)
         world.creatures = creatures
+        world.config.population.max_creatures = 4
 
         resolution = world._resolve_resource_transactions(1.0 / 60.0)
 
         self.assertEqual(len(resolution.reproductions), 1)
         self.assertEqual(
             resolution.reproductions[0].parent.creature_id,
-            2,
-        )
-        self.assertEqual(
-            resolution.candidates[1].total_energy_demand,
-            0.0,
+            1,
         )
         self.assertAlmostEqual(
-            resolution.candidates[2].total_energy_demand,
+            resolution.candidates[1].total_energy_demand,
             0.4,
         )
+        self.assertEqual(resolution.candidates[2].total_energy_demand, 0.0)
+        self.assertEqual(resolution.candidates[3].total_energy_demand, 0.0)
 
-    def test_parent_below_threshold_after_queue_promotes_next(self) -> None:
+    def test_reserved_investment_is_deducted_from_post_upkeep_baseline(self) -> None:
         creatures = [
             SimpleNamespace(
                 creature_id=index,
                 smoothed_rest=0.0,
-                energy=1.0,
-                total_energy_gathered=10.0 - index,
-                lineage=SimpleNamespace(species_id=1),
             )
             for index in (1, 2, 3)
         ]
-        requests = [
-            ReproductionRequest(creature, rank, 0.4)
-            for rank, creature in enumerate(creatures[:2])
-        ]
+        requests = [ReproductionRequest(creatures[0], 0.4, 0.36)]
         world = self.make_world(requests)
         world.creatures = creatures
-        world.config.population.min_reproduction_age = 20.0
-        world.config.population.reproduction_cooldown = 12.0
-        world.config.population.reproduction_energy_threshold = 0.8
-        world.fitness = {
-            creature.creature_id: CreatureFitness(age_seconds=30.0)
-            for creature in creatures
-        }
-        world.rt_neat = RtNeatManager(brain_controller=None)
-        creatures[0].energy = 0.79
 
         resolution = world._resolve_resource_transactions(1.0 / 60.0)
 
-        self.assertEqual(
-            [request.parent.creature_id for request in resolution.reproductions],
-            [2],
-        )
-        self.assertEqual(resolution.candidates[1].total_energy_demand, 0.0)
-        self.assertAlmostEqual(resolution.candidates[2].total_energy_demand, 0.4)
-        self.assertEqual(
-            [
-                (request.parent.creature_id, outcome)
-                for request, outcome in resolution.reproduction_attempts
-            ],
-            [(1, "eligibility_rejected"), (2, "committed")],
-        )
+        self.assertAlmostEqual(resolution.candidates[1].final_energy, 0.6)
+        self.assertAlmostEqual(resolution.candidates[1].total_energy_demand, 0.4)
+        self.assertEqual(resolution.candidates[2].final_energy, 1.0)
 
 
 class SelectedDiagnosticsTest(unittest.TestCase):
@@ -731,7 +705,7 @@ class SelectedDiagnosticsTest(unittest.TestCase):
             )
             for creature_id in (1, 2, 3)
         ]
-        reproduction = ReproductionRequest(creatures[0], 0, 0.2)
+        reproduction = ReproductionRequest(creatures[0], 0.2, 0.18)
         nursing = AcceptedNursingTransfer(
             NursingRequest(creatures[1], creatures[2], 0.1),
             0.1,
@@ -751,8 +725,16 @@ class SelectedDiagnosticsTest(unittest.TestCase):
             metabolism=SimpleNamespace(max_energy=1.0)
         )
         world._resolve_resource_transactions = lambda _delta: resolution
-        world._stage_final_reproductions = lambda _requests: ([], None, None)
+        world._stage_final_reproductions = lambda _requests: (
+            [SimpleNamespace(request=reproduction)],
+            object(),
+            None,
+        )
+        world._commit_staged_reproductions = lambda *_args: None
         world._last_digestion_processing_costs_per_second = {}
+        world.resources = SimpleNamespace(
+            last_digestion_processing_costs_per_second={}
+        )
         world.foods = []
         world.fitness = {}
         world._recover_extinct_population = lambda: None
@@ -834,7 +816,7 @@ class CompatibilityAndValidationTest(unittest.TestCase):
 
     def test_rest_recovery_and_healing_config_are_validated(self) -> None:
         invalid_configs = (
-            MetabolismConfig(rest_energy_recovery_per_second=-0.01),
+            MetabolismConfig(rest_energy_recovery_per_second=0.01),
             MetabolismConfig(rest_healing_rate_per_second=-0.01),
             MetabolismConfig(rest_healing_energy_cost_per_life=0.0),
             MetabolismConfig(starvation_energy_threshold=1.01),
@@ -944,7 +926,7 @@ class NursingAllocationTest(unittest.TestCase):
         target = self.creature(10, 2)
         world.creatures = [first, second, target]
         baseline = {
-            1: self.candidate(1.0),
+            1: self.candidate(0.0, 0.0),
             2: self.candidate(1.0),
             10: self.candidate(0.8),
         }

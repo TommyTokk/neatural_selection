@@ -438,7 +438,9 @@ class InspectorPanelComponent:
         )
         ledger = getattr(selected, "ledger_diagnostics", None)
         activity = getattr(ledger, "activity", None)
-        fitness_score = fitness.score(selected) if fitness is not None else None
+        net_energy_balance = (
+            fitness.net_energy_balance if fitness is not None else None
+        )
 
         def trait_field(
             key: str,
@@ -670,11 +672,11 @@ class InspectorPanelComponent:
                 f"{float(getattr(selected, 'heading', 0.0)):.3f} rad",
             ),
             _InspectorCardField(
-                "inspector_fitness",
-                "Fitness score",
+                "inspector_net_energy",
+                "Net energy balance",
                 "Unavailable"
-                if fitness_score is None
-                else self._format_decimal(fitness_score),
+                if net_energy_balance is None
+                else self._format_decimal(net_energy_balance),
             ),
             _InspectorCardField(
                 "inspector_flocking_benchmark",
@@ -1383,14 +1385,15 @@ class InspectorPanelComponent:
                 genome_id = world.neat_controller.genome_id_for(selected.creature_id)
                 cooldown_remaining = max(
                     0.0,
-                    world.config.population.reproduction_cooldown
-                    - fitness.seconds_since_reproduction(),
+                    world.config.population.birth_cooldown_seconds
+                    - (selected.age_seconds - selected.last_birth_time),
                 )
                 lines.extend(
                     [
                         f"Genome: {genome_id if genome_id is not None else 'None'}",
-                        f"Fitness: {fitness.score(selected):.2f}",
-                        f"Age: {fitness.age_seconds:.1f}s",
+                        f"Net energy: {fitness.net_energy_balance:.3f}",
+                        f"Net metabolic rate: {fitness.net_metabolic_rate:.4f}/s",
+                        f"Age: {selected.age_seconds:.1f}s",
                         f"Food eaten: {fitness.food_eaten}",
                         "Lifetime energy gathered: "
                         f"{selected.total_energy_gathered:.3f}",
@@ -1885,4 +1888,4 @@ class InspectorPanelComponent:
         fitness = world.fitness_for(selected)
         if fitness is None:
             return "None"
-        return self._format_genome_fitness(fitness.score(selected))
+        return self._format_genome_fitness(fitness.net_energy_balance)

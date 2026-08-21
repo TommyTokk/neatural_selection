@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from random import Random
 from types import SimpleNamespace
 import unittest
 
@@ -689,7 +690,7 @@ class SchedulerBiologyRateTest(unittest.TestCase):
         world._spawn_foods = lambda _dt: None
         return world
 
-    def test_reproduction_cadence_becomes_due_once_per_second(self) -> None:
+    def test_reproduction_is_due_at_every_biology_boundary(self) -> None:
         world = object.__new__(World)
         world._reproduction_accumulator = 0.0
         due_count = 0
@@ -698,38 +699,33 @@ class SchedulerBiologyRateTest(unittest.TestCase):
             world._update_reproduction(0.05)
             due_count += int(world._reproduction_due_this_step)
 
-        self.assertEqual(due_count, 1)
+        self.assertEqual(due_count, 20)
         self.assertAlmostEqual(world._reproduction_accumulator, 0.0)
 
-    def test_cached_reproduction_level_is_consumed_once_per_due_cadence(
+    def test_capacity_blocked_request_preparation_is_rng_and_state_neutral(
         self,
     ) -> None:
         world = object.__new__(World)
-        parent = SimpleNamespace(creature_id=1)
-        action = neutral_action()
-        action.want_reproduce = 1.0
+        world.config = build_sim_config()
+        world.config.population.max_creatures = 1
+        world.rng = Random(7)
+        parent = SimpleNamespace(
+            creature_id=1,
+            energy=1.0,
+            age_seconds=30.0,
+            last_birth_time=0.0,
+            lifetime_offspring_count=0,
+        )
         world.creatures = [parent]
-        world.fitness = {parent.creature_id: object()}
-        world.rt_neat = SimpleNamespace(
-            eligible_parent_ids=[parent.creature_id]
-        )
-        world._last_actions = {parent.creature_id: action}
-        world._effective_actions = {parent.creature_id: action}
-        world._reproduction_due_this_step = True
-        resource_checks: list[None] = []
-        world._has_reproduction_resources = lambda: (
-            resource_checks.append(None) or True
-        )
-        world._reproduction_cost_for = lambda _parent: 0.25
+        state = (parent.energy, parent.last_birth_time, world.rng.getstate())
 
-        first = world._prepare_reproduction_requests()
-        second = world._prepare_reproduction_requests()
+        requests = world._prepare_reproduction_requests({})
 
-        self.assertEqual(len(first), 1)
-        self.assertEqual(first[0].parent, parent)
-        self.assertEqual(first[0].reserved_energy_cost, 0.25)
-        self.assertEqual(second, [])
-        self.assertEqual(resource_checks, [None])
+        self.assertEqual(requests, [])
+        self.assertEqual(
+            state,
+            (parent.energy, parent.last_birth_time, world.rng.getstate()),
+        )
 
     def test_nursing_rate_integrates_full_biology_duration(self) -> None:
         world = object.__new__(World)
@@ -1098,22 +1094,18 @@ class DeterministicSchedulerIntegrationTest(unittest.TestCase):
                     parent.energy,
                     world.config.population.reproduction_energy_threshold,
                 )
-                parent_fitness = world.fitness[parent.creature_id]
-                parent_fitness.age_seconds = max(
-                    parent_fitness.age_seconds,
+                parent.age_seconds = max(
+                    parent.age_seconds,
                     world.config.population.min_reproduction_age,
                 )
-                parent_fitness.last_reproduction_age = (
-                    parent_fitness.age_seconds
+                parent.last_birth_time = (
+                    parent.age_seconds
                     - world.config.population.reproduction_cooldown
                 )
-                world.rt_neat.eligible_parent_ids = [parent.creature_id]
                 world._last_actions[parent.creature_id] = reproduction
                 world._effective_actions[parent.creature_id] = reproduction
-                world._has_reproduction_resources = lambda: True
-                self.assertTrue(world._try_reproduce())
 
-                victim = world.creatures[0]
+                victim = world.creatures[2]
                 victim.pending_direct_life_damage = victim.life + 1.0
                 consumer = next(
                     creature

@@ -484,22 +484,19 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertGreater(snapshot.biome.lateral_gradient, 0.0)
         self.assertAlmostEqual(snapshot.biome.forward_gradient, 0.0)
 
-    def test_reproductive_readiness_is_independent_from_infant_cutoff(self) -> None:
+    def test_reproductive_readiness_reaches_one_at_physiological_maturity(self) -> None:
         world = self.make_world_for_biome_sensors()
         creature = self.biome_sensor_creature()
-        world.fitness[creature.creature_id].age_seconds = 11.9
+        creature.age_seconds = 9.9
         self.assertTrue(world._is_infant(creature))
+        infant_snapshot = world._sensor_snapshot_for(creature)
+        self.assertAlmostEqual(infant_snapshot.reproductive_readiness, 0.99)
 
-        world.fitness[creature.creature_id].age_seconds = 12.0
+        creature.age_seconds = 10.0
         self.assertFalse(world._is_infant(creature))
-        adolescent_snapshot = world._sensor_snapshot_for(creature)
-        self.assertAlmostEqual(adolescent_snapshot.reproductive_readiness, 0.6)
+        mature_snapshot = world._sensor_snapshot_for(creature)
 
-        world.fitness[creature.creature_id].age_seconds = 20.0
-
-        snapshot = world._sensor_snapshot_for(creature)
-
-        self.assertEqual(snapshot.reproductive_readiness, 1.0)
+        self.assertEqual(mature_snapshot.reproductive_readiness, 1.0)
 
     def test_creature_intents_apply_cached_actions_every_tick(self) -> None:
         world = self.make_world_for_biome_sensors()

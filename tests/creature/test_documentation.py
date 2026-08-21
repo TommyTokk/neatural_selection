@@ -34,7 +34,7 @@ INTEGRATION_MANIFEST: dict[str, set[str]] = {
         "World._prune_historical_archives",
         "World._archive_creature_traits",
         "World._recover_extinct_population",
-        "World._try_reproduce",
+        "World._prepare_reproduction_requests",
         "World._register_living_creature",
         "World._unregister_living_creature",
     },

@@ -58,7 +58,9 @@ float
 
 
 @dataclass(slots=True)
-class CreatureFitness:
+class CreatureTelemetry:
+    """Passive lifetime diagnostics with no role in reproduction selection."""
+
     age_seconds: float = 0.0
     food_eaten: int = 0
     distance_traveled: float = 0.0
@@ -67,6 +69,8 @@ class CreatureFitness:
     matured_offspring_ids: list[int] = field(default_factory=list)
     evaluation_start_age_seconds: float = 0.0
     flocking_benchmark_reward: float = 0.0
+    lifetime_energy_ingested: float = 0.0
+    lifetime_energy_spent: float = 0.0
     _legacy_energy_gained: float = field(
         default=0.0,
         repr=False,
@@ -119,6 +123,90 @@ None
         # Keep record reproduction behavior explicit in its owning subsystem.
         self.last_reproduction_age = self.age_seconds
         self.offspring_count += 1
+
+    def record_energy_transaction(
+        self,
+        *,
+        ingested: float = 0.0,
+        spent: float = 0.0,
+    ) -> None:
+        """Record realized energy flows without producing a selection score.
+
+        Parameters
+        ----------
+        ingested
+            Usable energy credited during the committed transaction.
+        spent
+            Energy expended during the committed transaction.
+
+        Returns
+        -------
+        None
+            The passive lifetime counters are updated in place.
+        """
+        # Sanitize each external quantity before adding it to the lifetime ledger.
+        for name, value in (("ingested", ingested), ("spent", spent)):
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError, OverflowError):
+                numeric = 0.0
+            if not isfinite(numeric):
+                numeric = 0.0
+            if name == "ingested":
+                self.lifetime_energy_ingested += max(0.0, numeric)
+            else:
+                self.lifetime_energy_spent += max(0.0, numeric)
+
+    @property
+    def net_energy_balance(self) -> float:
+        """Return lifetime ingestion minus realized expenditure.
+
+        Parameters
+        ----------
+        None
+            This property receives no external parameters.
+
+        Returns
+        -------
+        float
+            Signed lifetime usable-energy balance.
+        """
+        # Keep the diagnostic derived so it cannot drift from its counters.
+        return self.lifetime_energy_ingested - self.lifetime_energy_spent
+
+    @property
+    def net_metabolic_rate(self) -> float:
+        """Return net energy balance per second of life.
+
+        Parameters
+        ----------
+        None
+            This property receives no external parameters.
+
+        Returns
+        -------
+        float
+            Signed net balance normalized by at least one second.
+        """
+        # The one-second floor keeps newborn diagnostics finite.
+        return self.net_energy_balance / max(self.age_seconds, 1.0)
+
+    @property
+    def lifetime_offspring_count(self) -> int:
+        """Expose the passive offspring total with physiological naming.
+
+        Parameters
+        ----------
+        None
+            This property receives no external parameters.
+
+        Returns
+        -------
+        int
+            Number of successfully committed offspring.
+        """
+        # Preserve the older serialized field while exposing current terminology.
+        return self.offspring_count
 
     def seconds_since_reproduction(self) -> float:
         """Execute seconds since reproduction behavior.
@@ -226,23 +314,6 @@ float
         # Keep evaluation age seconds behavior explicit in its owning subsystem.
         return max(0.0, self.age_seconds - self.evaluation_start_age_seconds)
 
-    def score(self, creature: object) -> float:
-        """Return implicit fitness from lifetime world energy and an age tie-breaker.
-
-Parameters
-----------
-creature
-    Input used by this creature-domain operation.
-Returns
--------
-float
-    Result produced by this creature-domain operation."""
-        # Keep score behavior explicit in its owning subsystem.
-        gathered = float(getattr(creature, "total_energy_gathered", 0.0))
-        if not isfinite(gathered):
-            gathered = 0.0
-        return max(0.0, gathered) + max(0.0, self.age_seconds) * 0.001
-
     def __getstate__(self) -> dict[str, object]:
         """Exclude one-shot legacy migration data from new checkpoints.
 
@@ -264,6 +335,8 @@ dict[str, object]
             "matured_offspring_ids": self.matured_offspring_ids,
             "evaluation_start_age_seconds": self.evaluation_start_age_seconds,
             "flocking_benchmark_reward": self.flocking_benchmark_reward,
+            "lifetime_energy_ingested": self.lifetime_energy_ingested,
+            "lifetime_energy_spent": self.lifetime_energy_spent,
         }
 
     def __setstate__(self, state: object) -> None:
@@ -306,6 +379,15 @@ None
         self.flocking_benchmark_reward = float(
             values.get("flocking_benchmark_reward", 0.0)
         )
+        self.lifetime_energy_ingested = float(
+            values.get(
+                "lifetime_energy_ingested",
+                values.get("energy_gained", 0.0),
+            )
+        )
+        self.lifetime_energy_spent = float(
+            values.get("lifetime_energy_spent", 0.0)
+        )
         try:
             legacy_energy = float(values.get("energy_gained", 0.0))
         except (TypeError, ValueError, OverflowError):
@@ -313,3 +395,7 @@ None
         self._legacy_energy_gained = (
             max(0.0, legacy_energy) if isfinite(legacy_energy) else 0.0
         )
+
+
+# Older imports and pickles resolve this name, but the object is telemetry only.
+CreatureFitness = CreatureTelemetry

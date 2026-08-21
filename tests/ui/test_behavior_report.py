@@ -120,9 +120,9 @@ class BehaviorReportUiTest(unittest.TestCase):
                 stats=SimpleNamespace(
                     births=3,
                     deaths=1,
-                    best_fitness=4.0,
-                    average_fitness=2.0,
-                    worst_fitness=1.0,
+                    best_net_energy_balance=4.0,
+                    average_net_energy_balance=2.0,
+                    average_net_metabolic_rate=1.0,
                     average_speed=12.0,
                 )
             ),

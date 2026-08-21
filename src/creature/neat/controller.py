@@ -11,7 +11,12 @@ import copy
 import neat
 
 from configs.sim_config import TraitConfig, VisionConfig
-from src.creature.action import ACTION_OUTPUT_COUNT, Action, neutral_action
+from src.creature.action import (
+    ACTION_OUTPUT_COUNT,
+    Action,
+    BrainOutputIndex,
+    neutral_action,
+)
 from src.creature.neat.brain import NeatBrain
 from src.creature.speciation import (
     CompositeCompatibilityDistance,
@@ -140,6 +145,7 @@ None
 
         # Network creation is neural-only; speciation is coordinated separately.
         for creature_id, (genome_id, genome) in zip(creature_ids, genomes):
+            self._enforce_reproduction_output_contract(genome, founder=True)
             self.brains[creature_id] = self._brain_from_genome(
                 genome_id,
                 genome,
@@ -196,6 +202,7 @@ None
             )
         # Rebuild networks without accepting any non-neural trait values.
         for creature_id, (genome_id, genome) in zip(creature_ids, genomes):
+            self._enforce_reproduction_output_contract(genome, founder=True)
             self.brains[creature_id] = self._brain_from_genome(
                 genome_id,
                 genome,
@@ -328,22 +335,18 @@ set[int]
             brain.genome_id
             for brain in self.brains.values()
         }
-        scored_dead_genomes = [
+        dead_genomes = [
             genome
             for genome_id, genome in self.population.population.items()
             if genome_id not in live_genome_ids
-            and genome.fitness is not None
         ]
-        scored_dead_genomes.sort(
-            key=lambda genome: (
-                float(genome.fitness),
-                int(genome.key),
-            ),
-            reverse=True,
+        retained_dead = (
+            dead_genomes
+            if len(dead_genomes) <= max(0, archive_size)
+            else self._evolution_rng.sample(dead_genomes, max(0, archive_size))
         )
         retained_genome_ids = live_genome_ids | {
-            genome.key
-            for genome in scored_dead_genomes[:max(0, archive_size)]
+            genome.key for genome in retained_dead
         }
         self.population.population = {
             genome_id: genome
@@ -382,14 +385,12 @@ None
             if species_id in protected_species_ids
         }
 
-    def archive_brain(self, creature_id: int, fitness_score: float) -> bool:
+    def archive_brain(self, creature_id: int) -> bool:
         """Execute archive brain behavior.
 
 Parameters
 ----------
 creature_id
-    Input used by this creature-domain operation.
-fitness_score
     Input used by this creature-domain operation.
 Returns
 -------
@@ -400,7 +401,7 @@ bool
         if brain is None:
             return False
 
-        brain.genome.fitness = fitness_score
+        brain.genome.fitness = None
         self.population.population[brain.genome_id] = brain.genome
         return True
 
@@ -517,6 +518,7 @@ Returns
 NeatBrain
     Result produced by this creature-domain operation."""
         # Keep brain from genome behavior explicit in its owning subsystem.
+        self._enforce_reproduction_output_contract(genome, founder=False)
         brain = NeatBrain.from_genome(genome_id, genome, self.config)
         next_revision = getattr(self, "_next_brain_revision_value", 1)
         brain.brain_revision = next_revision
@@ -814,10 +816,45 @@ NeatBrain
         child_genome.fitness = None
         with self._using_evolution_rng():
             child_genome.mutate(self.config.genome_config)
+        self._enforce_reproduction_output_contract(child_genome, founder=False)
         self.population.population[child_genome.key] = child_genome
         child_brain = self._brain_from_genome(child_genome.key, child_genome)
         self.brains[creature_id] = child_brain
         return child_brain
+
+    def _enforce_reproduction_output_contract(
+        self,
+        genome: Any,
+        *,
+        founder: bool,
+    ) -> None:
+        """Pin reproduction to sigmoid and make founders quiescent.
+
+        Parameters
+        ----------
+        genome
+            Neural genome whose reproduction output is normalized.
+        founder
+            Whether the output bias must be reset to the founder default.
+
+        Returns
+        -------
+        None
+            The output node is normalized in place when present.
+        """
+        # Resolve the declared output key instead of assuming NEAT node IDs.
+        output_keys = tuple(self.config.genome_config.output_keys)
+        output_index = int(BrainOutputIndex.REPRODUCE)
+        if output_index >= len(output_keys):
+            return
+        node = (getattr(genome, "nodes", {}) or {}).get(
+            output_keys[output_index]
+        )
+        if node is None:
+            return
+        node.activation = "sigmoid"
+        if founder:
+            node.bias = -1.0
 
 
 
@@ -877,8 +914,8 @@ None
             self._evolution_rng = random.Random()
         self._evolution_rng.setstate(state)
 
-    def best_genomes(self, count: int) -> list[Any]:
-        """Execute best genomes behavior.
+    def archived_genomes(self, count: int) -> list[Any]:
+        """Return an unranked deterministic sample of retained genomes.
 
 Parameters
 ----------
@@ -888,17 +925,12 @@ Returns
 -------
 list[Any]
     Result produced by this creature-domain operation."""
-        # Keep best genomes behavior explicit in its owning subsystem.
-        scored_genomes = [
-            genome
-            for genome in self.population.population.values()
-            if genome.fitness is not None
-        ]
-        return sorted(
-            scored_genomes,
-            key=lambda genome: genome.fitness,
-            reverse=True,
-        )[:count]
+        # Sampling never reads genome fitness or species-adjusted values.
+        genomes = list(self.population.population.values())
+        requested = max(0, int(count))
+        if len(genomes) <= requested:
+            return genomes
+        return self._evolution_rng.sample(genomes, requested)
 
     def _next_genome_id(self) -> int:
         """Execute next genome id behavior.

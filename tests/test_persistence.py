@@ -991,6 +991,8 @@ class PersistenceManagerTest(unittest.TestCase):
         try:
             parent, infant = world.creatures
             infant.lineage.parent_id = parent.creature_id
+            parent.age_seconds = 28.0
+            infant.age_seconds = 7.0
             world.fitness[parent.creature_id].age_seconds = 28.0
             world.fitness[infant.creature_id].age_seconds = 7.0
             historical_root = replace(
@@ -1013,6 +1015,9 @@ class PersistenceManagerTest(unittest.TestCase):
             state["brain_contract"]["inputs"] = 37
             for creature_state in state["creatures"]:
                 creature_state.pop("total_energy_gathered", None)
+                creature_state.pop("age_seconds", None)
+                creature_state.pop("last_birth_time", None)
+                creature_state.pop("lifetime_offspring_count", None)
             state["creatures"][0]["fitness"].__setstate__((None, {
                 "age_seconds": 28.0,
                 "energy_gained": 3.5,

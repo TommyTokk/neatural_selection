@@ -30,10 +30,10 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 24
+CHECKPOINT_VERSION = 25
 LEGACY_CHECKPOINT_VERSIONS = {
     2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-    22, 23,
+    22, 23, 24,
 }
 LOGGER = logging.getLogger(__name__)
 
@@ -484,6 +484,15 @@ class PersistenceManager:
                         float(
                             getattr(creature, "total_energy_gathered", 0.0)
                         ),
+                    ),
+                    "age_seconds": float(
+                        getattr(creature, "age_seconds", 0.0)
+                    ),
+                    "last_birth_time": float(
+                        getattr(creature, "last_birth_time", -1_000_000.0)
+                    ),
+                    "lifetime_offspring_count": int(
+                        getattr(creature, "lifetime_offspring_count", 0)
                     ),
                     "life": float(getattr(creature, "life", 1.0)),
                     "stomach_energy": max(
@@ -2323,6 +2332,34 @@ class PersistenceManager:
                 world._register_living_creature(creature)
                 world._initialize_creature_runtime_state(creature)
                 fitness = creature_state["fitness"]
+                creature.age_seconds = max(
+                    0.0,
+                    float(
+                        creature_state.get(
+                            "age_seconds",
+                            getattr(fitness, "age_seconds", 0.0),
+                        )
+                    ),
+                )
+                creature.last_birth_time = float(
+                    creature_state.get(
+                        "last_birth_time",
+                        getattr(
+                            fitness,
+                            "last_reproduction_age",
+                            -1_000_000.0,
+                        ),
+                    )
+                )
+                creature.lifetime_offspring_count = max(
+                    0,
+                    int(
+                        creature_state.get(
+                            "lifetime_offspring_count",
+                            getattr(fitness, "offspring_count", 0),
+                        )
+                    ),
+                )
                 saved_total = creature_state.get("total_energy_gathered")
                 if saved_total is None:
                     saved_total = getattr(

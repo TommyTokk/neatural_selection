@@ -195,6 +195,49 @@ bool
         return self.final_life > 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class ReproductionEnergyTransfer:
+    """A parent-funded birth reservation and its converted child energy."""
+
+    parent_investment: float
+    child_endowment: float
+    conversion_loss: float
+
+
+def calculate_reproduction_energy_transfer(
+    usable_energy: float,
+    investment_fraction: float,
+    conversion_efficiency: float,
+) -> ReproductionEnergyTransfer:
+    """Calculate an immutable thermodynamic birth transfer.
+
+    Parameters
+    ----------
+    usable_energy
+        Parent energy available after digestion and ordinary upkeep.
+    investment_fraction
+        Fraction of usable energy reserved for birth.
+    conversion_efficiency
+        Fraction of the reservation delivered to the child.
+
+    Returns
+    -------
+    ReproductionEnergyTransfer
+        Parent reservation, child endowment, and conversion loss.
+    """
+    # Clamp the pure helper so malformed callers cannot create energy.
+    energy = max(0.0, float(usable_energy))
+    fraction = min(1.0, max(0.0, float(investment_fraction)))
+    efficiency = min(1.0, max(0.0, float(conversion_efficiency)))
+    investment = energy * fraction
+    child_endowment = investment * efficiency
+    return ReproductionEnergyTransfer(
+        parent_investment=investment,
+        child_endowment=child_endowment,
+        conversion_loss=investment - child_endowment,
+    )
+
+
 def calculate_digestion(
     *,
     stomach_contents: float,
@@ -750,22 +793,15 @@ ResourceCandidate
         if remaining_stomach <= 1e-12:
             remaining_stomach = 0.0
             remaining_load = 0.0
-        energy_before_rest_recovery = min(
+        energy_after_digestion = min(
             self.config.max_energy,
             starting_energy + digestion.net_energy,
         )
         rest_strength = min(1.0, max(0.0, float(effective_rest)))
-        recovery_limit = min(
-            self.config.max_energy,
-            max(0.0, self.config.starvation_energy_threshold),
-        )
-        rest_energy_recovered = min(
-            max(0.0, self.config.rest_energy_recovery_per_second)
-            * rest_strength
-            * max(0.0, float(delta_time)),
-            max(0.0, recovery_limit - energy_before_rest_recovery),
-        )
-        available_energy = energy_before_rest_recovery + rest_energy_recovered
+        # Rest may suppress activity and improve digestion, but it cannot
+        # manufacture usable energy.
+        rest_energy_recovered = 0.0
+        available_energy = energy_after_digestion
         energy_after_other = max(0.0, available_energy - other_demand)
         unmet_other_demand = max(0.0, other_demand - available_energy)
         paid_powered_movement = min(
@@ -1039,7 +1075,7 @@ EnergyCostBreakdown
         if max_speed > 0:
             speed_ratio = min(max(creature.speed, 0.0) / max_speed, 1.0)
 
-        base_movement = self.config.movement_energy_cost_factor * speed_ratio
+        base_movement = self.config.movement_energy_cost_factor * speed_ratio**2
         movement_multiplier = max(
             0.0,
             creature.physical_traits.movement_cost_multiplier
@@ -1439,6 +1475,11 @@ float
             raise ValueError(
                 "rest_digestion_efficiency_bonus must be within [0, 1]."
             )
+        if metabolism.rest_energy_recovery_per_second != 0.0:
+            raise ValueError(
+                "rest_energy_recovery_per_second must be zero in the "
+                "thermodynamic model."
+            )
 
     def brain_upkeep_energy_cost_per_second(
         self,
@@ -1468,11 +1509,15 @@ float
         if genome is None:
             return 0.0
 
-        nodes = getattr(genome, "nodes", {}) or {}
         connections = getattr(genome, "connections", {}) or {}
+        enabled_connections = sum(
+            1
+            for connection in connections.values()
+            if bool(getattr(connection, "enabled", True))
+        )
         return (
-            len(nodes) * self.config.brain_upkeep_per_node
-            + len(connections) * self.config.brain_upkeep_per_connection
+            enabled_connections
+            * self.config.brain_upkeep_per_enabled_connection
         )
 
     def eat(

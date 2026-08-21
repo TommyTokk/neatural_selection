@@ -87,18 +87,24 @@ class StatsPanelComponent:
             ("DEATHS", str(world.rt_neat.stats.deaths), self.theme.selected_outline),
             ("ARCHIVED", str(world.archived_fitness_count()), self.theme.text_primary),
             (
-                "BEST FITNESS",
-                self._format_decimal(world.rt_neat.stats.best_fitness),
+                "BEST NET ENERGY",
+                self._format_decimal(
+                    world.rt_neat.stats.best_net_energy_balance
+                ),
                 (58, 104, 96),
             ),
             (
-                "AVG FITNESS",
-                self._format_decimal(world.rt_neat.stats.average_fitness),
+                "AVG NET ENERGY",
+                self._format_decimal(
+                    world.rt_neat.stats.average_net_energy_balance
+                ),
                 self.theme.accent,
             ),
             (
-                "WORST FITNESS",
-                self._format_decimal(world.rt_neat.stats.worst_fitness),
+                "NET RATE",
+                self._format_decimal(
+                    world.rt_neat.stats.average_net_metabolic_rate
+                ),
                 self.theme.selected_outline,
             ),
             (
@@ -221,9 +227,12 @@ class StatsPanelComponent:
             f"/{world.rt_neat.stats.average_brain_connections:.1f} conns",
             f"Live brains: {world.live_brain_count()}",
             f"Archived: {world.archived_fitness_count()}",
-            f"Best fitness: {world.rt_neat.stats.best_fitness:.2f}",
-            f"Avg fitness: {world.rt_neat.stats.average_fitness:.2f}",
-            f"Worst fitness: {world.rt_neat.stats.worst_fitness:.2f}",
+            "Best net energy: "
+            f"{world.rt_neat.stats.best_net_energy_balance:.2f}",
+            "Avg net energy: "
+            f"{world.rt_neat.stats.average_net_energy_balance:.2f}",
+            "Avg net rate: "
+            f"{world.rt_neat.stats.average_net_metabolic_rate:.3f}",
             f"Eligible parents: {world.rt_neat.stats.eligible_parent_count}",
             world.stats.generation_label,
         ]

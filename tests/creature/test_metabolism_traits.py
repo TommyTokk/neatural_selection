@@ -333,7 +333,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
 
         self.assertAlmostEqual(creature.energy, 0.7)
 
-    def test_brain_complexity_increases_basal_upkeep_before_multiplier(
+    def test_enabled_connections_increase_neural_upkeep_before_multiplier(
         self,
     ) -> None:
         """Exercise test brain complexity increases basal upkeep before multiplier behavior.
@@ -356,8 +356,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
         metabolism = Metabolism(
             MetabolismConfig(
                 basic_metabolism_rate=0.0,
-                brain_upkeep_per_node=0.001,
-                brain_upkeep_per_connection=0.0005,
+                brain_upkeep_per_enabled_connection=0.0005,
                 movement_energy_cost_factor=0.0,
                 sprint_energy_cost_per_second=0.0,
                 digestive_upkeep_at_default_per_second=0.0,
@@ -389,8 +388,8 @@ class MetabolismTraitCostTest(unittest.TestCase):
             energy_cost_multiplier=2.0,
         )
 
-        self.assertAlmostEqual(simple.energy, 1.0 - 0.0035)
-        self.assertAlmostEqual(complex_creature.energy, 1.0 - 0.07)
+        self.assertAlmostEqual(simple.energy, 1.0 - 0.0015)
+        self.assertAlmostEqual(complex_creature.energy, 1.0 - 0.03)
         self.assertLess(complex_creature.energy, simple.energy)
 
     def test_infant_brain_tax_holiday_skips_complexity_upkeep(self) -> None:
@@ -409,13 +408,12 @@ class MetabolismTraitCostTest(unittest.TestCase):
         # Keep the test infant brain tax holiday skips complexity upkeep test intent explicit.
         genomes = {
             1: SimpleGenome(node_count=0, connection_count=0),
-            2: SimpleGenome(node_count=20, connection_count=0),
+            2: SimpleGenome(node_count=20, connection_count=20),
         }
         metabolism = Metabolism(
             MetabolismConfig(
                 basic_metabolism_rate=0.01,
-                brain_upkeep_per_node=0.001,
-                brain_upkeep_per_connection=0.0005,
+                brain_upkeep_per_enabled_connection=0.001,
                 movement_energy_cost_factor=0.0,
                 sprint_energy_cost_per_second=0.0,
                 digestive_upkeep_at_default_per_second=0.0,

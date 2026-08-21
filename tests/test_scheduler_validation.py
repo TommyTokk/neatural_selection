@@ -636,25 +636,17 @@ class PopulationChurnValidationTest(unittest.TestCase):
         if step > 0 and step % 15 == 0 and world.creatures:
             parent = min(world.creatures, key=lambda item: item.creature_id)
             parent.energy = max(parent.energy, 1.0)
-            parent_fitness = world.fitness[parent.creature_id]
-            parent_fitness.age_seconds = max(
-                parent_fitness.age_seconds,
+            parent.age_seconds = max(
+                parent.age_seconds,
                 world.config.population.min_reproduction_age,
             )
-            parent_fitness.last_reproduction_age = (
-                parent_fitness.age_seconds
+            parent.last_birth_time = (
+                parent.age_seconds
                 - world.config.population.reproduction_cooldown
             )
             reproduce = _action(reproduce=True)
             world._last_actions[parent.creature_id] = reproduce
             world._effective_actions[parent.creature_id] = reproduce
-            world.rt_neat.eligible_parent_ids = [parent.creature_id]
-            original = world._has_reproduction_resources
-            world._has_reproduction_resources = lambda: True
-            try:
-                world._try_reproduce()
-            finally:
-                world._has_reproduction_resources = original
         if step % 20 == 10 and len(world.creatures) > 2:
             victim = max(world.creatures, key=lambda item: item.creature_id)
             if world.foods:

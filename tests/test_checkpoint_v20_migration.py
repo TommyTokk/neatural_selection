@@ -69,7 +69,7 @@ class CheckpointV20MigrationTest(unittest.TestCase):
         )
 
     def test_v20_schema_six_fixtures_require_and_apply_brain_reset(self) -> None:
-        self.assertEqual(CHECKPOINT_VERSION, 24)
+        self.assertEqual(CHECKPOINT_VERSION, 25)
         for metadata in self.manifest["fixtures"]:
             with self.subTest(fixture=metadata["file"]):
                 with gzip.open(FIXTURE_DIRECTORY / metadata["file"], "rb") as stream:

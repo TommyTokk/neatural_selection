@@ -103,21 +103,16 @@ class TelemetryDatabase:
                 sim_time REAL PRIMARY KEY,
                 alive_count INTEGER,
                 food_count INTEGER,
-                best_fitness REAL
+                best_net_energy_balance REAL
             );
 
-            CREATE TABLE IF NOT EXISTS parent_selection_events (
+            CREATE TABLE IF NOT EXISTS reproduction_events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sim_time REAL NOT NULL,
                 parent_creature_id INTEGER NOT NULL,
                 species_id INTEGER NOT NULL,
-                total_energy_gathered REAL NOT NULL,
-                node_count INTEGER NOT NULL,
-                enabled_connection_count INTEGER NOT NULL,
-                network_complexity REAL,
-                eligible_pool_size INTEGER NOT NULL,
-                tournament_k1 INTEGER NOT NULL,
-                tournament_k2 INTEGER NOT NULL,
+                parent_investment REAL NOT NULL,
+                child_endowment REAL NOT NULL,
                 outcome TEXT NOT NULL
             );
 
@@ -154,14 +149,29 @@ class TelemetryDatabase:
                 ON species(parent_species_id);
             CREATE INDEX IF NOT EXISTS idx_creatures_species
                 ON creatures(species_id);
-            CREATE INDEX IF NOT EXISTS idx_parent_selection_time
-                ON parent_selection_events(sim_time);
+            CREATE INDEX IF NOT EXISTS idx_reproduction_events_time
+                ON reproduction_events(sim_time);
             """
         )
         self._ensure_species_history_columns()
         self._ensure_flocking_population_metrics_columns()
+        self._ensure_population_metrics_columns()
         self.connection.commit()
         self._closed = False
+
+    def _ensure_population_metrics_columns(self) -> None:
+        """Add thermodynamic metrics to telemetry databases in place."""
+        columns = {
+            str(row[1])
+            for row in self.connection.execute(
+                "PRAGMA table_info(population_metrics)"
+            )
+        }
+        if "best_net_energy_balance" not in columns:
+            self.connection.execute(
+                "ALTER TABLE population_metrics "
+                "ADD COLUMN best_net_energy_balance REAL"
+            )
 
     def _ensure_species_history_columns(self) -> None:
         columns = {
@@ -661,43 +671,39 @@ class TelemetryDatabase:
         sim_time: float,
         alive_count: int,
         food_count: int,
-        best_fitness: float,
+        best_net_energy_balance: float,
     ) -> None:
         self.connection.execute(
             """
             INSERT INTO population_metrics
-                (sim_time, alive_count, food_count, best_fitness)
+                (sim_time, alive_count, food_count, best_net_energy_balance)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(sim_time) DO UPDATE SET
                 alive_count = excluded.alive_count,
                 food_count = excluded.food_count,
-                best_fitness = excluded.best_fitness
+                best_net_energy_balance = excluded.best_net_energy_balance
             """,
-            (sim_time, alive_count, food_count, best_fitness),
+            (sim_time, alive_count, food_count, best_net_energy_balance),
         )
         self.connection.commit()
 
-    def log_parent_selection_events(
+    def log_reproduction_events(
         self,
         events: list[dict[str, object]],
     ) -> None:
+        """Store passive autonomous-birth outcomes."""
         if not events:
             return
         columns = (
             "sim_time",
             "parent_creature_id",
             "species_id",
-            "total_energy_gathered",
-            "node_count",
-            "enabled_connection_count",
-            "network_complexity",
-            "eligible_pool_size",
-            "tournament_k1",
-            "tournament_k2",
+            "parent_investment",
+            "child_endowment",
             "outcome",
         )
         self.connection.executemany(
-            "INSERT INTO parent_selection_events "
+            "INSERT INTO reproduction_events "
             f"({', '.join(columns)}) VALUES "
             f"({', '.join('?' for _ in columns)})",
             [tuple(event[column] for column in columns) for event in events],

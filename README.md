@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This project models a population of autonomous herbivorous creatures whose morphology, metabolism, perception, social tendencies, and neural controllers can change through continuous reproduction and mutation. A creature is not represented by a single state vector alone: the implementation separates inherited genotype, transient physiological state, rigid-body dynamics, neural decision state, ancestry, and observational records. Behaviour emerges from the repeated coupling of perception, feed-forward NEAT activation, action execution, resource accounting, and selection. No explicit objective such as “move toward food” is programmed into the controller; instead, creatures that gather more environmental energy are preferentially selected as parents, while the energetic costs of sensing, motion, neural complexity, digestion, communication, and reproduction constrain viable strategies.
+This project models a population of autonomous herbivorous creatures whose morphology, metabolism, perception, social tendencies, and neural controllers change through continuous asexual reproduction and mutation. A creature is not represented by a single state vector alone: the implementation separates inherited genotype, transient physiological state, rigid-body dynamics, neural decision state, ancestry, and observational records. Behaviour emerges from perception, feed-forward NEAT activation, action execution, and thermodynamic resource accounting. There is no explicit parent ranking: a lineage propagates only when an individual survives long enough, accumulates sufficient post-upkeep energy, expresses reproductive intent, and funds its child directly.
 
 This report describes the current computational model, its principal mathematical formulations, and the mechanisms used to analyse emergent behaviour. Environmental quantities are considered only where they enter a creature's sensors, motion, resource balance, communication, reproduction, or survival.
 
@@ -18,7 +18,7 @@ _Primary implementation: [creature domain package](src/creature/) · [simulation
 6. [Communication](#6-communication)
 7. [Feeding, metabolism, rest, and vitality](#7-feeding-metabolism-rest-and-vitality)
 8. [Reproduction, development, and evolution](#8-reproduction-development-and-evolution)
-9. [Fitness and speciation](#9-fitness-and-speciation)
+9. [Passive telemetry and speciation](#9-passive-telemetry-and-speciation)
 10. [Behavioural analysis and explainability](#10-behavioural-analysis-and-explainability)
 11. [Concluding interpretation](#11-concluding-interpretation)
 
@@ -40,7 +40,7 @@ _Implementation: [common numerical helpers](src/creature/common.py) · [configur
 
 ### 1.1 Artificial-life formulation
 
-Each creature is an embodied, autonomous agent. Its body occupies continuous two-dimensional space; its sensors transform local physical and biological conditions into a fixed neural input vector; its feed-forward neural genome maps that vector to action intensities; and the resulting motion and biological transactions alter both the creature and its surroundings. Reproduction is asexual: a selected parent supplies the child's inherited traits and neural genome, after which both are independently mutated. The population therefore implements a continuous evolutionary process rather than a sequence of isolated generations.
+Each creature is an embodied, autonomous agent. Its body occupies continuous two-dimensional space; its sensors transform local physical and biological conditions into a fixed neural input vector; its feed-forward neural genome maps that vector to action intensities; and the resulting motion and biological transactions alter both the creature and its surroundings. Reproduction is asexual: any physiologically eligible creature may fund a child from its own post-upkeep energy, after which inherited traits and the neural genome mutate. The population therefore implements a continuous evolutionary process rather than a sequence of isolated generations.
 
 _Implementation: [creature entity](src/creature/model.py) · [evolution coordinator](src/creature/evolution.py) · [real-time NEAT manager](src/creature/neat/rt_neat.py)_
 
@@ -49,11 +49,11 @@ The model distinguishes four kinds of state:
 1. **Hereditary state:** vision, morphology, digestive traits, flocking genes, social tags, colour, and the NEAT genome.
 2. **Physical and physiological state:** position, velocity, heading, energy, life, stomach contents, age, and carried food.
 3. **Controller state:** the instantiated neural network, smoothed action values, internal chronometers, and cached social intention.
-4. **Historical state:** lineage, fitness measurements, completed behavioural bouts, species records, and archived genomes.
+4. **Historical state:** lineage, passive lifetime measurements, completed behavioural bouts, species records, and archived genomes.
 
 This separation prevents temporary conditions—such as infant movement penalties or senescence—from accidentally changing inherited traits.
 
-_Implementation: [genotype](src/creature/genotype.py) · [live state](src/creature/model.py) · [runtime services](src/creature/runtime/) · [historical fitness](src/creature/fitness.py)_
+_Implementation: [genotype](src/creature/genotype.py) · [live state](src/creature/model.py) · [runtime services](src/creature/runtime/) · [historical telemetry](src/creature/fitness.py)_
 
 ### 1.2 Deterministic multi-rate cycle
 
@@ -134,7 +134,7 @@ Every creature has a stable integer identity and a `LineageInfo` record containi
 
 _Implementation: [lineage and mutation deltas](src/creature/genotype.py) · [offspring planning](src/creature/evolution.py)_
 
-Resource diagnostics retain the latest complete transaction: digestive conversion, rest recovery, healing, total demand, movement-powered demand, deficits, direct damage, and final energy and life. These records do not determine biology; they expose the already resolved ledger for scientific inspection.
+Resource diagnostics retain the latest complete transaction: digestive conversion, the explicitly zero rest-generation term, paid healing, total demand, movement-powered demand, deficits, direct damage, and final energy and life. These records do not determine biology; they expose the already resolved ledger for scientific inspection.
 
 _Implementation: [diagnostic records](src/creature/model.py) · [ledger commit](src/creature/metabolism.py)_
 
@@ -183,7 +183,7 @@ Thus a low-energy creature with no stomach space cannot obtain a strong feeding-
 
 _Implementation: [sensor input formulation](src/creature/vision.py) · [stomach fullness](src/creature/vision.py) · [flocking defaults](configs/sim_config.py)_
 
-Reproductive readiness is computed from biological eligibility rather than from the raw neural wish to reproduce. Energy, minimum age, cooldown, available population capacity, and resource conditions remain authoritative external gates. Internal time is represented through an alternating signal, a resettable chronometer, and normalized age, allowing networks to evolve periodic or interval-dependent behaviour without recurrent connections.
+Reproductive readiness is computed from biological eligibility rather than from the raw neural wish to reproduce. Post-upkeep energy, minimum age, cooldown, and available population capacity remain authoritative external gates; food abundance and comparative performance do not. Internal time is represented through an alternating signal, a resettable chronometer, and normalized age, allowing networks to evolve periodic or interval-dependent behaviour without recurrent connections.
 
 _Implementation: [sensor snapshot assembly](src/world.py) · [reproductive eligibility](src/creature/neat/rt_neat.py) · [chronometer update](src/world.py)_
 
@@ -269,7 +269,7 @@ The action schema contains exactly 15 ordered outputs:
 | 14 | `emit_alarm_pheromone` | $[0,1]$ | alarm deposition intensity |
 | 15 | `rest` | $[0,1]$ | continuous resting intent |
 
-Separation, alignment, and cohesion are not actions: they are inherited traits that modulate social steering. Positive discrete intents become active only when their value exceeds $0.1$. This threshold prevents arbitrarily small neural noise from triggering eating, reproduction, carrying, nursing, or chronometer resets.
+Separation, alignment, and cohesion are not actions: they are inherited traits that modulate social steering. Most positive discrete intents become active only when their value exceeds $0.1$. Reproduction deliberately uses the stricter centered threshold $0.2$, equivalent to raw sigmoid output above $0.6$, while eating, carrying, nursing, and chronometer resets retain the shared $0.1$ action threshold.
 
 _Implementation: [action ordering, ranges, and threshold](src/creature/action.py) · [NEAT output declaration](configs/neat_herbivore.ini)_
 
@@ -496,7 +496,7 @@ C=C_{\mathrm{base}}+C_{\mathrm{brain}}+C_{\mathrm{move}}
 +C_{\mathrm{sound}}+C_{\mathrm{pheromone}}+C_{\mathrm{digestive}}.
 $$
 
-Default basal demand is $0.01$. Movement demand is $0.02(v/v_{\max})m$, where $m$ is the inherited movement-cost multiplier; panic adds up to $0.04$ per second. Body cost is $0.006(r/r_{\max})^2$. After five seconds of age, neural upkeep adds $0.0003$ per node and $0.0001$ per connection per second.
+Default basal demand is $0.005$. Movement demand is quadratic, $0.02(v/v_{\max})^2m$, where $m$ is the inherited movement-cost multiplier; panic adds up to $0.04$ per second. Maximum normalized body cost is $0.004(r/r_{\max})^2$. Vision contributes between $0.001$ and $0.006$ per second, and neural upkeep charges $0.00008$ per enabled connection.
 
 _Implementation: [energy cost breakdown](src/creature/metabolism.py) · [body and brain upkeep](src/creature/metabolism.py) · [metabolism and trait defaults](configs/sim_config.py)_
 
@@ -531,13 +531,13 @@ $$
 r_e=r_s(1-A),
 $$
 
-where $r_s$ is smoothed neural rest intent. A creature cannot obtain full digestive, recovery, or healing benefits while simultaneously performing costly behaviour.
+where $r_s$ is smoothed neural rest intent. A creature cannot obtain full digestive or paid-healing benefits while simultaneously performing costly behaviour.
 
 _Implementation: [activity formulation](src/creature/metabolism.py) · [effective-rest commit](src/world.py)_
 
-Rest can replenish usable energy only up to the starvation threshold, currently $0.3$, at a maximum rate $0.04r_e$ per second. It can also heal life at up to $0.01r_e$ life units per second, provided the creature can pay one unit of energy per life unit restored. Healing never revives a creature whose life has already reached zero.
+Rest does not create usable energy. It can improve digestion and heal life at up to $0.01r_e$ life units per second, provided the creature pays one unit of stored energy per life unit restored. Healing never revives a creature whose life has already reached zero.
 
-_Implementation: [rest recovery and healing](src/creature/metabolism.py) · [rest defaults](configs/sim_config.py)_
+_Implementation: [rest digestion and paid healing](src/creature/metabolism.py) · [rest defaults](configs/sim_config.py)_
 
 ### 7.5 Deficit damage, senescence, and death
 
@@ -565,34 +565,23 @@ _Implementation: [senescence factor and death processing](src/world.py) · [surv
 
 ## 8. Reproduction, development, and evolution
 
-### 8.1 Eligibility and parent selection
+### 8.1 Autonomous eligibility
 
-A creature becomes eligible only if it is at least $20$ seconds old, has energy of at least $0.8$, and has completed the $12$-second reproduction cooldown. It must also express reproductive intent above $0.1$. Population capacity and environmental biomass gates are checked independently, so a strong neural output cannot bypass ecological or physiological constraints.
+At each $20\,\mathrm{Hz}$ biology boundary the ledger credits digestion, deducts ordinary upkeep, resolves deficit damage, and then evaluates reproduction. A surviving creature is eligible when its post-upkeep energy is at least $0.75E_{\max}$, its age is at least ten seconds, its five-second cooldown is complete, and its centered neural intent exceeds $0.2$.
 
-_Implementation: [eligibility](src/creature/neat/rt_neat.py) · [intent and resource gates](src/world.py) · [population defaults](configs/sim_config.py)_
+The sub-tick transaction order is fixed: (1) credit digested nutrients to usable energy; (2) deduct basal, visual, locomotor, neural, and other ordinary upkeep; (3) evaluate energy, maturity, cooldown, survival, and intent against that post-upkeep state; and (4) reserve the $45\%$ birth investment. Thus the birth reservation never runs ahead of upkeep or turns ordinary birth-frame upkeep into an unpaid life deficit.
 
-Parent selection uses a two-stage tournament. From $k_1=3$ sampled eligible creatures, the $k_2=2$ largest lifetime gathered-energy values become finalists; the least complex neural network among them wins, with energy and stable identity as deterministic tie-breakers. If the pool is no larger than $k_1$, the same energy–parsimony ordering is applied to the entire pool. Neural complexity is the number of nodes plus enabled connections.
+The reproduction neuron is pinned to logistic sigmoid with founder bias $-1$. Intent thresholds must be interpreted in the output's declared domain: raw $\sigma(z)\in[0,1]$ uses $\sigma(z)>0.6$; symmetric centering $y=2(\sigma(z)-0.5)\in[-1,1]$ uses $y>0.2$; and offset centering $y=\sigma(z)-0.5\in[-0.5,0.5]$ uses $y>0.1$. The runtime uses the symmetric form. Eligible requests are shuffled uniformly; gathered energy, age ranking, neural complexity, species size, and identity never prioritize a parent. Capacity-deferred requests pay nothing and remain immediately eligible when a slot opens.
 
-_Implementation: [tournament and parsimony](src/creature/neat/rt_neat.py) · [selection configuration](configs/sim_config.py)_
-
-The parent's reproduction demand depends on network size:
-
-$$
-C_R=\min\left(0.75,
-0.35+0.008N+0.002C\right),
-$$
-
-where $N$ and $C$ are the numbers of neural nodes and connections. The parent must survive the same-step combination of upkeep, reproduction, and any nursing transfer.
-
-_Implementation: [dynamic reproduction cost](src/world.py) · [population parameters](configs/sim_config.py)_
+_Implementation: [physiological eligibility](src/world.py) · [neural output contract](src/creature/neat/controller.py) · [population defaults](configs/sim_config.py)_
 
 ### 8.2 Atomic birth transaction
 
-Reproduction is staged rather than immediately mutating the live population. The system first evaluates baseline resource candidates, ranks reproduction requests, resolves nursing and reproduction costs, and rejects any action that would make its donor fail the survival constraint. Genotype mutation, neural mutation, species assignment, random-number state, and child construction are prepared in a shadow transaction. They become observable only if the complete batch succeeds.
+For post-upkeep energy $E_p$, the parent reserves $I=0.45E_p$ and the child receives $E_c=0.90I$; the remaining $0.10I$ is conversion loss. Energy, cooldown, offspring count, genotype mutation, neural mutation, species assignment, allocators, and random-number state become observable only after the complete staged transaction succeeds.
 
 _Implementation: [resource transaction resolution](src/world.py) · [evolution shadow transaction](src/creature/evolution.py) · [transaction tests](tests/test_world_reproduction.py)_
 
-The child receives energy $0.15$, its parent's heading, a position offset safely from the parent and boundaries, generation $g_p+1$, and the parent identity. A newly detected species receives the assigned species identity before registration. The parent's cooldown and offspring count are updated only after successful materialization.
+Placement tries up to sixteen randomized angular and radial offsets and rejects boundaries or overlap with creatures, food, solid geometry, and other staged offspring. If every position is blocked, the shadow transaction is discarded: the parent loses no energy, cooldown, offspring count, allocator position, species state, or RNG state. A successful child inherits its parent's heading, generation $g_p+1$, and parent identity.
 
 _Implementation: [offspring commit and placement](src/world.py) · [lineage planning](src/creature/evolution.py)_
 
@@ -614,33 +603,30 @@ _Implementation: [neural child creation](src/creature/neat/controller.py) · [NE
 
 ### 8.5 Infancy, nursing, and extinction recovery
 
-A creature is an infant until age $12$ seconds. Infant movement cost is multiplied by three as a runtime penalty without modifying the inherited movement gene. A parent can nurse only its own nearby infant; the default transfer rate is $0.05$ energy units per second, and accepted transfers enter the donor's same-step resource transaction. Crossing the maturity boundary is recorded in the parent's fitness history.
+A creature is an infant until age ten seconds. Infant movement cost is multiplied by three as a runtime penalty without modifying the inherited movement gene. A parent can nurse only its own nearby infant; the default transfer rate is $0.05$ energy units per second, and accepted transfers enter the donor's same-step resource transaction. Startup validation requires the minimum child endowment to exceed worst-case idle burn over the maturity window by at least $20\%$.
 
 _Implementation: [infancy and nursing](src/world.py) · [family lineage](src/creature/genotype.py) · [population configuration](configs/sim_config.py)_
 
-If no creatures remain, the model draws up to five parent genomes from the retained elite archive and creates a configured recovery population, currently up to 35 creatures. Archived non-neural traits are mutated through the same path used by ordinary births, and recovered neural genomes are mutated and re-evaluated for speciation. Extinction recovery therefore preserves evolutionary memory without cloning an unchanged population.
+If no creatures remain, recovery samples preserved species uniformly before sampling an unranked genome within each species. Archived traits are mutated through the ordinary offspring path and re-evaluated for taxonomy. If extinction occurs before any species is archived, the model procedurally creates a fresh founder cohort and registers a valid root species.
 
-_Implementation: [extinction recovery](src/world.py) · [aligned archive pruning](src/creature/evolution.py) · [elite neural archive](src/creature/neat/controller.py)_
+_Implementation: [extinction recovery](src/world.py) · [aligned archive pruning](src/creature/evolution.py) · [unranked neural archive](src/creature/neat/controller.py)_
 
 ---
 
-## 9. Fitness and speciation
+## 9. Passive telemetry and speciation
 
-### 9.1 Implicit fitness
+### 9.1 Thermodynamic telemetry
 
-The selection score is
+There is no scalar selection score. `CreatureTelemetry` passively records lifetime ingestion $E_i$, realized expenditure $E_s$, offspring, age, food contacts, movement, and behavioural diagnostics. Its energy diagnostics are
 
 $$
-F=\max(0,E_{\mathrm{gathered}})+0.001\max(0,t_{\mathrm{age}}).
+E_{\mathrm{net}}=E_i-E_s,\qquad
+R_{\mathrm{net}}=\frac{E_{\mathrm{net}}}{\max(t_{\mathrm{age}},1)}.
 $$
 
-Lifetime gathered energy is increased by net digestive energy, so selection rewards energy successfully extracted from the world rather than merely food contacts, current energy, distance, or action intensity. Age is only a small deterministic tie-breaker. Parent tournament selection uses gathered energy directly before neural parsimony.
+These values are displayed and persisted but never enter reproduction, genome retention, speciation, or extinction recovery. `CreatureFitness` remains only as a compatibility alias for older imports and checkpoints.
 
-_Implementation: [fitness score and lifetime measures](src/creature/fitness.py) · [digestion ledger commit](src/creature/metabolism.py) · [parent selection](src/creature/neat/rt_neat.py)_
-
-Additional measurements—age, food items depleted, distance travelled, average speed, offspring count, mature offspring, flocking quality, births, deaths, and neural size—support analysis but do not replace the implicit gathered-energy criterion.
-
-_Implementation: [creature fitness records](src/creature/fitness.py) · [real-time population statistics](src/creature/neat/rt_neat.py)_
+_Implementation: [passive telemetry ledger](src/creature/fitness.py) · [real-time diagnostics](src/creature/neat/rt_neat.py)_
 
 An optional flocking benchmark measures group presence, heading alignment, spacing, and movement:
 
@@ -652,7 +638,7 @@ $$
 Q_s=\exp\left[-\left(\frac{d-d^*}{\sigma_d}\right)^2\right].
 $$
 
-The current defaults use target group size four, target spacing $60$, tolerance $30$, and reference speed $50$. Its bounded accumulated reward is diagnostic and does not enter the main selection score.
+The current defaults use target group size four, target spacing $60$, tolerance $30$, and reference speed $50$. Its bounded accumulated reward is diagnostic and does not affect reproduction.
 
 _Implementation: [flocking benchmark](src/creature/fitness.py) · [benchmark configuration](configs/sim_config.py)_
 
@@ -696,6 +682,8 @@ D=D_N+w_PD_P+w_FD_F,
 $$
 
 with current defaults $w_P=2$ and $w_F=1$. A child remains in its parent's species if $D\le T$; if $D>T$, it becomes the representative and founder of a new species. The default initial threshold is $T=3.5$.
+
+Species labels never share or rescale reproductive success. They remain operational for three separate purposes: taxonomic assignment by composite distance; active-clade management, where a species leaves the living set when its final member dies even if an archival representative is retained; and diversity-preserving extinction recovery, which samples preserved species before choosing an unranked genome within each selected species.
 
 _Implementation: [composite compatibility and species evaluation](src/creature/speciation.py) · [speciation defaults](configs/sim_config.py)_
 
@@ -793,10 +781,10 @@ _Implementation: [telemetry database](src/telemetry.py) · [persistent flock tra
 
 ## 11. Concluding interpretation
 
-The model couples evolution across several levels. Inherited radius, vision, digestion, movement efficiency, and social genes determine both opportunities and energetic liabilities. The NEAT genome transforms a high-dimensional but local sensory contract into continuous intentions. Physical integration, collision avoidance, resource availability, and transaction rules determine which intentions become realized behaviour. Gathered energy then influences parent selection, while network parsimony discourages unnecessary controller complexity. Speciation combines neural and phenotypic change, so neither morphology nor neural topology alone defines evolutionary divergence.
+The model couples evolution across several levels. Inherited radius, vision, digestion, movement efficiency, and social genes determine both opportunities and energetic liabilities. The NEAT genome transforms a high-dimensional but local sensory contract into continuous intentions. Physical integration, collision avoidance, resource availability, and transaction rules determine which intentions become realized behaviour. Lineages persist only through survival and autonomous energy-funded births; no comparative ranking or parsimony score selects parents. Speciation combines neural and phenotypic change, so neither morphology nor neural topology alone defines evolutionary divergence.
 
 _Implementation synthesis: [genotype](src/creature/genotype.py) · [brain](src/creature/neat/brain.py) · [metabolism](src/creature/metabolism.py) · [evolution and speciation](src/creature/evolution.py)_
 
-Several limitations follow from the formulation. The world is planar; bodies are circular and have equal mass; reproduction is asexual; sensory channels are engineered summaries rather than raw physical receptor arrays; the neural controller is feed-forward; compatibility and species thresholds are computational constructs; and the fitness proxy privileges lifetime gathered energy. Behavioural rules and counterfactual probes improve interpretability but remain operational definitions, not proof of subjective intention. These simplifications are deliberate: they create a tractable experimental system in which morphology, physiology, neural structure, social interaction, and evolutionary history can be measured under one deterministic simulation contract.
+Several limitations follow from the formulation. The world is planar; bodies are circular and have equal mass; reproduction is asexual; sensory channels are engineered summaries rather than raw physical receptor arrays; the neural controller is feed-forward; and compatibility and species thresholds are computational constructs. Passive energy and behavioural measurements describe outcomes but do not define a selection objective. Behavioural rules and counterfactual probes improve interpretability but remain operational definitions, not proof of subjective intention. These simplifications are deliberate: they create a tractable experimental system in which morphology, physiology, neural structure, social interaction, and evolutionary history can be measured under one deterministic simulation contract.
 
 _Sources and validation: [creature architecture tests](tests/creature/test_architecture.py) · [genotype determinism tests](tests/creature/test_genotype_determinism.py) · [scheduler validation](tests/test_scheduler_validation.py) · [behaviour observer tests](tests/test_behavior_observer.py)_

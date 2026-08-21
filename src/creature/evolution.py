@@ -528,7 +528,7 @@ CreatureEvolutionCoordinator
         active_species_ids
             Species identities represented by live creatures.
         archive_size
-            Maximum number of scored dead neural genomes to retain.
+            Maximum number of unranked dead neural genomes to retain.
 
         Returns
         -------

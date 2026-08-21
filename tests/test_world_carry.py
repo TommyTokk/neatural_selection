@@ -173,7 +173,7 @@ class WorldCarryTest(unittest.TestCase):
         world.config = SimpleNamespace(
             food=SimpleNamespace(max_food_radius=10.0),
             trait=SimpleNamespace(max_radius=20.0),
-            population=SimpleNamespace(min_reproduction_age=10.0),
+            population=SimpleNamespace(maturity_age_seconds=10.0),
             environment=SimpleNamespace(world_width=100.0, world_height=100.0),
             biome_sensor=SimpleNamespace(
                 forward_distance=48.0,

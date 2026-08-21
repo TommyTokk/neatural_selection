@@ -77,7 +77,7 @@ class WorldPersistenceTimerTest(unittest.TestCase):
         self.world.creatures = [object(), object()]
         self.world.foods = [object()]
         self.world.rt_neat = SimpleNamespace(
-            stats=SimpleNamespace(best_fitness=4.5)
+            stats=SimpleNamespace(best_net_energy_balance=4.5)
         )
         self.world.neat_controller = object()
         self.world.telemetry = _Telemetry()

@@ -378,12 +378,13 @@ class MetabolismConfig:
     life_damage_per_energy_deficit: float = 0.25
     movement_life_penalty_max_multiplier: float = 4.0
     rest_digestion_efficiency_bonus: float = 0.10
-    rest_energy_recovery_per_second: float = 0.04
+    # Rest may reduce activity and improve digestion, but it does not create
+    # energy in the thermodynamic model.
+    rest_energy_recovery_per_second: float = 0.0
     rest_healing_rate_per_second: float = 0.01
     rest_healing_energy_cost_per_life: float = 1.0
-    basic_metabolism_rate: float = 0.01
-    brain_upkeep_per_node: float = 0.0003
-    brain_upkeep_per_connection: float = 0.0001
+    basic_metabolism_rate: float = 0.005
+    brain_upkeep_per_enabled_connection: float = 0.00008
     movement_energy_cost_factor: float = 0.02
     sprint_energy_cost_per_second: float = 0.04
     eating_distance: float = 8
@@ -409,41 +410,98 @@ class MetabolismConfig:
 class PopulationConfig:
     initial_creatures: int = 40
     max_creatures: int = 55
-    elite_archive_size: int = 256
+    genome_archive_size: int = 256
     fitness_archive_size: int = 256
     extinction_recovery_creatures: int = 35
     extinction_recovery_parent_pool: int = 5
     senescence_age_seconds: float = 200.0
     senescence_cost_multiplier: float = 0.05
-    min_reproduction_age: float = 20.0
-    reproduction_cooldown: float = 12.0
-    reproduction_energy_threshold: float = 0.8
-    tournament_k1: int = 3
-    tournament_k2: int = 2
-    reproduction_energy_cost_base: float = 0.35
-    reproduction_cost_per_node: float = 0.008
-    reproduction_cost_per_connection: float = 0.002
-    max_dynamic_reproduction_cost: float = 0.75
-    infant_energy_spawn: float = 0.15
-    infant_maturity_age: float = 12.0
+    reproduction_energy_fraction: float = 0.75
+    child_energy_investment_fraction: float = 0.45
+    birth_conversion_efficiency: float = 0.90
+    maturity_age_seconds: float = 10.0
+    birth_cooldown_seconds: float = 5.0
+    # The action layer uses symmetric sigmoid centering, so 0.2 maps back to
+    # a raw sigmoid probability of 0.6.
+    reproduction_intent_threshold: float = 0.2
+    child_spawn_max_attempts: int = 16
     nursing_energy_transfer_rate: float = 0.05
     child_spawn_distance: float = 34.0
-    reproduction_min_food_ratio: float = 0.2
-    reproduction_min_available_biomass_ratio: float = 0.02
-    reproduction_recovery_pressure_threshold: float = 0.25
 
     def __post_init__(self) -> None:
-        for name in ("tournament_k1", "tournament_k2"):
-            value = getattr(self, name)
-            if type(value) is not int or value <= 0:
-                raise ValueError(
-                    f"population.{name} must be a positive integer."
-                )
-        if self.tournament_k2 > self.tournament_k1:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate thermodynamic birth settings at construction and startup."""
+        for name in (
+            "reproduction_energy_fraction",
+            "child_energy_investment_fraction",
+            "birth_conversion_efficiency",
+        ):
+            value = float(getattr(self, name))
+            if not isfinite(value) or not 0.0 < value <= 1.0:
+                raise ValueError(f"population.{name} must be within (0, 1].")
+        if (
+            not isfinite(float(self.reproduction_intent_threshold))
+            or not 0.0 <= self.reproduction_intent_threshold <= 1.0
+        ):
             raise ValueError(
-                "population.tournament_k2 must not exceed "
-                "population.tournament_k1."
+                "population.reproduction_intent_threshold must be within [0, 1]."
             )
+        for name in ("maturity_age_seconds", "birth_cooldown_seconds"):
+            value = float(getattr(self, name))
+            if not isfinite(value) or value < 0.0:
+                raise ValueError(f"population.{name} cannot be negative.")
+        if (
+            type(self.child_spawn_max_attempts) is not int
+            or self.child_spawn_max_attempts <= 0
+        ):
+            raise ValueError(
+                "population.child_spawn_max_attempts must be a positive integer."
+            )
+
+    # Checkpoint/test compatibility for pre-v25 timing names. The simulation
+    # reads only the physiological fields above.
+    @property
+    def min_reproduction_age(self) -> float:
+        return self.maturity_age_seconds
+
+    @min_reproduction_age.setter
+    def min_reproduction_age(self, value: float) -> None:
+        self.maturity_age_seconds = float(value)
+
+    @property
+    def infant_maturity_age(self) -> float:
+        return self.maturity_age_seconds
+
+    @infant_maturity_age.setter
+    def infant_maturity_age(self, value: float) -> None:
+        self.maturity_age_seconds = float(value)
+
+    @property
+    def reproduction_cooldown(self) -> float:
+        return self.birth_cooldown_seconds
+
+    @reproduction_cooldown.setter
+    def reproduction_cooldown(self, value: float) -> None:
+        self.birth_cooldown_seconds = float(value)
+
+    @property
+    def reproduction_energy_threshold(self) -> float:
+        return self.reproduction_energy_fraction
+
+    @reproduction_energy_threshold.setter
+    def reproduction_energy_threshold(self, value: float) -> None:
+        self.reproduction_energy_fraction = float(value)
+
+    @property
+    def elite_archive_size(self) -> int:
+        """Compatibility alias for the unranked genome archive limit."""
+        return self.genome_archive_size
+
+    @elite_archive_size.setter
+    def elite_archive_size(self, value: int) -> None:
+        self.genome_archive_size = int(value)
 
 
 @dataclass(slots=True)
@@ -505,7 +563,7 @@ class TraitConfig:
     social_tag_mutation_power: float = 0.05
     social_tag_replace_rate: float = 0.005
 
-    body_metabolism_cost_factor: float = 0.006
+    body_metabolism_cost_factor: float = 0.004
 
 
 @dataclass(slots=True)
@@ -519,8 +577,8 @@ class VisionConfig:
     min_angle: float = 0.35
     max_angle: float = pi
 
-    base_energy_cost: float = 0.002
-    area_energy_cost_factor: float = 0.018
+    base_energy_cost: float = 0.001
+    area_energy_cost_factor: float = 0.005
     boundary_warning_distance: float = 90.0
 
 

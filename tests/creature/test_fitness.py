@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 import unittest
 
-from src.fitness import CreatureFitness
+from src.fitness import CreatureFitness, CreatureTelemetry
 
 
-class CreatureFitnessScoreTest(unittest.TestCase):
-    def test_score_is_lifetime_energy_plus_lifespan_tiebreaker(self) -> None:
+class CreatureTelemetryTest(unittest.TestCase):
+    def test_net_energy_balance_tracks_ingestion_minus_spend(self) -> None:
         """Exercise test score is lifetime energy plus lifespan tiebreaker behavior.
         
         Parameters
@@ -21,12 +20,12 @@ class CreatureFitnessScoreTest(unittest.TestCase):
             The test completes through assertions.
         """
         # Keep the test score is lifetime energy plus lifespan tiebreaker test intent explicit.
-        creature = SimpleNamespace(total_energy_gathered=3.5)
-        fitness = CreatureFitness(age_seconds=20.0)
+        telemetry = CreatureTelemetry(age_seconds=20.0)
+        telemetry.record_energy_transaction(ingested=3.5, spent=1.25)
 
-        self.assertAlmostEqual(fitness.score(creature), 3.52)
+        self.assertAlmostEqual(telemetry.net_energy_balance, 2.25)
 
-    def test_gathered_energy_scores_before_evaluation_age_advances(self) -> None:
+    def test_net_metabolic_rate_uses_lifetime_age(self) -> None:
         """Exercise test gathered energy scores before evaluation age advances behavior.
         
         Parameters
@@ -40,15 +39,12 @@ class CreatureFitnessScoreTest(unittest.TestCase):
             The test completes through assertions.
         """
         # Keep the test gathered energy scores before evaluation age advances test intent explicit.
-        creature = SimpleNamespace(total_energy_gathered=2.0)
-        fitness = CreatureFitness(
-            age_seconds=30.0,
-            evaluation_start_age_seconds=30.0,
-        )
+        telemetry = CreatureTelemetry(age_seconds=30.0)
+        telemetry.record_energy_transaction(ingested=5.0, spent=2.0)
 
-        self.assertAlmostEqual(fitness.score(creature), 2.03)
+        self.assertAlmostEqual(telemetry.net_metabolic_rate, 0.1)
 
-    def test_offspring_and_flocking_diagnostics_do_not_change_score(self) -> None:
+    def test_telemetry_has_no_scalar_selection_score(self) -> None:
         """Exercise test offspring and flocking diagnostics do not change score behavior.
         
         Parameters
@@ -62,8 +58,6 @@ class CreatureFitnessScoreTest(unittest.TestCase):
             The test completes through assertions.
         """
         # Keep the test offspring and flocking diagnostics do not change score test intent explicit.
-        creature = SimpleNamespace(total_energy_gathered=1.25)
-        baseline = CreatureFitness(age_seconds=10.0)
         diagnostic = CreatureFitness(
             age_seconds=10.0,
             offspring_count=4,
@@ -71,7 +65,8 @@ class CreatureFitnessScoreTest(unittest.TestCase):
             flocking_benchmark_reward=100.0,
         )
 
-        self.assertEqual(diagnostic.score(creature), baseline.score(creature))
+        self.assertFalse(hasattr(diagnostic, "score"))
+        self.assertEqual(diagnostic.lifetime_offspring_count, 4)
 
     def test_food_recording_only_counts_depleted_food(self) -> None:
         """Exercise test food recording only counts depleted food behavior.
