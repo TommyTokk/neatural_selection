@@ -4,23 +4,24 @@
 
 This project models a population of autonomous herbivorous creatures whose morphology, metabolism, perception, social tendencies, and neural controllers change through continuous asexual reproduction and mutation. A creature is not represented by a single state vector alone: the implementation separates inherited genotype, transient physiological state, rigid-body dynamics, recurrent neural decision state, ancestry, and observational records. Behaviour emerges from perception, recurrent NEAT activation, action execution, and thermodynamic resource accounting. There is no explicit parent ranking: a lineage propagates only when an individual survives long enough, accumulates sufficient post-upkeep energy, expresses reproductive intent, and funds its child directly.
 
-This report describes the current computational model, its principal mathematical formulations, and the mechanisms used to analyse emergent behaviour. Environmental quantities are considered only where they enter a creature's sensors, motion, resource balance, communication, reproduction, or survival.
+This report describes the current computational model, its principal mathematical formulations, and the mechanisms used to analyse emergent behaviour. It includes the generated biome field, mixed food ecology, conserved biomass inventory, sensory transformations, physical and physiological transactions, communication fields, evolution, and passive scientific analysis.
 
 _Primary implementation: [creature domain package](src/creature/) · [simulation integration](src/world.py) · [simulation parameters](configs/sim_config.py)_
 
 ## Table of contents
 
 1. [Modelling scope and execution cycle](#1-modelling-scope-and-execution-cycle)
-2. [Creature state and genotype](#2-creature-state-and-genotype)
-3. [Perception and sensor formulation](#3-perception-and-sensor-formulation)
-4. [Neural decision model and actions](#4-neural-decision-model-and-actions)
-5. [Locomotion and social dynamics](#5-locomotion-and-social-dynamics)
-6. [Communication](#6-communication)
-7. [Feeding, metabolism, rest, and vitality](#7-feeding-metabolism-rest-and-vitality)
-8. [Reproduction, development, and evolution](#8-reproduction-development-and-evolution)
-9. [Passive telemetry and speciation](#9-passive-telemetry-and-speciation)
-10. [Behavioural analysis and explainability](#10-behavioural-analysis-and-explainability)
-11. [Concluding interpretation](#11-concluding-interpretation)
+2. [World, biomes, and food ecology](#2-world-biomes-and-food-ecology)
+3. [Creature state and genotype](#3-creature-state-and-genotype)
+4. [Perception and sensor formulation](#4-perception-and-sensor-formulation)
+5. [Neural decision model and actions](#5-neural-decision-model-and-actions)
+6. [Locomotion and social dynamics](#6-locomotion-and-social-dynamics)
+7. [Communication](#7-communication)
+8. [Feeding, metabolism, rest, and vitality](#8-feeding-metabolism-rest-and-vitality)
+9. [Reproduction, development, and evolution](#9-reproduction-development-and-evolution)
+10. [Passive telemetry and speciation](#10-passive-telemetry-and-speciation)
+11. [Behavioural analysis and explainability](#11-behavioural-analysis-and-explainability)
+12. [Concluding interpretation](#12-concluding-interpretation)
 
 ## Notation
 
@@ -81,9 +82,168 @@ _Implementation: [decision and action phases](src/world.py) · [perception servi
 
 ---
 
-## 2. Creature state and genotype
+## 2. World, biomes, and food ecology
 
-### 2.1 Embodied state
+### 2.1 Fractal biome generation
+
+The environment is a rectangular continuous world backed by a $64\times44$ biome grid. A seeded OpenSimplex field is evaluated over that grid at three octaves. If $N$ denotes two-dimensional simplex noise, $s$ is the spatial noise scale, $p$ is persistence, and $\ell$ is lacunarity, the sampled field is
+
+$$
+F(x,y)=\frac{1}{A}\sum_{o=0}^{O-1}p^o
+N\!\left(\ell^o\frac{x}{s},\ell^o\frac{y}{s}\right),
+\qquad
+A=\sum_{o=0}^{O-1}p^o.
+$$
+
+The defaults are $O=3$, $s=800$, $p=0.5$, and $\ell=2$. The sampled field is min--max normalized over the generated map. Let the requested prairie, bushes, and forest shares be $a_P$, $a_B$, and $a_F$. Their cumulative classification quantiles are
+
+$$
+q_P=\frac{a_P}{a_P+a_B+a_F},\qquad
+q_B=\frac{a_P+a_B}{a_P+a_B+a_F}.
+$$
+
+Values below the $q_P$ quantile become prairie, values between the two thresholds become bushes, and values at or above the $q_B$ quantile become forest. The default target shares are $0.35$, $0.40$, and $0.25$, respectively. Explicit prairie and bush thresholds from the food-patch configuration can replace the quantiles; startup rejects thresholds that are unordered. Because classification is grid-based, realized area shares are measured from cell counts and can differ slightly from the targets.
+
+_Implementation: [biome generation and classification](src/biome.py) · [biome defaults](configs/sim_config.py) · [generation tests](tests/test_biome.py)_
+
+### 2.2 Biome richness field
+
+Each biome has an ordinary-food spawn weight $w_b$: forest $2.75$, bushes $1.25$, and prairie $0.25$ by default. With uniform-spawn probability $p_u=0.10$ and $w_{\max}=\max_b w_b$, the expected ordinary-food density assigned to a biome cell is
+
+$$
+d_b=p_u+(1-p_u)\frac{w_b}{w_{\max}}.
+$$
+
+Thus the default cell values are $1$ in forest, approximately $0.509$ in bushes, and approximately $0.182$ in prairie. The positive uniform component deliberately prevents prairie from becoming an absolute zero-food region. If every biome weight is zero, the expected-density grid falls back to one everywhere because actual placement also falls back to uniform sampling.
+
+At an arbitrary world position, density is interpolated from the four surrounding cell-centre values. For fractional cell coordinates $(u,v)$,
+
+$$
+d(x,y)=(1-u)(1-v)d_{00}+u(1-v)d_{10}
+ +(1-u)vd_{01}+uvd_{11}.
+$$
+
+This continuous field is both an analytical prediction of the ordinary spawn process and the quantity exposed to biome sensors. It is not a count of currently present food. Biomes otherwise have no direct effect on locomotion, life, or metabolic cost; they influence creatures indirectly through resource placement and sensed resource expectation.
+
+_Implementation: [expected-density cache and interpolation](src/biome.py) · [richness sensing tests](tests/test_biome_sensing.py)_
+
+### 2.3 Independent food placement
+
+Independent pellets use a mixture sampler. With probability $p_u$, a position is drawn uniformly from the world interior. Otherwise, a uniformly proposed position in biome $b$ is accepted with probability
+
+$$
+P(\text{accept}\mid b)=\frac{w_b}{w_{\max}}.
+$$
+
+The pellet radius is respected when defining the admissible world interior. Weighted sampling makes at most 32 proposals by default and then falls back to a uniform position, so configuration or an unfortunate random sequence cannot block food creation. At bootstrap, if at least two independent items are requested, bounded cell enumeration first guarantees one ordinary pellet in bushes and one in forest when those biomes exist; remaining pellets follow the mixture sampler.
+
+_Implementation: [independent placement](src/food_spawner.py) · [biome placement tests](tests/test_food_spawner.py)_
+
+### 2.4 Food energy and physical representation
+
+An ordinary food pellet with radius $r$ and energy density $\rho$ contains
+
+$$
+E_f=\pi r^2\rho,
+$$
+
+where $r\in[6,10]$ and $\rho=0.002$ by default. After partial consumption, its radius follows the remaining energy,
+
+$$
+r=\sqrt{\frac{E_f}{\pi\rho}},
+$$
+
+and its physical mass is recomputed as
+
+$$
+m_f=0.9(0.2+0.035r).
+$$
+
+Ordinary partial consumption removes the committed energy and then updates energy, radius, mass, moment, and collision radius together. The runtime's $10\%$ micro-food tolerance belongs to bite formation rather than resizing: a whole pellet may be swallowed when it fits in the remaining stomach and is no more than $10\%$ larger than the interval's ordinary bite limit. Every pellet also has a bite capacity: at most that many chronological claims may consume it during one physical step. Independent pellets default to capacity one; biome patches may generate higher capacities.
+
+_Implementation: [food energy and resizing](src/food.py) · [food energy tests](tests/test_food_spawner.py)_
+
+### 2.5 Conserved biomass budget
+
+Food regeneration is limited by an explicit world energy inventory. Let $E_i$ and $S_i$ be usable and stomach energy for live creature $i$, and let $E_{f,j}$ be the remaining energy of food $j$. Available biomass is
+
+$$
+B_{\mathrm{available}}=\max\left(0,
+B_{\mathrm{total}}-\sum_i(E_i+S_i)-\sum_jE_{f,j}\right).
+$$
+
+Unless `total_biomass_energy` is configured explicitly, $B_{\mathrm{total}}$ is initialized from all creature usable/stomach energy plus all plant energy immediately after world bootstrap. Energy lost to upkeep, digestion inefficiency, or birth conversion therefore re-enters the unallocated biomass pool; it can become food again only through the bounded spawn mechanisms below. Life reserve is not included in this biomass ledger.
+
+For independent spawning, the budget is converted into slots using the energy of a pellet at the midpoint radius,
+
+$$
+\bar E_f=\pi\left(\frac{r_{\min}+r_{\max}}{2}\right)^2\rho,
+\qquad
+N_B=\left\lfloor\frac{B_{\mathrm{available}}}{\bar E_f}\right\rfloor.
+$$
+
+Clustered spawning instead constructs a complete candidate patch and checks its exact total energy before committing it. Both modes are additionally bounded by the global food-item capacity.
+
+_Implementation: [world biomass accounting](src/world.py) · [spawn budget](src/food_spawner.py) · [cluster budget](src/food_clustering.py)_
+
+### 2.6 Mixed independent and clustered food
+
+The food capacity is divided between independent pellets and biome-specific patches. For maximum item count $N_{\max}$ and cluster share $s_c$,
+
+$$
+N_{\mathrm{ind}}=\operatorname{round}(N_{\max}(1-s_c)),
+\qquad
+N_{\mathrm{cluster}}=N_{\max}-N_{\mathrm{ind}}.
+$$
+
+The default initial and maximum counts are both $363$, with $s_c=0.30$. Patch frequency is independent of biome area and ordinary-food weights. The manager chooses a feasible number of bush and forest patches whose patch-count ratio is nearest the configured $3{:}1$ weight while exactly accommodating the clustered item target within each profile's pellet-count bounds.
+
+| Biome | Patch-frequency weight | Pellets per patch | Spread radius | Energy multiplier | Bite capacity |
+|---|---:|---:|---:|---:|---:|
+| Prairie | $0$ | $1$ | $0$ | $1$ | $1$ |
+| Bushes | $3$ | $3$--$6$ | $20$--$40$ | $1$ | $1$--$2$ |
+| Forest | $1$ | $12$--$25$ | $50$--$100$ | $2$--$5$ | $2$--$6$ |
+
+Prairie patches are disabled by their zero frequency weight. For each active patch, a centre is sampled inside its assigned biome. Pellet offsets follow a two-dimensional Gaussian with standard deviation one third of the patch radius and are rejected outside that radius, the world, or the selected biome. Repeated placement failure shrinks the effective patch radius by $0.80$ down to $25\%$ of its configured radius before a new centre is tried.
+
+A patch energy multiplier $m_e$ is implemented by scaling the sampled base radius by $\sqrt{m_e}$, which multiplies area and energy by $m_e$. When a patch falls to at most $\lfloor0.10N_p\rfloor$ active pellets, its residual pellets are removed, it enters a random $600$--$1200$ tick cooldown, and it is relocated within the same biome before regrowth. Existing healthy patches are not destroyed merely because live capacity settings change; depleted inventory converges to the new target.
+
+_Implementation: [food-patch lifecycle](src/food_clustering.py) · [patch profiles](configs/sim_config.py) · [cluster tests](tests/test_food_clustering.py)_
+
+### 2.7 Regrowth pressure and shortage recovery
+
+Let $x=\operatorname{clip}_{[0,1]}(N/N_{\mathrm{cap}})$ be the relevant food ratio. The independent spawner uses independent-pellet count and its mode target; the patch manager uses total food count and global capacity. Regular regrowth uses
+
+$$
+P_f=\max\left(4x(1-x),\;0.05\,\mathbb{1}_{N=0}\right).
+$$
+
+The logistic term is zero at empty and full capacity and maximal at half capacity; the explicit $0.05$ seed prevents an empty world from being an absorbing state. Active species count $S_a$ scales the maximum rate through
+
+$$
+M_s=0.5+\frac{1.5}{1+\exp[-0.6(S_a-4)]},
+\qquad
+R=R_{\max}M_sP_f,
+$$
+
+where $R_{\max}=10$ biomass spawns per second. Independent and clustered systems accumulate fractional spawn credit at shares $1-s_c$ and $s_c$ of this rate. Integer credit can create items only when mode capacity, global capacity, placement, and biomass checks all succeed.
+
+Critical shortage recovery is separate from regular logistic growth. With low-food threshold $\theta=0.50$,
+
+$$
+q=\operatorname{clip}_{[0,1]}
+\left(\frac{\theta-x}{\max(0.001,\theta)}\right)
+$$
+
+measures shortage severity. At or below the critical ratio $x_c=0.15$, the independent spawner immediately queues enough pellets to approach $\lceil x_cN_{\mathrm{cap}}\rceil$, subject to the configured $215$-item burst budget and a per-update release cap of one quarter of that budget. If a critical shortage persists, additional burst credit accrues at $q/0.75$ events per second. The cluster manager similarly grants a one-shot emergency credit for its missing share. Emergency creation remains constrained by biomass and capacity; it cannot mint energy.
+
+_Implementation: [regular and emergency regrowth](src/food_spawner.py) · [cluster emergency credit](src/food_clustering.py) · [regrowth tests](tests/test_food_spawner.py)_
+
+---
+
+## 3. Creature state and genotype
+
+### 3.1 Embodied state
 
 A live creature owns a unit-mass Pymunk rigid body and a circular collision shape. The body's moment of inertia is that of a solid circle with inherited radius $r$. Its authoritative position, heading, linear velocity, and angular velocity are held by the physics body. The convenience quantities used by other subsystems are
 
@@ -100,7 +260,7 @@ The principal live physiological variables are usable energy $E$, life reserve $
 
 _Implementation: [live physiological fields and ledger diagnostics](src/creature/model.py) · [resource ledger](src/creature/metabolism.py)_
 
-### 2.2 Aggregate genotype
+### 3.2 Aggregate genotype
 
 The non-neural genotype is the tuple
 
@@ -128,7 +288,7 @@ Founder physical and flocking values are Gaussian perturbations around configure
 
 _Implementation: [genotype initialization and bounds](src/creature/genotype.py) · [trait and vision defaults](configs/sim_config.py)_
 
-### 2.3 Lineage and diagnostics
+### 3.3 Lineage and diagnostics
 
 Every creature has a stable integer identity and a `LineageInfo` record containing its parent identity, generation, species identity, and the effective bounded change of every mutable non-neural trait. The recorded mutation is the difference after clipping, not the unbounded random proposal; it therefore describes the phenotype actually inherited by the child.
 
@@ -140,9 +300,9 @@ _Implementation: [diagnostic records](src/creature/model.py) · [ledger commit](
 
 ---
 
-## 3. Perception and sensor formulation
+## 4. Perception and sensor formulation
 
-### 3.1 Sensor contract
+### 4.1 Sensor contract
 
 The current sensing schema is version 7 and contains exactly 43 ordered inputs. This ordering is a formal interface: it must match the `num_inputs = 43` declaration used to construct every NEAT network. A schema change therefore represents a change in the meaning of evolved genomes, not a cosmetic renaming.
 
@@ -164,7 +324,7 @@ _Implementation: [sensor contract and serialization](src/creature/vision.py) · 
 
 _Implementation: [input names and writer](src/creature/vision.py) · [sensor construction](src/world.py)_
 
-### 3.2 Endogenous normalization
+### 4.2 Endogenous normalization
 
 Let normalized energy and stomach fullness be
 
@@ -179,15 +339,21 @@ $$
 h=(1-e)(1-s).
 $$
 
-Thus a low-energy creature with no stomach space cannot obtain a strong feeding-drive input until digestion creates capacity. Visible creature and food counts are normalized as $\min(n_c/5,1)$ and $\min(n_f/10,1)$. The compatible flock count is normalized relative to the configured target group size, currently four.
+Thus a low-energy creature with no stomach space cannot obtain a strong feeding-drive input until digestion creates capacity. Speed is normalized by the world's maximum speed; visible creature and food counts are normalized as $\min(n_c/5,1)$ and $\min(n_f/10,1)$. Stomach fullness and life reserve are independently exposed as $s$ and $\operatorname{clip}_{[0,1]}(L/L_{\max})$, so the network can distinguish stored nutrients, immediately usable energy, and remaining vitality.
 
 _Implementation: [sensor input formulation](src/creature/vision.py) · [stomach fullness](src/creature/vision.py) · [flocking defaults](configs/sim_config.py)_
 
-Reproductive readiness is computed from biological eligibility rather than from the raw neural wish to reproduce. Post-upkeep energy, minimum age, cooldown, and available population capacity remain authoritative external gates; food abundance and comparative performance do not. Internal time is represented through an alternating signal, a resettable chronometer, normalized age, and the network's recurrent activation state, allowing networks to evolve periodic or interval-dependent behaviour.
+The input named reproductive readiness is specifically a maturity ramp,
+
+$$
+r_m=\min\left(\frac{t_{\mathrm{age}}}{t_{\mathrm{maturity}}},1\right),
+$$
+
+not a promise that reproduction will succeed. Post-upkeep energy, survival, cooldown, population capacity, and neural intent remain authoritative external gates. Internal time consists of a signal alternating between zero and one every integer second, a resettable chronometer clipped after $20$ seconds, and age clipped after $120$ seconds. Together with the recurrent activation state, these inputs allow periodic and interval-dependent policies without exposing global simulation time.
 
 _Implementation: [sensor snapshot assembly](src/world.py) · [reproductive eligibility](src/creature/neat/rt_neat.py) · [chronometer update](src/world.py)_
 
-### 3.3 Visual geometry
+### 4.3 Visual geometry
 
 The visual field is a circular sector parameterized by inherited range $R$ and angle $\Phi$. Candidates are compared by surface distance and relative bearing, so the physical sizes of observer and target influence visibility. Relative angles are normalized to the signed interval $[-1,1]$: zero denotes the forward axis, negative and positive values denote opposite sides of the field, and the magnitudes approach one near the field boundaries. Proximity increases from zero for absent or distant targets toward one as the target approaches.
 
@@ -205,31 +371,89 @@ C_{\mathrm{vision}}
 \left(\frac{R}{R_{\max}}\right)^2,
 $$
 
-where $C_0=0.002$ and $C_A=0.018$ by default. The quadratic range term approximates the growth of sensed sector area and creates an evolutionary trade-off between information and upkeep.
+where $C_0=0.001$ and $C_A=0.005$ by default. The quadratic range term approximates the growth of sensed sector area and creates an evolutionary trade-off between information and upkeep.
 
 _Implementation: [vision energy model](src/creature/vision.py) · [vision configuration](configs/sim_config.py)_
 
-### 3.4 Resource, family, social, and communication senses
+### 4.4 Biome probes and resource gradients
 
-Three body-relative resource probes produce local expected food richness and two gradients: left versus right, and ahead versus the current position. These inputs provide a continuous environmental cue even when no individual food item is visible. Family sensing is restricted to the creature's own immature offspring and supplies nearest-infant proximity and angle, supporting the evolution of nursing behaviour.
+Biome and pheromone sensing share three body-relative probe positions. For creature position $\mathbf{p}$ and heading $\theta$, define forward and left unit vectors
 
-_Implementation: [biome sensor snapshot](src/creature/vision.py) · [biome probes](src/world.py) · [family index and infant sensing](src/world.py)_
+$$
+\mathbf{h}=(\cos\theta,\sin\theta),\qquad
+\mathbf{l}=(-\sin\theta,\cos\theta).
+$$
 
-Compatible neighbours are aggregated into effective count, group-centre displacement, and relative group velocity in the focal creature's body frame. A separate long-range observation can represent compatible social mass beyond the immediate group when enabled. Compatibility is itself inherited or evolutionary: the default mode compares two-dimensional social tags, while alternative modes can use species or legacy relations.
+With forward distance $f=96$ and lateral offset $s_b=48$, the probes are
 
-_Implementation: [flock sensor construction](src/creature/vision.py) · [social compatibility resolver](src/creature/flocking.py) · [compatibility configuration](configs/sim_config.py)_
+$$
+\mathbf{p}_0=\mathbf{p},\qquad
+\mathbf{p}_L=\mathbf{p}+f\mathbf{h}+s_b\mathbf{l},\qquad
+\mathbf{p}_R=\mathbf{p}+f\mathbf{h}-s_b\mathbf{l}.
+$$
 
-Acoustic sensing reports the strongest audible non-self signal after distance attenuation, expressed as strength, body-relative direction sine/cosine, and tone. Chemical sensing samples two independent scalar fields—trail and alarm pheromones—at the body centre and two forward lateral probes. The neural network therefore observes local chemical gradients without receiving privileged emitter identities.
+Let $d_0$, $d_L$, and $d_R$ be the interpolated expected food densities at those locations. The three neural inputs are
 
-_Implementation: [acoustic and pheromone observations](src/creature/communication.py) · [pheromone sensor positions](src/world.py)_
+$$
+\begin{aligned}
+r_{\mathrm{local}}&=d_0,\\
+g_{\mathrm{lat}}&=\operatorname{clip}_{[-1,1]}
+\left(\frac{d_L-d_R}{d_0+\epsilon}\right),\\
+g_{\mathrm{fwd}}&=\operatorname{clip}_{[-1,1]}
+\left(\frac{(d_L+d_R)/2-d_0}{d_0+\epsilon}\right),
+\end{aligned}
+\qquad \epsilon=0.001.
+$$
+
+A positive lateral gradient means the expected resource field is richer on the left; a positive forward gradient means the average of the two forward probes is richer than the current position. Division by local richness makes the gradient approximately scale-invariant, while $\epsilon$ keeps zero-richness boundaries finite. These signals predict ordinary-food spawn propensity. They do not report live food, clustered-patch occupancy, or food hidden behind another body; those facts enter only through visual and contact mechanisms.
+
+_Implementation: [probe geometry and richness sampling](src/world.py) · [gradient formulation](src/creature/vision.py) · [biome sensing tests](tests/test_biome_sensing.py)_
+
+### 4.5 Family and compatible-group sensing
+
+Family sensing searches the lineage index only for the focal creature's own children whose age is below the maturity threshold. The nearest visible infant contributes the same surface-proximity and signed-angle representation used by other visual targets. Unrelated infants and mature offspring do not enter these two inputs, which allows nursing policies without providing a general kinship oracle.
+
+Social sensing is geometrically separate from ordinary visual occlusion. Within the configured $150$-unit social radius, each neighbour contributes with compatibility $c_j\in[0,1]$. The effective flock count is
+
+$$
+n_{\mathrm{eff}}=\sum_j c_j,
+$$
+
+and is exposed as $\operatorname{clip}_{[0,1]}(n_{\mathrm{eff}}/4)$. Compatible displacements and velocities are weighted by $c_j$, averaged by $n_{\mathrm{eff}}$, rotated into the focal creature's forward/right frame, normalized by social radius and twice maximum speed, and clipped to $[-1,1]$. Presence is $\operatorname{clip}_{[0,1]}(n_{\mathrm{eff}})$.
+
+The default compatibility mode compares inherited two-dimensional social tags $\mathbf{t}_i$ using a Gaussian kernel,
+
+$$
+c_{ij}=\exp\left(-\frac{\lVert\mathbf{t}_i-\mathbf{t}_j\rVert^2}
+{2\sigma_t^2}\right),\qquad \sigma_t=0.35.
+$$
+
+Species mode instead returns one only for matching known species; legacy mode derives a graded value from composite evolutionary distance. Optional long-range sensing, disabled by default, weights compatible neighbours by
+
+$$
+w_j=c_j\operatorname{clip}_{[0,1]}
+\left(1-\frac{d_j}{R_L}\right)s_L,
+$$
+
+then exposes clipped total intensity and the normalized resultant direction in body coordinates. No neighbour identities are supplied to the brain.
+
+_Implementation: [family and flock snapshots](src/creature/vision.py) · [family index](src/world.py) · [compatibility resolver](src/creature/flocking.py)_
+
+### 4.6 Acoustic and chemical sensing
+
+Acoustic sensing selects the strongest audible non-self emission after distance attenuation, with emitter identity used only as a deterministic tie-breaker. The neural inputs are received strength, tone, and the sine/cosine of direction in the listener's body frame; emitter identity and semantic meaning are not exposed.
+
+Chemical sensing bilinearly samples trail and alarm fields at $\mathbf{p}_0$, $\mathbf{p}_L$, and $\mathbf{p}_R$. All six concentrations are passed directly to the network rather than being collapsed into engineered gradients. The recurrent controller may therefore learn a difference such as left minus right, compare alarm with trail, or ignore either channel. Pheromone values identify neither the emitter nor the age of a deposit, and the identical probe geometry does not imply that biome richness and pheromone concentration share a physical process.
+
+_Implementation: [acoustic and pheromone observations](src/creature/communication.py) · [shared probe positions](src/world.py)_
 
 ---
 
-## 4. Neural decision model and actions
+## 5. Neural decision model and actions
 
-### 4.1 Feed-forward NEAT controller
+### 5.1 Recurrent NEAT controller
 
-Each creature owns a NEAT genome and a discrete recurrent network instantiated from it. Founder genomes begin without hidden nodes and with a sparse random sample—currently $15\%$—of direct and eligible recurrent connections. Evolution may add or delete nodes and connections, including cycles and self-loops, change connection weights, toggle connections, and occasionally change activation or aggregation functions. Every creature retains its own two-buffer activation state across decision ticks; newly created brains start at zero. Activation mutation is restricted to bounded `sigmoid`, `tanh`, and `clamped` functions so evolved feedback cannot select unbounded activations.
+Each creature owns a NEAT genome and a discrete recurrent network instantiated from it. Founder genomes begin without hidden nodes and with a sparse random sample—currently $15\%$—of possible direct input-to-output connections. Recurrence is enabled at the genome level, so evolution may later add or delete nodes and connections, including cycles and self-loops, change connection weights, toggle connections, and occasionally change activation or aggregation functions. Every creature retains its own two-buffer activation state across decision ticks; newly created brains start at zero. Activation mutation is restricted to bounded `sigmoid`, `tanh`, and `clamped` functions so evolved feedback cannot select unbounded activations.
 
 _Implementation: [brain representation](src/creature/neat/brain.py) · [brain controller](src/creature/neat/controller.py) · [NEAT genome parameters](configs/neat_herbivore.ini)_
 
@@ -239,7 +463,7 @@ $$
 \mathbf{z}=N_{G_N}(\mathbf{x}),
 $$
 
-where $\mathbf{x}\in\mathbb{R}^{43}$ is the ordered sensor vector and $G_N$ is the neural genome. Output centering is activation-aware. For example, a sigmoid result is transformed by $y=2\operatorname{clip}_{[0,1]}(z)-1$, while `tanh` and clamped outputs are clipped directly to $[-1,1]`; unsupported finite activation outputs pass through $\tanh$. Invalid or missing outputs become zero. This centering makes a neutral sigmoid value of $0.5$ correspond to zero action evidence.
+where $\mathbf{x}\in\mathbb{R}^{43}$ is the ordered sensor vector and $G_N$ is the neural genome. Output centering is activation-aware. For example, a sigmoid result is transformed by $y=2\operatorname{clip}_{[0,1]}(z)-1$, while $tanh$ and clamped outputs are clipped directly to $[-1,1]$; unsupported finite activation outputs pass through $tanh$. Invalid or missing outputs become zero. This centering makes a neutral sigmoid value of $0.5$ correspond to zero action evidence.
 
 _Implementation: [network evaluation and normalization](src/creature/neat/brain.py) · [initial activation choices](configs/neat_herbivore.ini)_
 
@@ -247,7 +471,7 @@ If a brain is missing or a decision cannot be obtained, the controller returns a
 
 _Implementation: [controller fallback](src/creature/neat/controller.py) · [neutral action](src/creature/action.py)_
 
-### 4.2 Action contract
+### 5.2 Action contract
 
 The action schema contains exactly 15 ordered outputs:
 
@@ -286,9 +510,9 @@ _Implementation: [herding filter](src/creature/neat/brain.py) · [action and res
 
 ---
 
-## 5. Locomotion and social dynamics
+## 6. Locomotion and social dynamics
 
-### 5.1 Propulsion and turning
+### 6.1 Propulsion and turning
 
 For heading $\theta$ and signed acceleration $a$, the direct neural force is
 
@@ -314,7 +538,7 @@ where the response coefficient $\rho$ is adjusted for elapsed physical time. A d
 
 _Implementation: [turn control and motion limits](src/world.py) · [turn parameters](configs/sim_config.py)_
 
-### 5.2 Planar drag and rest inhibition
+### 6.2 Planar drag and rest inhibition
 
 Velocity is decomposed into forward and lateral body axes. At each step the components are multiplied by cadence-adjusted retentions, currently $0.992$ and $0.72$ per reference physical step. This strong lateral damping produces top-down locomotion with directional inertia. Rest adds exponential braking
 
@@ -326,7 +550,7 @@ where $r_s$ is smoothed rest and $k_b=2.5$. Voluntary force is additionally scal
 
 _Implementation: [planar drag and rest braking](src/world.py) · [rest parameters](configs/sim_config.py)_
 
-### 5.3 Collision avoidance and force priority
+### 6.3 Collision avoidance and force priority
 
 Collision avoidance is mandatory and receives first access to a finite force budget. Any lower-priority force component that opposes accepted avoidance is projected out. If $\mathbf{a}$ is the avoidance vector and $\mathbf{v}\cdot\mathbf{a}<0$, the opposing component is removed as
 
@@ -339,7 +563,7 @@ Requested forces are then magnitude-limited to the remaining budget. This orderi
 
 _Implementation: [collision avoidance](src/world.py) · [opposition removal and force allocation](src/creature/flocking.py)_
 
-### 5.4 Flocking formulation
+### 6.4 Flocking formulation
 
 For herding drive $h$, panic $p$, compatible-social presence $s$, personal-space presence $q$, minimum engagement $e_0$, panic suppression $\kappa$, and inherited genes $(g_s,g_a,g_c)$, the effective flocking weights are
 
@@ -378,9 +602,9 @@ _Implementation: [compatibility resolver](src/creature/flocking.py) · [composit
 
 ---
 
-## 6. Communication
+## 7. Communication
 
-### 6.1 Acoustic channel
+### 7.1 Acoustic channel
 
 A creature may emit a signal with strength $s_e\in[0,1]$ and tone $\tau\in[-1,1]$. Emissions below $0.05$ are omitted. For source–receiver distance $d$ within acoustic range $R_a=480$, perceived strength is
 
@@ -402,23 +626,70 @@ with $c_a=0.006$ energy units per second. The quadratic term makes strong long-r
 
 _Implementation: [communication energy demand](src/creature/metabolism.py) · [communication configuration](configs/sim_config.py)_
 
-### 6.2 Pheromone fields
+### 7.2 Pheromone fields
 
-Trail and alarm pheromones are separate floating-point grids over the physical domain. A deposit is distributed bilinearly among the four nearest grid cells and clipped to maximum concentration one. With deposit intensity $u$, configured rate $r_p=0.75$, and elapsed time $\Delta t$, the committed amount is proportional to $u r_p\Delta t$.
+Trail and alarm pheromones are independent `float32` concentration fields with the same $64\times44$ dimensions and world bounds as the biome map. They share numerical machinery but never transform into one another. For emission intensity $u\in[0,1]$, configured deposition rate $r_p=0.75$, and elapsed time $\Delta t$, the deposited amount is
+
+$$
+a_p=u r_p\Delta t.
+$$
+
+If the emitter lies at fractional grid coordinates $(u_g,v_g)$ between columns $i_0,i_1$ and rows $j_0,j_1$, the four additions are
+
+$$
+\begin{array}{c|c}
+\text{grid node} & \text{added amount}\\ \hline
+(i_0,j_0) & a_p(1-u_g)(1-v_g)\\
+(i_1,j_0) & a_pu_g(1-v_g)\\
+(i_0,j_1) & a_p(1-u_g)v_g\\
+(i_1,j_1) & a_pu_gv_g
+\end{array}
+$$
+
+Concurrent deposits are accumulated per channel and concentrations are clipped to $P_{\max}=1$. Bilinear sampling uses the same four weights in reverse to avoid discontinuous sensor jumps at cell boundaries.
 
 _Implementation: [pheromone deposition](src/creature/communication.py) · [batched communication intents](src/world.py) · [pheromone defaults](configs/sim_config.py)_
 
-Each field follows a finite-difference approximation of diffusion with evaporation,
+Each field follows diffusion with first-order evaporation,
 
 $$
 \frac{\partial P}{\partial t}=D\nabla^2P-\lambda P,
 $$
 
-where the defaults are diffusion coefficient $D=390$ world-distance squared per simulated second and evaporation rate $\lambda=0.08$. Stable substeps are selected from grid geometry and $D$. The default boundary condition is reflective; wrap and absorbing modes are also defined. Field evolution is accumulated and normally processed every $0.25\,\mathrm{s}$, with a bounded catch-up count after large time increments.
+where the defaults are $D=390$ world-distance squared per simulated second and $\lambda=0.08\,\mathrm{s}^{-1}$. For grid spacing $\Delta x,\Delta y$ and numerical substep $\delta t$, define
+
+$$
+r_x=\frac{D\delta t}{\Delta x^2},\qquad
+r_y=\frac{D\delta t}{\Delta y^2}.
+$$
+
+The explicit update is
+
+$$
+P_{i,j}^{n+1}=\operatorname{clip}_{[0,P_{\max}]}
+\left(
+\left[
+P_{i,j}^{n}
++r_x(P_{i-1,j}^{n}-2P_{i,j}^{n}+P_{i+1,j}^{n})
++r_y(P_{i,j-1}^{n}-2P_{i,j}^{n}+P_{i,j+1}^{n})
+\right]e^{-\lambda\delta t}
+\right).
+$$
+
+Stability requires $r_x+r_y\le 0.5$. The solver therefore derives
+
+$$
+\delta t_{\max}=
+\frac{0.5}{D(\Delta x^{-2}+\Delta y^{-2})}
+$$
+
+and splits a requested advance into $\lceil\Delta t/\delta t_{\max}\rceil$ stable substeps. The default reflective boundary copies edge concentrations into ghost cells, giving zero outward gradient. Wrap mode uses the opposite edge; absorbing mode uses zero-valued ghost cells and returns zero for samples outside the domain.
+
+Field time accumulates independently of rendering and is normally advanced every $0.25\,\mathrm{s}$. At most four complete field updates are processed in one external tick. Excess full intervals after an abnormally large time increment are recorded and dropped while the sub-interval remainder is retained, bounding catch-up work explicitly.
 
 _Implementation: [pheromone solver](src/creature/communication.py) · [boundary modes and numerical parameters](configs/sim_config.py)_
 
-Pheromone sampling is bilinear and returns concentrations at three body-relative locations. Trail and alarm emission costs are linear in intensity:
+Each creature receives trail and alarm concentrations at the body centre, forward-left probe, and forward-right probe described in Section 4.4. These six raw inputs expose local level and direction without revealing emitter identity or deposit age. Trail and alarm emission costs are linear in intensity:
 
 $$
 C_{\mathrm{pheromone}}=c_p(u_{\mathrm{trail}}+u_{\mathrm{alarm}}),
@@ -430,17 +701,22 @@ _Implementation: [pheromone sensing](src/creature/communication.py) · [communic
 
 ---
 
-## 7. Feeding, metabolism, rest, and vitality
+## 8. Feeding, metabolism, rest, and vitality
 
-### 7.1 Ingestion and stomach state
+### 8.1 Ingestion and stomach state
 
-Eating requires active intent and geometric overlap between a food item and the creature's forward mouth position. At a physical contact, the maximum bite is
+Eating requires active intent and geometric overlap between a food item and the creature's forward mouth position. Let $K-S$ be remaining stomach space, $b_{\max}=0.5$ the default bite rate, $E_f$ remaining food energy, and $\tau=0.10$ the micro-food tolerance. At a physical contact, the committed bite is
 
 $$
-B=\min(K-S,\;b_{\max}\Delta t,\;E_f),
+B=
+\begin{cases}
+E_f,
+& E_f\le K-S\ \text{and}\ E_f\le b_{\max}\Delta t(1+\tau),\\
+\min(K-S,\;b_{\max}\Delta t,\;E_f), & \text{otherwise}.
+\end{cases}
 $$
 
-where $K$ is inherited stomach capacity, $S$ is current stomach energy, $b_{\max}=0.5$ is the default bite rate, and $E_f$ is remaining food energy. A small remainder tolerance allows a nearly finished item to be consumed atomically. Bite claims are ordered by physical step and stable identities, and per-food bite capacity prevents unlimited simultaneous consumption.
+The exceptional branch consumes a pellet that is only slightly larger than the time-scaled bite limit, provided the complete energy fits in the stomach. Bite claims are ordered by physical step and stable identities, and per-food bite capacity prevents unlimited simultaneous consumption.
 
 _Implementation: [mouth geometry and eating](src/creature/metabolism.py) · [food energy removal](src/food.py) · [chronological exposure resolution](src/world.py)_
 
@@ -448,7 +724,7 @@ Larger original food radii map linearly to a difficulty multiplier in $[0.75,1.2
 
 _Implementation: [food difficulty and stomach load](src/creature/metabolism.py) · [food carrying](src/world.py)_
 
-### 7.2 Digestion
+### 8.2 Digestion
 
 During a biological interval, the maximum processable stomach amount is
 
@@ -486,7 +762,7 @@ $S_c$ is reduced when neither current demand nor remaining energy capacity can u
 
 _Implementation: [pure digestion calculation](src/creature/metabolism.py) · [digestion tests](tests/creature/test_metabolism_traits.py)_
 
-### 7.3 Energy demand
+### 8.3 Energy demand
 
 The per-second demand is the sum
 
@@ -515,7 +791,7 @@ with $C_d=0.004$ and $C_{\max}=0.012$. Hence no digestive trait is unconditional
 
 _Implementation: [digestive upkeep](src/creature/metabolism.py) · [digestive defaults](configs/sim_config.py)_
 
-### 7.4 Activity-gated rest
+### 8.4 Activity-gated rest
 
 Resting effectiveness depends on realized activity, not merely on the neural rest output. Motor effort, normalized speed, turning, communication, reproduction, and nursing produce
 
@@ -539,7 +815,7 @@ Rest does not create usable energy. It can improve digestion and heal life at up
 
 _Implementation: [rest digestion and paid healing](src/creature/metabolism.py) · [rest defaults](configs/sim_config.py)_
 
-### 7.5 Deficit damage, senescence, and death
+### 8.5 Deficit damage, senescence, and death
 
 Available energy first pays non-movement demand and then powered voluntary movement. Unmet ordinary demand produces life damage at $0.25$ life units per missing energy unit. Unmet movement demand is more dangerous at low life. Its multiplier is
 
@@ -563,9 +839,9 @@ _Implementation: [senescence factor and death processing](src/world.py) · [surv
 
 ---
 
-## 8. Reproduction, development, and evolution
+## 9. Reproduction, development, and evolution
 
-### 8.1 Autonomous eligibility
+### 9.1 Autonomous eligibility
 
 At each $20\,\mathrm{Hz}$ biology boundary the ledger credits digestion, deducts ordinary upkeep, resolves deficit damage, and then evaluates reproduction. A surviving creature is eligible when its post-upkeep energy is at least $0.75E_{\max}$, its age is at least ten seconds, its five-second cooldown is complete, and its centered neural intent exceeds $0.2$.
 
@@ -575,7 +851,7 @@ The reproduction neuron is pinned to logistic sigmoid with founder bias $-1$. In
 
 _Implementation: [physiological eligibility](src/world.py) · [neural output contract](src/creature/neat/controller.py) · [population defaults](configs/sim_config.py)_
 
-### 8.2 Atomic birth transaction
+### 9.2 Atomic birth transaction
 
 For post-upkeep energy $E_p$, the parent reserves $I=0.45E_p$ and the child receives $E_c=0.90I$; the remaining $0.10I$ is conversion loss. Energy, cooldown, offspring count, genotype mutation, neural mutation, species assignment, allocators, and random-number state become observable only after the complete staged transaction succeeds.
 
@@ -585,25 +861,58 @@ Placement tries up to sixteen randomized angular and radial offsets and rejects 
 
 _Implementation: [offspring commit and placement](src/world.py) · [lineage planning](src/creature/evolution.py)_
 
-### 8.3 Non-neural mutation
+### 9.3 Non-neural mutation
 
-Vision mutates additively by Gaussian noise with standard deviations $8$ for range and $0.08$ radians for angle. Radius and movement-cost multiplier always receive Gaussian proposals using configured standard deviations. Each digestive trait independently mutates with probability $0.15$; otherwise it is inherited unchanged. Every result is clipped to its biological interval.
+Bounded continuous traits mutate in latent logit space rather than by additive physical-space noise. For $x\in[a,b]$, define
+
+$$
+z=\operatorname{clip}_{[\epsilon,1-\epsilon]}
+\left(\frac{x-a}{b-a}\right),\qquad
+u=\log\frac{z}{1-z},
+$$
+
+then sample
+
+$$
+u'=u+\mathcal{N}(0,\sigma_u^2),\qquad
+x'=a+(b-a)\frac{1}{1+e^{-u'}}.
+$$
+
+The implementation uses $\epsilon=10^{-6}$ only when mapping the parent into latent space and keeps the result strictly inside the configured interval. This avoids boundary point masses from repeated clipping and makes mutations naturally smaller in physical units near a trait limit.
+
+| Trait | Mutation gate | Latent $\sigma_u$ |
+|---|---:|---:|
+| Vision range | always | $0.32$ |
+| Vision angle | always | $0.17$ |
+| Radius | always | $0.42$ |
+| Movement-cost multiplier | always | $0.27$ |
+| Stomach capacity | $0.15$ | $0.27$ |
+| Digestion rate | $0.15$ | $0.23$ |
+| Digestion efficiency | $0.15$ | $0.23$ |
+
+Every digestive trait receives its own mutation-gate draw; a failed gate inherits the bounded parent value unchanged. Recorded lineage deltas are the realized physical-space differences after transformation.
 
 _Implementation: [vision and physical mutation](src/creature/genotype.py) · [mutation parameters](configs/sim_config.py)_
 
-Each flocking gene has probability $0.005$ of replacement by a uniform unit value and probability $0.05$ of Gaussian perturbation with standard deviation $0.05$. Social-tag coordinates follow the same default probabilities when tag compatibility is enabled. Colour undergoes a small HSV mutation and is kept away from the configured food-colour neighbourhood; colour has no direct energetic or behavioural effect.
+Each flocking gene has probability $0.005$ of replacement by a uniform unit value and a mutually exclusive probability $0.05$ of latent-logit mutation with $\sigma_u=0.20$. Social-tag coordinates follow the same defaults only when social-tag compatibility is enabled; disabling tag mode consumes no tag-mutation random draws. Colour undergoes a small HSV mutation and is kept away from the configured food-colour neighbourhood; colour has no direct energetic or behavioural effect.
 
 _Implementation: [flocking, tag, and colour mutation](src/creature/genotype.py) · [trait configuration](configs/sim_config.py)_
 
-### 8.4 Neural mutation and real-time evolution
+### 9.4 Neural mutation and real-time evolution
 
 The child's neural genome is a mutated copy of its parent's genome. Current NEAT parameters include connection addition probability $0.5$, connection deletion $0.05$, node addition $0.1$, node deletion $0.05$, weight mutation $0.8$, and weight replacement $0.02$. Innovation and allocator state are retained across births and persistence boundaries so structurally homologous changes remain comparable.
 
 _Implementation: [neural child creation](src/creature/neat/controller.py) · [NEAT mutation parameters](configs/neat_herbivore.ini) · [evolution coordinator](src/creature/evolution.py)_
 
-### 8.5 Infancy, nursing, and extinction recovery
+### 9.5 Infancy, nursing, and extinction recovery
 
-A creature is an infant until age ten seconds. Infant movement cost is multiplied by three as a runtime penalty without modifying the inherited movement gene. A parent can nurse only its own nearby infant; the default transfer rate is $0.05$ energy units per second, and accepted transfers enter the donor's same-step resource transaction. Startup validation requires the minimum child endowment to exceed worst-case idle burn over the maturity window by at least $20\%$.
+A creature is an infant until age ten seconds. Infant movement cost is multiplied by three as a runtime penalty without modifying the inherited movement gene. Nursing candidates are restricted to the donor's own infants within $2.5$ donor radii, with distance and infant identity providing deterministic ordering. The requested transfer is
+
+$$
+E_n=0.05\Delta t.
+$$
+
+Actual allocation is limited by the infant's remaining energy capacity and accepted only if the donor survives and can fund it from the same post-upkeep resource transaction. Nursing therefore creates neither energy nor an unpaid donor deficit. Startup validation requires the minimum child endowment to exceed worst-case idle burn over the maturity window by at least $20\%$.
 
 _Implementation: [infancy and nursing](src/world.py) · [family lineage](src/creature/genotype.py) · [population configuration](configs/sim_config.py)_
 
@@ -613,9 +922,9 @@ _Implementation: [extinction recovery](src/world.py) · [aligned archive pruning
 
 ---
 
-## 9. Passive telemetry and speciation
+## 10. Passive telemetry and speciation
 
-### 9.1 Thermodynamic telemetry
+### 10.1 Thermodynamic telemetry
 
 There is no scalar selection score. `CreatureTelemetry` passively records lifetime ingestion $E_i$, realized expenditure $E_s$, offspring, age, food contacts, movement, and behavioural diagnostics. Its energy diagnostics are
 
@@ -642,7 +951,7 @@ The current defaults use target group size four, target spacing $60$, tolerance 
 
 _Implementation: [flocking benchmark](src/creature/fitness.py) · [benchmark configuration](configs/sim_config.py)_
 
-### 9.2 Phenotypic distance
+### 10.2 Phenotypic distance
 
 For any bounded trait $x\in[x_{\min},x_{\max}]$, the normalized difference between child $c$ and representative $r$ is
 
@@ -673,7 +982,7 @@ Social tags affect live compatibility in tag mode but are not part of this speci
 
 _Implementation: [flocking-trait distance](src/creature/speciation.py) · [live social-tag compatibility](src/creature/flocking.py)_
 
-### 9.3 Composite species criterion
+### 10.3 Composite species criterion
 
 Let $D_N$ be neat-python's genomic compatibility distance. The complete distance is
 
@@ -697,9 +1006,9 @@ _Implementation: [speciation result and neural shifts](src/creature/speciation.p
 
 ---
 
-## 10. Behavioural analysis and explainability
+## 11. Behavioural analysis and explainability
 
-### 10.1 Behaviour from realized evidence
+### 11.1 Behaviour from realized evidence
 
 The behavioural analyser deliberately does not infer behaviour from named NEAT outputs. It receives primitive observations of realized state and trajectory, then applies temporal rules to six categories:
 
@@ -718,7 +1027,7 @@ The default analyser samples at $10\,\mathrm{Hz}$ over a $2.5$-second sliding wi
 
 _Implementation: [temporal bout state machine](src/behavior_observer.py) · [observer parameters](configs/sim_config.py)_
 
-### 10.2 Evidence and completed bouts
+### 11.2 Evidence and completed bouts
 
 Every active rule emits named evidence with a value, unit, pass/fail result, and explanatory label. A completed bout stores start and end times, duration, evidence summaries, termination reason, and an outcome appropriate to the behaviour, such as food consumed, target lost, approach started, alarm exposure reduced, or interruption.
 
@@ -732,7 +1041,7 @@ Completed bouts are aggregated into per-creature lifetime summaries and species-
 
 _Implementation: [creature and species history reports](src/behavior_history.py) · [history integration](src/world.py)_
 
-### 10.3 Counterfactual NEAT explanations
+### 11.3 Counterfactual NEAT explanations
 
 Counterfactual analysis evaluates an isolated copy of the focal recurrent network. Starting from the factual sensor vector $\mathbf{x}$ and the exact pre-decision recurrent state, one semantic group of inputs is replaced by neutral values to obtain $\mathbf{x}^{(-I)}$. The worker retains one compiled evaluator per focal brain, queues only shallow-copied state buffers with each probe, and restores fresh buffer dictionaries before every intervention. This preserves intervention independence without repeatedly cloning or serializing the compiled topology, and never mutates the live brain:
 
@@ -761,7 +1070,7 @@ Counterfactual samples belonging to a completed bout are summarized by medians, 
 
 _Implementation: [counterfactual bout aggregator](src/counterfactual_neat.py) · [completed explanation records](src/behavior_history.py)_
 
-### 10.4 Species-level scientific profiles
+### 11.4 Species-level scientific profiles
 
 Species analysis compares founder morphology with the parent species, reporting percentage change as
 
@@ -779,12 +1088,14 @@ _Implementation: [telemetry database](src/telemetry.py) · [persistent flock tra
 
 ---
 
-## 11. Concluding interpretation
+## 12. Concluding interpretation
 
-The model couples evolution across several levels. Inherited radius, vision, digestion, movement efficiency, and social genes determine both opportunities and energetic liabilities. The NEAT genome transforms a high-dimensional but local sensory contract into continuous intentions. Physical integration, collision avoidance, resource availability, and transaction rules determine which intentions become realized behaviour. Lineages persist only through survival and autonomous energy-funded births; no comparative ranking or parsimony score selects parents. Speciation combines neural and phenotypic change, so neither morphology nor neural topology alone defines evolutionary divergence.
+The model couples ecology and evolution across several levels. A seeded biome map shapes ordinary resource probability and biome-specific food patches; a conserved biomass inventory limits how much plant and creature energy can coexist. Creatures do not receive biome labels or privileged food maps. Instead, inherited vision observes concrete nearby targets while body-relative probes expose a continuous prediction of ordinary-food richness and local pheromone concentrations. Inherited radius, digestion, movement efficiency, and social genes determine both opportunities and energetic liabilities, and the recurrent NEAT genome transforms the resulting local sensory contract into continuous intentions. Physical integration, collision avoidance, resource availability, and transaction rules determine which intentions become realized behaviour.
+
+Lineages persist only through survival and autonomous energy-funded births; no comparative ranking or parsimony score selects parents. Speciation combines neural and phenotypic change, so neither morphology nor neural topology alone defines evolutionary divergence. The separation between predicted richness, realized food encounters, neural intentions, completed biological transactions, and passive behavioural evidence is central to the model: none of these layers is treated as a substitute for another.
 
 _Implementation synthesis: [genotype](src/creature/genotype.py) · [brain](src/creature/neat/brain.py) · [metabolism](src/creature/metabolism.py) · [evolution and speciation](src/creature/evolution.py)_
 
-Several limitations follow from the formulation. The world is planar; bodies are circular and have equal mass; reproduction is asexual; sensory channels are engineered summaries rather than raw physical receptor arrays; recurrent updates are discrete and synchronous rather than continuous-time; and compatibility and species thresholds are computational constructs. Passive energy and behavioural measurements describe outcomes but do not define a selection objective. Behavioural rules and counterfactual probes improve interpretability but remain operational definitions, not proof of subjective intention. These simplifications are deliberate: they create a tractable experimental system in which morphology, physiology, neural structure, social interaction, and evolutionary history can be measured under one deterministic simulation contract.
+Several limitations follow from the formulation. The world is planar; creature bodies are circular and have equal mass; biomes and pheromones are discretized fields; the richness signal predicts the ordinary spawn distribution rather than current food occupancy; and clustered resources are not represented in that prediction. Reproduction is asexual, sensory channels are engineered summaries rather than raw physical receptor arrays, recurrent updates are discrete rather than continuous-time, and compatibility and species thresholds are computational constructs. The conserved budget tracks usable energy, stomach contents, and food energy rather than a complete material or life-reserve chemistry. Passive energy and behavioural measurements describe outcomes but do not define a selection objective. Behavioural rules and counterfactual probes improve interpretability but remain operational definitions, not proof of subjective intention. These simplifications create a tractable experimental system in which ecology, morphology, physiology, neural structure, social interaction, and evolutionary history can be measured under one deterministic simulation contract.
 
 _Sources and validation: [creature architecture tests](tests/creature/test_architecture.py) · [genotype determinism tests](tests/creature/test_genotype_determinism.py) · [scheduler validation](tests/test_scheduler_validation.py) · [behaviour observer tests](tests/test_behavior_observer.py)_
