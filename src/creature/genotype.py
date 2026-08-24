@@ -5,12 +5,72 @@ from __future__ import annotations
 from colorsys import hsv_to_rgb, rgb_to_hsv
 import copy
 from dataclasses import dataclass, field
+import math
 from random import Random
 
 from configs.sim_config import SimConfig, SocialCompatibilityMode
 from src.creature.common import clamp
 
 Color = tuple[int, int, int] | tuple[int, int, int, int]
+
+
+def mutate_logit_bounded(
+    value: float,
+    min_val: float,
+    max_val: float,
+    sigma_u: float,
+    rng: Random,
+) -> float:
+    """Mutate one bounded continuous value in overflow-safe logit space.
+
+    Parameters
+    ----------
+    value
+        Current physical-space trait value.
+    min_val
+        Inclusive configured lower bound.
+    max_val
+        Inclusive configured upper bound.
+    sigma_u
+        Positive Gaussian standard deviation in latent logit space.
+    rng
+        Authoritative random generator.
+
+    Returns
+    -------
+    float
+        Strictly interior mutated value, or ``min_val`` for a locked span.
+    """
+    span = max_val - min_val
+    if span <= 1e-9:
+        return min_val
+
+    epsilon = 1e-6
+    probability = max(
+        epsilon,
+        min(1.0 - epsilon, (value - min_val) / span),
+    )
+    latent = math.log(probability / (1.0 - probability))
+    mutated_latent = latent + rng.gauss(0.0, sigma_u)
+    if mutated_latent >= 0.0:
+        negative_exp = math.exp(-mutated_latent)
+        mutated_probability = 1.0 / (1.0 + negative_exp)
+    else:
+        positive_exp = math.exp(mutated_latent)
+        mutated_probability = positive_exp / (1.0 + positive_exp)
+    # Avoid re-clamping to ``epsilon`` here: doing so would create an artificial
+    # point mass for roughly half of mutations that start on either boundary.
+    # Only exact floating-point sigmoid endpoints need an interior adjustment.
+    mutated_probability = max(
+        math.nextafter(0.0, 1.0),
+        min(math.nextafter(1.0, 0.0), mutated_probability),
+    )
+    physical_value = min_val + span * mutated_probability
+    # ``epsilon`` is sufficient for configured trait ranges; nextafter also
+    # protects strict interiority when physical offsets lose low-order bits.
+    lower_interior = math.nextafter(min_val, max_val)
+    upper_interior = math.nextafter(max_val, min_val)
+    return max(lower_interior, min(upper_interior, physical_value))
 
 
 @dataclass(slots=True)
@@ -227,14 +287,14 @@ FlockingTraits
     Newly sampled social traits."""
         # Keep initial flocking traits behavior explicit in its owning subsystem.
         # Disabled social tags deliberately consume no random values.
-        trait = self.config.trait
+        flocking = self.config.flocking
         tagged = self.config.flocking.compatibility.mode is SocialCompatibilityMode.SOCIAL_TAG
         return FlockingTraits(
-            clamp(rng.gauss(trait.default_separation_gene, trait.initial_flocking_gene_stdev), 0.0, 1.0),
-            clamp(rng.gauss(trait.default_alignment_gene, trait.initial_flocking_gene_stdev), 0.0, 1.0),
-            clamp(rng.gauss(trait.default_cohesion_gene, trait.initial_flocking_gene_stdev), 0.0, 1.0),
-            clamp(rng.gauss(trait.default_social_tag_x, trait.initial_social_tag_stdev), 0.0, 1.0) if tagged else trait.default_social_tag_x,
-            clamp(rng.gauss(trait.default_social_tag_y, trait.initial_social_tag_stdev), 0.0, 1.0) if tagged else trait.default_social_tag_y,
+            clamp(rng.gauss(flocking.default_separation_gene, flocking.initial_flocking_gene_stdev), 0.0, 1.0),
+            clamp(rng.gauss(flocking.default_alignment_gene, flocking.initial_flocking_gene_stdev), 0.0, 1.0),
+            clamp(rng.gauss(flocking.default_cohesion_gene, flocking.initial_flocking_gene_stdev), 0.0, 1.0),
+            clamp(rng.gauss(flocking.default_social_tag_x, flocking.initial_social_tag_stdev), 0.0, 1.0) if tagged else flocking.default_social_tag_x,
+            clamp(rng.gauss(flocking.default_social_tag_y, flocking.initial_social_tag_stdev), 0.0, 1.0) if tagged else flocking.default_social_tag_y,
         )
 
     def initial_vision(self, rng: Random) -> VisionTraits:
@@ -272,10 +332,22 @@ Returns
 tuple[VisionTraits, TraitMutationDelta]
     Child traits and their effective delta."""
         # Keep mutate vision behavior explicit in its owning subsystem.
-        # Fixed powers preserve the established visual mutation distribution.
+        vision = self.config.vision
         child = VisionTraits(
-            clamp(parent.range + rng.gauss(0.0, 8.0), self.config.vision.min_range, self.config.vision.max_range),
-            clamp(parent.angle + rng.gauss(0.0, 0.08), self.config.vision.min_angle, self.config.vision.max_angle),
+            mutate_logit_bounded(
+                parent.range,
+                vision.min_range,
+                vision.max_range,
+                vision.range_mutation_sigma_u,
+                rng,
+            ),
+            mutate_logit_bounded(
+                parent.angle,
+                vision.min_angle,
+                vision.max_angle,
+                vision.angle_mutation_sigma_u,
+                rng,
+            ),
         )
         return child, TraitMutationDelta(
             vision_range=child.range - parent.range,
@@ -303,16 +375,19 @@ tuple[PhysicalTraits, TraitMutationDelta]
         # Keep mutate physical traits behavior explicit in its owning subsystem.
         # Body mutations always precede the conditional digestive mutations.
         trait = self.config.trait
-        radius = clamp(
-            parent.radius + rng.gauss(0.0, trait.radius_mutation_stddev),
+        radius = mutate_logit_bounded(
+            parent.radius,
             trait.min_radius,
             trait.max_radius,
+            trait.radius_mutation_sigma_u,
+            rng,
         )
-        movement = clamp(
-            parent.movement_cost_multiplier
-            + rng.gauss(0.0, trait.movement_cost_mutation_stddev),
+        movement = mutate_logit_bounded(
+            parent.movement_cost_multiplier,
             trait.min_movement_cost_multiplier,
             trait.max_movement_cost_multiplier,
+            trait.movement_cost_mutation_sigma_u,
+            rng,
         )
 
         def mutate_digestive(
@@ -342,10 +417,12 @@ float
             # Every digestive trait consumes exactly one mutation-gate roll.
             if rng.random() >= trait.digestive_trait_mutation_rate:
                 return clamp(value, minimum, maximum)
-            return clamp(
-                value + rng.gauss(0.0, standard_deviation),
+            return mutate_logit_bounded(
+                value,
                 minimum,
                 maximum,
+                standard_deviation,
+                rng,
             )
 
         parent_capacity = getattr(
@@ -361,19 +438,19 @@ float
         )
         capacity = mutate_digestive(
             parent_capacity,
-            trait.stomach_capacity_mutation_stddev,
+            trait.stomach_capacity_mutation_sigma_u,
             trait.min_stomach_capacity,
             trait.max_stomach_capacity,
         )
         rate = mutate_digestive(
             parent_rate,
-            trait.digestion_rate_mutation_stddev,
+            trait.digestion_rate_mutation_sigma_u,
             trait.min_digestion_rate,
             trait.max_digestion_rate,
         )
         efficiency = mutate_digestive(
             parent_efficiency,
-            trait.digestion_efficiency_mutation_stddev,
+            trait.digestion_efficiency_mutation_sigma_u,
             trait.min_digestion_efficiency,
             trait.max_digestion_efficiency,
         )
@@ -406,7 +483,7 @@ tuple[FlockingTraits, TraitMutationDelta]
     Child traits and their effective bounded delta."""
         # Keep mutate flocking traits behavior explicit in its owning subsystem.
         # All steering genes share one canonical replace-or-perturb operation.
-        trait = self.config.trait
+        flocking = self.config.flocking
 
         def mutate_gene(value: float) -> float:
             """Mutate one unit-interval steering gene.
@@ -423,10 +500,19 @@ float
             # Keep mutate gene behavior explicit in its owning subsystem.
             # One roll selects mutually exclusive replacement and perturbation.
             roll = rng.random()
-            if roll < trait.flocking_gene_replace_rate:
+            if roll < flocking.flocking_gene_replace_rate:
                 return rng.uniform(0.0, 1.0)
-            if roll < trait.flocking_gene_replace_rate + trait.flocking_gene_mutation_rate:
-                value += rng.gauss(0.0, trait.flocking_gene_mutation_power)
+            if roll < (
+                flocking.flocking_gene_replace_rate
+                + flocking.flocking_gene_mutation_rate
+            ):
+                return mutate_logit_bounded(
+                    value,
+                    0.0,
+                    1.0,
+                    flocking.flocking_gene_mutation_sigma_u,
+                    rng,
+                )
             return clamp(value, 0.0, 1.0)
 
         def mutate_tag(value: float) -> float:
@@ -446,10 +532,19 @@ float
             if self.config.flocking.compatibility.mode is not SocialCompatibilityMode.SOCIAL_TAG:
                 return value
             roll = rng.random()
-            if roll < trait.social_tag_replace_rate:
+            if roll < flocking.social_tag_replace_rate:
                 return rng.uniform(0.0, 1.0)
-            if roll < trait.social_tag_replace_rate + trait.social_tag_mutation_rate:
-                value += rng.gauss(0.0, trait.social_tag_mutation_power)
+            if roll < (
+                flocking.social_tag_replace_rate
+                + flocking.social_tag_mutation_rate
+            ):
+                return mutate_logit_bounded(
+                    value,
+                    0.0,
+                    1.0,
+                    flocking.social_tag_mutation_sigma_u,
+                    rng,
+                )
             return clamp(value, 0.0, 1.0)
 
         child = FlockingTraits(

@@ -690,15 +690,23 @@ Returns
 FlockingWeights
     Result produced by this creature-domain operation."""
     # Keep calculate flocking weights behavior explicit in its owning subsystem.
-    herding = _clamp(herding)
-    panic = _clamp(panic)
-    separation_gene = _clamp(separation_gene)
-    alignment_gene = _clamp(alignment_gene)
-    cohesion_gene = _clamp(cohesion_gene)
-    personal_space_presence = _clamp(personal_space_presence)
-    social_presence = _clamp(social_presence)
-    minimum_social_engagement = _clamp(minimum_social_engagement)
-    panic_suppression_strength = _clamp(panic_suppression_strength)
+    herding = _clamp(herding, 0.0, 1.0)
+    panic = _clamp(panic, 0.0, 1.0)
+    separation_gene = _clamp(separation_gene, 0.0, 1.0)
+    alignment_gene = _clamp(alignment_gene, 0.0, 1.0)
+    cohesion_gene = _clamp(cohesion_gene, 0.0, 1.0)
+    personal_space_presence = _clamp(personal_space_presence, 0.0, 1.0)
+    social_presence = _clamp(social_presence, 0.0, 1.0)
+    minimum_social_engagement = _clamp(
+        minimum_social_engagement,
+        0.0,
+        1.0,
+    )
+    panic_suppression_strength = _clamp(
+        panic_suppression_strength,
+        0.0,
+        1.0,
+    )
 
     engagement = social_presence * (
         minimum_social_engagement
@@ -766,11 +774,15 @@ SocialIntent
     )
     desired = _limit(desired, max_speed)
     group_scale = _clamp(
-        max(0.0, effective_count) / max(1, int(target_group_size))
+        max(0.0, effective_count) / max(1, int(target_group_size)),
+        0.0,
+        1.0,
     )
     confidence = _clamp(
         max(weights.separation, weights.alignment, weights.cohesion)
-        * (0.5 + 0.5 * group_scale)
+        * (0.5 + 0.5 * group_scale),
+        0.0,
+        1.0,
     )
     return SocialIntent(
         desired_velocity=desired,
@@ -806,7 +818,7 @@ Returns
 Vector
     Result produced by this creature-domain operation."""
     # Keep blend desired velocity behavior explicit in its owning subsystem.
-    influence = _clamp(social_influence)
+    influence = _clamp(social_influence, 0.0, 1.0)
     if influence <= 0.0:
         return neural_desired_velocity
     return (

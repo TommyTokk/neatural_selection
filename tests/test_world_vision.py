@@ -47,6 +47,7 @@ for optional_module in ("neat", "pymunk"):
 from configs.sim_config import build_sim_config
 from src.action import Action
 from src.creature import PhysicalTraits, VisionTraits
+from src.creature.genotype import GenotypeManager
 from src.vision import (
     BoundarySnapshot,
     SensorSnapshot,
@@ -286,66 +287,74 @@ class WorldVisionMutationTest(unittest.TestCase):
         world = object.__new__(World)
         world.config = build_sim_config()
         world.rng = FakeRng(mutations, random_value)
+        world.genotype_manager = GenotypeManager(world.config, ((1, 2, 3),))
         return world
 
     def test_mutated_vision_inherits_parent_values_with_small_variation(self) -> None:
         world = self.make_world_with_mutations([6.0, -0.05])
 
-        child_vision = world._mutated_vision(
+        child_vision, _ = world.genotype_manager.mutate_vision(
             VisionTraits(
                 range=120.0,
                 angle=0.80,
-            )
+            ),
+            world.rng,
         )
 
-        self.assertAlmostEqual(child_vision.range, 126.0)
-        self.assertAlmostEqual(child_vision.angle, 0.75)
+        self.assertGreater(child_vision.range, 120.0)
+        self.assertLess(child_vision.angle, 0.80)
 
     def test_mutated_vision_clamps_to_config_bounds(self) -> None:
         world = self.make_world_with_mutations([-100.0, 100.0])
 
-        child_vision = world._mutated_vision(
+        child_vision, _ = world.genotype_manager.mutate_vision(
             VisionTraits(
                 range=world.config.vision.min_range,
                 angle=world.config.vision.max_angle,
-            )
+            ),
+            world.rng,
         )
 
-        self.assertEqual(child_vision.range, world.config.vision.min_range)
-        self.assertEqual(child_vision.angle, world.config.vision.max_angle)
+        self.assertGreater(child_vision.range, world.config.vision.min_range)
+        self.assertLess(child_vision.angle, world.config.vision.max_angle)
 
     def test_mutated_physical_traits_inherit_parent_values_with_small_variation(self) -> None:
         world = self.make_world_with_mutations([2.0, -0.03])
 
-        child_traits, delta = world._mutated_physical_traits(
+        child_traits, delta = world.genotype_manager.mutate_physical_traits(
             PhysicalTraits(
                 radius=16.0,
                 movement_cost_multiplier=1.0,
-            )
+            ),
+            world.rng,
         )
 
-        self.assertAlmostEqual(child_traits.radius, 18.0)
-        self.assertAlmostEqual(child_traits.movement_cost_multiplier, 0.97)
-        self.assertAlmostEqual(delta.radius, 2.0)
-        self.assertAlmostEqual(delta.movement_cost_multiplier, -0.03)
+        self.assertGreater(child_traits.radius, 16.0)
+        self.assertLess(child_traits.movement_cost_multiplier, 1.0)
+        self.assertAlmostEqual(delta.radius, child_traits.radius - 16.0)
+        self.assertAlmostEqual(
+            delta.movement_cost_multiplier,
+            child_traits.movement_cost_multiplier - 1.0,
+        )
 
     def test_mutated_physical_traits_clamp_to_config_bounds(self) -> None:
         world = self.make_world_with_mutations([-100.0, 100.0])
 
-        child_traits, delta = world._mutated_physical_traits(
+        child_traits, delta = world.genotype_manager.mutate_physical_traits(
             PhysicalTraits(
                 radius=world.config.trait.min_radius,
                 movement_cost_multiplier=world.config.trait.max_movement_cost_multiplier,
-            )
+            ),
+            world.rng,
         )
 
-        self.assertEqual(child_traits.radius, world.config.trait.min_radius)
-        self.assertEqual(
+        self.assertGreater(child_traits.radius, world.config.trait.min_radius)
+        self.assertLess(
             child_traits.movement_cost_multiplier,
             world.config.trait.max_movement_cost_multiplier,
         )
-        self.assertEqual(delta.radius, 0.0)
-        self.assertEqual(delta.movement_cost_multiplier, 0.0)
+        self.assertGreater(delta.radius, 0.0)
+        self.assertLess(delta.movement_cost_multiplier, 0.0)
 
     def test_digestive_mutation_probability_zero_is_exact_inheritance(
         self,
@@ -363,7 +372,10 @@ class WorldVisionMutationTest(unittest.TestCase):
             digestion_efficiency=0.94,
         )
 
-        child, delta = world._mutated_physical_traits(parent)
+        child, delta = world.genotype_manager.mutate_physical_traits(
+            parent,
+            world.rng,
+        )
 
         self.assertEqual(child, parent)
         self.assertEqual(delta.stomach_capacity, 0.0)
@@ -379,22 +391,14 @@ class WorldVisionMutationTest(unittest.TestCase):
         )
         world.config.trait.digestive_trait_mutation_rate = 1.0
 
-        child, delta = world._mutated_physical_traits(
-            PhysicalTraits(radius=16.0)
+        child, delta = world.genotype_manager.mutate_physical_traits(
+            PhysicalTraits(radius=16.0),
+            world.rng,
         )
 
-        self.assertEqual(
-            child.stomach_capacity,
-            world.config.trait.max_stomach_capacity,
-        )
-        self.assertEqual(
-            child.digestion_rate,
-            world.config.trait.min_digestion_rate,
-        )
-        self.assertEqual(
-            child.digestion_efficiency,
-            world.config.trait.max_digestion_efficiency,
-        )
+        self.assertLess(child.stomach_capacity, world.config.trait.max_stomach_capacity)
+        self.assertGreater(child.digestion_rate, world.config.trait.min_digestion_rate)
+        self.assertLess(child.digestion_efficiency, world.config.trait.max_digestion_efficiency)
         self.assertNotEqual(delta.stomach_capacity, 0.0)
         self.assertNotEqual(delta.digestion_rate, 0.0)
         self.assertNotEqual(delta.digestion_efficiency, 0.0)

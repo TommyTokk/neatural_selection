@@ -43,11 +43,14 @@ class NeatBrainController(_NeuralController):
         )
         if genomes and creatures:
             founder = creatures[0]
+            flocking_traits = getattr(founder, "flocking_traits", None)
+            if flocking_traits is None:
+                flocking_traits = FlockingTraits()
             self.species_manager.register_initial_representative(
                 genomes[0][1],
                 founder.physical_traits,
                 founder.vision,
-                flocking_traits=founder.flocking_traits,
+                flocking_traits=flocking_traits,
             )
 
     def reset_for_new_sensing_epoch(
@@ -81,12 +84,15 @@ class NeatBrainController(_NeuralController):
         )
         if genomes and creatures:
             founder = creatures[0]
+            flocking_traits = getattr(founder, "flocking_traits", None)
+            if flocking_traits is None:
+                flocking_traits = FlockingTraits()
             self.species_manager.register_initial_representative(
                 genomes[0][1],
                 founder.physical_traits,
                 founder.vision,
                 species_id=root_species_id,
-                flocking_traits=founder.flocking_traits,
+                flocking_traits=flocking_traits,
             )
 
     def flocking_compatibility(self, first: Creature, second: Creature) -> float:
@@ -163,6 +169,7 @@ class NeatBrainController(_NeuralController):
         child_physical_traits: PhysicalTraits,
         child_vision: VisionTraits,
         child_flocking_traits: FlockingTraits | None = None,
+        active_species_ids: set[int] | None = None,
     ) -> tuple[Any | None, SpeciationResult | None]:
         """Preserve the historical combined neural/speciation child call.
 
@@ -180,6 +187,8 @@ class NeatBrainController(_NeuralController):
             Mutated child visual traits.
         child_flocking_traits
             Mutated child social traits.
+        active_species_ids
+            Living and already-staged species eligible for assignment.
 
         Returns
         -------
@@ -197,6 +206,7 @@ class NeatBrainController(_NeuralController):
             parent_species_id,
             self.config.genome_config,
             child_flocking_traits,
+            active_species_ids,
         )
         return brain, result
 
@@ -208,6 +218,7 @@ class NeatBrainController(_NeuralController):
         child_physical_traits: PhysicalTraits,
         child_vision: VisionTraits,
         child_flocking_traits: FlockingTraits | None = None,
+        active_species_ids: set[int] | None = None,
     ) -> tuple[Any, SpeciationResult]:
         """Preserve archived-genome mutation with integrated speciation.
 
@@ -225,6 +236,8 @@ class NeatBrainController(_NeuralController):
             Mutated recovery visual traits.
         child_flocking_traits
             Mutated recovery social traits.
+        active_species_ids
+            Living and already-recovered species eligible for assignment.
 
         Returns
         -------
@@ -240,5 +253,6 @@ class NeatBrainController(_NeuralController):
             parent_species_id,
             self.config.genome_config,
             child_flocking_traits,
+            active_species_ids,
         )
         return brain, result

@@ -316,6 +316,7 @@ OffspringPlan
         genotype: CreatureGenotype,
         lineage: LineageInfo,
         rng: Random,
+        active_species_ids: set[int] | None = None,
     ) -> OffspringPlan | None:
         """Complete neural evolution and speciation for a mutated live child.
 
@@ -331,6 +332,8 @@ OffspringPlan
             Already-mutated ancestry metadata with the parent species.
         rng
             Shadow or live simulation RNG used only for founder colour.
+        active_species_ids
+            Living and already-staged species eligible for global assignment.
 
         Returns
         -------
@@ -351,6 +354,7 @@ OffspringPlan
             brain,
             parent.color,
             rng,
+            active_species_ids,
         )
 
     def finalize_from_genome(
@@ -361,6 +365,7 @@ OffspringPlan
         genotype: CreatureGenotype,
         lineage: LineageInfo,
         rng: Random,
+        active_species_ids: set[int] | None = None,
     ) -> OffspringPlan:
         """Complete recovery evolution from an archived neural genome.
 
@@ -378,6 +383,8 @@ OffspringPlan
             Recovery lineage containing the archived parent species.
         rng
             Shadow or live simulation RNG used only for founder colour.
+        active_species_ids
+            Living and already-recovered species eligible for assignment.
 
         Returns
         -------
@@ -396,6 +403,7 @@ OffspringPlan
             brain,
             parent_color,
             rng,
+            active_species_ids,
         )
 
     def _finalize_plan(
@@ -406,6 +414,7 @@ OffspringPlan
         brain: NeatBrain,
         parent_color: tuple[int, ...],
         rng: Random,
+        active_species_ids: set[int] | None = None,
     ) -> OffspringPlan:
         """Apply composite speciation and final founder-colour replacement.
 
@@ -423,6 +432,8 @@ OffspringPlan
             Parent RGB or RGBA founder colour.
         rng
             Simulation RNG used only if speciation creates a new species.
+        active_species_ids
+            Species identities eligible for global assignment.
 
         Returns
         -------
@@ -430,7 +441,8 @@ OffspringPlan
             Final genotype, lineage, neural brain, and speciation result.
         """
         # Composite compatibility is the explicit integration boundary.
-        speciation = self.species_manager.evaluate_species(
+        evaluate_species = self.species_manager.evaluate_species
+        arguments = (
             brain.genome,
             genotype.physical_traits,
             genotype.vision,
@@ -438,6 +450,13 @@ OffspringPlan
             self.brain_controller.config.genome_config,
             genotype.flocking_traits,
         )
+        if "active_species_ids" in inspect.signature(evaluate_species).parameters:
+            speciation = evaluate_species(
+                *arguments,
+                active_species_ids=active_species_ids,
+            )
+        else:
+            speciation = evaluate_species(*arguments)
         lineage.species_id = speciation.species_id
 
         # Founder colour is replaced only after the final species is known.

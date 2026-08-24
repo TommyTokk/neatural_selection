@@ -18,6 +18,7 @@ from src.creature import (
     PhysicalTraits,
     VisionTraits,
 )
+from src.creature.genotype import GenotypeManager
 from src.flocking import calculate_flocking_weights
 from src.vision import FlockSensorSnapshot
 from src.world import World
@@ -502,6 +503,7 @@ class FlockingTraitEvolutionTest(unittest.TestCase):
         world = World.__new__(World)
         world.config = SimConfig()
         world.rng = Random(7)
+        world.genotype_manager = GenotypeManager(world.config, ((1, 2, 3),))
         return world
 
     def test_traits_clamp_to_biological_bounds(self) -> None:
@@ -511,8 +513,8 @@ class FlockingTraitEvolutionTest(unittest.TestCase):
         first = self.world()
         second = self.world()
 
-        first_traits = first._initial_flocking_traits()
-        second_traits = second._initial_flocking_traits()
+        first_traits = first.genotype_manager.initial_flocking_traits(first.rng)
+        second_traits = second.genotype_manager.initial_flocking_traits(second.rng)
 
         self.assertEqual(first_traits, second_traits)
         for value in (
@@ -525,11 +527,14 @@ class FlockingTraitEvolutionTest(unittest.TestCase):
 
     def test_no_mutation_inherits_each_gene_independently(self) -> None:
         world = self.world()
-        world.config.trait.flocking_gene_mutation_rate = 0.0
-        world.config.trait.flocking_gene_replace_rate = 0.0
+        world.config.flocking.flocking_gene_mutation_rate = 0.0
+        world.config.flocking.flocking_gene_replace_rate = 0.0
         parent = FlockingTraits(0.9, 0.2, 0.6)
 
-        child, delta = world._mutated_flocking_traits(parent)
+        child, delta = world.genotype_manager.mutate_flocking_traits(
+            parent,
+            world.rng,
+        )
 
         self.assertEqual(child, parent)
         self.assertEqual(
@@ -539,29 +544,35 @@ class FlockingTraitEvolutionTest(unittest.TestCase):
 
     def test_mutating_one_gene_does_not_modify_the_other_two(self) -> None:
         world = self.world()
-        world.config.trait.flocking_gene_mutation_rate = 0.5
-        world.config.trait.flocking_gene_replace_rate = 0.0
+        world.config.flocking.flocking_gene_mutation_rate = 0.5
+        world.config.flocking.flocking_gene_replace_rate = 0.0
         world.rng = Mock()
         world.rng.random.side_effect = [0.1, 0.9, 0.9, 0.9, 0.9]
         world.rng.gauss.return_value = 0.1
         parent = FlockingTraits(0.4, 0.5, 0.6)
 
-        child, _ = world._mutated_flocking_traits(parent)
+        child, _ = world.genotype_manager.mutate_flocking_traits(
+            parent,
+            world.rng,
+        )
 
-        self.assertAlmostEqual(child.separation_gene, 0.5)
+        self.assertGreater(child.separation_gene, parent.separation_gene)
         self.assertEqual(child.alignment_gene, parent.alignment_gene)
         self.assertEqual(child.cohesion_gene, parent.cohesion_gene)
 
     def test_replacement_is_independent_and_records_the_clamped_delta(self) -> None:
         world = self.world()
-        world.config.trait.flocking_gene_mutation_rate = 0.0
-        world.config.trait.flocking_gene_replace_rate = 0.005
+        world.config.flocking.flocking_gene_mutation_rate = 0.0
+        world.config.flocking.flocking_gene_replace_rate = 0.005
         world.rng = Mock()
         world.rng.random.side_effect = [0.001, 0.9, 0.9, 0.9, 0.9]
         world.rng.uniform.return_value = 0.8
         parent = FlockingTraits(0.4, 0.5, 0.6)
 
-        child, delta = world._mutated_flocking_traits(parent)
+        child, delta = world.genotype_manager.mutate_flocking_traits(
+            parent,
+            world.rng,
+        )
 
         self.assertEqual(child, FlockingTraits(0.8, 0.5, 0.6))
         self.assertAlmostEqual(delta.separation_gene, 0.4)

@@ -19,28 +19,43 @@ from src.persistence import SimulationPaths  # noqa: E402
 from src.world import World  # noqa: E402
 
 
+def force_benchmark_birth(world: World, parent: object) -> bool:
+    """Stage and commit one thermodynamic child for benchmark setup."""
+    request = world._reproduction_request_for(parent)
+    staged, shadow, rng_state = world._stage_final_reproductions([request])
+    if not staged:
+        return False
+    parent.energy = max(0.0, parent.energy - request.parent_investment)
+    world._commit_staged_reproductions(staged, shadow, rng_state)
+    return True
+
+
 def fill_to_physical_capacity(world: World) -> None:
     """Create normal rtNEAT offspring until the configured physical cap."""
     if not world.creatures:
         return
-    parent = world.creatures[0]
     world.total_biomass_energy += 10_000.0
-    world.rt_neat.eligible_parent_ids = [parent.creature_id]
-    world._last_actions[parent.creature_id] = Action(
-        accelerate=0.0,
-        rotate=0.0,
-        want_reproduce=1.0,
-        want_eat=0.0,
-        reset_chronometer=0.0,
-        want_grab=0.0,
-        want_release=0.0,
-    )
-    world._effective_actions[parent.creature_id] = world._last_actions[
-        parent.creature_id
-    ]
     while len(world.creatures) < world.config.population.max_creatures:
-        parent.energy = world.config.metabolism.max_energy
-        if not world._try_reproduce():
+        created_child = False
+        for parent in tuple(world.creatures):
+            world.rt_neat.eligible_parent_ids = [parent.creature_id]
+            world._last_actions[parent.creature_id] = Action(
+                accelerate=0.0,
+                rotate=0.0,
+                want_reproduce=1.0,
+                want_eat=0.0,
+                reset_chronometer=0.0,
+                want_grab=0.0,
+                want_release=0.0,
+            )
+            world._effective_actions[parent.creature_id] = (
+                world._last_actions[parent.creature_id]
+            )
+            parent.energy = world.config.metabolism.max_energy
+            if force_benchmark_birth(world, parent):
+                created_child = True
+                break
+        if not created_child:
             raise RuntimeError(
                 "Could not populate the benchmark to the physical cap."
             )

@@ -12,6 +12,7 @@ from src.creature.genotype import FlockingTraits, PhysicalTraits, VisionTraits
 
 NeuralShiftType = Literal["added", "changed", "removed"]
 SpeciesRepresentative = tuple[Any, PhysicalTraits, VisionTraits, FlockingTraits]
+CENTROID_EMA_BETA = 0.10
 
 
 @dataclass(frozen=True, slots=True)
@@ -688,8 +689,8 @@ def _normalized_trait_difference(
         If an input or restored value violates validation rules.
     """
     # Keep normalized trait difference behavior explicit in its owning subsystem.
-    if maximum <= minimum:
-        raise ValueError("Phenotypic trait ranges must have a positive width.")
+    if maximum - minimum <= 1e-9:
+        return 0.0
     clamped_first = max(minimum, min(maximum, first))
     clamped_second = max(minimum, min(maximum, second))
     return abs(clamped_first - clamped_second) / (maximum - minimum)
@@ -978,6 +979,7 @@ None
         parent_species_id: int,
         genome_config: Any,
         child_flocking_traits: FlockingTraits | None = None,
+        active_species_ids: set[int] | None = None,
     ) -> SpeciationResult:
         """Execute evaluate species behavior.
 
@@ -995,29 +997,62 @@ genome_config
     Input used by this creature-domain operation.
 child_flocking_traits
     Input used by this creature-domain operation.
+active_species_ids
+    Species identities eligible for global assignment, or all known species.
 Returns
 -------
 SpeciationResult
     Result produced by this creature-domain operation."""
         # Keep evaluate species behavior explicit in its owning subsystem.
+        child_flocking_traits = child_flocking_traits or FlockingTraits()
+        candidate_ids = sorted(
+            self.representatives
+            if active_species_ids is None
+            else (
+                species_id
+                for species_id in active_species_ids
+                if species_id in self.representatives
+            )
+        )
+        closest: tuple[float, int, CompositeCompatibilityDistance] | None = None
+        for species_id in candidate_ids:
+            (
+                candidate_genome,
+                candidate_physical,
+                candidate_vision,
+                candidate_flocking,
+            ) = self.representatives[species_id]
+            candidate_distance = self.composite_distance(
+                child_genome,
+                child_physical_traits,
+                child_vision,
+                child_flocking_traits,
+                candidate_genome,
+                candidate_physical,
+                candidate_vision,
+                candidate_flocking,
+                genome_config,
+            )
+            key = (candidate_distance.composite_distance, species_id)
+            if closest is None or key < (closest[0], closest[1]):
+                closest = (key[0], key[1], candidate_distance)
+
+        if closest is None:
+            return self._create_unmatched_species(
+                child_genome,
+                child_physical_traits,
+                child_vision,
+                child_flocking_traits,
+                parent_species_id,
+            )
+
+        _, closest_species_id, compatibility = closest
         (
             representative_genome,
             representative_physical_traits,
             representative_vision,
             representative_flocking_traits,
-        ) = self.representatives[parent_species_id]
-        child_flocking_traits = child_flocking_traits or FlockingTraits()
-        compatibility = self.composite_distance(
-            child_genome,
-            child_physical_traits,
-            child_vision,
-            child_flocking_traits,
-            representative_genome,
-            representative_physical_traits,
-            representative_vision,
-            representative_flocking_traits,
-            genome_config,
-        )
+        ) = self.representatives[closest_species_id]
         trait_deltas = SpeciesTraitSnapshot(
             radius=(
                 child_physical_traits.radius
@@ -1126,8 +1161,17 @@ SpeciationResult
                 neural_shifts=neural_shifts,
             )
 
+        self.representatives[closest_species_id] = self._updated_representative(
+            child_genome,
+            child_physical_traits,
+            child_vision,
+            child_flocking_traits,
+            representative_physical_traits,
+            representative_vision,
+            representative_flocking_traits,
+        )
         return SpeciationResult(
-            species_id=parent_species_id,
+            species_id=closest_species_id,
             parent_species_id=parent_species_id,
             is_new_species=False,
             founder_traits=SpeciesTraitSnapshot.from_traits(
@@ -1138,6 +1182,173 @@ SpeciationResult
             trait_deltas=trait_deltas,
             distances=distances,
         )
+
+    def _create_unmatched_species(
+        self,
+        child_genome: Any,
+        child_physical_traits: PhysicalTraits,
+        child_vision: VisionTraits,
+        child_flocking_traits: FlockingTraits,
+        parent_species_id: int,
+    ) -> SpeciationResult:
+        """Create a species when no active representative can be compared.
+
+        Parameters
+        ----------
+        child_genome
+            Neural genome used as the new representative.
+        child_physical_traits
+            Physical traits used to initialize the centroid.
+        child_vision
+            Visual traits used to initialize the centroid.
+        child_flocking_traits
+            Social genes used to initialize the centroid.
+        parent_species_id
+            Biological parent species retained in lineage telemetry.
+
+        Returns
+        -------
+        SpeciationResult
+            New-species result without a compatibility baseline.
+        """
+        # With no active comparison target, the child is its own centroid.
+        new_species_id = self.next_species_id
+        self.next_species_id += 1
+        self.representatives[new_species_id] = (
+            child_genome,
+            copy.deepcopy(child_physical_traits),
+            copy.deepcopy(child_vision),
+            copy.deepcopy(child_flocking_traits),
+        )
+        zero = SpeciesTraitSnapshot(0.0, 0.0, 0.0, 0.0)
+        distances = SpeciesDistanceBreakdown(
+            neat_distance=None,
+            phenotypic_distance=None,
+            weighted_phenotypic_distance=None,
+            composite_distance=None,
+            compatibility_threshold=self.compatibility_threshold,
+            phenotypic_weight=self.phenotypic_weight,
+            radius_component=None,
+            vision_range_component=None,
+            vision_angle_component=None,
+            movement_cost_component=None,
+            flocking_trait_distance=None,
+            weighted_flocking_trait_distance=None,
+            flocking_trait_distance_coefficient=(
+                self.flocking_trait_distance_coefficient
+            ),
+        )
+        return SpeciationResult(
+            species_id=new_species_id,
+            parent_species_id=parent_species_id,
+            is_new_species=True,
+            founder_traits=SpeciesTraitSnapshot.from_traits(
+                child_physical_traits,
+                child_vision,
+                child_flocking_traits,
+            ),
+            trait_deltas=zero,
+            distances=distances,
+        )
+
+    @staticmethod
+    def _updated_representative(
+        child_genome: Any,
+        child_physical_traits: PhysicalTraits,
+        child_vision: VisionTraits,
+        child_flocking_traits: FlockingTraits,
+        centroid_physical_traits: PhysicalTraits,
+        centroid_vision: VisionTraits,
+        centroid_flocking_traits: FlockingTraits,
+    ) -> SpeciesRepresentative:
+        """Return the latest genome with physical-unit EMA trait centroids.
+
+        Parameters
+        ----------
+        child_genome
+            Latest assigned neural representative.
+        child_physical_traits
+            Latest child's physical traits.
+        child_vision
+            Latest child's visual traits.
+        child_flocking_traits
+            Latest child's social genes and tags.
+        centroid_physical_traits
+            Current physical-unit physical centroid.
+        centroid_vision
+            Current physical-unit visual centroid.
+        centroid_flocking_traits
+            Current unit-interval flocking-gene centroid.
+
+        Returns
+        -------
+        SpeciesRepresentative
+            Legacy four-element tuple containing the updated centroid.
+        """
+        # Replace the immutable tuple instead of mutating archived trait values.
+        beta = CENTROID_EMA_BETA
+
+        def ema(current: float, child: float) -> float:
+            """Blend one physical-unit centroid value toward a child value.
+
+            Parameters
+            ----------
+            current
+                Current centroid component.
+            child
+                Newly assigned child's component.
+
+            Returns
+            -------
+            float
+                Updated EMA component.
+            """
+            # Keep the requested fixed smoothing factor uniform across traits.
+            return (1.0 - beta) * current + beta * child
+
+        physical = PhysicalTraits(
+            radius=ema(
+                centroid_physical_traits.radius,
+                child_physical_traits.radius,
+            ),
+            movement_cost_multiplier=ema(
+                centroid_physical_traits.movement_cost_multiplier,
+                child_physical_traits.movement_cost_multiplier,
+            ),
+            stomach_capacity=ema(
+                centroid_physical_traits.stomach_capacity,
+                child_physical_traits.stomach_capacity,
+            ),
+            digestion_rate=ema(
+                centroid_physical_traits.digestion_rate,
+                child_physical_traits.digestion_rate,
+            ),
+            digestion_efficiency=ema(
+                centroid_physical_traits.digestion_efficiency,
+                child_physical_traits.digestion_efficiency,
+            ),
+        )
+        vision = VisionTraits(
+            range=ema(centroid_vision.range, child_vision.range),
+            angle=ema(centroid_vision.angle, child_vision.angle),
+        )
+        flocking = FlockingTraits(
+            separation_gene=ema(
+                centroid_flocking_traits.separation_gene,
+                child_flocking_traits.separation_gene,
+            ),
+            alignment_gene=ema(
+                centroid_flocking_traits.alignment_gene,
+                child_flocking_traits.alignment_gene,
+            ),
+            cohesion_gene=ema(
+                centroid_flocking_traits.cohesion_gene,
+                child_flocking_traits.cohesion_gene,
+            ),
+            social_tag_x=child_flocking_traits.social_tag_x,
+            social_tag_y=child_flocking_traits.social_tag_y,
+        )
+        return child_genome, physical, vision, flocking
 
     def composite_distance(
         self,

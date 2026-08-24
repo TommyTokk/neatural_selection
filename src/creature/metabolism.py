@@ -1336,14 +1336,14 @@ float
                 "digestive_trait_mutation_rate must be between 0 and 1."
             )
         nonnegative = {
-            "stomach_capacity_mutation_stddev": (
-                trait.stomach_capacity_mutation_stddev
+            "stomach_capacity_mutation_sigma_u": (
+                trait.stomach_capacity_mutation_sigma_u
             ),
-            "digestion_rate_mutation_stddev": (
-                trait.digestion_rate_mutation_stddev
+            "digestion_rate_mutation_sigma_u": (
+                trait.digestion_rate_mutation_sigma_u
             ),
-            "digestion_efficiency_mutation_stddev": (
-                trait.digestion_efficiency_mutation_stddev
+            "digestion_efficiency_mutation_sigma_u": (
+                trait.digestion_efficiency_mutation_sigma_u
             ),
             "initial_stomach_capacity_jitter": (
                 trait.initial_stomach_capacity_jitter

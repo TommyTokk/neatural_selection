@@ -16,6 +16,7 @@ from src.graphics import configure_graphics  # noqa: E402
 configure_graphics()
 
 from configs.sim_config import build_sim_config  # noqa: E402
+from benchmarks.benchmark_flocking import force_benchmark_birth  # noqa: E402
 from src.action import Action  # noqa: E402
 from src.persistence import SimulationPaths  # noqa: E402
 from src.world import ReproductionRequest, World  # noqa: E402
@@ -56,7 +57,7 @@ def fill_population(world: World, target: int) -> None:
     )
     while len(world.creatures) < target:
         parent.energy = world.config.metabolism.max_energy
-        if not world._try_reproduce():
+        if not force_benchmark_birth(world, parent):
             raise RuntimeError("Could not fill transaction benchmark population.")
 
 

@@ -34,7 +34,7 @@ def migration_config():
     config.behavior.enabled = False
     config.counterfactual_why.enabled = False
     config.population.initial_creatures = 2
-    config.population.min_reproduction_age = 10_000.0
+    config.population.maturity_age_seconds = 10.0
     config.population.senescence_age_seconds = 10_000.0
     config.food.initial_food_items = 8
     config.food.max_food_items = 300

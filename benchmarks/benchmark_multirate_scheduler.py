@@ -17,6 +17,7 @@ from benchmarks.benchmark_hot_loop_cleanup import (  # noqa: E402
     make_world,
     percentile,
 )
+from benchmarks.benchmark_flocking import force_benchmark_birth  # noqa: E402
 from configs.sim_config import build_sim_config  # noqa: E402
 from src.action import Action  # noqa: E402
 import src.world as world_module  # noqa: E402
@@ -317,10 +318,7 @@ def collect_churn_counters(measured_steps: int = 12) -> dict[str, int]:
                 victim = world.creatures[-1]
                 removed_ids.add(victim.creature_id)
                 world._remove_creature(victim, death_reason="benchmark_churn")
-                parent = world.creatures[0]
                 world.total_biomass_energy += 10_000.0
-                parent.energy = world.config.metabolism.max_energy
-                world.rt_neat.eligible_parent_ids = [parent.creature_id]
                 reproduce = Action(
                     accelerate=0.0,
                     rotate=0.0,
@@ -330,10 +328,17 @@ def collect_churn_counters(measured_steps: int = 12) -> dict[str, int]:
                     want_grab=0.0,
                     want_release=0.0,
                 )
-                world._last_actions[parent.creature_id] = reproduce
-                world._effective_actions[parent.creature_id] = reproduce
                 issued_before = set(world._issued_creature_ids)
-                if not world._try_reproduce():
+                created_child = False
+                for parent in tuple(world.creatures):
+                    parent.energy = world.config.metabolism.max_energy
+                    world.rt_neat.eligible_parent_ids = [parent.creature_id]
+                    world._last_actions[parent.creature_id] = reproduce
+                    world._effective_actions[parent.creature_id] = reproduce
+                    if force_benchmark_birth(world, parent):
+                        created_child = True
+                        break
+                if not created_child:
                     raise RuntimeError("Could not create benchmark churn birth.")
                 spawned_id = world.creatures[-1].creature_id
                 spawned_ids.add(spawned_id)

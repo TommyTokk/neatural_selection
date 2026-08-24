@@ -1811,12 +1811,13 @@ class PersistenceManager:
         from src.world import ArchivedCreatureTraits, World
 
         trait_config = config.trait
+        flocking_config = config.flocking
         default_flocking_traits = FlockingTraits(
-            separation_gene=trait_config.default_separation_gene,
-            alignment_gene=trait_config.default_alignment_gene,
-            cohesion_gene=trait_config.default_cohesion_gene,
-            social_tag_x=trait_config.default_social_tag_x,
-            social_tag_y=trait_config.default_social_tag_y,
+            separation_gene=flocking_config.default_separation_gene,
+            alignment_gene=flocking_config.default_alignment_gene,
+            cohesion_gene=flocking_config.default_cohesion_gene,
+            social_tag_x=flocking_config.default_social_tag_x,
+            social_tag_y=flocking_config.default_social_tag_y,
         )
 
         def normalized_flocking(value: object | None) -> FlockingTraits:

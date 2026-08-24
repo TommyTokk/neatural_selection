@@ -11,12 +11,14 @@ from configs.sim_config import (
     build_sim_config,
 )
 from src.creature import (
+    CreatureGenotype,
     FlockingTraits,
     LineageInfo,
     PhysicalTraits,
     TraitMutationDelta,
     VisionTraits,
 )
+from src.creature.genotype import GenotypeManager
 from src.flocking import SocialCompatibilityResolver
 from src.neat_controller import calculate_flocking_trait_distance
 from src.persistence import (
@@ -519,7 +521,7 @@ class SchemaSevenSensingTest(unittest.TestCase):
                 [observer, neighbor],
                 (-200.0, -200.0, 200.0, 200.0),
                 100.0,
-            ).as_inputs()[26]
+            ).as_inputs()[25]
 
         self.assertLess(right_component(20.0), 0.0)
         self.assertGreater(right_component(-20.0), 0.0)
@@ -561,7 +563,7 @@ class SchemaSevenSensingTest(unittest.TestCase):
             [observer, *neighbors],
             (-200.0, -200.0, 200.0, 200.0),
             100.0,
-        ).as_inputs()[24]
+        ).as_inputs()[23]
         self.assertEqual(value, 1.0)
 
     def test_long_range_observation_does_not_require_fov(self) -> None:
@@ -876,10 +878,10 @@ class SocialTagCompatibilityTest(unittest.TestCase):
         config.flocking.compatibility.mode = (
             SocialCompatibilityMode.SOCIAL_TAG
         )
-        config.trait.flocking_gene_replace_rate = 0.0
-        config.trait.flocking_gene_mutation_rate = 0.0
-        config.trait.social_tag_replace_rate = 0.0
-        config.trait.social_tag_mutation_rate = 0.0
+        config.flocking.flocking_gene_replace_rate = 0.0
+        config.flocking.flocking_gene_mutation_rate = 0.0
+        config.flocking.social_tag_replace_rate = 0.0
+        config.flocking.social_tag_mutation_rate = 0.0
         world = object.__new__(World)
         world.config = config
         world.rng = Random(4)
@@ -890,7 +892,8 @@ class SocialTagCompatibilityTest(unittest.TestCase):
             social_tag_x=0.4,
             social_tag_y=0.6,
         )
-        child, delta = world._mutated_flocking_traits(parent)
+        manager = GenotypeManager(config, ((1, 2, 3),))
+        child, delta = manager.mutate_flocking_traits(parent, world.rng)
         self.assertEqual(child, parent)
         self.assertEqual(delta.social_tag_x, 0.0)
         self.assertEqual(delta.social_tag_y, 0.0)
@@ -931,6 +934,12 @@ class SocialTagCompatibilityTest(unittest.TestCase):
                     social_tag_y=0.15,
                 )
             ),
+        )
+        creature.genotype = CreatureGenotype(
+            creature.vision,
+            creature.physical_traits,
+            creature.flocking_traits,
+            creature.color,
         )
         world._archive_creature_traits(creature)
         archived = world._trait_archive_by_genome_id[99]
@@ -1144,11 +1153,11 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             restored_traits = restored.creatures[0].flocking_traits
             self.assertEqual(
                 restored_traits.social_tag_x,
-                config.trait.default_social_tag_x,
+                config.flocking.default_social_tag_x,
             )
             self.assertEqual(
                 restored_traits.social_tag_y,
-                config.trait.default_social_tag_y,
+                config.flocking.default_social_tag_y,
             )
         finally:
             world.close()

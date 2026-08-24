@@ -1090,10 +1090,7 @@ class DeterministicSchedulerIntegrationTest(unittest.TestCase):
                 reproduction = neutral_action()
                 reproduction.want_reproduce = 1.0
                 parent = world.creatures[0]
-                parent.energy = max(
-                    parent.energy,
-                    world.config.population.reproduction_energy_threshold,
-                )
+                parent.energy = world.config.metabolism.max_energy
                 parent.age_seconds = max(
                     parent.age_seconds,
                     world.config.population.min_reproduction_age,
@@ -1104,6 +1101,26 @@ class DeterministicSchedulerIntegrationTest(unittest.TestCase):
                 )
                 world._last_actions[parent.creature_id] = reproduction
                 world._effective_actions[parent.creature_id] = reproduction
+                original_decide = world.neat_controller.decide
+
+                def forced_parent_decision(
+                    creature_id: int,
+                    snapshot: object,
+                    *,
+                    decision_dt: float | None = None,
+                    parent_id: int = parent.creature_id,
+                    fallback=original_decide,
+                    forced_action: Action = reproduction,
+                ) -> Action:
+                    if creature_id == parent_id:
+                        return forced_action
+                    return fallback(
+                        creature_id,
+                        snapshot,
+                        decision_dt=decision_dt,
+                    )
+
+                world.neat_controller.decide = forced_parent_decision
 
                 victim = world.creatures[2]
                 victim.pending_direct_life_damage = victim.life + 1.0

@@ -452,6 +452,7 @@ class InspectorPanelComponent:
             delta_scale: float = 1.0,
             delta_suffix: str = "",
         ) -> _InspectorCardField:
+            """Build one inherited-trait field with lineage delta details."""
             detail, tone = self._inspector_trait_delta_detail(
                 mutation_delta,
                 parent_id,
@@ -469,6 +470,7 @@ class InspectorPanelComponent:
             )
 
         def runtime_value(value: object | None, formatter: str) -> str:
+            """Format an optional runtime value or its pending placeholder."""
             if value is None:
                 return "Recomputing"
             return format(float(value), formatter)
@@ -615,6 +617,7 @@ class InspectorPanelComponent:
         )
 
         def flock_value(name: str) -> str:
+            """Format one inherited flocking value when traits are available."""
             if flocking_traits is None:
                 return "Unavailable"
             return f"{float(getattr(flocking_traits, name, 0.0)):.3f}"
@@ -1888,4 +1891,9 @@ class InspectorPanelComponent:
         fitness = world.fitness_for(selected)
         if fitness is None:
             return "None"
-        return self._format_genome_fitness(fitness.net_energy_balance)
+        net_energy_balance = getattr(fitness, "net_energy_balance", None)
+        if net_energy_balance is None:
+            score = getattr(fitness, "score", None)
+            if callable(score):
+                net_energy_balance = score(selected)
+        return self._format_genome_fitness(net_energy_balance)

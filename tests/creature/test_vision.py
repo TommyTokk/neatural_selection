@@ -387,7 +387,7 @@ class VisionVisibilityTest(unittest.TestCase):
         hidden_food = FakeFood(id=1, position=(60.0, 0.0), radius=5.0)
         exposed_food = FakeFood(id=2, position=(40.0, 25.0), radius=5.0)
 
-        with patch("src.vision.Food", FakeFood):
+        with patch("src.creature.vision.Food", FakeFood):
             result = self.vision.sense_with_visible_food_ids(
                 observer,
                 foods=[hidden_food, exposed_food],
@@ -1847,7 +1847,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.flock.flockmate_count, 1.0)
-        self.assertAlmostEqual(snapshot.as_inputs()[24], 0.25)
+        self.assertAlmostEqual(snapshot.as_inputs()[23], 0.25)
         self.assertEqual(snapshot.flock.average_flockmate_velocity, (1.0, 6.0))
         self.assertAlmostEqual(
             snapshot.flock.average_flockmate_proximity,

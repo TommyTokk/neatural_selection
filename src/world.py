@@ -451,9 +451,7 @@ class World:
         in particular, creature spawning still consumes the simulation RNG.
         """
         # Validate configuration before any service allocates persistent state.
-        config.flocking.validate()
-        config.action.validate()
-        config.scheduler.validate()
+        config.validate()
         self.config = config
         self.fixed_timestep = 1.0 / config.scheduler.physics_hz
         self.rng = Random(config.random_seed)
@@ -1302,10 +1300,17 @@ class World:
 
     def start_new_sensing_epoch(self, root_species_id: int) -> None:
         """Reset behavioral evolution while preserving the living world."""
-        self.evolution.reset_for_new_sensing_epoch(
-            self.creatures,
-            root_species_id,
-        )
+        evolution = getattr(self, "evolution", None)
+        if evolution is not None:
+            evolution.reset_for_new_sensing_epoch(
+                self.creatures,
+                root_species_id,
+            )
+        else:
+            self.neat_controller.reset_for_new_sensing_epoch(
+                self.creatures,
+                root_species_id,
+            )
 
         for creature in self.creatures:
             previous_fitness = self.fitness.get(creature.creature_id)
@@ -2123,7 +2128,7 @@ class World:
         if own_infants is None:
             own_infants = self._own_infant_children_for(creature)
 
-        age_seconds = creature.age_seconds
+        age_seconds = float(getattr(creature, "age_seconds", 0.0))
         chronometer = self._chronometers.get(creature.creature_id, 0.0)
 
         reproductive_readiness = min(
@@ -5603,6 +5608,10 @@ class World:
             shadow_state = shadow_controller
         live_rng = self.rng
         staged: list[StagedOffspring] = []
+        active_species_ids = {
+            creature.lineage.species_id
+            for creature in getattr(self, "creatures", ())
+        }
         reserved_positions: list[tuple[float, float, float]] = []
         first_child_id = self._next_creature_id_value
         try:
@@ -5633,6 +5642,7 @@ class World:
                         ),
                         traits.lineage,
                         shadow_rng,
+                        active_species_ids,
                     )
                     if plan is None:
                         raise RuntimeError(
@@ -5649,6 +5659,7 @@ class World:
                         traits.physical_traits,
                         traits.vision,
                         traits.flocking_traits,
+                        active_species_ids,
                     )
                     if child_brain is None or speciation is None:
                         raise RuntimeError(
@@ -5669,6 +5680,7 @@ class World:
                         speciation_result=speciation,
                     )
                 )
+                active_species_ids.add(speciation.species_id)
                 reserved_positions.append(
                     (*position, traits.physical_traits.radius)
                 )
@@ -7062,6 +7074,7 @@ class World:
         )
 
         recovered_count = 0
+        active_species_ids: set[int] = set()
         for index in range(recovery_count):
             parent_genome = parent_genomes[index % len(parent_genomes)]
             archived_traits = self._archived_traits_for_genome(parent_genome)
@@ -7105,6 +7118,7 @@ class World:
                     child.genotype,
                     child.lineage,
                     self.rng,
+                    active_species_ids,
                 )
                 child_brain = recovery_plan.brain
                 speciation_result = recovery_plan.speciation_result
@@ -7117,6 +7131,7 @@ class World:
                         child.physical_traits,
                         child.vision,
                         child.flocking_traits,
+                        active_species_ids,
                     )
                 )
             if child_brain is None:
@@ -7124,6 +7139,7 @@ class World:
                 self.space.remove(child.body, child.shape)
                 continue
             child.lineage.species_id = speciation_result.species_id
+            active_species_ids.add(speciation_result.species_id)
             if speciation_result.is_new_species and evolution is None:
                 child.color = self.genotype_manager.new_species_color(parent_color, self.rng)
             if speciation_result.is_new_species:
@@ -7210,7 +7226,10 @@ class World:
     def _validate_infant_runway(self) -> None:
         """Reject configurations whose weakest infant cannot reach maturity."""
         self.config.population.validate()
-        genome_config = self.neat_controller.config.genome_config
+        controller_config = getattr(self.neat_controller, "config", None)
+        genome_config = getattr(controller_config, "genome_config", None)
+        if genome_config is None:
+            return
         input_count = int(getattr(genome_config, "num_inputs", 0))
         output_count = int(getattr(genome_config, "num_outputs", 0))
         configured_fraction = getattr(

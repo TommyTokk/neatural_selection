@@ -63,6 +63,20 @@ class FlockingBenchmarkConfig:
 
 @dataclass(slots=True)
 class FlockingConfig:
+    default_separation_gene: float = 0.5
+    default_alignment_gene: float = 0.5
+    default_cohesion_gene: float = 0.5
+    initial_flocking_gene_stdev: float = 0.08
+    flocking_gene_mutation_rate: float = 0.05
+    flocking_gene_mutation_sigma_u: float = 0.20
+    flocking_gene_replace_rate: float = 0.005
+    default_social_tag_x: float = 0.5
+    default_social_tag_y: float = 0.5
+    initial_social_tag_stdev: float = 0.15
+    social_tag_mutation_rate: float = 0.05
+    social_tag_mutation_sigma_u: float = 0.20
+    social_tag_replace_rate: float = 0.005
+
     minimum_social_engagement: float = 0.25
     panic_suppression_strength: float = 0.5
     max_social_influence: float = 0.35
@@ -114,6 +128,55 @@ class FlockingConfig:
                 or not 0.0 <= value <= 1.0
             ):
                 raise ValueError(f"{name} must be finite and within [0, 1].")
+
+        inherited_fractions = {
+            "default_separation_gene": self.default_separation_gene,
+            "default_alignment_gene": self.default_alignment_gene,
+            "default_cohesion_gene": self.default_cohesion_gene,
+            "default_social_tag_x": self.default_social_tag_x,
+            "default_social_tag_y": self.default_social_tag_y,
+            "flocking_gene_mutation_rate": self.flocking_gene_mutation_rate,
+            "flocking_gene_replace_rate": self.flocking_gene_replace_rate,
+            "social_tag_mutation_rate": self.social_tag_mutation_rate,
+            "social_tag_replace_rate": self.social_tag_replace_rate,
+        }
+        for name, value in inherited_fractions.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(f"flocking.{name} must be finite and within [0, 1].")
+        for prefix in ("flocking_gene", "social_tag"):
+            mutation_rate = getattr(self, f"{prefix}_mutation_rate")
+            replace_rate = getattr(self, f"{prefix}_replace_rate")
+            if mutation_rate + replace_rate > 1.0:
+                raise ValueError(
+                    f"flocking.{prefix}_mutation_rate + {prefix}_replace_rate "
+                    "must not exceed 1.0."
+                )
+        for name in (
+            "flocking_gene_mutation_sigma_u",
+            "social_tag_mutation_sigma_u",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value <= 0.0
+            ):
+                raise ValueError(f"flocking.{name} must be finite and positive.")
+        for name in ("initial_flocking_gene_stdev", "initial_social_tag_stdev"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"flocking.{name} must be finite and nonnegative.")
 
         if (
             isinstance(self.herding_decay_rate, bool)
@@ -522,54 +585,129 @@ class TraitConfig:
     min_radius: float = 12.0
     max_radius: float = 22.0
     initial_radius_jitter: float = 2.0
-    radius_mutation_stddev: float = 1.0
+    radius_mutation_sigma_u: float = 0.42
 
     default_movement_cost_multiplier: float = 1.0
     min_movement_cost_multiplier: float = 0.75
     max_movement_cost_multiplier: float = 1.35
     initial_movement_cost_jitter: float = 0.08
-    movement_cost_mutation_stddev: float = 0.04
+    movement_cost_mutation_sigma_u: float = 0.27
 
     default_stomach_capacity: float = 1.6
     min_stomach_capacity: float = 0.8
     max_stomach_capacity: float = 2.6
     initial_stomach_capacity_jitter: float = 0.15
-    stomach_capacity_mutation_stddev: float = 0.12
+    stomach_capacity_mutation_sigma_u: float = 0.27
 
     default_digestion_rate: float = 0.20
     min_digestion_rate: float = 0.05
     max_digestion_rate: float = 0.40
     initial_digestion_rate_jitter: float = 0.025
-    digestion_rate_mutation_stddev: float = 0.02
+    digestion_rate_mutation_sigma_u: float = 0.23
 
     default_digestion_efficiency: float = 0.90
     min_digestion_efficiency: float = 0.55
     max_digestion_efficiency: float = 0.98
     initial_digestion_efficiency_jitter: float = 0.02
-    digestion_efficiency_mutation_stddev: float = 0.015
+    digestion_efficiency_mutation_sigma_u: float = 0.23
     digestive_trait_mutation_rate: float = 0.15
 
-    default_separation_gene: float = 0.5
-    default_alignment_gene: float = 0.5
-    default_cohesion_gene: float = 0.5
-    initial_flocking_gene_stdev: float = 0.08
-    flocking_gene_mutation_rate: float = 0.05
-    flocking_gene_mutation_power: float = 0.05
-    flocking_gene_replace_rate: float = 0.005
-    default_social_tag_x: float = 0.5
-    default_social_tag_y: float = 0.5
-    initial_social_tag_stdev: float = 0.15
-    social_tag_mutation_rate: float = 0.05
-    social_tag_mutation_power: float = 0.05
-    social_tag_replace_rate: float = 0.005
-
     body_metabolism_cost_factor: float = 0.004
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate inherited physical and digestive trait configuration."""
+        ranges = (
+            ("radius", self.min_radius, self.default_radius, self.max_radius),
+            (
+                "movement_cost_multiplier",
+                self.min_movement_cost_multiplier,
+                self.default_movement_cost_multiplier,
+                self.max_movement_cost_multiplier,
+            ),
+            (
+                "stomach_capacity",
+                self.min_stomach_capacity,
+                self.default_stomach_capacity,
+                self.max_stomach_capacity,
+            ),
+            (
+                "digestion_rate",
+                self.min_digestion_rate,
+                self.default_digestion_rate,
+                self.max_digestion_rate,
+            ),
+            (
+                "digestion_efficiency",
+                self.min_digestion_efficiency,
+                self.default_digestion_efficiency,
+                self.max_digestion_efficiency,
+            ),
+        )
+        for name, minimum, default, maximum in ranges:
+            values = (minimum, default, maximum)
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                for value in values
+            ):
+                raise ValueError(f"trait.{name} bounds and default must be finite.")
+            if maximum <= minimum:
+                raise ValueError(f"trait.{name} range must have positive width.")
+            if not minimum <= default <= maximum:
+                raise ValueError(f"trait.default_{name} must be within its bounds.")
+
+        for name in (
+            "radius_mutation_sigma_u",
+            "movement_cost_mutation_sigma_u",
+            "stomach_capacity_mutation_sigma_u",
+            "digestion_rate_mutation_sigma_u",
+            "digestion_efficiency_mutation_sigma_u",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value <= 0.0
+            ):
+                raise ValueError(f"trait.{name} must be finite and positive.")
+        for name in (
+            "initial_radius_jitter",
+            "initial_movement_cost_jitter",
+            "initial_stomach_capacity_jitter",
+            "initial_digestion_rate_jitter",
+            "initial_digestion_efficiency_jitter",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"trait.{name} must be finite and nonnegative.")
+        mutation_rate = self.digestive_trait_mutation_rate
+        if (
+            isinstance(mutation_rate, bool)
+            or not isinstance(mutation_rate, (int, float))
+            or not isfinite(mutation_rate)
+            or not 0.0 <= mutation_rate <= 1.0
+        ):
+            raise ValueError(
+                "trait.digestive_trait_mutation_rate must be within [0, 1]."
+            )
 
 
 @dataclass(slots=True)
 class VisionConfig:
-    default_range: float = 98.0
+    default_range: float = 150.0
     default_angle: float = 0.95
+    range_mutation_sigma_u: float = 0.32
+    angle_mutation_sigma_u: float = 0.17
     fovea_ratio: float = 0.33
 
     min_range: float = 100.0
@@ -580,6 +718,37 @@ class VisionConfig:
     base_energy_cost: float = 0.001
     area_energy_cost_factor: float = 0.005
     boundary_warning_distance: float = 90.0
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate visual trait bounds, defaults, and latent mutation powers."""
+        for name, minimum, default, maximum in (
+            ("range", self.min_range, self.default_range, self.max_range),
+            ("angle", self.min_angle, self.default_angle, self.max_angle),
+        ):
+            values = (minimum, default, maximum)
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                for value in values
+            ):
+                raise ValueError(f"vision.{name} bounds and default must be finite.")
+            if maximum <= minimum:
+                raise ValueError(f"vision.{name} range must have positive width.")
+            if not minimum <= default <= maximum:
+                raise ValueError(f"vision.default_{name} must be within its bounds.")
+        for name in ("range_mutation_sigma_u", "angle_mutation_sigma_u"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value <= 0.0
+            ):
+                raise ValueError(f"vision.{name} must be finite and positive.")
 
 
 @dataclass(slots=True)
@@ -1221,6 +1390,18 @@ class SimConfig:
 
     # Evolutionary flocking architecture and experiments.
     flocking: FlockingConfig = field(default_factory=FlockingConfig)
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Revalidate mutable startup configuration before service creation."""
+        self.trait.validate()
+        self.vision.validate()
+        self.flocking.validate()
+        self.action.validate()
+        self.scheduler.validate()
+        self.population.validate()
 
 
 def build_sim_config() -> SimConfig:

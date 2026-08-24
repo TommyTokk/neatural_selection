@@ -4,6 +4,7 @@ from dataclasses import astuple
 from itertools import count
 from math import tanh
 from pathlib import Path
+from random import Random
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
@@ -75,6 +76,7 @@ from src.action import (
 )
 from src.neat_brain import NeatBrain
 from src.neat_controller import NeatBrainController
+from src.creature.genotype import FlockingTraits, PhysicalTraits, VisionTraits
 from src.vision import (
     BoundarySnapshot,
     SENSOR_CONTRACT,
@@ -342,6 +344,15 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         """
         # Keep the test transaction shadow reuses unmodified live objects test intent explicit.
         controller = NeatBrainController(Path("configs/neat_herbivore.ini"))
+        representative_genome = next(
+            iter(controller.population.population.values())
+        )
+        controller.species_manager.register_initial_representative(
+            representative_genome,
+            PhysicalTraits(radius=16.0),
+            VisionTraits(range=150.0, angle=0.95),
+            flocking_traits=FlockingTraits(),
+        )
 
         shadow = controller.transaction_shadow()
 
@@ -358,10 +369,17 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         for species_id, representative in (
             controller.species_manager.representatives.items()
         ):
-            self.assertIs(
-                shadow.species_manager.representatives[species_id],
-                representative,
-            )
+            shadow_representative = shadow.species_manager.representatives[
+                species_id
+            ]
+            self.assertIsNot(shadow_representative, representative)
+            self.assertIs(shadow_representative[0], representative[0])
+            for shadow_traits, live_traits in zip(
+                shadow_representative[1:],
+                representative[1:],
+            ):
+                self.assertIsNot(shadow_traits, live_traits)
+                self.assertEqual(shadow_traits, live_traits)
 
         shadow.population.population[-1] = object()
         shadow.brains[-1] = object()
@@ -1853,7 +1871,7 @@ class SensorUsageTest(unittest.TestCase):
 
 
 class NeatArchivePruningTest(unittest.TestCase):
-    def test_population_archive_keeps_live_and_highest_fitness_genomes(self) -> None:
+    def test_population_archive_keeps_live_and_unranked_sample(self) -> None:
         """Exercise test population archive keeps live and highest fitness genomes behavior.
         
         Parameters
@@ -1877,10 +1895,12 @@ class NeatArchivePruningTest(unittest.TestCase):
             101: SimpleNamespace(genome_id=1),
             102: SimpleNamespace(genome_id=2),
         }
+        controller._evolution_rng = Random(7)
 
         retained = controller.prune_population_archive(3)
 
-        self.assertEqual(retained, {1, 2, 4998, 4999, 5000})
+        self.assertEqual({1, 2}, retained & {1, 2})
+        self.assertEqual(len(retained), 5)
         self.assertEqual(set(controller.population.population), retained)
 
     def test_monotonic_genome_ids_do_not_depend_on_retained_population(self) -> None:

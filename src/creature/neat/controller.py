@@ -618,17 +618,28 @@ NeatBrainController
             shadow_genome_config.innovation_tracker = shadow_tracker
 
         # Child mutation already deep-copies the selected parent genome.  The
-        # transaction only adds entries to these mappings, so copying their
-        # containers isolates staging without cloning every live genome and
-        # brain (or eagerly cloning every fallback argument to ``dict.get``).
+        # transaction only adds entries to population and brain mappings, so
+        # copying their containers isolates staging without cloning every live
+        # genome and brain.
         shadow.population = copy.copy(self.population)
         shadow.population.population = dict(self.population.population)
         shadow.brains = dict(self.brains)
 
         shadow.species_manager = copy.copy(self.species_manager)
-        shadow.species_manager.representatives = dict(
-            self.species_manager.representatives
-        )
+        shadow.species_manager.representatives = {
+            species_id: (
+                genome,
+                copy.deepcopy(physical_traits),
+                copy.deepcopy(vision),
+                copy.deepcopy(flocking_traits),
+            )
+            for species_id, (
+                genome,
+                physical_traits,
+                vision,
+                flocking_traits,
+            ) in self.species_manager.representatives.items()
+        }
         shadow._pairwise_compatibility_distance_cache = dict(
             getattr(self, "_pairwise_compatibility_distance_cache", {})
         )
@@ -843,7 +854,8 @@ NeatBrain
             The output node is normalized in place when present.
         """
         # Resolve the declared output key instead of assuming NEAT node IDs.
-        output_keys = tuple(self.config.genome_config.output_keys)
+        genome_config = getattr(self.config, "genome_config", None)
+        output_keys = tuple(getattr(genome_config, "output_keys", ()))
         output_index = int(BrainOutputIndex.REPRODUCE)
         if output_index >= len(output_keys):
             return

@@ -290,6 +290,7 @@ class PhenotypicDistanceTest(unittest.TestCase):
             max_movement_cost_multiplier=1.5,
         )
         vision_config = VisionConfig(
+            default_range=75.0,
             min_range=50.0,
             max_range=100.0,
             min_angle=0.0,
