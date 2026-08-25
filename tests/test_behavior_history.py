@@ -444,7 +444,7 @@ class CompletedBoutFinalizationTest(unittest.TestCase):
         )
         self.assertEqual(ended.outcome, BehaviorOutcome.ABANDONED)
 
-    def test_orientation_and_alarm_natural_outcomes(self) -> None:
+    def test_orientation_and_pheromone_natural_outcomes(self) -> None:
         def active_orientation() -> TemporalBehaviorAnalyzer:
             analyzer = TemporalBehaviorAnalyzer(
                 BehaviorObserverConfig(bout_end_grace_seconds=0.15)
@@ -505,12 +505,12 @@ class CompletedBoutFinalizationTest(unittest.TestCase):
             BehaviorObserverConfig(bout_end_grace_seconds=0.15)
         )
         for index in range(8):
-            local_alarm = 0.30 - index * 0.015
+            local_red = 0.30 - index * 0.015
             reduced.process(
                 observation(
                     index * 0.1,
-                    alarm_here=local_alarm,
-                    alarm_forward=local_alarm - 0.04,
+                    red_here=local_red,
+                    red_forward=local_red - 0.04,
                 )
             )
         reduced.process(observation(0.8))
@@ -518,11 +518,11 @@ class CompletedBoutFinalizationTest(unittest.TestCase):
         retreat = next(
             item
             for item in reduced.drain_completed_bouts()
-            if item.behavior is BehaviorKind.ALARM_RETREAT
+            if item.behavior is BehaviorKind.PHEROMONE_GRADIENT_RESPONSE
         )
         self.assertEqual(
             retreat.outcome,
-            BehaviorOutcome.ALARM_EXPOSURE_REDUCED,
+            BehaviorOutcome.PHEROMONE_DESCENT,
         )
 
 

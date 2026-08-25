@@ -457,7 +457,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertIn("factual cues strengthen", copy)
         self.assertIn("real paired probe nearest the median", copy)
         self.assertIn("factual flock center", copy)
-        self.assertIn("stable, near-zero turn", copy)
+        self.assertIn("independently masked rgb cues", copy)
         self.assertNotIn("factual response weakens", copy)
 
     def test_expanded_why_card_draws_result_and_waiting_placeholders(
@@ -5571,8 +5571,8 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
     def test_neuro_integration_view_uses_safe_unknown_node_fallbacks(self) -> None:
         parent = self.make_record(1, None)
-        input_keys = (*tuple(range(-1, -44, -1)), -99)
-        output_keys = (*tuple(range(15)), 99)
+        input_keys = (*tuple(range(-1, -47, -1)), -99)
+        output_keys = (*tuple(range(16)), 99)
         record = self.make_record(
             2,
             1,
@@ -6224,8 +6224,8 @@ class SpeciesTreeWindowTest(unittest.TestCase):
             neat_controller=SimpleNamespace(
                 config=SimpleNamespace(
                     genome_config=SimpleNamespace(
-                        input_keys=list(range(-1, -44, -1)),
-                        output_keys=list(range(15)),
+                        input_keys=list(range(-1, -47, -1)),
+                        output_keys=list(range(16)),
                     )
                 )
             )
@@ -6234,14 +6234,14 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         labels = self.renderer._species_tree_neat_node_labels(world)
 
         self.assertEqual(
-            [labels[key] for key in range(-1, -44, -1)],
+            [labels[key] for key in range(-1, -47, -1)],
             list(SENSOR_INPUT_NAMES),
         )
         self.assertEqual(labels[-11], "food_proximity")
         self.assertEqual(labels[-24], "flock_effective_count")
         self.assertEqual(labels[-32], "stomach_fullness")
         self.assertEqual(labels[-33], "sound_strength")
-        self.assertEqual(labels[-43], "life_normalized")
+        self.assertEqual(labels[-46], "life_normalized")
         self.assertEqual(self.renderer._short_brain_label(labels[-24]), "flock_n")
         self.assertEqual(labels[0], "accelerate")
         self.assertEqual(labels[3], "want_eat")

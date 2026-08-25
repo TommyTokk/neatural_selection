@@ -14,6 +14,8 @@ from threading import Condition, Thread
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import numpy as np
+
 from configs.sim_config import LiveFoodConfig, PersistenceConfig, SimConfig
 from src.creature.action import (
     ACTION_OUTPUT_COUNT,
@@ -30,12 +32,35 @@ if TYPE_CHECKING:
     from src.world import World
 
 
-CHECKPOINT_VERSION = 26
+CHECKPOINT_VERSION = 27
 LEGACY_CHECKPOINT_VERSIONS = {
     2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-    22, 23, 24, 25,
+    22, 23, 24, 25, 26,
 }
 LOGGER = logging.getLogger(__name__)
+
+
+def _migrate_legacy_pheromone_field(
+    trail: object,
+    alarm: object,
+    *,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Convert legacy height-major semantic fields to width-major RGB."""
+    legacy_trail = np.asarray(trail, dtype=np.float32)
+    legacy_alarm = np.asarray(alarm, dtype=np.float32)
+    expected = (height, width)
+    if legacy_trail.shape != expected or legacy_alarm.shape != expected:
+        raise ValueError("Legacy pheromone fields have incompatible grid shapes.")
+    return np.stack(
+        (
+            legacy_alarm.T,
+            legacy_trail.T,
+            np.zeros((width, height), dtype=np.float32),
+        ),
+        axis=2,
+    )
 
 
 def _action_to_primitive(action: object) -> dict[str, float] | None:
@@ -688,9 +713,7 @@ class PersistenceManager:
         communication_state = None
         if pheromones is not None and acoustics is not None:
             communication_state = {
-                "pheromone_accumulator": float(pheromones.accumulator),
-                "trail": pheromones.trail.copy(),
-                "alarm": pheromones.alarm.copy(),
+                "pheromone_field": pheromones.field.copy(),
                 "pheromone_metadata": pheromones.state_metadata(),
                 "acoustic_signals": copy.deepcopy(acoustics.signals),
             }
@@ -2161,12 +2184,25 @@ class PersistenceManager:
                     raise ValueError(
                         "Current checkpoint is missing pheromone metadata."
                     )
-                world.pheromones.restore(
-                    communication_state["trail"],
-                    communication_state["alarm"],
-                    communication_state.get("pheromone_accumulator", 0.0),
-                    pheromone_metadata,
-                )
+                if "pheromone_field" in communication_state:
+                    world.pheromones.restore(
+                        communication_state["pheromone_field"],
+                        pheromone_metadata,
+                    )
+                else:
+                    # Versions 2-26 stored independent height-major semantic
+                    # fields.  Their meanings are preserved only for migration:
+                    # alarm becomes Red, trail becomes Green, and Blue is empty.
+                    migrated = _migrate_legacy_pheromone_field(
+                        communication_state["trail"],
+                        communication_state["alarm"],
+                        width=world.pheromones.grid_width,
+                        height=world.pheromones.grid_height,
+                    )
+                    world.pheromones.restore(
+                        migrated,
+                        world.pheromones.state_metadata(),
+                    )
                 saved_signals = communication_state.get("acoustic_signals", {})
                 world.acoustics.replace_signals(
                     saved_signals.values()

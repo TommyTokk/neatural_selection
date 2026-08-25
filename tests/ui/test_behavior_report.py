@@ -602,7 +602,7 @@ class BehaviorReportUiTest(unittest.TestCase):
                 "Feeding",
                 "Resting",
                 "Cohesion",
-                "Alarm retreat",
+                "Pheromone gradient response",
                 "Bouts and Evidence",
                 "Counterfactual influence",
                 "Influence labels",
@@ -1368,7 +1368,7 @@ class BehaviorReportUiTest(unittest.TestCase):
             )
             for intervention in (
                 SemanticIntervention.SATIATED_STATE,
-                SemanticIntervention.ALARM_PHEROMONE_CUES,
+                SemanticIntervention.RED_PHEROMONE_CUES,
             )
         )
         behavior = BehaviorLifetimeSummary(

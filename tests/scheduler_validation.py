@@ -315,9 +315,7 @@ def authoritative_state(world: World) -> dict[str, Any]:
                 int(spawner._pending_low_food_burst_items),
             ),
             "pheromones": {
-                "accumulator": float(pheromones.accumulator),
-                "trail": np.array(pheromones.trail, copy=True),
-                "alarm": np.array(pheromones.alarm, copy=True),
+                "pheromone_field": np.array(pheromones.field, copy=True),
             },
             "acoustic_signals": _canonical(acoustics.signals),
             "observer_deadline": float(world._behavior_next_sample_time),

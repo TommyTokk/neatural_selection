@@ -7,6 +7,7 @@ import sqlite3
 import unittest
 
 from src.telemetry import (
+    TELEMETRY_SCHEMA_VERSION,
     TelemetryDatabase,
     _deserialize_neural_shifts,
     _serialize_neural_shifts,
@@ -140,6 +141,10 @@ class TelemetryDatabaseTest(unittest.TestCase):
 
         self.assertEqual(journal_mode, ("wal",))
         self.assertEqual(
+            self.database.connection.execute("PRAGMA user_version").fetchone(),
+            (TELEMETRY_SCHEMA_VERSION,),
+        )
+        self.assertEqual(
             {row[0] for row in table_rows},
             {
                 "species",
@@ -179,6 +184,14 @@ class TelemetryDatabaseTest(unittest.TestCase):
         self.assertEqual(creature, (2, 8.0, malicious_reason, 123.0, 17.0))
         self.assertEqual(metrics, (3, 40, 12.5))
         self.assertEqual(creatures_table, ("creatures",))
+
+    def test_population_metrics_store_rgb_field_averages(self) -> None:
+        self.database.log_metrics(2.0, 4, 10, 0.5, 0.1, 0.2, 0.3)
+        row = self.database.connection.execute(
+            "SELECT red_avg, green_avg, blue_avg FROM population_metrics "
+            "WHERE sim_time = 2.0"
+        ).fetchone()
+        self.assertEqual(row, (0.1, 0.2, 0.3))
 
     def test_reproduction_events_store_energy_transfer_and_outcome(self) -> None:
         self.database.log_reproduction_events(
@@ -326,6 +339,34 @@ class TelemetryDatabaseTest(unittest.TestCase):
         self.assertIn("digestion_rate", columns)
         self.assertIn("digestion_efficiency", columns)
         self.assertIn("digestive_trait_component", columns)
+
+    def test_existing_population_metrics_gains_rgb_columns(self) -> None:
+        legacy_file = Path(self.temporary_directory.name) / "legacy_metrics.sqlite"
+        connection = sqlite3.connect(legacy_file)
+        connection.execute(
+            "CREATE TABLE population_metrics "
+            "(sim_time REAL PRIMARY KEY, alive_count INTEGER, food_count INTEGER)"
+        )
+        connection.execute("INSERT INTO population_metrics VALUES (1.0, 2, 3)")
+        connection.commit()
+        connection.close()
+
+        upgraded = TelemetryDatabase(legacy_file)
+        try:
+            columns = {
+                row[1]
+                for row in upgraded.connection.execute(
+                    "PRAGMA table_info(population_metrics)"
+                ).fetchall()
+            }
+            legacy_rgb = upgraded.connection.execute(
+                "SELECT red_avg, green_avg, blue_avg FROM population_metrics"
+            ).fetchone()
+        finally:
+            upgraded.close()
+
+        self.assertTrue({"red_avg", "green_avg", "blue_avg"} <= columns)
+        self.assertEqual(legacy_rgb, (None, None, None))
 
     def test_legacy_history_row_loads_with_unavailable_neat_changes(self) -> None:
         self.database.connection.execute(

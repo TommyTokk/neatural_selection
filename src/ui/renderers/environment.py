@@ -409,36 +409,17 @@ class EnvironmentRenderer:
         np.ndarray
             Computed result.
         """
-        trail = np.asarray(getattr(pheromones, "trail"), dtype=np.float32)
-        alarm = np.asarray(getattr(pheromones, "alarm"), dtype=np.float32)
-        if trail.shape != alarm.shape:
-            raise ValueError(
-                "Trail and alarm pheromone fields must have the same shape."
-            )
-
-        config = getattr(pheromones, "config", None)
-        maximum = max(
-            0.0,
-            float(getattr(config, "pheromone_max_concentration", 1.0)),
-        )
-        output = np.zeros((*trail.shape, 4), dtype=np.uint8)
+        field = np.asarray(getattr(pheromones, "field"), dtype=np.float32)
+        if field.ndim != 3 or field.shape[2] != 3:
+            raise ValueError("Pheromone field must have width-major shape (W, H, 3).")
+        maximum = max(0.0, float(getattr(pheromones.config, "max_concentration", 1.0)))
+        image_field = np.swapaxes(field, 0, 1)
+        output = np.zeros((*image_field.shape[:2], 4), dtype=np.uint8)
         if maximum <= 0.0:
             return output
-
-        trail_normalized = np.clip(trail / maximum, 0.0, 1.0)
-        alarm_normalized = np.clip(alarm / maximum, 0.0, 1.0)
-        combined = trail_normalized + alarm_normalized
-        denominator = np.where(combined > 0.0, combined, 1.0)
-        trail_color = np.asarray((60.0, 220.0, 155.0), dtype=np.float32)
-        alarm_color = np.asarray((240.0, 70.0, 110.0), dtype=np.float32)
-        rgb = (
-            trail_normalized[..., None] * trail_color
-            + alarm_normalized[..., None] * alarm_color
-        ) / denominator[..., None]
-        output[..., :3] = np.clip(rgb, 0.0, 255.0).astype(np.uint8)
-        output[..., 3] = (
-            190.0 * np.sqrt(np.maximum(trail_normalized, alarm_normalized))
-        ).astype(np.uint8)
+        rgb = (np.clip(image_field / maximum, 0.0, 1.0) * 255.0).astype(np.uint8)
+        output[..., :3] = rgb
+        output[..., 3] = np.max(rgb, axis=2)
         return output
 
     def _texture_for_pheromones(self, pheromones: object) -> object | None:
@@ -1463,39 +1444,33 @@ class EnvironmentRenderer:
         positions_for = getattr(world, "pheromone_sensor_positions_for", None)
         if pheromones is None or positions_for is None:
             return
-        trail_values = (
-            pheromones.trail_here,
-            pheromones.trail_forward_left,
-            pheromones.trail_forward_right,
-        )
-        alarm_values = (
-            pheromones.alarm_here,
-            pheromones.alarm_forward_left,
-            pheromones.alarm_forward_right,
+        rgb_values = (
+            pheromones.local,
+            pheromones.forward_left,
+            pheromones.forward_right,
         )
         radius = max(4.0, 5.0 * world.environment_zoom)
-        for position, trail, alarm in zip(
+        for position, rgb in zip(
             positions_for(creature),
-            trail_values,
-            alarm_values,
+            rgb_values,
         ):
             draw_x, draw_y = world.environment_to_screen(*position)
             if not self._circle_intersects_visible_bounds(bounds, draw_x, draw_y, radius):
                 continue
-            trail_alpha = int(45 + 210 * max(0.0, min(1.0, trail)))
-            alarm_alpha = int(45 + 210 * max(0.0, min(1.0, alarm)))
+            color = tuple(int(255 * max(0.0, min(1.0, value))) for value in rgb)
+            alpha = max(45, max(color))
             arcade.draw_circle_outline(
                 draw_x,
                 draw_y,
                 radius + 2.0,
-                (80, 230, 145, trail_alpha),
+                (*color, alpha),
                 2,
             )
             arcade.draw_circle_filled(
                 draw_x,
                 draw_y,
                 radius,
-                (245, 90, 100, alarm_alpha),
+                (*color, alpha),
             )
 
     def _draw_vision_cone(

@@ -162,8 +162,9 @@ def collect_counters(warmup_steps: int, measured_steps: int) -> dict[str, object
         for creature in world.creatures:
             action = world._action_for_execution(creature.creature_id)
             if action is not None and (
-                action.emit_trail_pheromone > 0.0
-                or action.emit_alarm_pheromone > 0.0
+                action.emit_red > 0.0
+                or action.emit_green > 0.0
+                or action.emit_blue > 0.0
             ):
                 active = True
                 break
@@ -225,8 +226,9 @@ def collect_counters(warmup_steps: int, measured_steps: int) -> dict[str, object
             # seeded networks' current emissions.  This keeps the counter
             # deterministic while leaving timing runs entirely uninstrumented.
             for action in world._last_actions.values():
-                action.emit_trail_pheromone = 0.0
-                action.emit_alarm_pheromone = 0.0
+                action.emit_red = 0.0
+                action.emit_green = 0.0
+                action.emit_blue = 0.0
             for _ in range(measured_steps):
                 world._commit_communication_intents(World.FIXED_TIMESTEP)
     finally:

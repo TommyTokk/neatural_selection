@@ -567,30 +567,24 @@ class CounterfactualScoringTest(unittest.TestCase):
         )
         self.assertIs(acceleration.direction, EffectDirection.MINIMAL)
 
-    def test_alarm_retreat_prefers_forward_acceleration_and_stable_heading(
+    def test_pheromone_response_uses_color_mask_without_fixed_direction(
         self,
     ) -> None:
         supportive = semantic_effect(
-            BehaviorKind.ALARM_RETREAT,
-            SemanticIntervention.ALARM_PHEROMONE_CUES,
+            BehaviorKind.PHEROMONE_GRADIENT_RESPONSE,
+            SemanticIntervention.RED_PHEROMONE_CUES,
             self.outputs(accelerate=0.7, rotate=0.1),
             self.outputs(accelerate=0.2, rotate=0.7),
         )
         suppressive = semantic_effect(
-            BehaviorKind.ALARM_RETREAT,
-            SemanticIntervention.ALARM_PHEROMONE_CUES,
+            BehaviorKind.PHEROMONE_GRADIENT_RESPONSE,
+            SemanticIntervention.RED_PHEROMONE_CUES,
             self.outputs(accelerate=0.2, rotate=0.7),
             self.outputs(accelerate=0.7, rotate=0.1),
         )
 
-        self.assertIs(
-            supportive.effect_direction,
-            EffectDirection.SUPPORTIVE,
-        )
-        self.assertIs(
-            suppressive.effect_direction,
-            EffectDirection.SUPPRESSIVE,
-        )
+        self.assertIs(supportive.effect_direction, EffectDirection.MIXED)
+        self.assertIs(suppressive.effect_direction, EffectDirection.MIXED)
 
     def test_mapped_food_behavior_preserves_target_identity(self) -> None:
         state = SimpleNamespace(

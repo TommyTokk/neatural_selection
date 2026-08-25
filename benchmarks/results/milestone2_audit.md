@@ -92,7 +92,7 @@ elapsed time. Equal-duration step-response and turn-trajectory tests cover
 Current outputs are classified as follows:
 
 - continuous: acceleration, rotation, panic/sprint, herding, rest, acoustic
-  intensity/tone, and trail/alarm pheromone intensity;
+  intensity/tone, and Red/Green/Blue pheromone intensity;
 - level-triggered and cadence-gated: eating, nursing, and reproduction;
 - fresh-decision edges: chronometer reset, grab, and release.
 
@@ -101,7 +101,7 @@ Grab, release, and reset execute only with a fresh decision. Eating is sampled
 through physics-rate contact exposure, while nursing is integrated once using
 `biology_dt`.
 
-Pheromone emission is `deposit_rate * intensity * fixed_dt`. Acoustic output
+Pheromone emission is `RGB intensity * fixed_dt`. Acoustic output
 replaces continuous emitter state on every physics step instead of appending
 semantic events, and disappears when the next cached level is inactive.
 Communication energy uses per-second acoustic/pheromone rates multiplied by

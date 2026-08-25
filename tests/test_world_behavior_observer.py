@@ -85,9 +85,9 @@ def world_shell() -> World:
                 visible_personal_space_count=0,
             ),
             pheromones=SimpleNamespace(
-                alarm_here=0.3,
-                alarm_forward_left=0.2,
-                alarm_forward_right=0.22,
+                local=(0.3, 0.0, 0.0),
+                forward_left=(0.2, 0.0, 0.0),
+                forward_right=(0.22, 0.0, 0.0),
             ),
         )
     }

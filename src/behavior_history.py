@@ -37,7 +37,8 @@ class BehaviorOutcome(str, Enum):
     APPROACH_STARTED = "approach_started"
     ENDED_WITHOUT_APPROACH = "ended_without_approach"
     CONSUMPTION_EVENT = "consumption_event"
-    ALARM_EXPOSURE_REDUCED = "alarm_exposure_reduced"
+    PHEROMONE_ASCENT = "pheromone_ascent"
+    PHEROMONE_DESCENT = "pheromone_descent"
     INTERRUPTED = "interrupted"
 
 

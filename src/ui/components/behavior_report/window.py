@@ -49,7 +49,7 @@ class BehaviorReportWindowComponent:
         BehaviorKind.FEEDING: (239, 139, 24),
         BehaviorKind.RESTING: (145, 105, 218),
         BehaviorKind.COHESION: (66, 111, 181),
-        BehaviorKind.ALARM_RETREAT: (224, 83, 108),
+        BehaviorKind.PHEROMONE_GRADIENT_RESPONSE: (224, 83, 108),
     }
     _SECTION_FILL = (248, 248, 252)
     _LIVING = (30, 157, 99)
@@ -139,14 +139,14 @@ class BehaviorReportWindowComponent:
                 f"alignment of at least {behavior.cohesion_min_velocity_alignment:.2f}.",
             ),
             (
-                "Alarm retreat",
-                "Uses local and forward alarm-pheromone samples plus realized "
-                "forward speed. Local alarm must be at least "
-                f"{behavior.alarm_min_level:.2f}, forward alarm at least "
-                f"{behavior.alarm_min_spatial_gradient:.2f} lower, exposure "
-                f"must fall by {behavior.alarm_min_temporal_drop:.2f}/s with "
-                f"{behavior.trend_consistency_ratio:.0%} consistency, and "
-                f"retreat speed must reach {behavior.alarm_retreat_min_speed:.1f} px/s.",
+                "Pheromone gradient response",
+                "Uses the locally dominant RGB channel, its body-frame gradient, "
+                "realized velocity, and temporal exposure trend. Concentration "
+                f"must reach {behavior.pheromone_min_level:.2f}, gradient magnitude "
+                f"{behavior.pheromone_min_gradient:.2f}, temporal change "
+                f"{behavior.pheromone_min_temporal_change:.2f}/s with "
+                f"{behavior.trend_consistency_ratio:.0%} consistency, and speed "
+                f"{behavior.pheromone_response_min_speed:.1f} px/s.",
             ),
             (
                 "Bouts and Evidence",
@@ -166,12 +166,12 @@ class BehaviorReportWindowComponent:
                 "absolute output change is normalized to 0–1 by that output's "
                 "range, then behavior-relevant outputs are averaged. Food "
                 "orientation scores rotation; approach scores acceleration and "
-                "rotation; feeding scores eat intent; cohesion and alarm retreat "
+                "rotation; feeding scores eat intent; cohesion and pheromone response "
                 "score their relevant movement and specialized outputs. Resting "
                 "currently has no counterfactual WHY specification. Signed "
                 "movement direction is evaluated toward the factual food or "
-                "flock-center heading; alarm retreat favors forward movement "
-                "with a stable heading.",
+                "flock-center heading; pheromone response reports generic output "
+                "dependence without assigning a semantic meaning to any color.",
             ),
             (
                 "Influence labels",

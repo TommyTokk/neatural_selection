@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unittest
 
-from configs.sim_config import CommunicationConfig, MetabolismConfig, TraitConfig
+from configs.sim_config import (
+    CommunicationConfig,
+    MetabolismConfig,
+    PheromoneConfig,
+    TraitConfig,
+)
 from src.creature import PhysicalTraits
 from src.metabolism import Metabolism
 
@@ -171,7 +176,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
             TraitConfig(body_metabolism_cost_factor=0.0),
             communication_config=CommunicationConfig(
                 acoustic_energy_cost_per_second=0.006,
-                pheromone_energy_cost_per_second=0.002,
+                pheromone=PheromoneConfig(energy_cost_per_second=0.002),
             ),
         )
         creature = FakeCreature(
@@ -184,7 +189,7 @@ class MetabolismTraitCostTest(unittest.TestCase):
         cost = metabolism.energy_cost_breakdown_per_second(
             creature,
             max_speed=100.0,
-            communication_intensities=(0.5, 1.0, 0.5),
+            communication_intensities=(0.5, 1.0, 0.5, 0.0),
         )
 
         self.assertAlmostEqual(cost.acoustic, 0.0015)

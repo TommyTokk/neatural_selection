@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from enum import Enum
 from math import ceil, cos, exp, floor, isfinite, sin, sqrt
 
 import numpy as np
 
-from configs.sim_config import CommunicationConfig, PheromoneBoundaryMode
+from configs.sim_config import CommunicationConfig, PheromoneBoundaryMode, PheromoneConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,17 +43,11 @@ class AcousticSenseResult:
 
 @dataclass(frozen=True, slots=True)
 class PheromoneSnapshot:
-    trail_here: float = 0.0
-    trail_forward_left: float = 0.0
-    trail_forward_right: float = 0.0
-    alarm_here: float = 0.0
-    alarm_forward_left: float = 0.0
-    alarm_forward_right: float = 0.0
+    """Raw RGB samples at the local, forward-left, and forward-right probes."""
 
-
-class PheromoneChannel(str, Enum):
-    TRAIL = "trail"
-    ALARM = "alarm"
+    local: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    forward_left: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    forward_right: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 _EMPTY_ACOUSTIC_OBSERVATION = AcousticObservation()
@@ -430,86 +423,76 @@ AcousticSenseResult
 
 
 class PheromoneSystem:
-    """Two float32 concentration fields using stable world-space diffusion."""
+    """Width-major three-channel stigmergy field.
+
+    Axis 0 is world X, axis 1 is world Y, and axis 2 is RGB.  Image code must
+    swap the first two axes rather than changing this simulation invariant.
+    """
 
     _STABILITY_TOLERANCE = 1e-12
 
     def __init__(
         self,
-        config: CommunicationConfig,
+        config: PheromoneConfig | CommunicationConfig,
         grid_width: int,
         grid_height: int,
         world_bounds: tuple[float, float, float, float],
     ) -> None:
-        """Execute init behavior.
-        
+        """Create a width-major RGB pheromone field.
+
         Parameters
         ----------
         config
-            Input used by this creature-domain operation.
+            Pheromone physics and boundary configuration.
         grid_width
-            Input used by this creature-domain operation.
+            Number of samples along world X.
         grid_height
-            Input used by this creature-domain operation.
+            Number of samples along world Y.
         world_bounds
-            Input used by this creature-domain operation.
+            World-space left, bottom, right, and top bounds.
+
         Returns
         -------
         None
-            Result produced by this creature-domain operation.
-        
+            The initialized system owns an empty RGB tensor.
+
         Raises
         ------
+        TypeError
+            If the supplied configuration has the wrong type.
         ValueError
-            If an input or restored value violates validation rules.
+            If dimensions or bounds are invalid.
         """
-        # Keep init behavior explicit in its owning subsystem.
+        # Validate geometry once so every hot-path operation can stay vectorized.
+        if isinstance(config, CommunicationConfig):
+            config = config.pheromone
+        if not isinstance(config, PheromoneConfig):
+            raise TypeError("config must be a PheromoneConfig.")
         if type(grid_width) is not int or grid_width < 2:
-            raise ValueError(f"grid_width must be an integer >= 2, got {grid_width!r}.")
+            raise ValueError("grid_width must be an integer >= 2.")
         if type(grid_height) is not int or grid_height < 2:
-            raise ValueError(
-                f"grid_height must be an integer >= 2, got {grid_height!r}."
-            )
+            raise ValueError("grid_height must be an integer >= 2.")
         if not isinstance(world_bounds, (tuple, list)) or len(world_bounds) != 4:
             raise ValueError("world_bounds must contain left, bottom, right, and top.")
-        if any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not isfinite(value)
-            for value in world_bounds
-        ):
-            raise ValueError(f"world_bounds must be finite, got {world_bounds!r}.")
-        left, bottom, right, top = (float(value) for value in world_bounds)
-        if right <= left:
-            raise ValueError(
-                f"world_bounds require right > left, got left={left!r}, right={right!r}."
-            )
-        if top <= bottom:
-            raise ValueError(
-                f"world_bounds require top > bottom, got bottom={bottom!r}, top={top!r}."
-            )
+        bounds = tuple(float(value) for value in world_bounds)
+        if not np.all(np.isfinite(bounds)):
+            raise ValueError("world_bounds must be finite.")
+        left, bottom, right, top = bounds
+        if right <= left or top <= bottom:
+            raise ValueError("world_bounds must have positive width and height.")
 
         self.config = config
         self.grid_width = grid_width
         self.grid_height = grid_height
-        self.world_bounds = (left, bottom, right, top)
-        self.boundary_mode = PheromoneBoundaryMode(config.pheromone_boundary_mode)
+        self.world_bounds = bounds
+        self.boundary_mode = PheromoneBoundaryMode(config.boundary_mode)
         self.cell_size_x = (right - left) / (grid_width - 1)
         self.cell_size_y = (top - bottom) / (grid_height - 1)
-        if (
-            not isfinite(self.cell_size_x)
-            or self.cell_size_x <= 0.0
-            or not isfinite(self.cell_size_y)
-            or self.cell_size_y <= 0.0
-        ):
-            raise ValueError("Pheromone cell sizes must be finite and positive.")
-        self.inverse_cell_size_x_squared = 1.0 / (self.cell_size_x**2)
-        self.inverse_cell_size_y_squared = 1.0 / (self.cell_size_y**2)
-        self._diffusion_coefficient = float(config.pheromone_diffusion_coefficient)
-        self._evaporation_rate = float(config.pheromone_evaporation_rate)
-        self._maximum = float(config.pheromone_max_concentration)
-        self._interval = float(config.pheromone_update_interval)
-        self._max_updates_per_tick = config.pheromone_max_updates_per_tick
+        self.inverse_cell_size_x_squared = 1.0 / self.cell_size_x**2
+        self.inverse_cell_size_y_squared = 1.0 / self.cell_size_y**2
+        self._diffusion_coefficient = float(config.diffusion_coefficient)
+        self._decay_rate = float(config.decay_rate)
+        self._maximum = float(config.max_concentration)
         inverse_geometry_sum = (
             self.inverse_cell_size_x_squared
             + self.inverse_cell_size_y_squared
@@ -519,196 +502,105 @@ class PheromoneSystem:
             if self._diffusion_coefficient == 0.0
             else 0.5 / (self._diffusion_coefficient * inverse_geometry_sum)
         )
-
-        shape = (grid_height, grid_width)
-        self.trail = np.zeros(shape, dtype=np.float32)
-        self.alarm = np.zeros(shape, dtype=np.float32)
-        self.accumulator = 0.0
+        self.field = np.zeros((grid_width, grid_height, 3), dtype=np.float32)
         self.update_count = 0
-        self.diffusion_substep_count = 0
-        self.last_processed_updates = 0
-        self.last_dropped_updates = 0
-        self.last_dropped_time = 0.0
-        self.total_processed_updates = 0
-        self.total_dropped_updates = 0
-        self.total_dropped_time = 0.0
-        self._padded = np.empty((grid_height + 2, grid_width + 2), dtype=np.float32)
-        self._next = np.empty(shape, dtype=np.float32)
-        self._work = np.empty(shape, dtype=np.float32)
 
-    def deposit(
-        self,
-        position: tuple[float, float],
-        trail_amount: float = 0.0,
-        alarm_amount: float = 0.0,
-    ) -> None:
-        """Execute deposit behavior.
+    def sample(self, x: float, y: float) -> np.ndarray:
+        """Bilinearly sample RGB at one world position.
 
-Parameters
-----------
-position
-    Input used by this creature-domain operation.
-trail_amount
-    Input used by this creature-domain operation.
-alarm_amount
-    Input used by this creature-domain operation.
-Returns
--------
-None
-    Result produced by this creature-domain operation."""
-        # Keep deposit behavior explicit in its owning subsystem.
-        x, y = self._validate_position(position)
-        trail_amount = self._validate_amount(trail_amount, "trail_amount")
-        alarm_amount = self._validate_amount(alarm_amount, "alarm_amount")
-        indices = self._bilinear_indices(x, y)
-        if indices is None:
-            return
-        if trail_amount > 0.0:
-            self._deposit_into(self.trail, indices, trail_amount)
-        if alarm_amount > 0.0:
-            self._deposit_into(self.alarm, indices, alarm_amount)
-
-    def deposit_many(
-        self,
-        positions: np.ndarray,
-        trail_amounts: np.ndarray | None = None,
-        alarm_amounts: np.ndarray | None = None,
-    ) -> None:
-        """Deposit arrays of nonnegative amounts with one clip per channel.
-
-Parameters
-----------
-positions
-    Input used by this creature-domain operation.
-trail_amounts
-    Input used by this creature-domain operation.
-alarm_amounts
-    Input used by this creature-domain operation.
-Returns
--------
-None
-    Result produced by this creature-domain operation."""
-        # Keep deposit many behavior explicit in its owning subsystem.
-
-        positions_array = self._validated_positions_array(positions, 2)
-        count = positions_array.shape[0]
-        trail = self._validated_amounts_array(trail_amounts, count, "trail_amounts")
-        alarm = self._validated_amounts_array(alarm_amounts, count, "alarm_amounts")
-        if count == 0 or (trail is None and alarm is None):
-            return
-
-        x = positions_array[:, 0]
-        y = positions_array[:, 1]
-        left, bottom, right, top = self.world_bounds
-        if self.boundary_mode is PheromoneBoundaryMode.REFLECT:
-            x = np.clip(x, left, right)
-            y = np.clip(y, bottom, top)
-        elif self.boundary_mode is PheromoneBoundaryMode.WRAP:
-            x = np.mod(x - left, right - left) + left
-            y = np.mod(y - bottom, top - bottom) + bottom
-        else:
-            inside = (x >= left) & (x <= right) & (y >= bottom) & (y <= top)
-            if not np.any(inside):
-                return
-            x = x[inside]
-            y = y[inside]
-            if trail is not None:
-                trail = trail[inside]
-            if alarm is not None:
-                alarm = alarm[inside]
-
-        grid_x = (x - left) / (right - left) * (self.grid_width - 1)
-        grid_y = (y - bottom) / (top - bottom) * (self.grid_height - 1)
-        column0 = np.floor(grid_x).astype(np.intp)
-        row0 = np.floor(grid_y).astype(np.intp)
-        column1 = np.minimum(column0 + 1, self.grid_width - 1)
-        row1 = np.minimum(row0 + 1, self.grid_height - 1)
-        u = grid_x - column0
-        v = grid_y - row0
-        one_minus_u = 1.0 - u
-        one_minus_v = 1.0 - v
-        weights = (
-            one_minus_u * one_minus_v,
-            u * one_minus_v,
-            one_minus_u * v,
-            u * v,
-        )
-        flat_indices = np.concatenate(
-            (
-                row0 * self.grid_width + column0,
-                row0 * self.grid_width + column1,
-                row1 * self.grid_width + column0,
-                row1 * self.grid_width + column1,
-            )
-        )
-        if trail is not None:
-            self._deposit_many_into(self.trail, flat_indices, weights, trail)
-        if alarm is not None:
-            self._deposit_many_into(self.alarm, flat_indices, weights, alarm)
-
-    def sample(
-        self,
-        position: tuple[float, float],
-        channel: PheromoneChannel | str,
-    ) -> float:
-        """Execute sample behavior.
-        
         Parameters
         ----------
-        position
-            Input used by this creature-domain operation.
-        channel
-            Input used by this creature-domain operation.
+        x
+            World X coordinate.
+        y
+            World Y coordinate.
+
         Returns
         -------
-        float
-            Result produced by this creature-domain operation.
-        
-        Raises
-        ------
-        ValueError
-            If an input or restored value violates validation rules.
+        numpy.ndarray
+            Detached RGB vector with shape ``(3,)``.
         """
-        # Keep sample behavior explicit in its owning subsystem.
-        try:
-            validated_channel = PheromoneChannel(channel)
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"channel must be 'trail' or 'alarm', got {channel!r}."
-            ) from error
-        return (
-            self.sample_trail(position)
-            if validated_channel is PheromoneChannel.TRAIL
-            else self.sample_alarm(position)
+        # Route scalar reads through the same interpolation path as batch reads.
+        position = np.asarray([[self._finite_coordinate(x), self._finite_coordinate(y)]])
+        return self._sample_positions(position)[0].copy()
+
+    def deposit(self, x: float, y: float, color_vector: object) -> None:
+        """Additively splat one RGB amount at a world position.
+
+        Parameters
+        ----------
+        x
+            World X coordinate.
+        y
+            World Y coordinate.
+        color_vector
+            Nonnegative Red, Green, and Blue deposit amounts.
+
+        Returns
+        -------
+        None
+            The field is updated in place.
+        """
+        # Share validation and edge handling with batched deposition.
+        colors = self._validated_colors(color_vector, 1)
+        self.deposit_many(
+            np.asarray([[self._finite_coordinate(x), self._finite_coordinate(y)]]),
+            colors,
         )
 
-    def sample_trail(self, position: tuple[float, float]) -> float:
-        """Execute sample trail behavior.
+    def deposit_many(self, positions: object, color_vectors: object) -> None:
+        """Bilinearly splat many RGB vectors without grid loops.
 
-Parameters
-----------
-position
-    Input used by this creature-domain operation.
-Returns
--------
-float
-    Result produced by this creature-domain operation."""
-        # Keep sample trail behavior explicit in its owning subsystem.
-        return self._sample_channel(self.trail, position)
+        Parameters
+        ----------
+        positions
+            World positions with shape ``(N, 2)``.
+        color_vectors
+            RGB deposit amounts with shape ``(N, 3)``.
 
-    def sample_alarm(self, position: tuple[float, float]) -> float:
-        """Execute sample alarm behavior.
+        Returns
+        -------
+        None
+            Aggregated contributions are clipped into the field.
+        """
+        # Duplicate edge indices are intentionally accumulated by ``np.add.at``.
+        points = self._validated_positions(positions, trailing_shape=(2,))
+        colors = self._validated_colors(color_vectors, points.shape[0])
+        if points.shape[0] == 0:
+            return
+        mapped, inside = self._map_positions(points)
+        if self.boundary_mode is PheromoneBoundaryMode.ABSORB:
+            mapped = mapped[inside]
+            colors = colors[inside]
+            if mapped.shape[0] == 0:
+                return
 
-Parameters
-----------
-position
-    Input used by this creature-domain operation.
-Returns
--------
-float
-    Result produced by this creature-domain operation."""
-        # Keep sample alarm behavior explicit in its owning subsystem.
-        return self._sample_channel(self.alarm, position)
+        x0, x1, y0, y1, u, v = self._bilinear_components(mapped)
+        cell_indices = np.stack(
+            (
+                x0 * self.grid_height + y0,
+                x1 * self.grid_height + y0,
+                x0 * self.grid_height + y1,
+                x1 * self.grid_height + y1,
+            ),
+            axis=1,
+        )
+        weights = np.stack(
+            (
+                (1.0 - u) * (1.0 - v),
+                u * (1.0 - v),
+                (1.0 - u) * v,
+                u * v,
+            ),
+            axis=1,
+        )
+        contributions = weights[..., None] * colors[:, None, :]
+        np.add.at(
+            self.field.reshape(-1, 3),
+            cell_indices.reshape(-1),
+            contributions.reshape(-1, 3),
+        )
+        np.clip(self.field, 0.0, self._maximum, out=self.field)
 
     def sense(
         self,
@@ -718,810 +610,400 @@ float
             tuple[float, float],
         ],
     ) -> PheromoneSnapshot:
-        """Execute sense behavior.
-        
+        """Sample local, forward-left, and forward-right RGB probes.
+
         Parameters
         ----------
         positions
-            Input used by this creature-domain operation.
+            Exactly three world-space probe positions.
+
         Returns
         -------
         PheromoneSnapshot
-            Result produced by this creature-domain operation.
-        
+            Immutable RGB values in probe order.
+
         Raises
         ------
         ValueError
-            If an input or restored value violates validation rules.
+            If the probe collection does not have shape ``(3, 2)``.
         """
-        # Keep sense behavior explicit in its owning subsystem.
-        if not isinstance(positions, (tuple, list)) or len(positions) != 3:
-            raise ValueError("positions must contain here, forward-left, and forward-right.")
-        values: list[tuple[float, float]] = []
-        for position in positions:
-            x, y = self._validate_position(position)
-            indices = self._bilinear_indices(x, y)
-            values.append(
-                (0.0, 0.0)
-                if indices is None
-                else (
-                    self._sample_grid(self.trail, indices),
-                    self._sample_grid(self.alarm, indices),
-                )
-            )
+        # Preserve probe ordering for the sensor-gradient contract.
+        points = self._validated_positions(positions, trailing_shape=(2,))
+        if points.shape != (3, 2):
+            raise ValueError("positions must contain exactly three probes.")
+        values = self._sample_positions(points)
         return PheromoneSnapshot(
-            trail_here=values[0][0],
-            trail_forward_left=values[1][0],
-            trail_forward_right=values[2][0],
-            alarm_here=values[0][1],
-            alarm_forward_left=values[1][1],
-            alarm_forward_right=values[2][1],
+            local=tuple(float(value) for value in values[0]),
+            forward_left=tuple(float(value) for value in values[1]),
+            forward_right=tuple(float(value) for value in values[2]),
         )
 
-    def sense_many(
-        self,
-        positions: np.ndarray,
-        out: np.ndarray | None = None,
-    ) -> np.ndarray:
-        """Sample N triples of sensor positions into columns matching snapshots.
-        
+    def sense_many(self, positions: object, out: np.ndarray | None = None) -> np.ndarray:
+        """Sample three RGB probes for each creature in a batch.
+
         Parameters
         ----------
         positions
-            Input used by this creature-domain operation.
+            Probe positions with shape ``(N, 3, 2)``.
         out
-            Input used by this creature-domain operation.
+            Optional floating destination with shape ``(N, 3, 3)``.
+
         Returns
         -------
-        np.ndarray
-            Result produced by this creature-domain operation.
-        
+        numpy.ndarray
+            Probe-major RGB samples with shape ``(N, 3, 3)``.
+
         Raises
         ------
         ValueError
-            If an input or restored value violates validation rules.
+            If positions or the optional destination have invalid shapes.
         """
-        # Keep sense many behavior explicit in its owning subsystem.
-
-        positions_array = self._validated_positions_array(positions, 3)
-        count = positions_array.shape[0]
+        # Flatten only the probe dimension while retaining RGB as the last axis.
+        points = self._validated_positions(positions, trailing_shape=(3, 2))
+        count = points.shape[0]
+        expected_shape = (count, 3, 3)
         if out is None:
-            result = np.empty((count, 6), dtype=np.float32)
+            result = np.empty(expected_shape, dtype=np.float32)
+        elif (
+            not isinstance(out, np.ndarray)
+            or out.shape != expected_shape
+            or not np.issubdtype(out.dtype, np.floating)
+        ):
+            raise ValueError(f"out must be a floating array with shape {expected_shape}.")
         else:
-            if (
-                not isinstance(out, np.ndarray)
-                or out.shape != (count, 6)
-                or not np.issubdtype(out.dtype, np.floating)
-            ):
-                raise ValueError(
-                    f"out must be a floating array with shape {(count, 6)}."
-                )
             result = out
-        if count == 0:
-            return result
-
-        flattened = positions_array.reshape(-1, 2)
-        trail = self._sample_many_grid(self.trail, flattened).reshape(count, 3)
-        alarm = self._sample_many_grid(self.alarm, flattened).reshape(count, 3)
-        result[:, :3] = trail
-        result[:, 3:] = alarm
+        if count:
+            result[...] = self._sample_positions(points.reshape(-1, 2)).reshape(
+                expected_shape
+            )
         return result
 
-    def accumulate(self, delta_time: float) -> int:
-        """Execute accumulate behavior.
-        
+    def advance(self, delta_time: float) -> None:
+        """Advance diffusion-decay by one explicit fixed timestep.
+
         Parameters
         ----------
         delta_time
-            Input used by this creature-domain operation.
+            Deterministic simulation timestep in seconds.
+
         Returns
         -------
-        int
-            Result produced by this creature-domain operation.
-        
+        None
+            The complete RGB tensor is advanced in place.
+
         Raises
         ------
         ValueError
-            If an input or restored value violates validation rules.
+            If the timestep is invalid or exceeds the stability bound.
         """
-        # Keep accumulate behavior explicit in its owning subsystem.
-        delta_time = self._validated_timestep(delta_time)
-        if delta_time == 0.0:
-            self._set_last_catch_up(0, 0, 0.0)
-            return 0
-        accumulated = self.accumulator + delta_time
-        if not isfinite(accumulated):
-            raise ValueError("delta_time makes the pheromone accumulator nonfinite.")
-        full_updates = int(floor((accumulated + 1e-12) / self._interval))
-        remainder = accumulated - full_updates * self._interval
-        if remainder < 0.0 and abs(remainder) <= 1e-12:
-            remainder = 0.0
-        if remainder >= self._interval:
-            full_updates += 1
-            remainder -= self._interval
-        processed = min(full_updates, self._max_updates_per_tick)
-        dropped = full_updates - processed
-        for _ in range(processed):
-            self.advance(self._interval)
-        self.accumulator = 0.0 if abs(remainder) <= 1e-12 else remainder
-        dropped_time = dropped * self._interval
-        self._set_last_catch_up(processed, dropped, dropped_time)
-        self.total_processed_updates += processed
-        self.total_dropped_updates += dropped
-        self.total_dropped_time += dropped_time
-        return processed
-
-    def advance(self, delta_time: float) -> None:
-        """Execute advance behavior.
-
-Parameters
-----------
-delta_time
-    Input used by this creature-domain operation.
-Returns
--------
-None
-    Result produced by this creature-domain operation."""
-        # Keep advance behavior explicit in its owning subsystem.
-        delta_time = self._validated_timestep(delta_time)
-        if delta_time == 0.0:
+        # Roll X and Y independently; the channel axis is never diffused across.
+        dt = self._validated_timestep(delta_time)
+        if dt == 0.0:
             return
-        if self._diffusion_coefficient == 0.0:
-            substeps = 1
-        else:
-            ratio = delta_time / self.maximum_stable_timestep
-            substeps = max(1, ceil(ratio - self._STABILITY_TOLERANCE))
-        step_delta_time = delta_time / substeps
-        for _ in range(substeps):
-            self._advance_stable_step(step_delta_time)
+        if dt > self.maximum_stable_timestep + self._STABILITY_TOLERANCE:
+            raise ValueError(
+                "Pheromone timestep is unstable for the configured diffusion/grid: "
+                f"{dt} > {self.maximum_stable_timestep}."
+            )
+        field = self.field
+        x_minus = np.roll(field, 1, axis=0)
+        x_plus = np.roll(field, -1, axis=0)
+        y_minus = np.roll(field, 1, axis=1)
+        y_plus = np.roll(field, -1, axis=1)
+        if self.boundary_mode is PheromoneBoundaryMode.REFLECT:
+            x_minus[0, :, :] = field[0, :, :]
+            x_plus[-1, :, :] = field[-1, :, :]
+            y_minus[:, 0, :] = field[:, 0, :]
+            y_plus[:, -1, :] = field[:, -1, :]
+        elif self.boundary_mode is PheromoneBoundaryMode.ABSORB:
+            x_minus[0, :, :] = 0.0
+            x_plus[-1, :, :] = 0.0
+            y_minus[:, 0, :] = 0.0
+            y_plus[:, -1, :] = 0.0
+        laplacian = (
+            (x_minus + x_plus - 2.0 * field)
+            * self.inverse_cell_size_x_squared
+            + (y_minus + y_plus - 2.0 * field)
+            * self.inverse_cell_size_y_squared
+        )
+        updated = (field + self._diffusion_coefficient * laplacian * dt) * exp(
+            -self._decay_rate * dt
+        )
+        np.clip(updated, 0.0, self._maximum, out=self.field)
         self.update_count += 1
 
     def state_metadata(self) -> dict[str, object]:
-        """Execute state metadata behavior.
+        """Describe the persisted tensor coordinate contract.
 
-Parameters
-----------
-None
-    This callable receives no external parameters.
-Returns
--------
-dict[str, object]
-    Result produced by this creature-domain operation."""
-        # Keep state metadata behavior explicit in its owning subsystem.
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+
+        Returns
+        -------
+        dict[str, object]
+            Shape, axis order, bounds, and boundary mode metadata.
+        """
+        # Persist axis semantics explicitly to reject accidental transposition.
         return {
-            "grid_shape": (self.grid_height, self.grid_width),
+            "grid_shape": self.field.shape,
+            "axis_order": "xyc",
             "world_bounds": self.world_bounds,
             "boundary_mode": self.boundary_mode.value,
         }
 
     def restore(
         self,
-        trail: np.ndarray,
-        alarm: np.ndarray,
-        accumulator: float,
+        field: object,
         metadata: Mapping[str, object] | None = None,
     ) -> None:
-        """Execute restore behavior.
-        
+        """Restore a validated width-major RGB field.
+
         Parameters
         ----------
-        trail
-            Input used by this creature-domain operation.
-        alarm
-            Input used by this creature-domain operation.
-        accumulator
-            Input used by this creature-domain operation.
+        field
+            Candidate tensor with shape ``(width, height, 3)``.
         metadata
-            Input used by this creature-domain operation.
+            Optional saved coordinate and boundary contract.
+
         Returns
         -------
         None
-            Result produced by this creature-domain operation.
-        
+            Validated values replace the current field.
+
         Raises
         ------
         ValueError
-            If an input or restored value violates validation rules.
+            If values or metadata are incompatible with this system.
         """
-        # Keep restore behavior explicit in its owning subsystem.
-        restored_trail = self._validated_restore_grid(trail, "trail")
-        restored_alarm = self._validated_restore_grid(alarm, "alarm")
-        if (
-            isinstance(accumulator, bool)
-            or not isinstance(accumulator, (int, float))
-            or not isfinite(accumulator)
-            or not 0.0 <= accumulator < self._interval
-        ):
+        # Validate every persisted invariant before mutating live state.
+        restored = np.asarray(field, dtype=np.float32)
+        if restored.shape != self.field.shape:
             raise ValueError(
-                "pheromone accumulator must be finite and within "
-                f"[0, {self._interval}), got {accumulator!r}."
-            )
-        if metadata is not None:
-            if not isinstance(metadata, Mapping):
-                raise ValueError("pheromone metadata must be a mapping.")
-            expected_shape = (self.grid_height, self.grid_width)
-            if tuple(metadata.get("grid_shape", ())) != expected_shape:
-                raise ValueError("Saved pheromone metadata has an incompatible grid shape.")
-            try:
-                saved_bounds = tuple(float(value) for value in metadata["world_bounds"])
-            except (KeyError, TypeError, ValueError) as error:
-                raise ValueError(
-                    "Saved pheromone metadata has invalid world bounds."
-                ) from error
-            if saved_bounds != self.world_bounds:
-                raise ValueError("Saved pheromone metadata has incompatible world bounds.")
-            try:
-                saved_mode = PheromoneBoundaryMode(metadata["boundary_mode"])
-            except (KeyError, TypeError, ValueError) as error:
-                raise ValueError(
-                    "Saved pheromone metadata has an invalid boundary mode."
-                ) from error
-            if saved_mode is not self.boundary_mode:
-                raise ValueError("Saved pheromone metadata has an incompatible boundary mode.")
-
-        np.copyto(self.trail, restored_trail)
-        np.copyto(self.alarm, restored_alarm)
-        self.accumulator = float(accumulator)
-
-    def _advance_stable_step(self, delta_time: float) -> None:
-        """Execute advance stable step behavior.
-        
-        Parameters
-        ----------
-        delta_time
-            Input used by this creature-domain operation.
-        Returns
-        -------
-        None
-            Result produced by this creature-domain operation.
-        
-        Raises
-        ------
-        ValueError
-            If an input or restored value violates validation rules.
-        """
-        # Keep advance stable step behavior explicit in its owning subsystem.
-        rx = (
-            self._diffusion_coefficient
-            * delta_time
-            * self.inverse_cell_size_x_squared
-        )
-        ry = (
-            self._diffusion_coefficient
-            * delta_time
-            * self.inverse_cell_size_y_squared
-        )
-        if rx + ry > 0.5 + self._STABILITY_TOLERANCE:
-            raise ValueError(
-                "Internal pheromone step is unstable: "
-                f"rx + ry = {rx + ry!r}."
-            )
-        decay = exp(-self._evaporation_rate * delta_time)
-        self._advance_grid(self.trail, rx, ry, decay)
-        self._advance_grid(self.alarm, rx, ry, decay)
-        self.diffusion_substep_count += 1
-
-    def _advance_grid(
-        self,
-        grid: np.ndarray,
-        rx: float,
-        ry: float,
-        decay: float,
-    ) -> None:
-        """Execute advance grid behavior.
-
-Parameters
-----------
-grid
-    Input used by this creature-domain operation.
-rx
-    Input used by this creature-domain operation.
-ry
-    Input used by this creature-domain operation.
-decay
-    Input used by this creature-domain operation.
-Returns
--------
-None
-    Result produced by this creature-domain operation."""
-        # Keep advance grid behavior explicit in its owning subsystem.
-        padded = self._padded
-        padded[1:-1, 1:-1] = grid
-        if self.boundary_mode is PheromoneBoundaryMode.REFLECT:
-            padded[0, 1:-1] = grid[0, :]
-            padded[-1, 1:-1] = grid[-1, :]
-            padded[1:-1, 0] = grid[:, 0]
-            padded[1:-1, -1] = grid[:, -1]
-        elif self.boundary_mode is PheromoneBoundaryMode.WRAP:
-            padded[0, 1:-1] = grid[-1, :]
-            padded[-1, 1:-1] = grid[0, :]
-            padded[1:-1, 0] = grid[:, -1]
-            padded[1:-1, -1] = grid[:, 0]
-        else:
-            padded[0, 1:-1] = 0.0
-            padded[-1, 1:-1] = 0.0
-            padded[1:-1, 0] = 0.0
-            padded[1:-1, -1] = 0.0
-
-        next_grid = self._next
-        work = self._work
-        np.copyto(next_grid, grid)
-        np.add(padded[1:-1, :-2], padded[1:-1, 2:], out=work)
-        np.subtract(work, grid, out=work)
-        np.subtract(work, grid, out=work)
-        np.multiply(work, rx, out=work)
-        np.add(next_grid, work, out=next_grid)
-        np.add(padded[:-2, 1:-1], padded[2:, 1:-1], out=work)
-        np.subtract(work, grid, out=work)
-        np.subtract(work, grid, out=work)
-        np.multiply(work, ry, out=work)
-        np.add(next_grid, work, out=next_grid)
-        np.multiply(next_grid, decay, out=next_grid)
-        np.clip(next_grid, 0.0, self._maximum, out=next_grid)
-        np.copyto(grid, next_grid)
-
-    def _sample_channel(
-        self,
-        grid: np.ndarray,
-        position: tuple[float, float],
-    ) -> float:
-        """Execute sample channel behavior.
-
-Parameters
-----------
-grid
-    Input used by this creature-domain operation.
-position
-    Input used by this creature-domain operation.
-Returns
--------
-float
-    Result produced by this creature-domain operation."""
-        # Keep sample channel behavior explicit in its owning subsystem.
-        x, y = self._validate_position(position)
-        indices = self._bilinear_indices(x, y)
-        return 0.0 if indices is None else self._sample_grid(grid, indices)
-
-    def _bilinear_indices(
-        self,
-        x: float,
-        y: float,
-    ) -> tuple[int, int, int, int, float, float] | None:
-        """Execute bilinear indices behavior.
-
-Parameters
-----------
-x
-    Input used by this creature-domain operation.
-y
-    Input used by this creature-domain operation.
-Returns
--------
-tuple[int, int, int, int, float, float] | None
-    Result produced by this creature-domain operation."""
-        # Keep bilinear indices behavior explicit in its owning subsystem.
-        left, bottom, right, top = self.world_bounds
-        if self.boundary_mode is PheromoneBoundaryMode.REFLECT:
-            x = max(left, min(right, x))
-            y = max(bottom, min(top, y))
-        elif self.boundary_mode is PheromoneBoundaryMode.WRAP:
-            x = (x - left) % (right - left) + left
-            y = (y - bottom) % (top - bottom) + bottom
-        elif x < left or x > right or y < bottom or y > top:
-            return None
-        grid_x = (x - left) / (right - left) * (self.grid_width - 1)
-        grid_y = (y - bottom) / (top - bottom) * (self.grid_height - 1)
-        column0 = int(floor(grid_x))
-        row0 = int(floor(grid_y))
-        column1 = min(self.grid_width - 1, column0 + 1)
-        row1 = min(self.grid_height - 1, row0 + 1)
-        return column0, column1, row0, row1, grid_x - column0, grid_y - row0
-
-    def _deposit_into(
-        self,
-        grid: np.ndarray,
-        indices: tuple[int, int, int, int, float, float],
-        amount: float,
-    ) -> None:
-        """Execute deposit into behavior.
-
-Parameters
-----------
-grid
-    Input used by this creature-domain operation.
-indices
-    Input used by this creature-domain operation.
-amount
-    Input used by this creature-domain operation.
-Returns
--------
-None
-    Result produced by this creature-domain operation."""
-        # Keep deposit into behavior explicit in its owning subsystem.
-        column0, column1, row0, row1, u, v = indices
-        if column0 == column1 and row0 == row1:
-            grid[row0, column0] = min(
-                self._maximum, float(grid[row0, column0]) + amount
-            )
-            return
-        if column0 == column1:
-            self._add_clipped(grid, row0, column0, amount * (1.0 - v))
-            self._add_clipped(grid, row1, column0, amount * v)
-            return
-        if row0 == row1:
-            self._add_clipped(grid, row0, column0, amount * (1.0 - u))
-            self._add_clipped(grid, row0, column1, amount * u)
-            return
-        self._add_clipped(grid, row0, column0, amount * (1.0 - u) * (1.0 - v))
-        self._add_clipped(grid, row0, column1, amount * u * (1.0 - v))
-        self._add_clipped(grid, row1, column0, amount * (1.0 - u) * v)
-        self._add_clipped(grid, row1, column1, amount * u * v)
-
-    def _add_clipped(
-        self,
-        grid: np.ndarray,
-        row: int,
-        column: int,
-        amount: float,
-    ) -> None:
-        """Execute add clipped behavior.
-
-Parameters
-----------
-grid
-    Input used by this creature-domain operation.
-row
-    Input used by this creature-domain operation.
-column
-    Input used by this creature-domain operation.
-amount
-    Input used by this creature-domain operation.
-Returns
--------
-None
-    Result produced by this creature-domain operation."""
-        # Keep add clipped behavior explicit in its owning subsystem.
-        grid[row, column] = min(
-            self._maximum,
-            float(grid[row, column]) + amount,
-        )
-
-    def _deposit_many_into(
-        self,
-        grid: np.ndarray,
-        flat_indices: np.ndarray,
-        interpolation_weights: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-        amounts: np.ndarray,
-    ) -> None:
-        """Execute deposit many into behavior.
-
-Parameters
-----------
-grid
-    Input used by this creature-domain operation.
-flat_indices
-    Input used by this creature-domain operation.
-interpolation_weights
-    Input used by this creature-domain operation.
-amounts
-    Input used by this creature-domain operation.
-Returns
--------
-None
-    Result produced by this creature-domain operation."""
-        # Keep deposit many into behavior explicit in its owning subsystem.
-        contributions = np.concatenate(
-            tuple(amounts * weights for weights in interpolation_weights)
-        )
-        accumulated = np.bincount(
-            flat_indices,
-            weights=contributions,
-            minlength=grid.size,
-        )
-        np.add(grid, accumulated.reshape(grid.shape), out=grid, casting="unsafe")
-        np.clip(grid, 0.0, self._maximum, out=grid)
-
-    @staticmethod
-    def _sample_grid(
-        grid: np.ndarray,
-        indices: tuple[int, int, int, int, float, float],
-    ) -> float:
-        """Execute sample grid behavior.
-
-Parameters
-----------
-grid
-    Input used by this creature-domain operation.
-indices
-    Input used by this creature-domain operation.
-Returns
--------
-float
-    Result produced by this creature-domain operation."""
-        # Keep sample grid behavior explicit in its owning subsystem.
-        column0, column1, row0, row1, u, v = indices
-        return float(
-            grid[row0, column0] * (1.0 - u) * (1.0 - v)
-            + grid[row0, column1] * u * (1.0 - v)
-            + grid[row1, column0] * (1.0 - u) * v
-            + grid[row1, column1] * u * v
-        )
-
-    def _sample_many_grid(
-        self,
-        grid: np.ndarray,
-        positions: np.ndarray,
-    ) -> np.ndarray:
-        """Execute sample many grid behavior.
-
-Parameters
-----------
-grid
-    Input used by this creature-domain operation.
-positions
-    Input used by this creature-domain operation.
-Returns
--------
-np.ndarray
-    Result produced by this creature-domain operation."""
-        # Keep sample many grid behavior explicit in its owning subsystem.
-        left, bottom, right, top = self.world_bounds
-        x = positions[:, 0]
-        y = positions[:, 1]
-        outside: np.ndarray | None = None
-        if self.boundary_mode is PheromoneBoundaryMode.REFLECT:
-            x = np.clip(x, left, right)
-            y = np.clip(y, bottom, top)
-        elif self.boundary_mode is PheromoneBoundaryMode.WRAP:
-            x = np.mod(x - left, right - left) + left
-            y = np.mod(y - bottom, top - bottom) + bottom
-        else:
-            outside = (x < left) | (x > right) | (y < bottom) | (y > top)
-            x = np.clip(x, left, right)
-            y = np.clip(y, bottom, top)
-        grid_x = (x - left) / (right - left) * (self.grid_width - 1)
-        grid_y = (y - bottom) / (top - bottom) * (self.grid_height - 1)
-        column0 = np.floor(grid_x).astype(np.intp)
-        row0 = np.floor(grid_y).astype(np.intp)
-        column1 = np.minimum(column0 + 1, self.grid_width - 1)
-        row1 = np.minimum(row0 + 1, self.grid_height - 1)
-        u = grid_x - column0
-        v = grid_y - row0
-        result = (
-            grid[row0, column0] * (1.0 - u) * (1.0 - v)
-            + grid[row0, column1] * u * (1.0 - v)
-            + grid[row1, column0] * (1.0 - u) * v
-            + grid[row1, column1] * u * v
-        ).astype(np.float32, copy=False)
-        if outside is not None:
-            result[outside] = 0.0
-        return result
-
-    def _validated_restore_grid(self, values: object, name: str) -> np.ndarray:
-        """Execute validated restore grid behavior.
-        
-        Parameters
-        ----------
-        values
-            Input used by this creature-domain operation.
-        name
-            Input used by this creature-domain operation.
-        Returns
-        -------
-        np.ndarray
-            Result produced by this creature-domain operation.
-        
-        Raises
-        ------
-        ValueError
-            If an input or restored value violates validation rules.
-        """
-        # Keep validated restore grid behavior explicit in its owning subsystem.
-        try:
-            restored = np.asarray(values, dtype=np.float32)
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"Saved {name} pheromone grid is not numeric.") from error
-        expected_shape = (self.grid_height, self.grid_width)
-        if restored.shape != expected_shape:
-            raise ValueError(
-                f"Saved {name} pheromone grid must have shape {expected_shape}, "
+                f"Saved pheromone field must have shape {self.field.shape}, "
                 f"got {restored.shape}."
             )
         if not np.all(np.isfinite(restored)):
-            raise ValueError(f"Saved {name} pheromone grid contains nonfinite values.")
-        if np.any(restored < 0.0):
-            raise ValueError(f"Saved {name} pheromone grid contains negative values.")
-        if np.any(restored > self._maximum):
-            raise ValueError(
-                f"Saved {name} pheromone grid exceeds maximum concentration "
-                f"{self._maximum}."
-            )
-        return restored
+            raise ValueError("Saved pheromone field contains nonfinite values.")
+        if np.any(restored < 0.0) or np.any(restored > self._maximum):
+            raise ValueError("Saved pheromone field is outside its configured range.")
+        if metadata is not None:
+            if not isinstance(metadata, Mapping):
+                raise ValueError("pheromone metadata must be a mapping.")
+            if tuple(metadata.get("grid_shape", ())) != self.field.shape:
+                raise ValueError("Saved pheromone metadata has an incompatible shape.")
+            if metadata.get("axis_order") != "xyc":
+                raise ValueError("Saved pheromone metadata has an incompatible axis order.")
+            saved_bounds = tuple(float(value) for value in metadata.get("world_bounds", ()))
+            if saved_bounds != self.world_bounds:
+                raise ValueError("Saved pheromone metadata has incompatible world bounds.")
+            if PheromoneBoundaryMode(metadata.get("boundary_mode")) is not self.boundary_mode:
+                raise ValueError("Saved pheromone metadata has incompatible boundaries.")
+        np.copyto(self.field, restored)
 
-    @staticmethod
-    def _validate_position(position: object) -> tuple[float, float]:
-        """Execute validate position behavior.
-        
+    def _sample_positions(self, positions: np.ndarray) -> np.ndarray:
+        """Interpolate RGB values for validated world positions.
+
         Parameters
         ----------
-        position
-            Input used by this creature-domain operation.
+        positions
+            Finite world positions with shape ``(N, 2)``.
+
         Returns
         -------
-        tuple[float, float]
-            Result produced by this creature-domain operation.
-        
-        Raises
-        ------
-        ValueError
-            If an input or restored value violates validation rules.
+        numpy.ndarray
+            RGB samples with shape ``(N, 3)``.
         """
-        # Keep validate position behavior explicit in its owning subsystem.
-        if not isinstance(position, (tuple, list)) or len(position) != 2:
-            raise ValueError("position must contain exactly two coordinates.")
-        x, y = position
-        if (
-            isinstance(x, bool)
-            or not isinstance(x, (int, float))
-            or not isfinite(x)
-            or isinstance(y, bool)
-            or not isinstance(y, (int, float))
-            or not isfinite(y)
-        ):
-            raise ValueError(f"position coordinates must be finite, got {position!r}.")
-        return float(x), float(y)
+        # Use advanced indexing for all positions and channels at once.
+        mapped, inside = self._map_positions(positions)
+        x0, x1, y0, y1, u, v = self._bilinear_components(mapped)
+        result = (
+            self.field[x0, y0] * ((1.0 - u) * (1.0 - v))[:, None]
+            + self.field[x1, y0] * (u * (1.0 - v))[:, None]
+            + self.field[x0, y1] * ((1.0 - u) * v)[:, None]
+            + self.field[x1, y1] * (u * v)[:, None]
+        ).astype(np.float32, copy=False)
+        if self.boundary_mode is PheromoneBoundaryMode.ABSORB:
+            result[~inside] = 0.0
+        return result
 
-    @staticmethod
-    def _validate_amount(value: object, name: str) -> float:
-        """Execute validate amount behavior.
-        
+    def _map_positions(self, positions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Apply the configured continuous boundary policy.
+
         Parameters
         ----------
-        value
-            Input used by this creature-domain operation.
-        name
-            Input used by this creature-domain operation.
+        positions
+            Finite world positions with shape ``(N, 2)``.
+
         Returns
         -------
-        float
-            Result produced by this creature-domain operation.
-        
-        Raises
-        ------
-        ValueError
-            If an input or restored value violates validation rules.
+        tuple[numpy.ndarray, numpy.ndarray]
+            Mapped positions and their original in-bounds mask.
         """
-        # Keep validate amount behavior explicit in its owning subsystem.
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not isfinite(value)
-            or value < 0.0
-        ):
-            raise ValueError(f"{name} must be finite and nonnegative, got {value!r}.")
-        return float(value)
+        # Keep the original mask so absorb mode can reject outside samples.
+        left, bottom, right, top = self.world_bounds
+        mapped = positions.astype(np.float64, copy=True)
+        inside = (
+            (mapped[:, 0] >= left)
+            & (mapped[:, 0] <= right)
+            & (mapped[:, 1] >= bottom)
+            & (mapped[:, 1] <= top)
+        )
+        if self.boundary_mode is PheromoneBoundaryMode.WRAP:
+            mapped[:, 0] = np.mod(mapped[:, 0] - left, right - left) + left
+            mapped[:, 1] = np.mod(mapped[:, 1] - bottom, top - bottom) + bottom
+        else:
+            mapped[:, 0] = np.clip(mapped[:, 0], left, right)
+            mapped[:, 1] = np.clip(mapped[:, 1], bottom, top)
+        return mapped, inside
+
+    def _bilinear_components(
+        self, positions: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Calculate safe bilinear indices and fractional weights.
+
+        Parameters
+        ----------
+        positions
+            Boundary-mapped world positions with shape ``(N, 2)``.
+
+        Returns
+        -------
+        tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]
+            Lower/upper X and Y indices followed by X and Y fractions.
+        """
+        # Clamp upper indices so valid edge splats aggregate rather than escape.
+        left, bottom, right, top = self.world_bounds
+        grid_x = (positions[:, 0] - left) / (right - left) * (self.grid_width - 1)
+        grid_y = (positions[:, 1] - bottom) / (top - bottom) * (self.grid_height - 1)
+        x0 = np.floor(grid_x).astype(np.intp)
+        y0 = np.floor(grid_y).astype(np.intp)
+        x1 = np.minimum(x0 + 1, self.grid_width - 1)
+        y1 = np.minimum(y0 + 1, self.grid_height - 1)
+        return x0, x1, y0, y1, grid_x - x0, grid_y - y0
 
     @staticmethod
-    def _validated_positions_array(values: object, sensors: int) -> np.ndarray:
-        """Execute validated positions array behavior.
-        
+    def _validated_positions(values: object, trailing_shape: tuple[int, ...]) -> np.ndarray:
+        """Validate and normalize a position batch.
+
         Parameters
         ----------
         values
-            Input used by this creature-domain operation.
-        sensors
-            Input used by this creature-domain operation.
+            Candidate numeric positions.
+        trailing_shape
+            Required dimensions after the batch axis.
+
         Returns
         -------
-        np.ndarray
-            Result produced by this creature-domain operation.
-        
+        numpy.ndarray
+            Finite float64 positions with an explicit batch axis.
+
         Raises
         ------
         ValueError
-            If an input or restored value violates validation rules.
+            If values are nonnumeric, nonfinite, or incorrectly shaped.
         """
-        # Keep validated positions array behavior explicit in its owning subsystem.
+        # Normalize a single probe group into a one-item batch.
         try:
             positions = np.asarray(values, dtype=np.float64)
         except (TypeError, ValueError) as error:
-            raise ValueError("positions must be a numeric array.") from error
-        expected_tail = (2,) if sensors == 2 else (3, 2)
-        if positions.ndim != len(expected_tail) + 1 or positions.shape[1:] != expected_tail:
-            shape_text = "(N, 2)" if sensors == 2 else "(N, 3, 2)"
-            raise ValueError(f"positions must have shape {shape_text}, got {positions.shape}.")
+            raise ValueError("positions must be numeric.") from error
+        expected_ndim = len(trailing_shape) + 1
+        if positions.ndim == len(trailing_shape) and positions.shape == trailing_shape:
+            positions = positions.reshape((1, *trailing_shape))
+        if positions.ndim != expected_ndim or positions.shape[1:] != trailing_shape:
+            raise ValueError(f"positions must have shape (N, {', '.join(map(str, trailing_shape))}).")
         if not np.all(np.isfinite(positions)):
-            raise ValueError("positions must contain only finite values.")
+            raise ValueError("positions must be finite.")
         return positions
 
     @staticmethod
-    def _validated_amounts_array(
-        values: object | None,
-        count: int,
-        name: str,
-    ) -> np.ndarray | None:
-        """Execute validated amounts array behavior.
-        
+    def _validated_colors(values: object, count: int) -> np.ndarray:
+        """Validate nonnegative RGB deposit vectors.
+
         Parameters
         ----------
         values
-            Input used by this creature-domain operation.
+            Candidate RGB values.
         count
-            Input used by this creature-domain operation.
-        name
-            Input used by this creature-domain operation.
+            Required number of vectors.
+
         Returns
         -------
-        np.ndarray | None
-            Result produced by this creature-domain operation.
-        
+        numpy.ndarray
+            Float64 RGB values with shape ``(count, 3)``.
+
         Raises
         ------
         ValueError
-            If an input or restored value violates validation rules.
+            If values are invalid, negative, or incorrectly shaped.
         """
-        # Keep validated amounts array behavior explicit in its owning subsystem.
-        if values is None:
-            return None
+        # Accept a lone RGB vector only for one-position scalar deposition.
         try:
-            amounts = np.asarray(values, dtype=np.float64)
+            colors = np.asarray(values, dtype=np.float64)
         except (TypeError, ValueError) as error:
-            raise ValueError(f"{name} must be a numeric array.") from error
-        if amounts.shape != (count,):
-            raise ValueError(f"{name} must have shape {(count,)}, got {amounts.shape}.")
-        if not np.all(np.isfinite(amounts)) or np.any(amounts < 0.0):
-            raise ValueError(f"{name} must contain finite nonnegative values.")
-        return amounts
+            raise ValueError("color vectors must be numeric.") from error
+        if colors.shape == (3,) and count == 1:
+            colors = colors.reshape(1, 3)
+        if colors.shape != (count, 3):
+            raise ValueError(f"color vectors must have shape {(count, 3)}.")
+        if not np.all(np.isfinite(colors)) or np.any(colors < 0.0):
+            raise ValueError("color vectors must be finite and nonnegative.")
+        return colors
 
     @staticmethod
-    def _validated_timestep(value: object) -> float:
-        """Execute validated timestep behavior.
-        
+    def _finite_coordinate(value: object) -> float:
+        """Validate one finite world coordinate.
+
         Parameters
         ----------
         value
-            Input used by this creature-domain operation.
+            Candidate coordinate.
+
         Returns
         -------
         float
-            Result produced by this creature-domain operation.
-        
+            Validated coordinate.
+
         Raises
         ------
         ValueError
-            If an input or restored value violates validation rules.
+            If the coordinate is not a finite real number.
         """
-        # Keep validated timestep behavior explicit in its owning subsystem.
+        # Reject booleans even though Python treats them as integers.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("coordinates must be finite numbers.")
+        coordinate = float(value)
+        if not isfinite(coordinate):
+            raise ValueError("coordinates must be finite numbers.")
+        return coordinate
+
+    @staticmethod
+    def _validated_timestep(value: object) -> float:
+        """Validate one nonnegative explicit timestep.
+
+        Parameters
+        ----------
+        value
+            Candidate timestep in seconds.
+
+        Returns
+        -------
+        float
+            Validated timestep.
+
+        Raises
+        ------
+        ValueError
+            If the timestep is nonnumeric, nonfinite, or negative.
+        """
+        # Explicit integration cannot accept reverse or undefined time.
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
             or not isfinite(value)
             or value < 0.0
         ):
-            raise ValueError(f"delta_time must be finite and nonnegative, got {value!r}.")
+            raise ValueError("delta_time must be finite and nonnegative.")
         return float(value)
-
-    def _set_last_catch_up(
-        self,
-        processed: int,
-        dropped: int,
-        dropped_time: float,
-    ) -> None:
-        """Execute set last catch up behavior.
-
-Parameters
-----------
-processed
-    Input used by this creature-domain operation.
-dropped
-    Input used by this creature-domain operation.
-dropped_time
-    Input used by this creature-domain operation.
-Returns
--------
-None
-    Result produced by this creature-domain operation."""
-        # Keep set last catch up behavior explicit in its owning subsystem.
-        self.last_processed_updates = processed
-        self.last_dropped_updates = dropped
-        self.last_dropped_time = dropped_time

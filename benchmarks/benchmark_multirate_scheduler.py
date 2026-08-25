@@ -153,7 +153,7 @@ def collect_counters(warmup_steps: int, measured_steps: int) -> dict[str, int]:
             None,
         ),
         "stats": world._refresh_stats,
-        "pheromones": world.pheromones.accumulate,
+        "pheromones": world.pheromones.advance,
         "observer": world.behavior_observer.submit_batch,
         "why": world._sample_selected_why,
         "submit_why": world.behavior_observer.submit_why,
@@ -189,10 +189,10 @@ def collect_counters(warmup_steps: int, measured_steps: int) -> dict[str, int]:
             "exposure_resolutions", originals["resolve"]
         )
     world._refresh_stats = counted("statistics_refreshes", originals["stats"])
-    world.pheromones.accumulate = counted(
+    world.pheromones.advance = counted(
         "pheromone_updates",
         originals["pheromones"],
-        amount=lambda updates: int(updates),
+        amount=1,
     )
     world.behavior_observer.submit_batch = counted(
         "observer_samples", originals["observer"]

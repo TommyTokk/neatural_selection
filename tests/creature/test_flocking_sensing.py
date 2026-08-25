@@ -72,8 +72,8 @@ class SchemaSevenSensingTest(unittest.TestCase):
             The test completes through assertions.
         """
         # Keep the test contract has exact count test intent explicit.
-        self.assertEqual(SENSOR_CONTRACT.input_count, 43)
-        self.assertEqual(SENSOR_CONTRACT.schema_version, 7)
+        self.assertEqual(SENSOR_CONTRACT.input_count, 46)
+        self.assertEqual(SENSOR_CONTRACT.schema_version, 8)
 
     def test_write_inputs_matches_allocating_compatibility_api(self) -> None:
         """Exercise test write inputs matches allocating compatibility api behavior.
@@ -140,7 +140,7 @@ class SchemaSevenSensingTest(unittest.TestCase):
             100.0,
         )
         inputs = snapshot.as_inputs()
-        self.assertEqual(len(inputs), 43)
+        self.assertEqual(len(inputs), 46)
         self.assertGreater(inputs[22], 0.0)
         self.assertAlmostEqual(inputs[23], 0.25)
         self.assertAlmostEqual(inputs[25], 0.0)
@@ -992,7 +992,7 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             )
             self.assertEqual(
                 len(restored.neat_controller.config.genome_config.input_keys),
-                43,
+                46,
             )
             self.assertTrue(restored.brain_contract_reset_occurred)
             for creature in restored.creatures:
@@ -1006,10 +1006,10 @@ class CheckpointContractPolicyTest(unittest.TestCase):
             if restored is not None:
                 restored.close()
 
-    def test_schema_seven_round_trip_preserves_contract_not_transient_vectors(
+    def test_schema_eight_round_trip_preserves_contract_not_transient_vectors(
         self,
     ) -> None:
-        """Exercise test schema seven round trip preserves contract not transient vectors behavior.
+        """Exercise schema-eight round trips without transient sensor vectors.
         
         Parameters
         ----------
@@ -1021,7 +1021,7 @@ class CheckpointContractPolicyTest(unittest.TestCase):
         None
             The test completes through assertions.
         """
-        # Keep the test schema seven round trip preserves contract not transient vectors test intent explicit.
+        # Keep the schema-eight persistence contract explicit.
         config = build_sim_config()
         config.flocking.compatibility.mode = (
             SocialCompatibilityMode.SOCIAL_TAG
@@ -1039,8 +1039,8 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 world.neat_controller,
             )
             self.assertEqual(state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(state["brain_contract"]["sensor_schema"], 7)
-            self.assertEqual(state["brain_contract"]["inputs"], 43)
+            self.assertEqual(state["brain_contract"]["sensor_schema"], 8)
+            self.assertEqual(state["brain_contract"]["inputs"], 46)
             serialized_keys: set[str] = set()
 
             def collect_keys(value) -> None:

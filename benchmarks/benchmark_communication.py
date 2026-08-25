@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from configs.sim_config import CommunicationConfig
+from configs.sim_config import CommunicationConfig, PheromoneConfig
 from src.communication import AcousticSignal, AcousticSystem, PheromoneSystem
 
 
@@ -184,25 +184,19 @@ def benchmark_pheromones(warmups: int, repeats: int, quick: bool) -> None:
     rng = np.random.default_rng(4421)
     deposit_count = 2_000 if quick else 10_000
     positions = rng.uniform(0.0, 1_000.0, size=(deposit_count, 2))
-    trail = rng.uniform(0.0, 0.001, size=deposit_count)
-    alarm = rng.uniform(0.0, 0.001, size=deposit_count)
-    config = CommunicationConfig(
-        pheromone_diffusion_coefficient=10.0,
-        pheromone_max_concentration=100.0,
-    )
+    colors = rng.uniform(0.0, 0.001, size=(deposit_count, 3))
+    config = PheromoneConfig(diffusion_coefficient=10.0, max_concentration=100.0)
 
     def scalar_deposit() -> None:
         system = PheromoneSystem(config, 128, 128, (0.0, 0.0, 1_000.0, 1_000.0))
-        for position, trail_amount, alarm_amount in zip(positions, trail, alarm):
+        for position, color in zip(positions, colors):
             system.deposit(
-                (float(position[0]), float(position[1])),
-                float(trail_amount),
-                float(alarm_amount),
+                float(position[0]), float(position[1]), color,
             )
 
     def batch_deposit() -> None:
         system = PheromoneSystem(config, 128, 128, (0.0, 0.0, 1_000.0, 1_000.0))
-        system.deposit_many(positions, trail, alarm)
+        system.deposit_many(positions, colors)
 
     grid_x = positions[:, 0] / 1_000.0 * 127.0
     grid_y = positions[:, 1] / 1_000.0 * 127.0
@@ -228,17 +222,11 @@ def benchmark_pheromones(warmups: int, repeats: int, quick: bool) -> None:
     )
 
     def add_at_deposit() -> None:
-        trail_grid = np.zeros((128, 128), dtype=np.float32)
-        alarm_grid = np.zeros((128, 128), dtype=np.float32)
+        rgb_grid = np.zeros((128 * 128, 3), dtype=np.float32)
         np.add.at(
-            trail_grid.ravel(),
+            rgb_grid,
             add_at_indices,
-            np.concatenate(tuple(trail * weight for weight in add_at_weights)),
-        )
-        np.add.at(
-            alarm_grid.ravel(),
-            add_at_indices,
-            np.concatenate(tuple(alarm * weight for weight in add_at_weights)),
+            np.concatenate(tuple(colors * weight[:, None] for weight in add_at_weights)),
         )
 
     scalar = measure(scalar_deposit, warmups, repeats)
@@ -261,8 +249,7 @@ def benchmark_pheromones(warmups: int, repeats: int, quick: bool) -> None:
         128,
         (0.0, 0.0, 1_000.0, 1_000.0),
     )
-    sensing_system.trail[:] = rng.random(sensing_system.trail.shape)
-    sensing_system.alarm[:] = rng.random(sensing_system.alarm.shape)
+    sensing_system.field[:] = rng.random(sensing_system.field.shape)
     sensing = measure(
         lambda: sensing_system.sense_many(sensor_positions),
         warmups,
@@ -276,39 +263,29 @@ def benchmark_pheromones(warmups: int, repeats: int, quick: bool) -> None:
     sizes = [64, 128] if quick else [64, 128, 256, 512]
     for size in sizes:
         system = PheromoneSystem(
-            CommunicationConfig(
-                pheromone_diffusion_coefficient=390.0,
-                pheromone_evaporation_rate=0.08,
-            ),
+            PheromoneConfig(diffusion_coefficient=390.0, decay_rate=0.08),
             size,
             size,
             (-1_600.0, -1_100.0, 1_600.0, 1_100.0),
         )
-        system.trail[size // 2, size // 2] = 1.0
-        system.alarm[size // 2, size // 2] = 1.0
-        timing = measure(lambda: system.advance(0.25), warmups, repeats)
+        system.field[size // 2, size // 2] = 1.0
+        timing = measure(lambda: system.advance(1.0 / 60.0), warmups, repeats)
         print(
-            f"diffusion {size}x{size}, two channels: median/min "
+            f"diffusion {size}x{size}, RGB: median/min "
             f"{timing.median_seconds * 1e3:.3f}/{timing.minimum_seconds * 1e3:.3f} ms"
         )
 
     subdivision = PheromoneSystem(
-        CommunicationConfig(
-            pheromone_diffusion_coefficient=1.0,
-            pheromone_evaporation_rate=0.08,
-        ),
+        PheromoneConfig(diffusion_coefficient=1.0, decay_rate=0.08),
         128,
         128,
         (0.0, 0.0, 127.0, 127.0),
     )
-    subdivision.trail[64, 64] = subdivision.alarm[64, 64] = 1.0
-    timing = measure(lambda: subdivision.advance(2.0), warmups, repeats)
-    expected_steps = max(
-        1,
-        floor(2.0 / subdivision.maximum_stable_timestep + 0.999999999999),
-    )
+    subdivision.field[64, 64] = 1.0
+    stable_dt = min(1.0 / 60.0, subdivision.maximum_stable_timestep)
+    timing = measure(lambda: subdivision.advance(stable_dt), warmups, repeats)
     print(
-        f"large timestep ({expected_steps} stable substeps): median/min "
+        f"fixed stable timestep: median/min "
         f"{timing.median_seconds * 1e3:.3f}/{timing.minimum_seconds * 1e3:.3f} ms"
     )
 

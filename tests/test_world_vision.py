@@ -169,25 +169,22 @@ class WorldVisionMutationTest(unittest.TestCase):
                 0.0,
                 emit_sound=0.8,
                 sound_tone=-0.25,
-                emit_trail_pheromone=0.5,
-                emit_alarm_pheromone=0.25,
+                emit_red=0.5,
+                emit_green=0.25,
+                emit_blue=0.75,
             ),
             2: Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         }
         captured_signals: list[object] = []
-        deposits: list[tuple[tuple[float, float], float, float]] = []
+        deposits: list[tuple[tuple[float, float], tuple[float, float, float]]] = []
         world.acoustics = SimpleNamespace(
             replace_signals=lambda signals: captured_signals.extend(signals)
         )
         world.pheromones = SimpleNamespace(
-            deposit_many=lambda positions, trail_amounts, alarm_amounts: deposits.extend(
+            deposit_many=lambda positions, colors: deposits.extend(
                 (
-                    (tuple(position), float(trail_amount), float(alarm_amount))
-                    for position, trail_amount, alarm_amount in zip(
-                        positions,
-                        trail_amounts,
-                        alarm_amounts,
-                    )
+                    (tuple(position), tuple(float(value) for value in color))
+                    for position, color in zip(positions, colors)
                 )
             )
         )
@@ -197,9 +194,9 @@ class WorldVisionMutationTest(unittest.TestCase):
         self.assertEqual(len(captured_signals), 1)
         self.assertEqual(captured_signals[0].emitter_id, 1)
         self.assertAlmostEqual(captured_signals[0].tone, -0.25)
-        rate_per_step = world.config.communication.pheromone_deposit_rate / 60.0
-        self.assertAlmostEqual(deposits[0][1], 0.5 * rate_per_step)
-        self.assertAlmostEqual(deposits[0][2], 0.25 * rate_per_step)
+        self.assertAlmostEqual(deposits[0][1][0], 0.5 / 60.0)
+        self.assertAlmostEqual(deposits[0][1][1], 0.25 / 60.0)
+        self.assertAlmostEqual(deposits[0][1][2], 0.75 / 60.0)
         self.assertEqual(len(deposits), 1)
 
     def test_cached_acoustic_level_replaces_state_until_next_decision(

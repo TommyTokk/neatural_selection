@@ -56,7 +56,7 @@ class WorldSimulationSpeedTest(unittest.TestCase):
         world._simulation_step = 0
         world.simulation_lag_metrics = SimulationLagMetrics()
         world.space = SimpleNamespace(step=lambda delta: None)
-        world.pheromones = SimpleNamespace(accumulate=lambda delta: None)
+        world.pheromones = SimpleNamespace(advance=lambda delta: None)
         world.timebase_calls = {
             name: []
             for name in (

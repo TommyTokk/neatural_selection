@@ -10,12 +10,12 @@ from numpy.testing import assert_allclose
 from configs.sim_config import (
     CommunicationConfig,
     PheromoneBoundaryMode,
+    PheromoneConfig,
 )
 from src.communication import (
     AcousticObservation,
     AcousticSignal,
     AcousticSystem,
-    PheromoneChannel,
     PheromoneSystem,
 )
 
@@ -79,10 +79,10 @@ class AcousticSystemTest(unittest.TestCase):
         config = CommunicationConfig()
         self.assertEqual(config.acoustic_min_emission_strength, 0.05)
         self.assertEqual(config.acoustic_hearing_threshold, 0.05)
-        self.assertEqual(config.pheromone_diffusion_coefficient, 390.0)
-        self.assertEqual(config.pheromone_max_updates_per_tick, 4)
+        self.assertEqual(config.pheromone.diffusion_coefficient, 390.0)
+        self.assertEqual(config.pheromone.decay_rate, 0.08)
         self.assertIs(
-            config.pheromone_boundary_mode,
+            config.pheromone.boundary_mode,
             PheromoneBoundaryMode.REFLECT,
         )
 
@@ -403,505 +403,180 @@ class AcousticSystemTest(unittest.TestCase):
 
 
 class PheromoneSystemTest(unittest.TestCase):
-    def make_system(
-        self,
-        *,
-        grid_width: int = 8,
-        grid_height: int = 6,
-        bounds: tuple[float, float, float, float] = (0.0, 0.0, 80.0, 60.0),
-        **overrides: object,
-    ) -> PheromoneSystem:
-        """Exercise make system behavior.
-        
+    def make_system(self, **overrides: object) -> PheromoneSystem:
+        """Create a compact pheromone system for focused tests.
+
         Parameters
         ----------
-        grid_width
-            Value supplied to ``grid_width`` by the test scenario.
-        grid_height
-            Value supplied to ``grid_height`` by the test scenario.
-        bounds
-            Value supplied to ``bounds`` by the test scenario.
         overrides
-            Value supplied to ``overrides`` by the test scenario.
-        
+            Pheromone configuration values replacing test defaults.
+
         Returns
         -------
-        None
-            The test completes through assertions.
+        PheromoneSystem
+            Empty width-major test field.
         """
-        # Keep the make system test intent explicit.
-        values: dict[str, object] = {
-            "pheromone_update_interval": 0.25,
-            "pheromone_diffusion_coefficient": 30.0,
-            "pheromone_evaporation_rate": 0.08,
-            "pheromone_max_concentration": 10.0,
+        # Keep geometry asymmetric so swapped X/Y axes are observable.
+        values = {
+            "diffusion_coefficient": 0.0,
+            "decay_rate": 0.0,
+            "max_concentration": 1.0,
+            "boundary_mode": PheromoneBoundaryMode.REFLECT,
         }
         values.update(overrides)
         return PheromoneSystem(
-            CommunicationConfig(**values),
-            grid_width,
-            grid_height,
-            bounds,
+            PheromoneConfig(**values),
+            5,
+            3,
+            (0.0, 0.0, 4.0, 2.0),
         )
 
-    def test_scalar_deposit_and_sampling_are_bilinear(self) -> None:
-        """Exercise test scalar deposit and sampling are bilinear behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test scalar deposit and sampling are bilinear test intent explicit.
-        system = self.make_system(grid_width=3, grid_height=3, bounds=(0, 0, 2, 2))
-        system.deposit((0.5, 0.5), trail_amount=1.0, alarm_amount=0.5)
-        assert_allclose(system.trail[:2, :2], np.full((2, 2), 0.25))
-        assert_allclose(system.alarm[:2, :2], np.full((2, 2), 0.125))
-        self.assertAlmostEqual(system.sample_trail((0.5, 0.5)), 0.25)
-        self.assertAlmostEqual(system.sample_alarm((0.5, 0.5)), 0.125)
+    def test_field_is_strictly_width_major_rgb(self) -> None:
+        """Verify the public tensor and scalar sampling axis contract.
 
-    def test_edge_and_corner_deposits_preserve_total_weight(self) -> None:
-        """Exercise test edge and corner deposits preserve total weight behavior.
-        
         Parameters
         ----------
         None
-            This callable receives no external parameters.
-        
+            This test receives no external parameters.
+
         Returns
         -------
         None
-            The test completes through assertions.
+            Assertions verify width-major RGB storage.
         """
-        # Keep the test edge and corner deposits preserve total weight test intent explicit.
+        # Use unequal width and height to expose transposition.
         system = self.make_system()
-        for position in ((0.0, 0.0), (80.0, 60.0), (80.0, 30.0)):
-            system.trail.fill(0.0)
-            system.deposit(position, trail_amount=0.75)
-            self.assertAlmostEqual(float(system.trail.sum()), 0.75, places=6)
+        self.assertEqual(system.field.shape, (5, 3, 3))
+        system.field[3, 1] = (0.2, 0.4, 0.6)
+        assert_allclose(system.sample(3.0, 1.0), (0.2, 0.4, 0.6))
 
-    def test_batch_deposit_matches_scalar_with_duplicate_indices(self) -> None:
-        """Exercise test batch deposit matches scalar with duplicate indices behavior.
-        
+    def test_bilinear_splat_conserves_channels_at_edges(self) -> None:
+        """Verify edge splats conserve every RGB channel.
+
         Parameters
         ----------
         None
-            This callable receives no external parameters.
-        
+            This test receives no external parameters.
+
         Returns
         -------
         None
-            The test completes through assertions.
+            Assertions verify safe edge accumulation.
         """
-        # Keep the test batch deposit matches scalar with duplicate indices test intent explicit.
-        positions = np.array(
-            [[0.0, 0.0], [35.0, 27.0], [35.0, 27.0], [80.0, 60.0]],
-            dtype=np.float64,
-        )
-        trail = np.array([0.2, 0.3, 0.1, 0.4])
-        alarm = np.array([0.1, 0.2, 0.4, 0.3])
+        # Deposit on the maximum corner where upper indices become duplicates.
+        system = self.make_system()
+        system.deposit(4.0, 2.0, (0.2, 0.4, 0.6))
+        assert_allclose(system.field.sum(axis=(0, 1)), (0.2, 0.4, 0.6))
+        assert_allclose(system.field[4, 2], (0.2, 0.4, 0.6))
+
+    def test_batch_and_scalar_deposition_match(self) -> None:
+        """Verify scalar and batched bilinear deposits are equivalent.
+
+        Parameters
+        ----------
+        None
+            This test receives no external parameters.
+
+        Returns
+        -------
+        None
+            Assertions compare complete RGB tensors.
+        """
+        # Exercise duplicate-index accumulation through both APIs.
+        positions = np.asarray(((0.25, 0.75), (3.8, 1.9)))
+        colors = np.asarray(((0.2, 0.3, 0.1), (0.1, 0.2, 0.3)))
         scalar = self.make_system()
         batch = self.make_system()
-        for position, trail_amount, alarm_amount in zip(positions, trail, alarm):
-            scalar.deposit(
-                tuple(position),
-                trail_amount=float(trail_amount),
-                alarm_amount=float(alarm_amount),
-            )
-        batch.deposit_many(positions, trail, alarm)
-        assert_allclose(batch.trail, scalar.trail, rtol=1e-6, atol=1e-7)
-        assert_allclose(batch.alarm, scalar.alarm, rtol=1e-6, atol=1e-7)
+        for position, color in zip(positions, colors):
+            scalar.deposit(float(position[0]), float(position[1]), color)
+        batch.deposit_many(positions, colors)
+        assert_allclose(batch.field, scalar.field)
 
-    def test_scalar_and_batch_deposits_clip_to_float32_maximum(self) -> None:
-        """Exercise test scalar and batch deposits clip to float32 maximum behavior.
-        
+    def test_sense_many_returns_probe_and_rgb_axes(self) -> None:
+        """Verify batched sensing returns creature, probe, and RGB axes.
+
         Parameters
         ----------
         None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test scalar and batch deposits clip to float32 maximum test intent explicit.
-        scalar = self.make_system(pheromone_max_concentration=0.5)
-        batch = self.make_system(pheromone_max_concentration=0.5)
-        scalar.deposit((20.0, 20.0), trail_amount=10.0, alarm_amount=10.0)
-        batch.deposit_many(
-            np.array([[20.0, 20.0], [20.0, 20.0]]),
-            np.array([5.0, 5.0]),
-            np.array([5.0, 5.0]),
-        )
-        self.assertEqual(scalar.trail.dtype, np.float32)
-        self.assertEqual(batch.alarm.dtype, np.float32)
-        self.assertLessEqual(float(scalar.trail.max()), 0.5)
-        self.assertLessEqual(float(batch.alarm.max()), 0.5)
+            This test receives no external parameters.
 
-    def test_channel_validation_and_independence(self) -> None:
-        """Exercise test channel validation and independence behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
         Returns
         -------
         None
-            The test completes through assertions.
+            Assertions verify output shape and values.
         """
-        # Keep the test channel validation and independence test intent explicit.
+        # Seed a channel-distinct cell to make the final axis unambiguous.
         system = self.make_system()
-        system.deposit((10.0, 10.0), trail_amount=0.5)
-        self.assertGreater(system.sample((10.0, 10.0), PheromoneChannel.TRAIL), 0.0)
-        self.assertEqual(system.sample_alarm((10.0, 10.0)), 0.0)
-        with self.assertRaisesRegex(ValueError, "channel"):
-            system.sample((10.0, 10.0), "unknown")
+        system.field[1, 1] = (0.25, 0.5, 0.75)
+        probes = np.asarray(((((1.0, 1.0), (0.0, 0.0), (4.0, 2.0))),))
+        sensed = system.sense_many(probes)
+        self.assertEqual(sensed.shape, (1, 3, 3))
+        assert_allclose(sensed[0, 0], (0.25, 0.5, 0.75))
 
-    def test_vectorized_sense_matches_scalar_and_is_float32(self) -> None:
-        """Exercise test vectorized sense matches scalar and is float32 behavior.
-        
+    def test_diffusion_uses_x_and_y_axes_without_channel_leakage(self) -> None:
+        """Verify diffusion respects spatial axes and channel independence.
+
         Parameters
         ----------
         None
-            This callable receives no external parameters.
-        
+            This test receives no external parameters.
+
         Returns
         -------
         None
-            The test completes through assertions.
+            Assertions verify neighbor propagation and empty channels.
         """
-        # Keep the test vectorized sense matches scalar and is float32 test intent explicit.
+        # A Red-only impulse must remain Red while reaching X and Y neighbors.
+        system = self.make_system(diffusion_coefficient=0.1)
+        system.field[2, 1, 0] = 1.0
+        system.advance(0.1)
+        self.assertGreater(system.field[1, 1, 0], 0.0)
+        self.assertGreater(system.field[3, 1, 0], 0.0)
+        self.assertGreater(system.field[2, 0, 0], 0.0)
+        self.assertGreater(system.field[2, 2, 0], 0.0)
+        self.assertEqual(float(system.field[..., 1:].sum()), 0.0)
+
+    def test_absorb_and_wrap_boundaries_are_safe(self) -> None:
+        """Verify absorb and wrap deposition policies avoid invalid indices.
+
+        Parameters
+        ----------
+        None
+            This test receives no external parameters.
+
+        Returns
+        -------
+        None
+            Assertions verify rejection and periodic mapping.
+        """
+        # Probe both an outside absorb point and an outside periodic point.
+        absorb = self.make_system(boundary_mode="absorb")
+        absorb.deposit(-1.0, 1.0, (1.0, 1.0, 1.0))
+        self.assertEqual(float(absorb.field.sum()), 0.0)
+        wrap = self.make_system(boundary_mode="wrap")
+        wrap.deposit(4.1, 1.0, (0.2, 0.3, 0.4))
+        assert_allclose(wrap.field.sum(axis=(0, 1)), (0.2, 0.3, 0.4))
+
+    def test_restore_validates_shape_and_axis_metadata(self) -> None:
+        """Verify persistence restoration enforces the RGB tensor contract.
+
+        Parameters
+        ----------
+        None
+            This test receives no external parameters.
+
+        Returns
+        -------
+        None
+            Assertions verify valid restoration and invalid rejection.
+        """
+        # Restore one valid field before exercising incompatible metadata.
         system = self.make_system()
-        system.deposit((20.0, 20.0), trail_amount=0.8, alarm_amount=0.4)
-        positions = np.array(
-            [
-                [[20.0, 20.0], [21.0, 20.0], [20.0, 21.0]],
-                [[0.0, 0.0], [80.0, 60.0], [40.0, 30.0]],
-            ]
-        )
-        actual = system.sense_many(positions)
-        expected_rows = []
-        for triple in positions:
-            snapshot = system.sense(tuple(map(tuple, triple)))
-            expected_rows.append(
-                (
-                    snapshot.trail_here,
-                    snapshot.trail_forward_left,
-                    snapshot.trail_forward_right,
-                    snapshot.alarm_here,
-                    snapshot.alarm_forward_left,
-                    snapshot.alarm_forward_right,
-                )
-            )
-        expected = np.asarray(expected_rows, dtype=np.float32)
-        self.assertEqual(actual.dtype, np.float32)
-        assert_allclose(actual, expected, rtol=1e-6, atol=1e-7)
-
-    def test_boundary_position_semantics(self) -> None:
-        """Exercise test boundary position semantics behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test boundary position semantics test intent explicit.
-        reflect = self.make_system(pheromone_boundary_mode="reflect")
-        reflect.trail[0, 0] = 0.75
-        self.assertEqual(reflect.sample_trail((-100.0, -100.0)), 0.75)
-
-        wrap = self.make_system(pheromone_boundary_mode="wrap")
-        wrap.trail[0, 0] = 0.5
-        self.assertEqual(wrap.sample_trail((80.0, 60.0)), 0.5)
-
-        absorb = self.make_system(pheromone_boundary_mode="absorb")
-        absorb.deposit((-1.0, 0.0), trail_amount=1.0)
-        self.assertEqual(float(absorb.trail.sum()), 0.0)
-        self.assertEqual(absorb.sample_trail((-1.0, 0.0)), 0.0)
-
-    def test_reflect_and_wrap_conserve_mass_while_absorb_loses_it(self) -> None:
-        """Exercise test reflect and wrap conserve mass while absorb loses it behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test reflect and wrap conserve mass while absorb loses it test intent explicit.
-        totals: dict[PheromoneBoundaryMode, float] = {}
-        for mode in PheromoneBoundaryMode:
-            system = self.make_system(
-                pheromone_boundary_mode=mode,
-                pheromone_evaporation_rate=0.0,
-            )
-            system.trail[0, 0] = 1.0
-            system.advance(0.25)
-            totals[mode] = float(system.trail.sum())
-            self.assertGreaterEqual(float(system.trail.min()), -1e-7)
-        self.assertAlmostEqual(totals[PheromoneBoundaryMode.REFLECT], 1.0, places=6)
-        self.assertAlmostEqual(totals[PheromoneBoundaryMode.WRAP], 1.0, places=6)
-        self.assertLess(totals[PheromoneBoundaryMode.ABSORB], 1.0)
-
-    def test_large_public_timestep_uses_stable_substeps_without_creating_mass(self) -> None:
-        """Exercise test large public timestep uses stable substeps without creating mass behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test large public timestep uses stable substeps without creating mass test intent explicit.
-        system = self.make_system(
-            grid_width=16,
-            grid_height=16,
-            bounds=(0.0, 0.0, 15.0, 15.0),
-            pheromone_diffusion_coefficient=1.0,
-            pheromone_evaporation_rate=0.0,
-        )
-        system.trail[8, 8] = 1.0
-        system.advance(2.0)
-        self.assertGreater(system.diffusion_substep_count, 1)
-        self.assertEqual(system.update_count, 1)
-        self.assertGreaterEqual(float(system.trail.min()), -1e-7)
-        self.assertAlmostEqual(float(system.trail.sum()), 1.0, places=5)
-
-    def test_zero_diffusion_and_exponential_evaporation(self) -> None:
-        """Exercise test zero diffusion and exponential evaporation behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test zero diffusion and exponential evaporation test intent explicit.
-        system = self.make_system(pheromone_diffusion_coefficient=0.0)
-        system.trail[2, 2] = 1.0
-        previous = 1.0
-        for _ in range(4):
-            system.advance(0.25)
-            current = float(system.trail.sum())
-            self.assertLess(current, previous)
-            previous = current
-        self.assertAlmostEqual(previous, exp(-0.08), places=6)
-
-    def test_accumulator_equivalence_and_catch_up_cap(self) -> None:
-        """Exercise test accumulator equivalence and catch up cap behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test accumulator equivalence and catch up cap test intent explicit.
-        accumulated = self.make_system()
-        manual = self.make_system()
-        accumulated.trail[2, 2] = manual.trail[2, 2] = 1.0
-        for _ in range(60):
-            accumulated.accumulate(1.0 / 60.0)
-        for _ in range(4):
-            manual.advance(0.25)
-        assert_allclose(accumulated.trail, manual.trail, rtol=1e-6, atol=1e-7)
-
-        processed = accumulated.accumulate(2.1)
-        self.assertEqual(processed, 4)
-        self.assertEqual(accumulated.last_dropped_updates, 4)
-        self.assertAlmostEqual(accumulated.last_dropped_time, 1.0)
-        self.assertAlmostEqual(accumulated.accumulator, 0.1)
-
-    def test_world_space_diffusion_is_resolution_consistent(self) -> None:
-        """Exercise test world space diffusion is resolution consistent behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test world space diffusion is resolution consistent test intent explicit.
-        moments = []
-        for size in (21, 41):
-            system = self.make_system(
-                grid_width=size,
-                grid_height=size,
-                bounds=(0.0, 0.0, 100.0, 100.0),
-                pheromone_diffusion_coefficient=10.0,
-                pheromone_evaporation_rate=0.0,
-            )
-            system.deposit((50.0, 50.0), trail_amount=1.0)
-            system.advance(1.0)
-            coordinates = np.linspace(0.0, 100.0, size)
-            x, y = np.meshgrid(coordinates, coordinates)
-            radius_squared = (x - 50.0) ** 2 + (y - 50.0) ** 2
-            moments.append(float((system.trail * radius_squared).sum() / system.trail.sum()))
-        assert_allclose(moments[0], moments[1], rtol=0.05, atol=0.05)
-
-    def test_repeated_batch_and_diffusion_sequence_is_deterministic(self) -> None:
-        """Exercise test repeated batch and diffusion sequence is deterministic behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test repeated batch and diffusion sequence is deterministic test intent explicit.
-        positions = np.array([[12.5, 8.0], [35.0, 27.0], [12.5, 8.0]])
-        trail = np.array([0.2, 0.3, 0.4])
-        alarm = np.array([0.4, 0.1, 0.2])
-        first = self.make_system(pheromone_evaporation_rate=0.0)
-        second = self.make_system(pheromone_evaporation_rate=0.0)
-        for system in (first, second):
-            system.deposit_many(positions, trail, alarm)
-            system.advance(0.75)
-        self.assertTrue(np.array_equal(first.trail, second.trail))
-        self.assertTrue(np.array_equal(first.alarm, second.alarm))
-
-    def test_restore_round_trip_and_corruption_rejection(self) -> None:
-        """Exercise test restore round trip and corruption rejection behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test restore round trip and corruption rejection test intent explicit.
-        system = self.make_system()
-        system.deposit((20.0, 20.0), trail_amount=0.5, alarm_amount=0.25)
-        target = self.make_system()
-        target.restore(system.trail, system.alarm, 0.1, system.state_metadata())
-        assert_allclose(target.trail, system.trail)
-        assert_allclose(target.alarm, system.alarm)
-        self.assertEqual(target.accumulator, 0.1)
-
-        invalid_grids = (
-            np.zeros((1, 1), dtype=np.float32),
-            np.full(system.trail.shape, np.nan, dtype=np.float32),
-            np.full(system.trail.shape, np.inf, dtype=np.float32),
-            np.full(system.trail.shape, -np.inf, dtype=np.float32),
-            np.full(system.trail.shape, -1.0, dtype=np.float32),
-            np.full(system.trail.shape, 11.0, dtype=np.float32),
-        )
-        for values in invalid_grids:
-            with self.subTest(values=values), self.assertRaises(ValueError):
-                target.restore(values, system.alarm, 0.0)
-        for accumulator in (
-            -1.0,
-            float("nan"),
-            float("inf"),
-            float("-inf"),
-            0.25,
-        ):
-            with self.subTest(accumulator=accumulator), self.assertRaises(ValueError):
-                target.restore(system.trail, system.alarm, accumulator)
-        bad_metadata = system.state_metadata()
-        bad_metadata["boundary_mode"] = "wrap"
-        with self.assertRaisesRegex(ValueError, "boundary mode"):
-            target.restore(system.trail, system.alarm, 0.0, bad_metadata)
-
-    def test_configuration_and_public_timestep_validation(self) -> None:
-        """Exercise test configuration and public timestep validation behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test configuration and public timestep validation test intent explicit.
-        invalid_configs = (
-            {"acoustic_range": float("nan")},
-            {"acoustic_min_emission_strength": -0.1},
-            {"acoustic_hearing_threshold": 1.1},
-            {"pheromone_update_interval": 0.0},
-            {"pheromone_diffusion_coefficient": -1.0},
-            {"pheromone_max_updates_per_tick": 1.5},
-            {"pheromone_boundary_mode": "unknown"},
-        )
-        for values in invalid_configs:
-            with self.subTest(values=values), self.assertRaises(ValueError):
-                CommunicationConfig(**values)
-        system = self.make_system()
-        for timestep in (-1.0, float("nan"), float("inf")):
-            with self.subTest(timestep=timestep), self.assertRaises(ValueError):
-                system.advance(timestep)
-            with self.assertRaises(ValueError):
-                system.accumulate(timestep)
-
-    def test_grid_geometry_validation(self) -> None:
-        """Exercise test grid geometry validation behavior.
-        
-        Parameters
-        ----------
-        None
-            This callable receives no external parameters.
-        
-        Returns
-        -------
-        None
-            The test completes through assertions.
-        """
-        # Keep the test grid geometry validation test intent explicit.
-        config = CommunicationConfig()
-        invalid = (
-            (1, 2, (0.0, 0.0, 1.0, 1.0)),
-            (2.5, 2, (0.0, 0.0, 1.0, 1.0)),
-            (2, 2, (0.0, 0.0, 0.0, 1.0)),
-            (2, 2, (0.0, 0.0, 1.0, float("inf"))),
-        )
-        for width, height, bounds in invalid:
-            with self.subTest(width=width, height=height, bounds=bounds):
-                with self.assertRaises(ValueError):
-                    PheromoneSystem(config, width, height, bounds)
+        values = np.full(system.field.shape, 0.25, dtype=np.float32)
+        system.restore(values, system.state_metadata())
+        assert_allclose(system.field, values)
+        with self.assertRaises(ValueError):
+            system.restore(np.zeros((3, 5, 3), dtype=np.float32))
 
 
 if __name__ == "__main__":

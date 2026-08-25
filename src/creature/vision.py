@@ -4,6 +4,8 @@ from collections.abc import Callable, MutableSequence, Sequence
 from dataclasses import dataclass, field
 from math import atan2, cos, hypot, pi, sin, sqrt
 
+import numpy as np
+
 from configs.sim_config import (
     FlockingConfig,
     MetabolismConfig,
@@ -15,6 +17,7 @@ from src.creature.communication import AcousticObservation, PheromoneSnapshot
 from src.food import Food
 
 BIOME_GRADIENT_EPSILON = 0.001
+PHEROMONE_GRADIENT_EPSILON = 0.001
 
 SENSOR_INPUT_NAMES = (
     "constant",
@@ -53,12 +56,15 @@ SENSOR_INPUT_NAMES = (
     "sound_dir_sin",
     "sound_dir_cos",
     "sound_tone",
-    "trail_pheromone_here",
-    "trail_pheromone_forward_left",
-    "trail_pheromone_forward_right",
-    "alarm_pheromone_here",
-    "alarm_pheromone_forward_left",
-    "alarm_pheromone_forward_right",
+    "pheromone_local_red",
+    "pheromone_local_green",
+    "pheromone_local_blue",
+    "pheromone_lateral_red",
+    "pheromone_lateral_green",
+    "pheromone_lateral_blue",
+    "pheromone_forward_red",
+    "pheromone_forward_green",
+    "pheromone_forward_blue",
     "life_normalized",
 )
 
@@ -86,7 +92,7 @@ int
 
 
 SENSOR_CONTRACT = SensorContract(
-    7,
+    8,
     SENSOR_INPUT_NAMES,
     "configs/neat_herbivore.ini",
 )
@@ -438,14 +444,21 @@ class SensorSnapshot:
         output[index + 2] = self.acoustic.direction_sin
         output[index + 3] = self.acoustic.direction_cos
         output[index + 4] = self.acoustic.tone
-        output[index + 5] = self.pheromones.trail_here
-        output[index + 6] = self.pheromones.trail_forward_left
-        output[index + 7] = self.pheromones.trail_forward_right
-        output[index + 8] = self.pheromones.alarm_here
-        output[index + 9] = self.pheromones.alarm_forward_left
-        output[index + 10] = self.pheromones.alarm_forward_right
-        output[index + 11] = self._clamp01(self.life_normalized)
-        if index + 12 != expected:
+        local = np.clip(np.asarray(self.pheromones.local, dtype=np.float64), 0.0, 1.0)
+        left = np.clip(
+            np.asarray(self.pheromones.forward_left, dtype=np.float64), 0.0, 1.0
+        )
+        right = np.clip(
+            np.asarray(self.pheromones.forward_right, dtype=np.float64), 0.0, 1.0
+        )
+        denominator = local + PHEROMONE_GRADIENT_EPSILON
+        lateral = np.clip((left - right) / denominator, -1.0, 1.0)
+        forward = np.clip(((left + right) * 0.5 - local) / denominator, -1.0, 1.0)
+        output[index + 5 : index + 8] = local
+        output[index + 8 : index + 11] = lateral
+        output[index + 11 : index + 14] = forward
+        output[index + 14] = self._clamp01(self.life_normalized)
+        if index + 15 != expected:
             raise RuntimeError(
                 "Sensor contract input names do not match the written values."
             )

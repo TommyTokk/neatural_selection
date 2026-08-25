@@ -304,7 +304,7 @@ _Implementation: [diagnostic records](src/creature/model.py) · [ledger commit](
 
 ### 4.1 Sensor contract
 
-The current sensing schema is version 7 and contains exactly 43 ordered inputs. This ordering is a formal interface: it must match the `num_inputs = 43` declaration used to construct every NEAT network. A schema change therefore represents a change in the meaning of evolved genomes, not a cosmetic renaming.
+The current sensing schema is version 8 and contains exactly 46 ordered inputs. This ordering is a formal interface: it must match the `num_inputs = 46` declaration used to construct every NEAT network. A schema change therefore represents a change in the meaning of evolved genomes, not a cosmetic renaming.
 
 _Implementation: [sensor contract and serialization](src/creature/vision.py) · [NEAT input declaration](configs/neat_herbivore.ini) · [controller contract validation](src/creature/neat/controller.py)_
 
@@ -319,8 +319,10 @@ _Implementation: [sensor contract and serialization](src/creature/vision.py) · 
 | 23–31 | Compatible group | presence, effective count, centre in body coordinates, relative velocity, long-range intensity and direction |
 | 32 | Digestion | stomach fullness |
 | 33–36 | Acoustic communication | strength, direction sine, direction cosine, tone |
-| 37–42 | Chemical communication | trail and alarm concentrations at here, forward-left, and forward-right probes |
-| 43 | Vitality | normalized remaining life |
+| 37–39 | Local chemical communication | red, green, and blue intensity |
+| 40–42 | Lateral chemical gradients | red, green, and blue left-minus-right gradients |
+| 43–45 | Forward chemical gradients | red, green, and blue ahead-minus-local gradients |
+| 46 | Vitality | normalized remaining life |
 
 _Implementation: [input names and writer](src/creature/vision.py) · [sensor construction](src/world.py)_
 
@@ -443,7 +445,7 @@ _Implementation: [family and flock snapshots](src/creature/vision.py) · [family
 
 Acoustic sensing selects the strongest audible non-self emission after distance attenuation, with emitter identity used only as a deterministic tie-breaker. The neural inputs are received strength, tone, and the sine/cosine of direction in the listener's body frame; emitter identity and semantic meaning are not exposed.
 
-Chemical sensing bilinearly samples trail and alarm fields at $\mathbf{p}_0$, $\mathbf{p}_L$, and $\mathbf{p}_R$. All six concentrations are passed directly to the network rather than being collapsed into engineered gradients. The recurrent controller may therefore learn a difference such as left minus right, compare alarm with trail, or ignore either channel. Pheromone values identify neither the emitter nor the age of a deposit, and the identical probe geometry does not imply that biome richness and pheromone concentration share a physical process.
+Chemical sensing bilinearly samples one raw RGB field at $\mathbf{p}_0$, $\mathbf{p}_L$, and $\mathbf{p}_R$. For every color it exposes local intensity, a normalized lateral gradient, and a normalized forward gradient using the same body-relative formulation as biome richness. Colors carry no built-in meaning: recurrent controllers may evolve distinct uses for Red, Green, and Blue or ignore any channel.
 
 _Implementation: [acoustic and pheromone observations](src/creature/communication.py) · [shared probe positions](src/world.py)_
 
@@ -489,9 +491,10 @@ The action schema contains exactly 15 ordered outputs:
 | 10 | `herding` | $[0,1]$ | social engagement drive |
 | 11 | `emit_sound` | $[0,1]$ | acoustic emission strength |
 | 12 | `sound_tone` | $[-1,1]$ | signed acoustic tone |
-| 13 | `emit_trail_pheromone` | $[0,1]$ | trail deposition intensity |
-| 14 | `emit_alarm_pheromone` | $[0,1]$ | alarm deposition intensity |
-| 15 | `rest` | $[0,1]$ | continuous resting intent |
+| 13 | `emit_red` | $[0,1]$ | red deposition intensity |
+| 14 | `emit_green` | $[0,1]$ | green deposition intensity |
+| 15 | `emit_blue` | $[0,1]$ | blue deposition intensity |
+| 16 | `rest` | $[0,1]$ | continuous resting intent |
 
 Separation, alignment, and cohesion are not actions: they are inherited traits that modulate social steering. Most positive discrete intents become active only when their value exceeds $0.1$. Reproduction deliberately uses the stricter centered threshold $0.2$, equivalent to raw sigmoid output above $0.6$, while eating, carrying, nursing, and chronometer resets retain the shared $0.1$ action threshold.
 
@@ -628,10 +631,10 @@ _Implementation: [communication energy demand](src/creature/metabolism.py) · [c
 
 ### 7.2 Pheromone fields
 
-Trail and alarm pheromones are independent `float32` concentration fields with the same $64\times44$ dimensions and world bounds as the biome map. They share numerical machinery but never transform into one another. For emission intensity $u\in[0,1]$, configured deposition rate $r_p=0.75$, and elapsed time $\Delta t$, the deposited amount is
+Pheromones form one width-major `float32` tensor $\mathbf P\in\mathbb R^{64\times44\times3}$ whose axes are X, Y, and RGB. For emission vector $\mathbf u\in[0,1]^3$ and fixed elapsed time $\Delta t$, the deposited vector is
 
 $$
-a_p=u r_p\Delta t.
+\mathbf a_p=\mathbf u\Delta t.
 $$
 
 If the emitter lies at fractional grid coordinates $(u_g,v_g)$ between columns $i_0,i_1$ and rows $j_0,j_1$, the four additions are
@@ -683,16 +686,16 @@ $$
 \frac{0.5}{D(\Delta x^{-2}+\Delta y^{-2})}
 $$
 
-and splits a requested advance into $\lceil\Delta t/\delta t_{\max}\rceil$ stable substeps. The default reflective boundary copies edge concentrations into ghost cells, giving zero outward gradient. Wrap mode uses the opposite edge; absorbing mode uses zero-valued ghost cells and returns zero for samples outside the domain.
+and validates the configured fixed step against this limit. The default reflective boundary gives zero outward gradient. Wrap mode uses periodic neighbors; absorbing mode uses zero-valued exterior neighbors and returns zero for samples outside the domain.
 
-Field time accumulates independently of rendering and is normally advanced every $0.25\,\mathrm{s}$. At most four complete field updates are processed in one external tick. Excess full intervals after an abnormally large time increment are recorded and dropped while the sub-interval remainder is retained, bounding catch-up work explicitly.
+The complete RGB tensor advances exactly once per accepted $60\,\mathrm{Hz}$ physics step. Its five-point Laplacian is vectorized with `np.roll`; axis 0 always represents X and axis 1 always represents Y.
 
 _Implementation: [pheromone solver](src/creature/communication.py) · [boundary modes and numerical parameters](configs/sim_config.py)_
 
-Each creature receives trail and alarm concentrations at the body centre, forward-left probe, and forward-right probe described in Section 4.4. These six raw inputs expose local level and direction without revealing emitter identity or deposit age. Trail and alarm emission costs are linear in intensity:
+Each creature receives nine RGB intensity/gradient inputs without emitter identity or deposit age. RGB emission costs are linear in total intensity:
 
 $$
-C_{\mathrm{pheromone}}=c_p(u_{\mathrm{trail}}+u_{\mathrm{alarm}}),
+C_{\mathrm{pheromone}}=c_p(u_R+u_G+u_B),
 $$
 
 where $c_p=0.002$ per second. These costs enter the same resource ledger as locomotion and neural upkeep.
@@ -1017,7 +1020,7 @@ The behavioural analyser deliberately does not infer behaviour from named NEAT o
 - feeding;
 - resting;
 - group cohesion;
-- retreat from alarm pheromone.
+- ascent or descent along the locally dominant RGB pheromone gradient.
 
 This distinction is methodologically important. A positive `want_eat` output is an intention; feeding is recognized only from an actual consumption event. Likewise, turning output alone is not evidence of food orientation unless the creature's realized direction changes consistently toward a visible food target.
 
@@ -1029,7 +1032,7 @@ _Implementation: [temporal bout state machine](src/behavior_observer.py) · [obs
 
 ### 11.2 Evidence and completed bouts
 
-Every active rule emits named evidence with a value, unit, pass/fail result, and explanatory label. A completed bout stores start and end times, duration, evidence summaries, termination reason, and an outcome appropriate to the behaviour, such as food consumed, target lost, approach started, alarm exposure reduced, or interruption.
+Every active rule emits named evidence with a value, unit, pass/fail result, and explanatory label. A completed bout stores start and end times, duration, evidence summaries, termination reason, and an outcome appropriate to the behaviour, such as food consumed, target lost, approach started, pheromone ascent/descent, or interruption.
 
 _Implementation: [behaviour evidence and outcomes](src/behavior_observer.py) · [completed-bout records](src/behavior_history.py)_
 
@@ -1051,7 +1054,7 @@ $$
 \Delta\mathbf{y}=\mathbf{y}-\mathbf{y}^{(-I)}.
 $$
 
-Available interventions remove visible-food cues, resource gradients, hunger through a satiated state, social cues, offspring cues, acoustic cues, trail pheromone, alarm pheromone, or temporal cues. Because all other inputs and the genome remain fixed, the difference estimates local neural dependence on that semantic information group; it is not a claim of causal effect on the complete future world trajectory.
+Available interventions remove visible-food cues, resource gradients, hunger through a satiated state, social cues, offspring cues, acoustic cues, or each RGB pheromone channel independently. Because all other inputs and the genome remain fixed, the difference estimates local neural dependence on that information group; it is not a claim of causal effect on the complete future world trajectory.
 
 _Implementation: [semantic interventions and pure evaluator](src/counterfactual_neat.py) · [pure brain evaluation](src/creature/neat/brain.py)_
 

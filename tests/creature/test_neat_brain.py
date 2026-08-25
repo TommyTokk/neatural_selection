@@ -273,15 +273,16 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         # Keep the test output schema is contiguous and named test intent explicit.
         self.assertEqual(
             [int(output) for output in BrainOutputIndex],
-            list(range(15)),
+            list(range(16)),
         )
-        self.assertEqual(ACTION_OUTPUT_COUNT, 15)
+        self.assertEqual(ACTION_OUTPUT_COUNT, 16)
         self.assertEqual(ACTION_OUTPUT_NAMES[9], "herding")
         self.assertEqual(ACTION_OUTPUT_NAMES[10:], (
             "emit_sound",
             "sound_tone",
-            "emit_trail_pheromone",
-            "emit_alarm_pheromone",
+            "emit_red",
+            "emit_green",
+            "emit_blue",
             "rest",
         ))
 
@@ -528,8 +529,9 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             herding=brain.herding_state,
             emit_sound=positive(BrainOutputIndex.ACOUSTIC_EMISSION),
             sound_tone=centered[BrainOutputIndex.ACOUSTIC_TONE],
-            emit_trail_pheromone=positive(BrainOutputIndex.TRAIL_PHEROMONE),
-            emit_alarm_pheromone=positive(BrainOutputIndex.ALARM_PHEROMONE),
+            emit_red=positive(BrainOutputIndex.EMIT_RED),
+            emit_green=positive(BrainOutputIndex.EMIT_GREEN),
+            emit_blue=positive(BrainOutputIndex.EMIT_BLUE),
             rest=positive(BrainOutputIndex.REST),
         ).clamped()
 
@@ -888,8 +890,9 @@ class NeatBrainActionMappingTest(unittest.TestCase):
             "flee_panic_intensity",
             "herding",
             "emit_sound",
-            "emit_trail_pheromone",
-            "emit_alarm_pheromone",
+            "emit_red",
+            "emit_green",
+            "emit_blue",
         )
         for field_name in positive_fields:
             value = getattr(action, field_name)
@@ -921,7 +924,7 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         self.assertEqual(action.accelerate, 0.4)
         self.assertEqual(action.rotate, -0.4)
         self.assertEqual(action.want_reproduce, 0.0)
-        self.assertEqual(action.emit_alarm_pheromone, 0.0)
+        self.assertEqual(action.emit_green, 0.0)
 
     def test_exactly_fourteen_outputs_are_preserved(self) -> None:
         """Exercise test exactly fourteen outputs are preserved behavior.
@@ -1007,12 +1010,13 @@ class NeatBrainActionMappingTest(unittest.TestCase):
         )
 
         self.assertEqual(neutral.emit_sound, 0.0)
-        self.assertEqual(neutral.emit_trail_pheromone, 0.0)
-        self.assertEqual(neutral.emit_alarm_pheromone, 0.0)
+        self.assertEqual(neutral.emit_red, 0.0)
+        self.assertEqual(neutral.emit_green, 0.0)
+        self.assertEqual(neutral.emit_blue, 0.0)
         self.assertEqual(active.emit_sound, 0.5)
         self.assertEqual(active.sound_tone, -0.5)
-        self.assertEqual(active.emit_trail_pheromone, 1.0)
-        self.assertEqual(active.emit_alarm_pheromone, 0.2)
+        self.assertEqual(active.emit_red, 1.0)
+        self.assertEqual(active.emit_green, 0.2)
 
     def test_relu_signed_outputs_are_intentionally_one_sided(self) -> None:
         """Exercise test relu signed outputs are intentionally one sided behavior.

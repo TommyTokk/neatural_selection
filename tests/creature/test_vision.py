@@ -1417,7 +1417,7 @@ class VisionWallSensorTest(unittest.TestCase):
         )
         first_seventeen_inputs = inputs[:17]
 
-        self.assertEqual(SENSOR_INPUT_COUNT, 43)
+        self.assertEqual(SENSOR_INPUT_COUNT, 46)
         self.assertEqual(len(inputs), SENSOR_INPUT_COUNT)
         self.assertEqual(SENSOR_INPUT_NAMES[1], "feeding_drive")
         self.assertEqual(SENSOR_INPUT_NAMES[2], "reproductive_readiness")
@@ -1443,9 +1443,9 @@ class VisionWallSensorTest(unittest.TestCase):
         self.assertAlmostEqual(inputs[20], 0.0)
         self.assertAlmostEqual(inputs[21], 0.0)
         self.assertEqual(inputs[22:31], [0.0] * 9)
-        self.assertEqual(inputs[31:42], [0.0] * 11)
-        self.assertEqual(SENSOR_INPUT_NAMES[42], "life_normalized")
-        self.assertEqual(inputs[42], 1.0)
+        self.assertEqual(inputs[31:45], [0.0] * 14)
+        self.assertEqual(SENSOR_INPUT_NAMES[45], "life_normalized")
+        self.assertEqual(inputs[45], 1.0)
 
     def test_stomach_fullness_is_the_32nd_input_and_clamps(self) -> None:
         """Exercise test stomach fullness is the 32nd input and clamps behavior.

@@ -508,7 +508,7 @@ None
         sprint_intensities: dict[int, float] | None = None,
         energy_cost_multipliers: dict[int, float] | None = None,
         creature_age_seconds: dict[int, float] | None = None,
-        communication_intensities: dict[int, tuple[float, float, float]] | None = None,
+        communication_intensities: dict[int, tuple[float, float, float, float]] | None = None,
         movement_cost_multipliers: dict[int, float] | None = None,
     ) -> MetabolismReport:
         """Execute update behavior.
@@ -566,11 +566,11 @@ MetabolismReport
                         else creature_age_seconds.get(creature.creature_id)
                     ),
                     communication_intensities=(
-                        (0.0, 0.0, 0.0)
+                        (0.0, 0.0, 0.0, 0.0)
                         if communication_intensities is None
                         else communication_intensities.get(
                             creature.creature_id,
-                            (0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0, 0.0),
                         )
                     ),
                     movement_cost_multiplier=(
@@ -999,7 +999,9 @@ None
         sprint_intensity: float = 0.0,
         energy_cost_multiplier: float = 1.0,
         age_seconds: float | None = None,
-        communication_intensities: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        communication_intensities: tuple[float, float, float, float] = (
+            0.0, 0.0, 0.0, 0.0
+        ),
     ) -> None:
         """Execute consume energy behavior.
 
@@ -1045,7 +1047,9 @@ None
         max_speed: float,
         sprint_intensity: float = 0.0,
         age_seconds: float | None = None,
-        communication_intensities: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        communication_intensities: tuple[float, float, float, float] = (
+            0.0, 0.0, 0.0, 0.0
+        ),
         movement_cost_multiplier: float | None = None,
     ) -> EnergyCostBreakdown:
         """Calculate one second of energy demand without mutating genotype.
@@ -1061,7 +1065,7 @@ sprint_intensity
 age_seconds
     Optional age used by neural upkeep calculations.
 communication_intensities
-    Sound, trail, and alarm emission intensities.
+    Sound, red, green, and blue emission intensities.
 movement_cost_multiplier
     Optional runtime-adjusted multiplier; inherited value is the default.
 
@@ -1092,16 +1096,17 @@ EnergyCostBreakdown
         digestive_upkeep = self.digestive_upkeep_energy_cost_per_second(
             creature
         )
-        sound, trail, alarm = communication_intensities
+        sound, red, green, blue = communication_intensities
         acoustic = (
             max(0.0, self.communication_config.acoustic_energy_cost_per_second)
             * min(max(sound, 0.0), 1.0) ** 2
         )
         pheromone = (
-            max(0.0, self.communication_config.pheromone_energy_cost_per_second)
+            max(0.0, self.communication_config.pheromone.energy_cost_per_second)
             * (
-                min(max(trail, 0.0), 1.0)
-                + min(max(alarm, 0.0), 1.0)
+                min(max(red, 0.0), 1.0)
+                + min(max(green, 0.0), 1.0)
+                + min(max(blue, 0.0), 1.0)
             )
         )
         trait = (

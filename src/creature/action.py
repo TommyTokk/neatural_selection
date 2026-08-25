@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 from math import cos, sin
+from typing import Mapping
 
 class BrainOutputIndex(IntEnum):
     ACCELERATE = 0
@@ -17,12 +18,13 @@ class BrainOutputIndex(IntEnum):
     HERDING = 9
     ACOUSTIC_EMISSION = 10
     ACOUSTIC_TONE = 11
-    TRAIL_PHEROMONE = 12
-    ALARM_PHEROMONE = 13
-    REST = 14
+    EMIT_RED = 12
+    EMIT_GREEN = 13
+    EMIT_BLUE = 14
+    REST = 15
 
 
-ACTION_SCHEMA_VERSION = 2
+ACTION_SCHEMA_VERSION = 3
 _ACTION_OUTPUT_NAME_BY_INDEX = {
     BrainOutputIndex.ACCELERATE: "accelerate",
     BrainOutputIndex.ROTATE: "rotate",
@@ -36,8 +38,9 @@ _ACTION_OUTPUT_NAME_BY_INDEX = {
     BrainOutputIndex.HERDING: "herding",
     BrainOutputIndex.ACOUSTIC_EMISSION: "emit_sound",
     BrainOutputIndex.ACOUSTIC_TONE: "sound_tone",
-    BrainOutputIndex.TRAIL_PHEROMONE: "emit_trail_pheromone",
-    BrainOutputIndex.ALARM_PHEROMONE: "emit_alarm_pheromone",
+    BrainOutputIndex.EMIT_RED: "emit_red",
+    BrainOutputIndex.EMIT_GREEN: "emit_green",
+    BrainOutputIndex.EMIT_BLUE: "emit_blue",
     BrainOutputIndex.REST: "rest",
 }
 ACTION_OUTPUT_NAMES = tuple(
@@ -76,9 +79,37 @@ class Action:
     herding: float = 0.0
     emit_sound: float = 0.0
     sound_tone: float = 0.0
-    emit_trail_pheromone: float = 0.0
-    emit_alarm_pheromone: float = 0.0
+    emit_red: float = 0.0
+    emit_green: float = 0.0
+    emit_blue: float = 0.0
     rest: float = 0.0
+
+    def __setstate__(self, state: object) -> None:
+        """Restore known action fields while tolerating obsolete checkpoint slots.
+
+        Parameters
+        ----------
+        state
+            Pickle state produced by current or historical action schemas.
+
+        Returns
+        -------
+        None
+            Known fields are restored and unavailable current fields are zeroed.
+        """
+        # Contract-incompatible brains are reset after loading, so unknown slots
+        # need only be ignored safely while the checkpoint is deserialized.
+        values: Mapping[str, object] = {}
+        if isinstance(state, Mapping):
+            values = state
+        elif (
+            isinstance(state, tuple)
+            and len(state) == 2
+            and isinstance(state[1], Mapping)
+        ):
+            values = state[1]
+        for name in ACTION_OUTPUT_NAMES:
+            object.__setattr__(self, name, float(values.get(name, 0.0)))
 
     def clamped(self) -> Action:
         """Execute clamped behavior.
@@ -108,14 +139,9 @@ Action
             herding=max(0.0, min(1.0, self.herding)),
             emit_sound=max(0.0, min(1.0, self.emit_sound)),
             sound_tone=max(-1.0, min(1.0, self.sound_tone)),
-            emit_trail_pheromone=max(
-                0.0,
-                min(1.0, self.emit_trail_pheromone),
-            ),
-            emit_alarm_pheromone=max(
-                0.0,
-                min(1.0, self.emit_alarm_pheromone),
-            ),
+            emit_red=max(0.0, min(1.0, self.emit_red)),
+            emit_green=max(0.0, min(1.0, self.emit_green)),
+            emit_blue=max(0.0, min(1.0, self.emit_blue)),
             rest=max(0.0, min(1.0, self.rest)),
         )
 

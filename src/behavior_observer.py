@@ -39,7 +39,7 @@ class BehaviorKind(str, Enum):
     FEEDING = "feeding"
     RESTING = "resting"
     COHESION = "cohesion"
-    ALARM_RETREAT = "alarm_retreat"
+    PHEROMONE_GRADIENT_RESPONSE = "pheromone_gradient_response"
 
 
 class BoutStatus(str, Enum):
@@ -75,9 +75,9 @@ class BehaviorObservation:
     group_velocity_x: float = 0.0
     group_velocity_y: float = 0.0
     personal_space_occupied: bool = False
-    alarm_here: float = 0.0
-    alarm_forward_left: float = 0.0
-    alarm_forward_right: float = 0.0
+    pheromone_local: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    pheromone_lateral: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    pheromone_forward: tuple[float, float, float] = (0.0, 0.0, 0.0)
     carrying_food: bool = False
     food_consumption_count: int = 0
     food_consumed_energy_total: float = 0.0
@@ -173,6 +173,8 @@ class _RuleEvidence:
     score: float
     evidence: tuple[BehaviorEvidence, ...]
     target_id: int | None = None
+    pheromone_channel: int | None = None
+    pheromone_direction: int = 0
 
 
 @dataclass(slots=True)
@@ -185,7 +187,9 @@ class _BoutState:
     target_id: int | None = None
     evidence_accumulator: BehaviorEvidenceAccumulator | None = None
     start_consumption_count: int = 0
-    start_alarm_level: float = 0.0
+    start_pheromone_level: float = 0.0
+    pheromone_channel: int | None = None
+    pheromone_direction: int = 0
 
     def reset(self) -> None:
         self.status = None
@@ -195,7 +199,9 @@ class _BoutState:
         self.target_id = None
         self.evidence_accumulator = None
         self.start_consumption_count = 0
-        self.start_alarm_level = 0.0
+        self.start_pheromone_level = 0.0
+        self.pheromone_channel = None
+        self.pheromone_direction = 0
 
 
 class TemporalBehaviorAnalyzer:
@@ -269,7 +275,9 @@ class TemporalBehaviorAnalyzer:
             BehaviorKind.FOOD_APPROACH: self._food_approach(),
             BehaviorKind.RESTING: self._resting(),
             BehaviorKind.COHESION: self._cohesion(),
-            BehaviorKind.ALARM_RETREAT: self._alarm_retreat(),
+            BehaviorKind.PHEROMONE_GRADIENT_RESPONSE: (
+                self._pheromone_gradient_response()
+            ),
         }
         feeding = self._feeding(observation)
 
@@ -279,7 +287,7 @@ class TemporalBehaviorAnalyzer:
             BehaviorKind.FOOD_APPROACH,
             BehaviorKind.RESTING,
             BehaviorKind.COHESION,
-            BehaviorKind.ALARM_RETREAT,
+            BehaviorKind.PHEROMONE_GRADIENT_RESPONSE,
         ):
             state = self._update_bout(
                 behavior,
@@ -349,7 +357,12 @@ class TemporalBehaviorAnalyzer:
                 bout.start_consumption_count = (
                     observation.food_consumption_count
                 )
-                bout.start_alarm_level = observation.alarm_here
+                bout.pheromone_channel = rule.pheromone_channel
+                bout.pheromone_direction = rule.pheromone_direction
+                if rule.pheromone_channel is not None:
+                    bout.start_pheromone_level = observation.pheromone_local[
+                        rule.pheromone_channel
+                    ]
             if bout.evidence_accumulator is not None:
                 bout.evidence_accumulator.add(rule.evidence)
             if rule.target_id is not None:
@@ -420,7 +433,6 @@ class TemporalBehaviorAnalyzer:
                 bout.start_consumption_count = (
                     observation.food_consumption_count
                 )
-                bout.start_alarm_level = observation.alarm_here
             if bout.evidence_accumulator is not None:
                 bout.evidence_accumulator.add(rule.evidence)
             bout.status = BoutStatus.ACTIVE
@@ -518,7 +530,7 @@ class TemporalBehaviorAnalyzer:
             if behavior in {
                 BehaviorKind.FOOD_ORIENTATION,
                 BehaviorKind.FOOD_APPROACH,
-                BehaviorKind.ALARM_RETREAT,
+                BehaviorKind.PHEROMONE_GRADIENT_RESPONSE,
             }:
                 return BehaviorOutcome.INTERRUPTED
             return None
@@ -558,16 +570,12 @@ class TemporalBehaviorAnalyzer:
             ):
                 return BehaviorOutcome.TARGET_LOST
             return BehaviorOutcome.ENDED_WITHOUT_APPROACH
-        if behavior is BehaviorKind.ALARM_RETREAT:
-            start_time = (
-                end_time
-                if bout.active_since is None
-                else bout.active_since
+        if behavior is BehaviorKind.PHEROMONE_GRADIENT_RESPONSE:
+            return (
+                BehaviorOutcome.PHEROMONE_ASCENT
+                if bout.pheromone_direction > 0
+                else BehaviorOutcome.PHEROMONE_DESCENT
             )
-            duration = max(0.0, end_time - start_time)
-            required_drop = self.config.alarm_min_temporal_drop * duration
-            if observation.alarm_here <= bout.start_alarm_level - required_drop:
-                return BehaviorOutcome.ALARM_EXPOSURE_REDUCED
         return None
 
     def _food_segment(self) -> list[BehaviorObservation]:
@@ -928,7 +936,7 @@ class TemporalBehaviorAnalyzer:
         score = _mean(visible_share, outside_share, motion_score)
         return _RuleEvidence(passed, score, evidence)
 
-    def _alarm_retreat(self) -> _RuleEvidence:
+    def _pheromone_gradient_response(self) -> _RuleEvidence:
         samples = list(self.history)
         if len(samples) < 3:
             return _empty_rule()
@@ -936,65 +944,104 @@ class TemporalBehaviorAnalyzer:
         duration = current.simulation_time - samples[0].simulation_time
         if duration <= 0.0:
             return _empty_rule()
-        temporal_drop = (samples[0].alarm_here - current.alarm_here) / duration
-        drop_steps = sum(
-            later.alarm_here < earlier.alarm_here - 1e-9
-            for earlier, later in zip(samples, samples[1:])
-        )
-        consistency = drop_steps / max(1, len(samples) - 1)
-        forward_alarm = (
-            current.alarm_forward_left + current.alarm_forward_right
-        ) / 2.0
-        spatial_drop = current.alarm_here - forward_alarm
+        bout = self.bouts[BehaviorKind.PHEROMONE_GRADIENT_RESPONSE]
+        channel = bout.pheromone_channel
+        if channel is None:
+            channel = max(range(3), key=lambda index: current.pheromone_local[index])
+        local = current.pheromone_local[channel]
+        lateral = current.pheromone_lateral[channel]
+        forward = current.pheromone_forward[channel]
+        gradient_magnitude = hypot(lateral, forward)
         forward_speed = (
             current.velocity_x * cos(current.heading)
             + current.velocity_y * sin(current.heading)
         )
-        passed = (
-            current.alarm_here >= self.config.alarm_min_level
-            and spatial_drop >= self.config.alarm_min_spatial_gradient
-            and temporal_drop >= self.config.alarm_min_temporal_drop
-            and consistency >= self.config.trend_consistency_ratio
-            and forward_speed >= self.config.alarm_retreat_min_speed
+        left_speed = (
+            -current.velocity_x * sin(current.heading)
+            + current.velocity_y * cos(current.heading)
         )
+        speed = hypot(forward_speed, left_speed)
+        gradient_dot_velocity = forward * forward_speed + lateral * left_speed
+        direction = bout.pheromone_direction
+        if direction == 0:
+            direction = 1 if gradient_dot_velocity >= 0.0 else -1
+        alignment = (
+            0.0
+            if speed <= 1e-12 or gradient_magnitude <= 1e-12
+            else abs(gradient_dot_velocity) / (speed * gradient_magnitude)
+        )
+        temporal_change = (
+            current.pheromone_local[channel]
+            - samples[0].pheromone_local[channel]
+        ) / duration
+        matching_steps = sum(
+            direction
+            * (
+                later.pheromone_local[channel]
+                - earlier.pheromone_local[channel]
+            )
+            > 1e-9
+            for earlier, later in zip(samples, samples[1:])
+        )
+        consistency = matching_steps / max(1, len(samples) - 1)
+        passed = (
+            local >= self.config.pheromone_min_level
+            and gradient_magnitude >= self.config.pheromone_min_gradient
+            and direction * gradient_dot_velocity > 0.0
+            and direction * temporal_change
+            >= self.config.pheromone_min_temporal_change
+            and consistency >= self.config.trend_consistency_ratio
+            and speed >= self.config.pheromone_response_min_speed
+            and alignment >= self.config.movement_alignment_threshold
+        )
+        color_name = ("Red", "Green", "Blue")[channel]
+        movement_name = "ascent" if direction > 0 else "descent"
         evidence = (
             _evidence(
-                "alarm_level",
-                "Local alarm level",
-                current.alarm_here,
+                "pheromone_level",
+                f"Local {color_name} level",
+                local,
                 None,
-                current.alarm_here >= self.config.alarm_min_level,
+                local >= self.config.pheromone_min_level,
             ),
             _evidence(
-                "down_alarm_gradient",
-                "Forward alarm decrease",
-                spatial_drop,
+                "pheromone_gradient",
+                f"{color_name} gradient magnitude",
+                gradient_magnitude,
                 None,
-                spatial_drop >= self.config.alarm_min_spatial_gradient,
+                gradient_magnitude >= self.config.pheromone_min_gradient,
             ),
             _evidence(
-                "alarm_exposure_drop",
-                "Alarm exposure decrease",
-                temporal_drop,
+                "pheromone_temporal_change",
+                f"{color_name} exposure {movement_name}",
+                temporal_change,
                 "/s",
-                temporal_drop >= self.config.alarm_min_temporal_drop,
+                direction * temporal_change
+                >= self.config.pheromone_min_temporal_change,
             ),
             _evidence(
-                "realized_retreat_speed",
-                "Realized forward retreat speed",
-                forward_speed,
+                "gradient_response_speed",
+                f"Realized {movement_name} speed",
+                speed,
                 "px/s",
-                forward_speed >= self.config.alarm_retreat_min_speed,
+                speed >= self.config.pheromone_response_min_speed,
             ),
         )
         score = _mean(
-            current.alarm_here / self.config.alarm_min_level,
-            spatial_drop / self.config.alarm_min_spatial_gradient,
-            temporal_drop / self.config.alarm_min_temporal_drop,
+            local / self.config.pheromone_min_level,
+            gradient_magnitude / self.config.pheromone_min_gradient,
+            direction * temporal_change / self.config.pheromone_min_temporal_change,
             consistency,
-            forward_speed / self.config.alarm_retreat_min_speed,
+            speed / self.config.pheromone_response_min_speed,
+            alignment / self.config.movement_alignment_threshold,
         )
-        return _RuleEvidence(passed, score, evidence)
+        return _RuleEvidence(
+            passed,
+            score,
+            evidence,
+            pheromone_channel=channel,
+            pheromone_direction=direction,
+        )
 
 
 class BehaviorObserverService:
@@ -1956,6 +2003,9 @@ def _behavior_worker_main(
         newest_probe, discarded_probes = _drain_latest(why_probe_queue)
         why_superseded += discarded_probes
         if newest_probe is not None:
+            if pending_job is not None and newest_probe == pending_job.probe:
+                newest_probe = None
+        if newest_probe is not None:
             if pending_job is not None:
                 why_superseded += 1
             pending_job = None
@@ -2067,14 +2117,17 @@ def _put_latest(queue: Any, value: object, drops: int) -> int:
         return drops
     except Full:
         try:
-            queue.get_nowait()
+            # Multiprocessing queue feeder state can briefly report Full before
+            # the oldest item is visible to ``get_nowait``.  A tightly bounded
+            # handoff preserves the latest cumulative diagnostics in that race.
+            queue.get(timeout=0.002)
             drops += 1
         except Empty:
             pass
         if hasattr(value, "result_drops"):
             value = replace(value, result_drops=drops)
         try:
-            queue.put_nowait(value)
+            queue.put(value, timeout=0.002)
         except Full:
             drops += 1
         return drops

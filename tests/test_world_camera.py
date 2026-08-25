@@ -1209,35 +1209,40 @@ class WorldCameraTest(unittest.TestCase):
 
     def test_pheromone_heatmap_colors_alpha_and_clamping(self) -> None:
         pheromones = SimpleNamespace(
-            trail=np.asarray([[0.0, 1.0, 0.25, 4.0]], dtype=np.float32),
-            alarm=np.asarray([[0.0, 0.0, 0.75, -2.0]], dtype=np.float32),
-            config=SimpleNamespace(pheromone_max_concentration=1.0),
+            field=np.asarray(
+                [
+                    [[0.0, 0.0, 0.0]],
+                    [[1.0, 0.0, 0.0]],
+                    [[0.25, 0.75, 0.5]],
+                    [[4.0, -2.0, 0.1]],
+                ],
+                dtype=np.float32,
+            ),
+            config=SimpleNamespace(max_concentration=1.0),
         )
 
         rgba = EnvironmentRenderer._pheromone_rgba(pheromones)
 
         np.testing.assert_array_equal(rgba[0, 0], (0, 0, 0, 0))
-        np.testing.assert_array_equal(rgba[0, 1], (60, 220, 155, 190))
-        np.testing.assert_array_equal(rgba[0, 2], (195, 107, 121, 164))
-        np.testing.assert_array_equal(rgba[0, 3], (60, 220, 155, 190))
+        np.testing.assert_array_equal(rgba[0, 1], (255, 0, 0, 255))
+        np.testing.assert_array_equal(rgba[0, 2], (63, 191, 127, 191))
+        np.testing.assert_array_equal(rgba[0, 3], (255, 0, 25, 255))
 
-    def test_pheromone_heatmap_uses_alarm_color(self) -> None:
+    def test_pheromone_heatmap_uses_direct_rgb(self) -> None:
         pheromones = SimpleNamespace(
-            trail=np.zeros((1, 1), dtype=np.float32),
-            alarm=np.ones((1, 1), dtype=np.float32),
-            config=SimpleNamespace(pheromone_max_concentration=1.0),
+            field=np.asarray([[[0.1, 0.5, 1.0]]], dtype=np.float32),
+            config=SimpleNamespace(max_concentration=1.0),
         )
 
         rgba = EnvironmentRenderer._pheromone_rgba(pheromones)
 
-        np.testing.assert_array_equal(rgba[0, 0], (240, 70, 110, 190))
+        np.testing.assert_array_equal(rgba[0, 0], (25, 127, 255, 255))
 
     def test_pheromone_texture_flips_vertically_and_caches_by_revision(self) -> None:
         world = self.make_world_shell()
         world.pheromones = SimpleNamespace(
-            trail=np.asarray([[1.0], [0.0]], dtype=np.float32),
-            alarm=np.zeros((2, 1), dtype=np.float32),
-            config=SimpleNamespace(pheromone_max_concentration=1.0),
+            field=np.asarray([[[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]], dtype=np.float32),
+            config=SimpleNamespace(max_concentration=1.0),
             update_count=7,
         )
         renderer = EnvironmentRenderer(world.config)
@@ -1253,7 +1258,7 @@ class WorldCameraTest(unittest.TestCase):
         try:
             first = renderer._texture_for_pheromones(world.pheromones)
             second = renderer._texture_for_pheromones(world.pheromones)
-            world.pheromones.trail[1, 0] = 1.0
+            world.pheromones.field[0, 1, 0] = 1.0
             unchanged_revision = renderer._texture_for_pheromones(world.pheromones)
             world.pheromones.update_count += 1
             revised = renderer._texture_for_pheromones(world.pheromones)
@@ -1269,7 +1274,7 @@ class WorldCameraTest(unittest.TestCase):
         self.assertEqual(len(created_textures), 2)
         first_image = np.asarray(created_textures[0].image)
         np.testing.assert_array_equal(first_image[0, 0], (0, 0, 0, 0))
-        np.testing.assert_array_equal(first_image[1, 0], (60, 220, 155, 190))
+        np.testing.assert_array_equal(first_image[1, 0], (255, 0, 0, 255))
 
     def test_hidden_pheromone_map_performs_no_conversion(self) -> None:
         world = self.make_world_shell()

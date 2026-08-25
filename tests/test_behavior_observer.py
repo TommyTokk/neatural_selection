@@ -39,9 +39,14 @@ def observation(
     group_velocity_x: float = 0.0,
     group_velocity_y: float = 0.0,
     personal_space: bool = False,
-    alarm_here: float = 0.0,
-    alarm_forward: float = 0.0,
+    red_here: float = 0.0,
+    red_forward: float = 0.0,
 ) -> BehaviorObservation:
+    forward_gradient = (
+        (red_forward - red_here) / (red_here + 0.001)
+        if red_here > 0.0
+        else 0.0
+    )
     return BehaviorObservation(
         creature_id=creature_id,
         selection_generation=generation,
@@ -64,9 +69,9 @@ def observation(
         group_velocity_x=group_velocity_x,
         group_velocity_y=group_velocity_y,
         personal_space_occupied=personal_space,
-        alarm_here=alarm_here,
-        alarm_forward_left=alarm_forward,
-        alarm_forward_right=alarm_forward,
+        pheromone_local=(red_here, 0.0, 0.0),
+        pheromone_lateral=(0.0, 0.0, 0.0),
+        pheromone_forward=(forward_gradient, 0.0, 0.0),
         food_consumption_count=consumption_count,
         food_consumed_energy_total=consumed_energy,
     )
@@ -390,64 +395,64 @@ class TemporalBehaviorAnalyzerTest(unittest.TestCase):
         )
         self.assertTrue(alignment.passed)
 
-    def test_alarm_retreat_uses_alarm_gradient_not_neural_panic(self) -> None:
+    def test_pheromone_descent_uses_red_gradient_not_neural_panic(self) -> None:
         snapshot = None
         for index in range(8):
-            local_alarm = 0.30 - index * 0.015
+            local_red = 0.30 - index * 0.015
             snapshot = self.analyzer.process(
                 observation(
                     index * 0.1,
                     speed=20.0,
-                    alarm_here=local_alarm,
-                    alarm_forward=local_alarm - 0.04,
+                    red_here=local_red,
+                    red_forward=local_red - 0.04,
                 )
             )
-        retreat = state_for(snapshot, BehaviorKind.ALARM_RETREAT)
+        retreat = state_for(snapshot, BehaviorKind.PHEROMONE_GRADIENT_RESPONSE)
         self.assertIsNotNone(retreat)
         self.assertEqual(retreat.status, BoutStatus.ACTIVE)
 
-        no_alarm = TemporalBehaviorAnalyzer(self.config)
+        no_pheromone = TemporalBehaviorAnalyzer(self.config)
         for index in range(8):
-            snapshot = no_alarm.process(
+            snapshot = no_pheromone.process(
                 observation(index * 0.1, speed=40.0)
             )
         self.assertIsNone(
-            state_for(snapshot, BehaviorKind.ALARM_RETREAT)
+            state_for(snapshot, BehaviorKind.PHEROMONE_GRADIENT_RESPONSE)
         )
 
-    def test_alarm_retreat_requires_spatial_and_temporal_decrease(self) -> None:
+    def test_pheromone_descent_requires_spatial_and_temporal_decrease(self) -> None:
         no_spatial = TemporalBehaviorAnalyzer(self.config)
         no_temporal = TemporalBehaviorAnalyzer(self.config)
         for index in range(8):
-            local_alarm = 0.30 - index * 0.015
+            local_red = 0.30 - index * 0.015
             spatial_snapshot = no_spatial.process(
                 observation(
                     index * 0.1,
                     speed=20.0,
-                    alarm_here=local_alarm,
-                    alarm_forward=local_alarm,
+                    red_here=local_red,
+                    red_forward=local_red,
                 )
             )
             temporal_snapshot = no_temporal.process(
                 observation(
                     index * 0.1,
                     speed=20.0,
-                    alarm_here=0.30,
-                    alarm_forward=0.25,
+                    red_here=0.30,
+                    red_forward=0.25,
                 )
             )
 
         self.assertIsNone(
-            state_for(spatial_snapshot, BehaviorKind.ALARM_RETREAT)
+            state_for(spatial_snapshot, BehaviorKind.PHEROMONE_GRADIENT_RESPONSE)
         )
         self.assertIsNone(
-            state_for(temporal_snapshot, BehaviorKind.ALARM_RETREAT)
+            state_for(temporal_snapshot, BehaviorKind.PHEROMONE_GRADIENT_RESPONSE)
         )
 
     def test_primary_and_secondary_bouts_can_be_simultaneous(self) -> None:
         snapshot = None
         for index in range(8):
-            local_alarm = 0.30 - index * 0.015
+            local_red = 0.30 - index * 0.015
             snapshot = self.analyzer.process(
                 observation(
                     index * 0.1,
@@ -458,8 +463,8 @@ class TemporalBehaviorAnalyzerTest(unittest.TestCase):
                     angular_velocity=0.8,
                     group_distance=80.0,
                     group_velocity_x=18.0,
-                    alarm_here=local_alarm,
-                    alarm_forward=local_alarm - 0.04,
+                    red_here=local_red,
+                    red_forward=local_red - 0.04,
                 )
             )
 
@@ -473,7 +478,7 @@ class TemporalBehaviorAnalyzerTest(unittest.TestCase):
                 BehaviorKind.FOOD_ORIENTATION,
                 BehaviorKind.FOOD_APPROACH,
                 BehaviorKind.COHESION,
-                BehaviorKind.ALARM_RETREAT,
+                BehaviorKind.PHEROMONE_GRADIENT_RESPONSE,
             }.issubset(kinds)
         )
 

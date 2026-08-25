@@ -48,8 +48,9 @@ class SemanticIntervention(str, Enum):
     SOCIAL_CUES = "social_cues"
     OFFSPRING_CUES = "offspring_cues"
     ACOUSTIC_CUES = "acoustic_cues"
-    TRAIL_PHEROMONE_CUES = "trail_pheromone_cues"
-    ALARM_PHEROMONE_CUES = "alarm_pheromone_cues"
+    RED_PHEROMONE_CUES = "red_pheromone_cues"
+    GREEN_PHEROMONE_CUES = "green_pheromone_cues"
+    BLUE_PHEROMONE_CUES = "blue_pheromone_cues"
     WALL_CUES = "wall_cues"
 
 
@@ -227,6 +228,13 @@ class BehaviorExplanationSpec:
     interventions: tuple[SemanticIntervention, ...]
 
 
+_COLOR_MASKS = (
+    SemanticIntervention.RED_PHEROMONE_CUES,
+    SemanticIntervention.GREEN_PHEROMONE_CUES,
+    SemanticIntervention.BLUE_PHEROMONE_CUES,
+)
+
+
 BEHAVIOR_EXPLANATION_SPECS: dict[BehaviorKind, BehaviorExplanationSpec] = {
     BehaviorKind.FOOD_ORIENTATION: BehaviorExplanationSpec(
         scored_outputs=("rotate",),
@@ -238,6 +246,7 @@ BEHAVIOR_EXPLANATION_SPECS: dict[BehaviorKind, BehaviorExplanationSpec] = {
             SemanticIntervention.SATIATED_STATE,
             SemanticIntervention.SOCIAL_CUES,
             SemanticIntervention.WALL_CUES,
+            *_COLOR_MASKS,
         ),
     ),
     BehaviorKind.FOOD_APPROACH: BehaviorExplanationSpec(
@@ -250,6 +259,7 @@ BEHAVIOR_EXPLANATION_SPECS: dict[BehaviorKind, BehaviorExplanationSpec] = {
             SemanticIntervention.SATIATED_STATE,
             SemanticIntervention.SOCIAL_CUES,
             SemanticIntervention.WALL_CUES,
+            *_COLOR_MASKS,
         ),
     ),
     BehaviorKind.FEEDING: BehaviorExplanationSpec(
@@ -259,6 +269,7 @@ BEHAVIOR_EXPLANATION_SPECS: dict[BehaviorKind, BehaviorExplanationSpec] = {
         interventions=(
             SemanticIntervention.VISIBLE_FOOD_CUES,
             SemanticIntervention.SATIATED_STATE,
+            *_COLOR_MASKS,
         ),
     ),
     BehaviorKind.COHESION: BehaviorExplanationSpec(
@@ -271,9 +282,10 @@ BEHAVIOR_EXPLANATION_SPECS: dict[BehaviorKind, BehaviorExplanationSpec] = {
             SemanticIntervention.VISIBLE_FOOD_CUES,
             SemanticIntervention.RESOURCE_GRADIENT_CUES,
             SemanticIntervention.WALL_CUES,
+            *_COLOR_MASKS,
         ),
     ),
-    BehaviorKind.ALARM_RETREAT: BehaviorExplanationSpec(
+    BehaviorKind.PHEROMONE_GRADIENT_RESPONSE: BehaviorExplanationSpec(
         scored_outputs=(
             "flee_panic_intensity",
             "accelerate",
@@ -286,7 +298,7 @@ BEHAVIOR_EXPLANATION_SPECS: dict[BehaviorKind, BehaviorExplanationSpec] = {
         ),
         reversal_critical_outputs=("accelerate", "rotate"),
         interventions=(
-            SemanticIntervention.ALARM_PHEROMONE_CUES,
+            *_COLOR_MASKS,
             SemanticIntervention.SATIATED_STATE,
             SemanticIntervention.SOCIAL_CUES,
             SemanticIntervention.WALL_CUES,
@@ -367,23 +379,20 @@ INTERVENTION_REPLACEMENTS: dict[
         "sound_dir_cos": _NEUTRAL_ACOUSTIC.direction_cos,
         "sound_tone": _NEUTRAL_ACOUSTIC.tone,
     },
-    SemanticIntervention.TRAIL_PHEROMONE_CUES: {
-        "trail_pheromone_here": _NEUTRAL_PHEROMONES.trail_here,
-        "trail_pheromone_forward_left": (
-            _NEUTRAL_PHEROMONES.trail_forward_left
-        ),
-        "trail_pheromone_forward_right": (
-            _NEUTRAL_PHEROMONES.trail_forward_right
-        ),
+    SemanticIntervention.RED_PHEROMONE_CUES: {
+        "pheromone_local_red": 0.0,
+        "pheromone_lateral_red": 0.0,
+        "pheromone_forward_red": 0.0,
     },
-    SemanticIntervention.ALARM_PHEROMONE_CUES: {
-        "alarm_pheromone_here": _NEUTRAL_PHEROMONES.alarm_here,
-        "alarm_pheromone_forward_left": (
-            _NEUTRAL_PHEROMONES.alarm_forward_left
-        ),
-        "alarm_pheromone_forward_right": (
-            _NEUTRAL_PHEROMONES.alarm_forward_right
-        ),
+    SemanticIntervention.GREEN_PHEROMONE_CUES: {
+        "pheromone_local_green": 0.0,
+        "pheromone_lateral_green": 0.0,
+        "pheromone_forward_green": 0.0,
+    },
+    SemanticIntervention.BLUE_PHEROMONE_CUES: {
+        "pheromone_local_blue": 0.0,
+        "pheromone_lateral_blue": 0.0,
+        "pheromone_forward_blue": 0.0,
     },
     SemanticIntervention.WALL_CUES: {
         "wall_proximity": _EMPTY_PROXIMITY,
@@ -567,14 +576,14 @@ def _target_relative_acceleration_effect(
     )
 
 
-def _alarm_retreat_movement_effect(
+def _gradient_response_movement_effect(
     name: str,
     actual_value: float,
     counterfactual_value: float,
     *,
     secondary_context: bool,
 ) -> OutputEffect:
-    """Interpret retreat movement as forward travel with stable heading."""
+    """Interpret a generic realized gradient response."""
     actual = _project_output(name, actual_value)
     counterfactual = _project_output(name, counterfactual_value)
     if name == "accelerate":
@@ -774,16 +783,6 @@ def semantic_effect(
                 actual,
                 counterfactual,
                 target_relative_angle=float(group_relative_angle),
-                secondary_context=secondary,
-            )
-        if behavior is BehaviorKind.ALARM_RETREAT and name in {
-            "accelerate",
-            "rotate",
-        }:
-            return _alarm_retreat_movement_effect(
-                name,
-                actual,
-                counterfactual,
                 secondary_context=secondary,
             )
         return output_effect(

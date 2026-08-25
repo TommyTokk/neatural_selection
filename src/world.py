@@ -523,10 +523,9 @@ class World:
         )
         self._motion_commands: dict[int, MotionCommand] = {}
         self._communication_positions = np.empty((0, 2), dtype=np.float64)
-        self._communication_trail_amounts = np.empty(0, dtype=np.float64)
-        self._communication_alarm_amounts = np.empty(0, dtype=np.float64)
+        self._communication_color_amounts = np.empty((0, 3), dtype=np.float64)
         self._pheromone_sensor_positions = np.empty((0, 3, 2), dtype=np.float64)
-        self._pheromone_sensor_values = np.empty((0, 6), dtype=np.float32)
+        self._pheromone_sensor_values = np.empty((0, 3, 3), dtype=np.float32)
         self.debug_vision_enabled = config.debug.show_debug_vision_by_default
         self.layout = build_screen_layout(
             config.display.width, config.display.height, config.layout
@@ -609,7 +608,7 @@ class World:
         )
         self.acoustics = AcousticSystem(config.communication)
         self.pheromones = PheromoneSystem(
-            config.communication,
+            config.communication.pheromone,
             self.biome_map.grid_width,
             self.biome_map.grid_height,
             self.environment_world_bounds,
@@ -769,8 +768,7 @@ class World:
         self.social.last_runtime = self._last_flocking_runtime
         self.social.last_debug = self._last_flock_steering_debug
         self.social.communication_positions = self._communication_positions
-        self.social.communication_trail_amounts = self._communication_trail_amounts
-        self.social.communication_alarm_amounts = self._communication_alarm_amounts
+        self.social.communication_color_amounts = self._communication_color_amounts
         self.resources = CreatureResourceService(self.metabolism)
         self.resources.fitness = self.fitness
         self.resources.held_food_by_creature_id = self._held_food_by_creature_id
@@ -914,7 +912,7 @@ class World:
             self._update_chronometers(biology_dt)
             self._update_reproduction(biology_dt)
             self._update_metabolism(biology_dt)
-        self.pheromones.accumulate(delta_time)
+        self.pheromones.advance(delta_time)
         self._spawn_foods(delta_time)
         self._update_flocking_telemetry(delta_time)
         self._sample_selected_behavior()
@@ -1037,8 +1035,7 @@ class World:
         self.social.last_runtime = self._last_flocking_runtime
         self.social.last_debug = self._last_flock_steering_debug
         self.social.communication_positions = self._communication_positions
-        self.social.communication_trail_amounts = self._communication_trail_amounts
-        self.social.communication_alarm_amounts = self._communication_alarm_amounts
+        self.social.communication_color_amounts = self._communication_color_amounts
         self.resources.fitness = self.fitness
         self.resources.held_food_by_creature_id = self._held_food_by_creature_id
         self.resources.carrier_by_food_id = self._carrier_by_food_id
@@ -1122,11 +1119,20 @@ class World:
         telemetry = self.telemetry
         if telemetry is None:
             return
+        pheromones = getattr(self, "pheromones", None)
+        rgb_average = (
+            np.zeros(3, dtype=np.float64)
+            if pheromones is None
+            else np.asarray(pheromones.field, dtype=np.float64).mean(axis=(0, 1))
+        )
         telemetry.log_metrics(
             self.elapsed_time,
             len(self.creatures),
             len(self.foods),
             self.rt_neat.stats.best_net_energy_balance,
+            float(rgb_average[0]),
+            float(rgb_average[1]),
+            float(rgb_average[2]),
         )
 
     def _flocking_capture_deadline(self) -> float:
@@ -2211,7 +2217,9 @@ class World:
                 )
             else:
                 snapshot.pheromones = PheromoneSnapshot(
-                    *(float(value) for value in pheromone_values)
+                    local=tuple(float(value) for value in pheromone_values[0]),
+                    forward_left=tuple(float(value) for value in pheromone_values[1]),
+                    forward_right=tuple(float(value) for value in pheromone_values[2]),
                 )
         return snapshot
 
@@ -2548,6 +2556,27 @@ class World:
         food = sensor.food
         flock = sensor.flock
         pheromones = sensor.pheromones
+        pheromone_local = np.clip(
+            np.asarray(pheromones.local, dtype=np.float64), 0.0, 1.0
+        )
+        pheromone_left = np.clip(
+            np.asarray(pheromones.forward_left, dtype=np.float64), 0.0, 1.0
+        )
+        pheromone_right = np.clip(
+            np.asarray(pheromones.forward_right, dtype=np.float64), 0.0, 1.0
+        )
+        pheromone_denominator = pheromone_local + 0.001
+        pheromone_lateral = np.clip(
+            (pheromone_left - pheromone_right) / pheromone_denominator,
+            -1.0,
+            1.0,
+        )
+        pheromone_forward = np.clip(
+            ((pheromone_left + pheromone_right) * 0.5 - pheromone_local)
+            / pheromone_denominator,
+            -1.0,
+            1.0,
+        )
         compatible_group_visible = (
             float(getattr(flock, "flockmate_count", 0.0)) > 1e-12
         )
@@ -2617,13 +2646,9 @@ class World:
             personal_space_occupied=bool(
                 int(getattr(flock, "visible_personal_space_count", 0)) > 0
             ),
-            alarm_here=float(getattr(pheromones, "alarm_here", 0.0)),
-            alarm_forward_left=float(
-                getattr(pheromones, "alarm_forward_left", 0.0)
-            ),
-            alarm_forward_right=float(
-                getattr(pheromones, "alarm_forward_right", 0.0)
-            ),
+            pheromone_local=tuple(float(value) for value in pheromone_local),
+            pheromone_lateral=tuple(float(value) for value in pheromone_lateral),
+            pheromone_forward=tuple(float(value) for value in pheromone_forward),
             carrying_food=(
                 creature.creature_id
                 in getattr(self, "_held_food_by_creature_id", {})
@@ -3696,8 +3721,9 @@ class World:
             want_grab=0.0,
             want_nurse=0.0,
             emit_sound=0.0,
-            emit_trail_pheromone=0.0,
-            emit_alarm_pheromone=0.0,
+            emit_red=0.0,
+            emit_green=0.0,
+            emit_blue=0.0,
         )
 
     @staticmethod
@@ -3729,7 +3755,6 @@ class World:
             return
 
         signals: list[AcousticSignal] = []
-        deposit_rate = max(0.0, self.config.communication.pheromone_deposit_rate)
         elapsed = max(0.0, delta_time)
         deposit_count = 0
         for creature in self.creatures:
@@ -3749,29 +3774,22 @@ class World:
                         tone=max(-1.0, min(1.0, action.sound_tone)),
                     )
                 )
-            trail_amount = (
-                deposit_rate
-                * max(0.0, min(1.0, action.emit_trail_pheromone))
-                * elapsed
-            )
-            alarm_amount = (
-                deposit_rate
-                * max(0.0, min(1.0, action.emit_alarm_pheromone))
-                * elapsed
-            )
-            if trail_amount <= 0.0 and alarm_amount <= 0.0:
+            color_amount = np.clip(
+                (action.emit_red, action.emit_green, action.emit_blue),
+                0.0,
+                1.0,
+            ) * elapsed
+            if not np.any(color_amount > 0.0):
                 continue
             if deposit_count == 0:
                 self._ensure_communication_buffer_capacity(len(self.creatures))
             self._communication_positions[deposit_count] = creature.position
-            self._communication_trail_amounts[deposit_count] = trail_amount
-            self._communication_alarm_amounts[deposit_count] = alarm_amount
+            self._communication_color_amounts[deposit_count] = color_amount
             deposit_count += 1
         if deposit_count:
             pheromones.deposit_many(
                 self._communication_positions[:deposit_count],
-                self._communication_trail_amounts[:deposit_count],
-                self._communication_alarm_amounts[:deposit_count],
+                self._communication_color_amounts[:deposit_count],
             )
         acoustics.replace_signals(signals)
 
@@ -3795,14 +3813,12 @@ class World:
             return
         capacity = max(16, required, current * 2)
         self._communication_positions = np.empty((capacity, 2), dtype=np.float64)
-        self._communication_trail_amounts = np.empty(capacity, dtype=np.float64)
-        self._communication_alarm_amounts = np.empty(capacity, dtype=np.float64)
+        self._communication_color_amounts = np.empty((capacity, 3), dtype=np.float64)
         # Keep social-service reusable buffers aligned after geometric growth.
         social = getattr(self, "social", None)
         if social is not None:
             social.communication_positions = self._communication_positions
-            social.communication_trail_amounts = self._communication_trail_amounts
-            social.communication_alarm_amounts = self._communication_alarm_amounts
+            social.communication_color_amounts = self._communication_color_amounts
 
     def _ensure_pheromone_sensor_buffer_capacity(self, required: int) -> None:
         positions = getattr(self, "_pheromone_sensor_positions", None)
@@ -3815,7 +3831,7 @@ class World:
             dtype=np.float64,
         )
         self._pheromone_sensor_values = np.empty(
-            (capacity, 6),
+            (capacity, 3, 3),
             dtype=np.float32,
         )
 
@@ -6310,14 +6326,15 @@ class World:
     def _communication_intensities_for(
         self,
         creature_id: int,
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float]:
         action = self._action_for_execution(creature_id)
         if action is None:
-            return (0.0, 0.0, 0.0)
+            return (0.0, 0.0, 0.0, 0.0)
         return (
             max(0.0, min(1.0, action.emit_sound)),
-            max(0.0, min(1.0, action.emit_trail_pheromone)),
-            max(0.0, min(1.0, action.emit_alarm_pheromone)),
+            max(0.0, min(1.0, action.emit_red)),
+            max(0.0, min(1.0, action.emit_green)),
+            max(0.0, min(1.0, action.emit_blue)),
         )
 
     def _activity_for(
@@ -6328,7 +6345,7 @@ class World:
         nursing_transfer: float = 0.0,
     ) -> ActivityResult:
         """Calculate weighted activity without mutating creature state."""
-        sound, trail, alarm = self._communication_intensities_for(
+        sound, red, green, blue = self._communication_intensities_for(
             creature.creature_id
         )
         communication_config = self.config.communication
@@ -6338,15 +6355,15 @@ class World:
         )
         pheromone_rate = max(
             0.0,
-            communication_config.pheromone_energy_cost_per_second,
+            communication_config.pheromone.energy_cost_per_second,
         )
-        maximum_communication_cost = acoustic_rate + 2.0 * pheromone_rate
+        maximum_communication_cost = acoustic_rate + 3.0 * pheromone_rate
         communication_cost = (
             0.0
             if maximum_communication_cost <= 0.0
             else (
                 sound * acoustic_rate
-                + (trail + alarm) * pheromone_rate
+                + (red + green + blue) * pheromone_rate
             )
             / maximum_communication_cost
         )

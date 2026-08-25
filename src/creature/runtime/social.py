@@ -29,8 +29,7 @@ None
         self.last_runtime: dict[int, Any] = {}
         self.last_debug: dict[int, Any] = {}
         self.communication_positions: Any | None = None
-        self.communication_trail_amounts: Any | None = None
-        self.communication_alarm_amounts: Any | None = None
+        self.communication_color_amounts: Any | None = None
 
     def initialize(self, creature_id: int) -> None:
         """Install neutral social state for one creature.

@@ -364,8 +364,9 @@ class EffectiveActionTest(unittest.TestCase):
             herding=1.0,
             emit_sound=1.0,
             sound_tone=0.4,
-            emit_trail_pheromone=1.0,
-            emit_alarm_pheromone=1.0,
+            emit_red=1.0,
+            emit_green=1.0,
+            emit_blue=1.0,
             rest=1.0,
         )
 
@@ -383,8 +384,9 @@ class EffectiveActionTest(unittest.TestCase):
         self.assertEqual(effective.want_grab, 0.0)
         self.assertEqual(effective.want_nurse, 0.0)
         self.assertEqual(effective.emit_sound, 0.0)
-        self.assertEqual(effective.emit_trail_pheromone, 0.0)
-        self.assertEqual(effective.emit_alarm_pheromone, 0.0)
+        self.assertEqual(effective.emit_red, 0.0)
+        self.assertEqual(effective.emit_green, 0.0)
+        self.assertEqual(effective.emit_blue, 0.0)
         self.assertEqual(effective.want_eat, raw.want_eat)
         self.assertEqual(effective.want_release, raw.want_release)
         self.assertEqual(effective.reset_chronometer, raw.reset_chronometer)

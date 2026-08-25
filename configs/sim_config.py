@@ -343,32 +343,21 @@ class BiomeSensorConfig:
 
 
 @dataclass(slots=True)
-class CommunicationConfig:
-    acoustic_range: float = 480.0
-    acoustic_min_emission_strength: float = 0.05
-    acoustic_hearing_threshold: float = 0.05
-    acoustic_energy_cost_per_second: float = 0.006
+class PheromoneConfig:
+    """Configuration for the raw three-channel stigmergy field."""
 
-    pheromone_update_interval: float = 0.25
-    # World distance squared per simulated second. This preserves the previous
-    # visual rate on the default 64 x 44 grid while remaining resolution-aware.
-    pheromone_diffusion_coefficient: float = 390.0
-    pheromone_evaporation_rate: float = 0.08
-    pheromone_max_concentration: float = 1.0
-    pheromone_deposit_rate: float = 0.75
-    pheromone_energy_cost_per_second: float = 0.002
-    pheromone_max_updates_per_tick: int = 4
-    pheromone_boundary_mode: PheromoneBoundaryMode = PheromoneBoundaryMode.REFLECT
+    diffusion_coefficient: float = 390.0
+    decay_rate: float = 0.08
+    max_concentration: float = 1.0
+    energy_cost_per_second: float = 0.002
+    boundary_mode: PheromoneBoundaryMode = PheromoneBoundaryMode.REFLECT
 
     def __post_init__(self) -> None:
         finite_nonnegative = (
-            "acoustic_range",
-            "acoustic_energy_cost_per_second",
-            "pheromone_diffusion_coefficient",
-            "pheromone_evaporation_rate",
-            "pheromone_max_concentration",
-            "pheromone_deposit_rate",
-            "pheromone_energy_cost_per_second",
+            "diffusion_coefficient",
+            "decay_rate",
+            "max_concentration",
+            "energy_cost_per_second",
         )
         for name in finite_nonnegative:
             value = getattr(self, name)
@@ -379,6 +368,34 @@ class CommunicationConfig:
                     f"{name} must be finite and nonnegative, got {value!r}."
                 )
 
+        try:
+            self.boundary_mode = PheromoneBoundaryMode(self.boundary_mode)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "pheromone.boundary_mode must be one of "
+                f"{[mode.value for mode in PheromoneBoundaryMode]}, got "
+                f"{self.boundary_mode!r}."
+            ) from error
+
+
+@dataclass(slots=True)
+class CommunicationConfig:
+    acoustic_range: float = 480.0
+    acoustic_min_emission_strength: float = 0.05
+    acoustic_hearing_threshold: float = 0.05
+    acoustic_energy_cost_per_second: float = 0.006
+    pheromone: PheromoneConfig = field(default_factory=PheromoneConfig)
+
+    def __post_init__(self) -> None:
+        for name in ("acoustic_range", "acoustic_energy_cost_per_second"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"{name} must be finite and nonnegative.")
         for name in (
             "acoustic_min_emission_strength",
             "acoustic_hearing_threshold",
@@ -390,39 +407,10 @@ class CommunicationConfig:
                 or not isfinite(value)
                 or not 0.0 <= value <= 1.0
             ):
-                raise ValueError(
-                    f"{name} must be finite and within [0, 1], got {value!r}."
-                )
-
-        interval = self.pheromone_update_interval
-        if (
-            isinstance(interval, bool)
-            or not isinstance(interval, (int, float))
-            or not isfinite(interval)
-            or interval <= 0.0
-        ):
-            raise ValueError(
-                "pheromone_update_interval must be finite and positive, "
-                f"got {interval!r}."
-            )
-
-        update_cap = self.pheromone_max_updates_per_tick
-        if type(update_cap) is not int or update_cap < 1:
-            raise ValueError(
-                "pheromone_max_updates_per_tick must be a positive integer, "
-                f"got {update_cap!r}."
-            )
-
-        try:
-            self.pheromone_boundary_mode = PheromoneBoundaryMode(
-                self.pheromone_boundary_mode
-            )
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "pheromone_boundary_mode must be one of "
-                f"{[mode.value for mode in PheromoneBoundaryMode]}, got "
-                f"{self.pheromone_boundary_mode!r}."
-            ) from error
+                raise ValueError(f"{name} must be finite and within [0, 1].")
+        if not isinstance(self.pheromone, PheromoneConfig):
+            raise ValueError("communication.pheromone must be a PheromoneConfig.")
+        self.pheromone.__post_init__()
 
 
 @dataclass(slots=True)
@@ -1102,10 +1090,10 @@ class BehaviorObserverConfig:
     movement_alignment_threshold: float = 0.35
     cohesion_min_closing_speed: float = 5.0
     cohesion_min_velocity_alignment: float = 0.75
-    alarm_retreat_min_speed: float = 10.0
-    alarm_min_level: float = 0.10
-    alarm_min_spatial_gradient: float = 0.02
-    alarm_min_temporal_drop: float = 0.03
+    pheromone_response_min_speed: float = 10.0
+    pheromone_min_level: float = 0.10
+    pheromone_min_gradient: float = 0.02
+    pheromone_min_temporal_change: float = 0.03
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
@@ -1130,10 +1118,10 @@ class BehaviorObserverConfig:
             "orientation_min_turn_rate": self.orientation_min_turn_rate,
             "approach_min_closing_speed": self.approach_min_closing_speed,
             "cohesion_min_closing_speed": self.cohesion_min_closing_speed,
-            "alarm_retreat_min_speed": self.alarm_retreat_min_speed,
-            "alarm_min_level": self.alarm_min_level,
-            "alarm_min_spatial_gradient": self.alarm_min_spatial_gradient,
-            "alarm_min_temporal_drop": self.alarm_min_temporal_drop,
+            "pheromone_response_min_speed": self.pheromone_response_min_speed,
+            "pheromone_min_level": self.pheromone_min_level,
+            "pheromone_min_gradient": self.pheromone_min_gradient,
+            "pheromone_min_temporal_change": self.pheromone_min_temporal_change,
         }
         for name, value in positive.items():
             if (

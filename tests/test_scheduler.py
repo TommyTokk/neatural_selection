@@ -93,7 +93,7 @@ class SchedulerCadenceTest(unittest.TestCase):
         world._simulation_step = 0
         world.simulation_lag_metrics = SimulationLagMetrics()
         world.space = SimpleNamespace(step=lambda _dt: None)
-        world.pheromones = SimpleNamespace(accumulate=lambda _dt: None)
+        world.pheromones = SimpleNamespace(advance=lambda _dt: None)
         calls = {
             "motion": [],
             "biology": [],
@@ -259,7 +259,7 @@ class SchedulerCadenceTest(unittest.TestCase):
                 name,
                 lambda _dt, label=label: events.append(label),
             )
-        world.pheromones.accumulate = lambda _dt: events.append("pheromones")
+        world.pheromones.advance = lambda _dt: events.append("pheromones")
         world._refresh_stats = lambda: events.append("statistics")
 
         world._run_fixed_step()
@@ -339,7 +339,7 @@ class SchedulerCadenceTest(unittest.TestCase):
         world.creatures = [creature]
         world._update_metabolism = lambda _dt: world.creatures.clear()
         later_populations: list[int] = []
-        world.pheromones.accumulate = lambda _dt: later_populations.append(
+        world.pheromones.advance = lambda _dt: later_populations.append(
             len(world.creatures)
         )
         world._spawn_foods = lambda _dt: later_populations.append(
@@ -755,8 +755,9 @@ class SchedulerBiologyRateTest(unittest.TestCase):
         quiet = self._real_world(neutral_action())
         emitting_action = neutral_action()
         emitting_action.emit_sound = 1.0
-        emitting_action.emit_trail_pheromone = 1.0
-        emitting_action.emit_alarm_pheromone = 1.0
+        emitting_action.emit_red = 1.0
+        emitting_action.emit_green = 1.0
+        emitting_action.emit_blue = 1.0
         emitting = self._real_world(emitting_action)
         try:
             for world in (quiet, emitting):
@@ -774,8 +775,8 @@ class SchedulerBiologyRateTest(unittest.TestCase):
             emitting_fitness = emitting.fitness[emitting_creature.creature_id]
             communication_cost = (
                 emitting.config.communication.acoustic_energy_cost_per_second
-                + 2.0
-                * emitting.config.communication.pheromone_energy_cost_per_second
+                + 3.0
+                * emitting.config.communication.pheromone.energy_cost_per_second
             )
 
             self.assertAlmostEqual(quiet_fitness.age_seconds, 1.0)
@@ -847,7 +848,7 @@ class SchedulerBiologyRateTest(unittest.TestCase):
                     )
                 )
 
-            world.pheromones.accumulate = lambda _dt: record("pheromones")
+            world.pheromones.advance = lambda _dt: record("pheromones")
             world._spawn_foods = lambda _dt: record("food_spawn")
             world._update_flocking_telemetry = lambda _dt: record(
                 "telemetry"

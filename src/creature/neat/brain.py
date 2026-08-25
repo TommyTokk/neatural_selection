@@ -224,11 +224,14 @@ NeatBrain
             sound_tone=self._clamp(
                 centered_outputs[BrainOutputIndex.ACOUSTIC_TONE], -1.0, 1.0
             ),
-            emit_trail_pheromone=self._positive_action_output(
-                centered_outputs[BrainOutputIndex.TRAIL_PHEROMONE]
+            emit_red=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.EMIT_RED]
             ),
-            emit_alarm_pheromone=self._positive_action_output(
-                centered_outputs[BrainOutputIndex.ALARM_PHEROMONE]
+            emit_green=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.EMIT_GREEN]
+            ),
+            emit_blue=self._positive_action_output(
+                centered_outputs[BrainOutputIndex.EMIT_BLUE]
             ),
             rest=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.REST]

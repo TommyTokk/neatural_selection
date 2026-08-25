@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sqlite3
 
+TELEMETRY_SCHEMA_VERSION = 27
+
 from src.creature.speciation import (
     NeatChangeSummary,
     NeuralShift,
@@ -103,7 +105,10 @@ class TelemetryDatabase:
                 sim_time REAL PRIMARY KEY,
                 alive_count INTEGER,
                 food_count INTEGER,
-                best_net_energy_balance REAL
+                best_net_energy_balance REAL,
+                red_avg REAL,
+                green_avg REAL,
+                blue_avg REAL
             );
 
             CREATE TABLE IF NOT EXISTS reproduction_events (
@@ -156,6 +161,7 @@ class TelemetryDatabase:
         self._ensure_species_history_columns()
         self._ensure_flocking_population_metrics_columns()
         self._ensure_population_metrics_columns()
+        self.connection.execute(f"PRAGMA user_version = {TELEMETRY_SCHEMA_VERSION}")
         self.connection.commit()
         self._closed = False
 
@@ -167,11 +173,17 @@ class TelemetryDatabase:
                 "PRAGMA table_info(population_metrics)"
             )
         }
-        if "best_net_energy_balance" not in columns:
-            self.connection.execute(
-                "ALTER TABLE population_metrics "
-                "ADD COLUMN best_net_energy_balance REAL"
-            )
+        required = {
+            "best_net_energy_balance": "REAL",
+            "red_avg": "REAL",
+            "green_avg": "REAL",
+            "blue_avg": "REAL",
+        }
+        for name, column_type in required.items():
+            if name not in columns:
+                self.connection.execute(
+                    f"ALTER TABLE population_metrics ADD COLUMN {name} {column_type}"
+                )
 
     def _ensure_species_history_columns(self) -> None:
         columns = {
@@ -672,18 +684,33 @@ class TelemetryDatabase:
         alive_count: int,
         food_count: int,
         best_net_energy_balance: float,
+        red_avg: float = 0.0,
+        green_avg: float = 0.0,
+        blue_avg: float = 0.0,
     ) -> None:
         self.connection.execute(
             """
             INSERT INTO population_metrics
-                (sim_time, alive_count, food_count, best_net_energy_balance)
-            VALUES (?, ?, ?, ?)
+                (sim_time, alive_count, food_count, best_net_energy_balance,
+                 red_avg, green_avg, blue_avg)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sim_time) DO UPDATE SET
                 alive_count = excluded.alive_count,
                 food_count = excluded.food_count,
-                best_net_energy_balance = excluded.best_net_energy_balance
+                best_net_energy_balance = excluded.best_net_energy_balance,
+                red_avg = excluded.red_avg,
+                green_avg = excluded.green_avg,
+                blue_avg = excluded.blue_avg
             """,
-            (sim_time, alive_count, food_count, best_net_energy_balance),
+            (
+                sim_time,
+                alive_count,
+                food_count,
+                best_net_energy_balance,
+                red_avg,
+                green_avg,
+                blue_avg,
+            ),
         )
         self.connection.commit()
 

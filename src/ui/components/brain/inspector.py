@@ -88,7 +88,7 @@ class BrainInspectorComponent:
         BehaviorKind.FEEDING: (35, 168, 89),
         BehaviorKind.RESTING: (132, 91, 205),
         BehaviorKind.COHESION: (215, 72, 128),
-        BehaviorKind.ALARM_RETREAT: (228, 91, 49),
+        BehaviorKind.PHEROMONE_GRADIENT_RESPONSE: (228, 91, 49),
     }
     BRAIN_BEHAVIOR_ACTIVATION_COPY = {
         BehaviorKind.FOOD_ORIENTATION: (
@@ -111,9 +111,9 @@ class BrainInspectorComponent:
             "A compatible group remains visible outside separation range, "
             "then the creature approaches its center or aligns its velocity."
         ),
-        BehaviorKind.ALARM_RETREAT: (
-            "Local alarm is present and falls ahead and over time while the "
-            "creature moves forward down the alarm gradient."
+        BehaviorKind.PHEROMONE_GRADIENT_RESPONSE: (
+            "Movement consistently follows an ascending or descending gradient "
+            "of the locally dominant pheromone color."
         ),
     }
 
@@ -586,8 +586,8 @@ class BrainInspectorComponent:
             ),
             (
                 "Cohesion evaluates movement toward the factual flock center "
-                "and waits without that reference. Alarm retreat favors "
-                "forward acceleration with a stable, near-zero turn."
+                "and waits without that reference. Pheromone-gradient response "
+                "reports dependence on independently masked RGB cues."
             ),
             (
                 "Live histories show one real paired probe nearest the median "
@@ -1017,8 +1017,9 @@ class BrainInspectorComponent:
             SemanticIntervention.SOCIAL_CUES: "Social cues",
             SemanticIntervention.OFFSPRING_CUES: "Offspring cues",
             SemanticIntervention.ACOUSTIC_CUES: "Acoustic cues",
-            SemanticIntervention.TRAIL_PHEROMONE_CUES: "Trail pheromone cues",
-            SemanticIntervention.ALARM_PHEROMONE_CUES: "Alarm pheromone cues",
+            SemanticIntervention.RED_PHEROMONE_CUES: "Red pheromone cues",
+            SemanticIntervention.GREEN_PHEROMONE_CUES: "Green pheromone cues",
+            SemanticIntervention.BLUE_PHEROMONE_CUES: "Blue pheromone cues",
             SemanticIntervention.WALL_CUES: "Wall cues",
         }[intervention]
 
@@ -1696,7 +1697,7 @@ class BrainInspectorComponent:
             BehaviorKind.FEEDING: "Feeding",
             BehaviorKind.RESTING: "Resting",
             BehaviorKind.COHESION: "Cohesion",
-            BehaviorKind.ALARM_RETREAT: "Alarm retreat",
+            BehaviorKind.PHEROMONE_GRADIENT_RESPONSE: "Pheromone gradient response",
         }
         return labels[behavior]
 

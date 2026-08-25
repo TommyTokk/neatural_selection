@@ -58,8 +58,8 @@ class ThermodynamicReproductionTest(unittest.TestCase):
         world.neat_controller = SimpleNamespace(
             config=SimpleNamespace(
                 genome_config=SimpleNamespace(
-                    num_inputs=43,
-                    num_outputs=15,
+                    num_inputs=46,
+                    num_outputs=16,
                     connection_fraction=0.15,
                 )
             )

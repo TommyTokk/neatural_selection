@@ -14,6 +14,8 @@ import pickle
 import unittest
 import weakref
 
+import numpy as np
+
 from configs.sim_config import build_sim_config
 from src.creature import FlockingTraits, PhysicalTraits, VisionTraits
 from src.persistence import (
@@ -23,6 +25,7 @@ from src.persistence import (
     PersistenceManager,
     SavePriority,
     SimulationPaths,
+    _migrate_legacy_pheromone_field,
 )
 from src.speciation import (
     SpeciesDistanceBreakdown,
@@ -53,6 +56,24 @@ class PersistenceManagerTest(unittest.TestCase):
     def test_checkpoint_versions_2_through_19_remain_loadable(self) -> None:
         for version in range(2, 20):
             PersistenceManager._validate_state({"version": version})
+
+    def test_legacy_pheromones_map_alarm_red_trail_green_width_major(self) -> None:
+        trail = np.zeros((2, 3), dtype=np.float32)
+        alarm = np.zeros((2, 3), dtype=np.float32)
+        trail[1, 2] = 0.6
+        alarm[0, 1] = 0.8
+
+        migrated = _migrate_legacy_pheromone_field(
+            trail,
+            alarm,
+            width=3,
+            height=2,
+        )
+
+        self.assertEqual(migrated.shape, (3, 2, 3))
+        self.assertAlmostEqual(float(migrated[1, 0, 0]), 0.8)
+        self.assertAlmostEqual(float(migrated[2, 1, 1]), 0.6)
+        np.testing.assert_array_equal(migrated[:, :, 2], 0.0)
 
     def test_atomic_write_rotates_quick_backup(self) -> None:
         first_state = {"version": CHECKPOINT_VERSION, "value": "first"}
@@ -417,8 +438,8 @@ class PersistenceManagerTest(unittest.TestCase):
             "biome_fertility_ema_updated_at",
             state["creatures"][0],
         )
-        self.assertEqual(state["brain_contract"]["sensor_schema"], 7)
-        self.assertEqual(state["brain_contract"]["inputs"], 43)
+        self.assertEqual(state["brain_contract"]["sensor_schema"], 8)
+        self.assertEqual(state["brain_contract"]["inputs"], 46)
         self.assertNotIn("previous_biome", state["world"])
         self.assertNotIn("physics_accumulator", state["world"])
         self.assertEqual(state["world"]["simulation_step"], 0)
@@ -566,11 +587,10 @@ class PersistenceManagerTest(unittest.TestCase):
                 world.creatures[0].physical_traits.digestion_efficiency,
             )
             world.pheromones.deposit(
-                world.creatures[0].position,
-                trail_amount=0.4,
-                alarm_amount=0.2,
+                float(world.creatures[0].position[0]),
+                float(world.creatures[0].position[1]),
+                (0.2, 0.4, 0.1),
             )
-            world.pheromones.accumulator = 0.1
             world.acoustics.replace_signals(
                 [
                     AcousticSignal(
@@ -745,14 +765,9 @@ class PersistenceManagerTest(unittest.TestCase):
                 ),
                 saved_digestive_traits,
             )
-            self.assertAlmostEqual(restored.pheromones.accumulator, 0.1)
-            self.assertAlmostEqual(
-                float(restored.pheromones.trail.sum()),
-                float(world.pheromones.trail.sum()),
-            )
-            self.assertAlmostEqual(
-                float(restored.pheromones.alarm.sum()),
-                float(world.pheromones.alarm.sum()),
+            np.testing.assert_allclose(
+                restored.pheromones.field,
+                world.pheromones.field,
             )
             self.assertEqual(restored.acoustics.signals, world.acoustics.signals)
             self.assertEqual(
@@ -1151,10 +1166,10 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.neat_controller,
             )
             self.assertEqual(current_state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 7)
-            self.assertEqual(current_state["brain_contract"]["inputs"], 43)
-            self.assertEqual(current_state["brain_contract"]["outputs"], 15)
-            self.assertEqual(current_state["brain_contract"]["action_schema"], 2)
+            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 8)
+            self.assertEqual(current_state["brain_contract"]["inputs"], 46)
+            self.assertEqual(current_state["brain_contract"]["outputs"], 16)
+            self.assertEqual(current_state["brain_contract"]["action_schema"], 3)
             round_tripped = PersistenceManager._restore_world(
                 current_state,
                 self.config,
@@ -1222,7 +1237,7 @@ class PersistenceManagerTest(unittest.TestCase):
             self.assertIsNot(restored_brain.genome, original_brain.genome)
             self.assertEqual(
                 len(restored.neat_controller.config.genome_config.output_keys),
-                15,
+                16,
             )
         finally:
             world.close()
