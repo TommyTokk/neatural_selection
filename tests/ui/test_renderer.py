@@ -1321,6 +1321,9 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.renderer._brain_expanded_why_behavior = (
             BehaviorKind.FEEDING.value
         )
+        self.renderer._brain_connection_direction = "incoming"
+        self.renderer._brain_connection_filter = "active"
+        self.renderer._brain_connection_sort_descending = False
         self.renderer._control_hitboxes["brain_window_close"] = arcade.LBWH(
             450,
             350,
@@ -1336,6 +1339,9 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertIsNone(self.renderer._brain_selection_identity)
         self.assertFalse(self.renderer._brain_node_inspector_open)
         self.assertEqual(self.renderer._brain_inspector_page, "node")
+        self.assertEqual(self.renderer._brain_connection_direction, "both")
+        self.assertEqual(self.renderer._brain_connection_filter, "all")
+        self.assertTrue(self.renderer._brain_connection_sort_descending)
         self.assertEqual(self.renderer._brain_behavior_scroll_offset, 0.0)
         self.assertIsNone(self.renderer._brain_expanded_behavior)
         self.assertIsNone(self.renderer._brain_expanded_why_behavior)
@@ -1477,6 +1483,195 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             "| +0.300 | Enabled",
             text,
         )
+
+    def test_structured_connection_view_filters_and_sorts_enabled_genes(self) -> None:
+        fixture = self.make_brain_world()
+        fixture.brain.genome.nodes[2] = SimpleNamespace(
+            activation="tanh",
+            aggregation="sum",
+            bias=0.0,
+            response=1.0,
+        )
+        fixture.brain.genome.connections[(2, 1)] = SimpleNamespace(
+            key=(2, 1),
+            weight=-0.5,
+            enabled=False,
+        )
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+        view = self.renderer._brain_node_inspector_view(
+            fixture.brain,
+            layout,
+            layout.nodes[1],
+        )
+
+        self.assertEqual(len(view.incoming_rows), 2)
+        self.renderer._brain_connection_filter = "active"
+        active = self.renderer._brain_visible_connection_rows(view.incoming_rows)
+        self.assertEqual([row.endpoint_key for row in active], [-1])
+
+        self.renderer._brain_connection_filter = "all"
+        descending = self.renderer._brain_visible_connection_rows(view.incoming_rows)
+        self.assertEqual([row.weight for row in descending], [0.8, -0.5])
+        self.renderer._brain_connection_sort_descending = False
+        ascending = self.renderer._brain_visible_connection_rows(view.incoming_rows)
+        self.assertEqual([row.weight for row in ascending], [-0.5, 0.8])
+
+    def test_structured_connection_renderer_honors_direction_and_counts(self) -> None:
+        fixture = self.make_brain_world()
+        fixture.brain.genome.connections[(-1, 1)].enabled = False
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor_with_a_name_that_needs_truncation"],
+            ["accelerate"],
+        )
+        view = self.renderer._brain_node_inspector_view(
+            fixture.brain,
+            layout,
+            layout.nodes[1],
+        )
+        self.renderer._brain_connection_direction = "incoming"
+        self.renderer._brain_connection_filter = "active"
+
+        self.renderer._draw_brain_connection_inspector_content(
+            arcade.LBWH(100, 100, 288, 420),
+            view,
+            weight_scale=5.0,
+        )
+
+        self.assertEqual(
+            self.renderer._text_cache["brain_connection_incoming_title"].text,
+            "INCOMING CONNECTIONS (0 / 1)",
+        )
+        self.assertEqual(
+            self.renderer._text_cache["brain_connection_incoming_empty"].text,
+            "No active incoming connections",
+        )
+        self.assertNotIn("brain_connection_outgoing_title", self.renderer._text_cache)
+        self.assertIn("brain_connection_route_title", self.renderer._text_cache)
+        self.assertIn(
+            "brain_connection_direction_incoming",
+            self.renderer._control_hitboxes,
+        )
+
+    def test_connection_weight_colors_use_fixed_signed_strength_scale(self) -> None:
+        neutral = (180, 188, 200)
+
+        self.assertEqual(
+            self.renderer._brain_connection_weight_color(None, 5.0),
+            neutral,
+        )
+        self.assertEqual(
+            self.renderer._brain_connection_weight_color(0.1, 5.0),
+            neutral,
+        )
+        weak_positive = self.renderer._brain_connection_weight_color(0.5, 5.0)
+        self.assertNotEqual(weak_positive, neutral)
+        self.assertEqual(
+            self.renderer._brain_connection_weight_color(5.0, 5.0),
+            (43, 108, 246),
+        )
+        self.assertEqual(
+            self.renderer._brain_connection_weight_color(-5.0, 5.0),
+            (245, 62, 62),
+        )
+        self.assertEqual(
+            self.renderer._brain_connection_weight_color(float("nan"), 0.0),
+            neutral,
+        )
+
+    def test_connection_rows_use_larger_node_font_and_inner_padding(self) -> None:
+        fixture = self.make_brain_world()
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+        view = self.renderer._brain_node_inspector_view(
+            fixture.brain,
+            layout,
+            layout.nodes[1],
+        )
+        bounds = arcade.LBWH(100, 100, 288, 520)
+
+        self.renderer._draw_brain_connection_inspector_content(
+            bounds,
+            view,
+            weight_scale=5.0,
+        )
+
+        endpoint = self.renderer._text_cache[
+            "brain_connection_incoming_0_endpoint"
+        ]
+        status = self.renderer._text_cache[
+            "brain_connection_incoming_0_status"
+        ]
+        self.assertEqual(endpoint.font_size, 11.5)
+        self.assertFalse(endpoint.bold)
+        self.assertEqual(status.font_size, 8.5)
+        self.assertFalse(status.bold)
+        self.assertEqual(
+            status.color,
+            self.renderer._brain_connection_weight_color(0.8, 5.0),
+        )
+        self.assertGreaterEqual(
+            endpoint.x,
+            bounds.left + self.renderer.BRAIN_CONNECTION_HORIZONTAL_PADDING,
+        )
+        self.assertEqual(self.renderer.BRAIN_CONNECTION_ROW_HEIGHT, 40.0)
+
+        positive_background = (
+            self.renderer._brain_connection_row_background_color(
+                2.0,
+                5.0,
+                enabled=True,
+            )
+        )
+        negative_background = (
+            self.renderer._brain_connection_row_background_color(
+                -2.0,
+                5.0,
+                enabled=True,
+            )
+        )
+        self.assertNotEqual(positive_background, negative_background)
+
+    def test_connection_controls_update_state_and_reset_scroll(self) -> None:
+        self.renderer._brain_inspector_page = "node"
+        self.renderer._scroll_offsets["brain_node_inspector"] = 72.0
+        self.renderer._control_hitboxes[
+            "brain_connection_direction_outgoing"
+        ] = arcade.LBWH(180, 180, 50, 24)
+
+        handled = self.renderer.handle_mouse_press(SimpleNamespace(), 200, 190)
+
+        self.assertTrue(handled)
+        self.assertEqual(self.renderer._brain_connection_direction, "outgoing")
+        self.assertEqual(self.renderer._scroll_offsets["brain_node_inspector"], 0.0)
+
+        self.renderer._control_hitboxes[
+            "brain_connection_filter_active"
+        ] = arcade.LBWH(240, 180, 50, 24)
+        self.renderer.handle_mouse_press(SimpleNamespace(), 260, 190)
+        self.assertEqual(self.renderer._brain_connection_filter, "active")
+
+        self.renderer._control_hitboxes[
+            "brain_connection_sort_weight"
+        ] = arcade.LBWH(300, 180, 70, 24)
+        self.renderer.handle_mouse_press(SimpleNamespace(), 330, 190)
+        self.assertFalse(self.renderer._brain_connection_sort_descending)
 
     def test_workspace_registers_nodes_and_expands_when_inspector_collapses(self) -> None:
         fixture = self.make_brain_world()
@@ -1761,7 +1956,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertLess(dense_font, sparse_font)
         self.assertEqual(sparse_radius, 13.0)
         self.assertGreaterEqual(dense_radius, 6.0)
-        self.assertGreaterEqual(dense_font, 8.0)
+        self.assertGreaterEqual(dense_font, 9.5)
 
     def test_graph_nodes_use_static_white_fill_and_hide_hidden_canvas_labels(
         self,

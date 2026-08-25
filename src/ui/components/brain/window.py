@@ -270,6 +270,9 @@ class BrainWindowComponent:
         self._brain_selected_node_key = None
         self._brain_selection_identity = None
         self._brain_inspector_page = "node"
+        self._brain_connection_direction = "both"
+        self._brain_connection_filter = "all"
+        self._brain_connection_sort_descending = True
         self._brain_node_bounds.clear()
         self._scroll_offsets["brain_node_inspector"] = 0.0
         self._scroll_offsets["brain_behavior_inspector"] = 0.0
@@ -289,6 +292,7 @@ class BrainWindowComponent:
         state.inspector_layout = None
         state.inspector_node_key = None
         state.inspector_lines = ()
+        state.inspector_view = None
     def _clear_brain_render_caches(self) -> None:
         """Release cached brain layout, selection, and wrapped content."""
         state = self._brain_state

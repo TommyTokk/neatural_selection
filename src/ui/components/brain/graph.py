@@ -721,7 +721,7 @@ class BrainGraphComponent:
             else usable_height / (densest_column - 1)
         )
         radius = max(6.0, min(13.0, (row_step - 2.0) * 0.62))
-        font_size = max(8.0, min(11.0, row_step * 0.6))
+        font_size = max(9.5, min(12.5, row_step * 0.68))
         return radius, font_size
     def _draw_brain_legend(self, bounds: arcade.Rect) -> None:
         """Draw brain legend.

@@ -21,6 +21,8 @@ from src.analysis import (
 from src.creature.speciation import SpeciesRecord
 from src.ui.common.interaction import rect_contains
 from src.ui.components.state import (
+    BrainConnectionRowView,
+    BrainNodeInspectorView,
     SpeciesInspectorRow as _SpeciesInspectorRow,
     SpeciesInspectorSection as _SpeciesInspectorSection,
     SpeciesTreeLabel as _SpeciesTreeLabel,
@@ -68,6 +70,11 @@ class BrainInspectorComponent:
     BRAIN_NODE_SUMMARY_MIN_HEIGHT = 56.0
     BRAIN_NODE_SUMMARY_LINE_HEIGHT = 17.0
     BRAIN_NODE_SUMMARY_VERTICAL_PADDING = 20.0
+    BRAIN_CONNECTION_NEAR_ZERO = 0.25
+    BRAIN_CONNECTION_DEFAULT_WEIGHT_SCALE = 5.0
+    BRAIN_CONNECTION_ROW_HEIGHT = 40.0
+    BRAIN_ROUTE_ROW_HEIGHT = 56.0
+    BRAIN_CONNECTION_HORIZONTAL_PADDING = 8.0
     BRAIN_BEHAVIOR_CARD_HEIGHT = 88.0
     BRAIN_BEHAVIOR_CARD_GAP = 10.0
     BRAIN_BEHAVIOR_HEADER_HEIGHT = 56.0
@@ -208,6 +215,7 @@ class BrainInspectorComponent:
                 layout,
                 content,
                 show_close=False,
+                weight_scale=self._brain_connection_weight_scale(world),
             )
 
     def _draw_brain_why_inspector(
@@ -1708,6 +1716,7 @@ class BrainInspectorComponent:
         bounds: arcade.Rect,
         *,
         show_close: bool = True,
+        weight_scale: float = BRAIN_CONNECTION_DEFAULT_WEIGHT_SCALE,
     ) -> None:
         """Draw brain node inspector.
 
@@ -1847,15 +1856,10 @@ class BrainInspectorComponent:
             bounds.width - 32,
             max(1.0, summary.bottom - bounds.bottom - 22),
         )
-        self._draw_scrollable_lines_in_bounds(
-            "brain_node_inspector",
+        self._draw_brain_connection_inspector_content(
             content,
-            self._cached_brain_node_inspector_lines(brain, layout, node),
-            line_spacing=20,
-            first_line_color=self.theme.text_primary,
-            body_color=self.theme.text_muted,
-            first_line_bold=True,
-            wrap_lines=True,
+            self._cached_brain_node_inspector_view(brain, layout, node),
+            weight_scale=weight_scale,
         )
     def _brain_node_summary_layout(
         self,
@@ -1963,6 +1967,841 @@ class BrainInspectorComponent:
                 bold=True,
             )
         )
+    def _brain_connection_weight_scale(self, world: World) -> float:
+        """Return the configured absolute NEAT connection-weight limit."""
+        genome_config = getattr(
+            getattr(
+                getattr(world, "neat_controller", None),
+                "config",
+                None,
+            ),
+            "genome_config",
+            None,
+        )
+        candidates = (
+            getattr(genome_config, "weight_min_value", None),
+            getattr(genome_config, "weight_max_value", None),
+        )
+        limits: list[float] = []
+        for candidate in candidates:
+            try:
+                value = abs(float(candidate))
+            except (TypeError, ValueError):
+                continue
+            if isfinite(value):
+                limits.append(value)
+        scale = max(limits, default=self.BRAIN_CONNECTION_DEFAULT_WEIGHT_SCALE)
+        if scale <= self.BRAIN_CONNECTION_NEAR_ZERO:
+            return self.BRAIN_CONNECTION_DEFAULT_WEIGHT_SCALE
+        return scale
+    def _cached_brain_node_inspector_view(
+        self,
+        brain: object,
+        layout: BrainGraphLayout,
+        node: BrainGraphNode,
+    ) -> BrainNodeInspectorView:
+        """Return cached structured content for the stable node selection."""
+        state = self._brain_state
+        if (
+            state.inspector_brain is brain
+            and state.inspector_layout is layout
+            and state.inspector_node_key == node.key
+            and state.inspector_view is not None
+        ):
+            return state.inspector_view
+
+        view = self._brain_node_inspector_view(brain, layout, node)
+        state.inspector_brain = brain
+        state.inspector_layout = layout
+        state.inspector_node_key = node.key
+        state.inspector_view = view
+        return view
+    def _brain_node_inspector_view(
+        self,
+        brain: object,
+        layout: BrainGraphLayout,
+        node: BrainGraphNode,
+    ) -> BrainNodeInspectorView:
+        """Build structured node metadata and direct/route connection rows."""
+        if node.kind == BrainNodeKind.INPUT:
+            layer_label = "Input"
+        elif node.kind == BrainNodeKind.OUTPUT:
+            layer_label = "Output"
+        else:
+            layer_label = f"Hidden {node.depth}"
+        details: list[tuple[str, str]] = [
+            ("Layer", layer_label),
+            ("ID", str(node.key)),
+        ]
+        gene = getattr(brain.genome, "nodes", {}).get(node.key)
+        if node.kind == BrainNodeKind.INPUT:
+            details.append(("Sensor", node.label))
+        elif gene is not None:
+            details.extend(
+                (
+                    ("Activation", str(getattr(gene, "activation", "Unavailable"))),
+                    ("Aggregation", str(getattr(gene, "aggregation", "Unavailable"))),
+                    (
+                        "Bias",
+                        self._format_optional_number(
+                            getattr(gene, "bias", None),
+                            signed=True,
+                        ),
+                    ),
+                    (
+                        "Response",
+                        self._format_optional_number(
+                            getattr(gene, "response", None),
+                        ),
+                    ),
+                )
+            )
+
+        order = {key: index for index, key in enumerate(layout.nodes)}
+        connections = [
+            connection
+            for connection in getattr(brain.genome, "connections", {}).values()
+            if connection.key[0] in layout.nodes and connection.key[1] in layout.nodes
+        ]
+        connections_by_key = {
+            connection.key: connection for connection in connections
+        }
+        incoming_connections = sorted(
+            (connection for connection in connections if connection.key[1] == node.key),
+            key=lambda connection: order.get(connection.key[0], len(order)),
+        )
+        outgoing_connections = sorted(
+            (connection for connection in connections if connection.key[0] == node.key),
+            key=lambda connection: order.get(connection.key[1], len(order)),
+        )
+        incoming_rows = tuple(
+            BrainConnectionRowView(
+                endpoint_label=self._brain_node_display_name(
+                    layout.nodes[connection.key[0]]
+                ),
+                endpoint_key=int(connection.key[0]),
+                source_key=int(connection.key[0]),
+                target_key=int(connection.key[1]),
+                weight=self._brain_connection_weight(connection),
+                enabled=bool(getattr(connection, "enabled", False)),
+            )
+            for connection in incoming_connections
+        )
+        outgoing_rows = tuple(
+            BrainConnectionRowView(
+                endpoint_label=self._brain_node_display_name(
+                    layout.nodes[connection.key[1]]
+                ),
+                endpoint_key=int(connection.key[1]),
+                source_key=int(connection.key[0]),
+                target_key=int(connection.key[1]),
+                weight=self._brain_connection_weight(connection),
+                enabled=bool(getattr(connection, "enabled", False)),
+            )
+            for connection in outgoing_connections
+        )
+
+        highlight = self._brain_highlight_for_node(layout, node.key)
+        additional_route_keys = sorted(
+            highlight.edges - highlight.direct_edges,
+            key=lambda key: (
+                order.get(key[0], len(order)),
+                order.get(key[1], len(order)),
+            ),
+        )
+        route_rows: list[BrainConnectionRowView] = []
+        for connection_key in additional_route_keys:
+            connection = connections_by_key[connection_key]
+            in_upstream = connection_key in highlight.upstream_edges
+            in_downstream = connection_key in highlight.downstream_edges
+            relation = (
+                "Upstream + downstream"
+                if in_upstream and in_downstream
+                else "Upstream"
+                if in_upstream
+                else "Downstream"
+            )
+            source = layout.nodes[connection_key[0]]
+            target = layout.nodes[connection_key[1]]
+            route_rows.append(
+                BrainConnectionRowView(
+                    endpoint_label=(
+                        f"{self._brain_node_display_name(source)} [{source.key}] "
+                        f"→ {self._brain_node_display_name(target)} [{target.key}]"
+                    ),
+                    endpoint_key=int(target.key),
+                    source_key=int(source.key),
+                    target_key=int(target.key),
+                    weight=self._brain_connection_weight(connection),
+                    enabled=bool(getattr(connection, "enabled", False)),
+                    relation=relation,
+                )
+            )
+        return BrainNodeInspectorView(
+            details=tuple(details),
+            incoming_rows=incoming_rows,
+            outgoing_rows=outgoing_rows,
+            route_rows=tuple(route_rows),
+        )
+    @staticmethod
+    def _brain_connection_weight(connection: object) -> float | None:
+        """Return a finite connection weight, or ``None`` when unavailable."""
+        try:
+            weight = float(getattr(connection, "weight"))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return weight if isfinite(weight) else None
+    def _brain_sorted_connection_rows(
+        self,
+        rows: tuple[BrainConnectionRowView, ...],
+    ) -> tuple[BrainConnectionRowView, ...]:
+        """Sort rows numerically by signed weight with unavailable values last."""
+        descending = self._brain_connection_sort_descending
+
+        def sort_key(row: BrainConnectionRowView) -> tuple[object, ...]:
+            """Return a stable key with unavailable weights ordered last."""
+            if row.weight is None:
+                return (1, 0.0, row.endpoint_key, row.source_key, row.target_key)
+            value = -row.weight if descending else row.weight
+            return (0, value, row.endpoint_key, row.source_key, row.target_key)
+
+        return tuple(sorted(rows, key=sort_key))
+    def _brain_visible_connection_rows(
+        self,
+        rows: tuple[BrainConnectionRowView, ...],
+    ) -> tuple[BrainConnectionRowView, ...]:
+        """Apply the active-gene filter and current signed-weight ordering."""
+        filtered = (
+            tuple(row for row in rows if row.enabled)
+            if self._brain_connection_filter == "active"
+            else rows
+        )
+        return self._brain_sorted_connection_rows(filtered)
+    def _brain_connection_weight_color(
+        self,
+        weight: float | None,
+        weight_scale: float,
+    ) -> tuple[int, int, int]:
+        """Map sign and globally normalized strength to a readable text color."""
+        neutral = (180, 188, 200)
+        if weight is None or not isfinite(weight):
+            return neutral
+        magnitude = abs(weight)
+        if magnitude < self.BRAIN_CONNECTION_NEAR_ZERO:
+            return neutral
+        try:
+            scale = abs(float(weight_scale))
+        except (TypeError, ValueError):
+            scale = self.BRAIN_CONNECTION_DEFAULT_WEIGHT_SCALE
+        if not isfinite(scale) or scale <= self.BRAIN_CONNECTION_NEAR_ZERO:
+            scale = self.BRAIN_CONNECTION_DEFAULT_WEIGHT_SCALE
+        strength = max(
+            0.0,
+            min(
+                1.0,
+                (magnitude - self.BRAIN_CONNECTION_NEAR_ZERO)
+                / (scale - self.BRAIN_CONNECTION_NEAR_ZERO),
+            ),
+        )
+        signed_color = (43, 108, 246) if weight >= 0.0 else (245, 62, 62)
+        return self._brain_blend_color(
+            neutral,
+            signed_color,
+            0.35 + 0.65 * strength,
+        )
+    def _brain_connection_row_background_color(
+        self,
+        weight: float | None,
+        weight_scale: float,
+        *,
+        enabled: bool,
+    ) -> tuple[int, int, int]:
+        """Return a subtle row tint matching the signed weight color."""
+        accent = self._brain_connection_weight_color(weight, weight_scale)
+        return self._brain_blend_color(
+            self.theme.card_background,
+            accent,
+            0.20 if enabled else 0.12,
+        )
+    @staticmethod
+    def _brain_connection_weight_text(weight: float | None) -> str:
+        """Format a finite signed weight for a table cell."""
+        return "—" if weight is None else f"{weight:+.3f}"
+    def _draw_brain_connection_inspector_content(
+        self,
+        content: arcade.Rect,
+        view: BrainNodeInspectorView,
+        *,
+        weight_scale: float,
+    ) -> None:
+        """Draw node details, controls, and scrollable connection tables."""
+        incoming = self._brain_visible_connection_rows(view.incoming_rows)
+        outgoing = self._brain_visible_connection_rows(view.outgoing_rows)
+        routes = self._brain_sorted_connection_rows(view.route_rows)
+        directions = self._brain_connection_direction
+        show_incoming = directions in {"both", "incoming"}
+        show_outgoing = directions in {"both", "outgoing"}
+        content_height = self._brain_connection_content_height(
+            view,
+            incoming,
+            outgoing,
+            routes,
+            show_incoming=show_incoming,
+            show_outgoing=show_outgoing,
+        )
+        scroll_limit = max(0.0, content_height - content.height)
+        scroll_offset = max(
+            0.0,
+            min(
+                scroll_limit,
+                self._scroll_offsets.get("brain_node_inspector", 0.0),
+            ),
+        )
+        self._scroll_offsets["brain_node_inspector"] = scroll_offset
+        self._scroll_limits["brain_node_inspector"] = scroll_limit
+        self._scroll_regions["brain_node_inspector"] = content
+
+        inner = arcade.LBWH(
+            content.left + self.BRAIN_CONNECTION_HORIZONTAL_PADDING,
+            content.bottom,
+            max(
+                1.0,
+                content.width - self.BRAIN_CONNECTION_HORIZONTAL_PADDING * 2.0,
+            ),
+            content.height,
+        )
+        y = content.top - 12.0 + scroll_offset
+        with self._ui_clip(content):
+            self._draw_text(
+                "brain_node_details_title",
+                "NODE DETAILS",
+                inner.left,
+                y - 11.0,
+                self.theme.text_primary,
+                9.5,
+                bold=True,
+            )
+            y -= 26.0
+            label_width = min(92.0, inner.width * 0.32)
+            for index, (label, value) in enumerate(view.details):
+                self._draw_text(
+                    f"brain_node_detail_{index}_label",
+                    label.upper(),
+                    inner.left,
+                    y,
+                    self.theme.text_muted,
+                    8.5,
+                )
+                self._draw_text(
+                    f"brain_node_detail_{index}_value",
+                    self._fit_line(value, inner.width - label_width - 8.0),
+                    inner.left + label_width,
+                    y,
+                    self.theme.text_primary,
+                    10.5,
+                )
+                y -= 20.0
+            y -= 12.0
+            arcade.draw_line(
+                inner.left,
+                y + 10.0,
+                inner.right,
+                y + 10.0,
+                self.theme.panel_border,
+                1.0,
+            )
+            self._draw_text(
+                "brain_connections_title",
+                "CONNECTIONS",
+                inner.left,
+                y - 12.0,
+                self.theme.text_primary,
+                9.5,
+                bold=True,
+            )
+            y -= 28.0
+            y = self._draw_brain_connection_direction_controls(inner, y)
+            y = self._draw_brain_connection_filter_controls(inner, y)
+            if show_incoming:
+                y = self._draw_brain_direct_connection_table(
+                    inner,
+                    y,
+                    key="incoming",
+                    endpoint_heading="FROM (SOURCE)",
+                    rows=incoming,
+                    total_count=len(view.incoming_rows),
+                    weight_scale=weight_scale,
+                )
+            if show_outgoing:
+                y = self._draw_brain_direct_connection_table(
+                    inner,
+                    y,
+                    key="outgoing",
+                    endpoint_heading="TO (TARGET)",
+                    rows=outgoing,
+                    total_count=len(view.outgoing_rows),
+                    weight_scale=weight_scale,
+                )
+            self._draw_brain_route_connection_table(
+                inner,
+                y,
+                routes,
+                weight_scale=weight_scale,
+            )
+        if scroll_limit > 0.0:
+            self._draw_scrollbar(content, scroll_offset, scroll_limit)
+    def _brain_connection_content_height(
+        self,
+        view: BrainNodeInspectorView,
+        incoming: tuple[BrainConnectionRowView, ...],
+        outgoing: tuple[BrainConnectionRowView, ...],
+        routes: tuple[BrainConnectionRowView, ...],
+        *,
+        show_incoming: bool,
+        show_outgoing: bool,
+    ) -> float:
+        """Return vertical space occupied by the structured inspector content."""
+        height = 12.0 + 26.0 + len(view.details) * 20.0 + 12.0
+        height += 28.0 + 40.0 + 42.0
+        if show_incoming:
+            height += 30.0 + 26.0 + max(40.0, len(incoming) * self.BRAIN_CONNECTION_ROW_HEIGHT) + 16.0
+        if show_outgoing:
+            height += 30.0 + 26.0 + max(40.0, len(outgoing) * self.BRAIN_CONNECTION_ROW_HEIGHT) + 16.0
+        height += 30.0 + max(40.0, len(routes) * self.BRAIN_ROUTE_ROW_HEIGHT) + 20.0
+        return height
+    def _draw_brain_connection_direction_controls(
+        self,
+        content: arcade.Rect,
+        y: float,
+    ) -> float:
+        """Draw Both/Incoming/Outgoing segmented direction controls."""
+        gap = 7.0
+        width = (content.width - 2.0 * gap) / 3.0
+        for index, (value, label) in enumerate(
+            (("both", "BOTH"), ("incoming", "INCOMING"), ("outgoing", "OUTGOING"))
+        ):
+            bounds = arcade.LBWH(
+                content.left + index * (width + gap),
+                y - 30.0,
+                width,
+                30.0,
+            )
+            self._draw_brain_connection_control(
+                bounds,
+                f"brain_connection_direction_{value}",
+                label,
+                value == self._brain_connection_direction,
+                content,
+            )
+        return y - 40.0
+    def _draw_brain_connection_filter_controls(
+        self,
+        content: arcade.Rect,
+        y: float,
+    ) -> float:
+        """Draw All/Active status filters and the signed weight sort control."""
+        button_width = min(72.0, (content.width - 108.0) / 2.0)
+        for index, (value, label) in enumerate((("all", "ALL"), ("active", "ACTIVE"))):
+            bounds = arcade.LBWH(
+                content.left + index * (button_width + 7.0),
+                y - 30.0,
+                button_width,
+                30.0,
+            )
+            self._draw_brain_connection_control(
+                bounds,
+                f"brain_connection_filter_{value}",
+                label,
+                value == self._brain_connection_filter,
+                content,
+            )
+        sort_bounds = arcade.LBWH(
+            content.right - 94.0,
+            y - 30.0,
+            94.0,
+            30.0,
+        )
+        arrow = "↓" if self._brain_connection_sort_descending else "↑"
+        self._draw_brain_connection_control(
+            sort_bounds,
+            "brain_connection_sort_weight",
+            f"WEIGHT {arrow}",
+            False,
+            content,
+        )
+        return y - 42.0
+    def _draw_brain_connection_control(
+        self,
+        bounds: arcade.Rect,
+        key: str,
+        label: str,
+        active: bool,
+        viewport: arcade.Rect,
+    ) -> None:
+        """Draw one inspector selector and register only its visible hitbox."""
+        fill = self.theme.accent_soft if active else self.theme.card_background
+        border = self.theme.accent if active else self.theme.panel_border
+        color = self.theme.accent if active else self.theme.text_muted
+        self._draw_rounded_rect(bounds, fill, border, 5.0, 1.0)
+        self._draw_text(
+            f"{key}_label",
+            label,
+            bounds.center_x,
+            bounds.center_y,
+            color,
+            9.0,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+        if bounds.top >= viewport.bottom and bounds.bottom <= viewport.top:
+            self._control_hitboxes[key] = bounds
+    def _draw_brain_direct_connection_table(
+        self,
+        content: arcade.Rect,
+        y: float,
+        *,
+        key: str,
+        endpoint_heading: str,
+        rows: tuple[BrainConnectionRowView, ...],
+        total_count: int,
+        weight_scale: float,
+    ) -> float:
+        """Draw one incoming or outgoing direct-connection table."""
+        count = (
+            f"{len(rows)} / {total_count}"
+            if len(rows) != total_count
+            else str(total_count)
+        )
+        self._draw_text(
+            f"brain_connection_{key}_title",
+            f"{key.upper()} CONNECTIONS ({count})",
+            content.left,
+            y - 14.0,
+            self.theme.text_primary,
+            9.5,
+            bold=True,
+        )
+        y -= 30.0
+        columns = self._brain_direct_connection_columns(content)
+        headings = (
+            (endpoint_heading, columns["endpoint"].left, "left"),
+            ("NODE ID", columns["node_id"].center_x, "center"),
+            ("WEIGHT", columns["weight"].right, "right"),
+            ("STATUS", columns["status"].center_x, "center"),
+        )
+        for index, (label, x, anchor) in enumerate(headings):
+            self._draw_text(
+                f"brain_connection_{key}_heading_{index}",
+                label,
+                x,
+                y - 11.0,
+                self.theme.text_muted,
+                7.8,
+                bold=True,
+                anchor_x=anchor,
+            )
+        arcade.draw_line(
+            content.left,
+            y - 24.0,
+            content.right,
+            y - 24.0,
+            self.theme.panel_border,
+            1.0,
+        )
+        y -= 26.0
+        if not rows:
+            empty = (
+                f"No active {key} connections"
+                if total_count and self._brain_connection_filter == "active"
+                else f"No {key} connections"
+            )
+            self._draw_text(
+                f"brain_connection_{key}_empty",
+                empty,
+                content.left + 4.0,
+                y - 19.0,
+                self.theme.text_muted,
+                9.5,
+            )
+            y -= 40.0
+        else:
+            for index, row in enumerate(rows):
+                row_bounds = arcade.LBWH(
+                    content.left,
+                    y - self.BRAIN_CONNECTION_ROW_HEIGHT,
+                    content.width,
+                    self.BRAIN_CONNECTION_ROW_HEIGHT,
+                )
+                self._draw_brain_direct_connection_row(
+                    key,
+                    index,
+                    row_bounds,
+                    columns,
+                    row,
+                    weight_scale,
+                )
+                y -= self.BRAIN_CONNECTION_ROW_HEIGHT
+        return y - 16.0
+    @staticmethod
+    def _brain_direct_connection_columns(
+        content: arcade.Rect,
+    ) -> dict[str, arcade.Rect]:
+        """Return responsive right-anchored columns for direct rows."""
+        status_width = 58.0
+        weight_width = 52.0
+        node_id_width = 42.0
+        gap = 6.0
+        status = arcade.LBWH(
+            content.right - status_width,
+            content.bottom,
+            status_width,
+            content.height,
+        )
+        weight = arcade.LBWH(
+            status.left - gap - weight_width,
+            content.bottom,
+            weight_width,
+            content.height,
+        )
+        node_id = arcade.LBWH(
+            weight.left - gap - node_id_width,
+            content.bottom,
+            node_id_width,
+            content.height,
+        )
+        endpoint = arcade.LBWH(
+            content.left,
+            content.bottom,
+            max(24.0, node_id.left - gap - content.left),
+            content.height,
+        )
+        return {
+            "endpoint": endpoint,
+            "node_id": node_id,
+            "weight": weight,
+            "status": status,
+        }
+    def _draw_brain_direct_connection_row(
+        self,
+        key: str,
+        index: int,
+        bounds: arcade.Rect,
+        columns: dict[str, arcade.Rect],
+        row: BrainConnectionRowView,
+        weight_scale: float,
+    ) -> None:
+        """Draw one aligned direct-connection row with a status badge."""
+        weight_color = self._brain_connection_weight_color(
+            row.weight,
+            weight_scale,
+        )
+        self._draw_rounded_rect_fill(
+            arcade.LBWH(
+                bounds.left,
+                bounds.bottom + 2.0,
+                bounds.width,
+                bounds.height - 4.0,
+            ),
+            self._brain_connection_row_background_color(
+                row.weight,
+                weight_scale,
+                enabled=row.enabled,
+            ),
+            5.0,
+        )
+        endpoint_color = self.theme.text_primary if row.enabled else self.theme.text_muted
+        self._draw_text(
+            f"brain_connection_{key}_{index}_endpoint",
+            self._fit_line(row.endpoint_label, columns["endpoint"].width - 8.0),
+            columns["endpoint"].left + 4.0,
+            bounds.center_y,
+            endpoint_color,
+            11.5,
+            anchor_y="center",
+        )
+        self._draw_text(
+            f"brain_connection_{key}_{index}_id",
+            str(row.endpoint_key),
+            columns["node_id"].center_x,
+            bounds.center_y,
+            self.theme.text_muted,
+            10.0,
+            anchor_x="center",
+            anchor_y="center",
+        )
+        self._draw_text(
+            f"brain_connection_{key}_{index}_weight",
+            self._brain_connection_weight_text(row.weight),
+            columns["weight"].right,
+            bounds.center_y,
+            weight_color,
+            10.5,
+            anchor_x="right",
+            anchor_y="center",
+        )
+        self._draw_brain_connection_status_badge(
+            f"brain_connection_{key}_{index}_status",
+            arcade.LBWH(
+                columns["status"].left,
+                bounds.center_y - 10.0,
+                columns["status"].width,
+                20.0,
+            ),
+            row.enabled,
+            weight_color,
+        )
+        arcade.draw_line(
+            bounds.left,
+            bounds.bottom,
+            bounds.right,
+            bounds.bottom,
+            self._brain_color_alpha(self.theme.panel_border, 115),
+            0.75,
+        )
+    def _draw_brain_connection_status_badge(
+        self,
+        key: str,
+        bounds: arcade.Rect,
+        enabled: bool,
+        accent_color: arcade.Color | tuple[int, ...],
+    ) -> None:
+        """Draw a status badge using the connection row's weight tint."""
+        color = tuple(accent_color[:3])
+        self._draw_rounded_rect(
+            bounds,
+            self._brain_blend_color(
+                self.theme.card_background,
+                color,
+                0.28 if enabled else 0.18,
+            ),
+            self._brain_blend_color(
+                self.theme.card_background,
+                color,
+                0.72 if enabled else 0.50,
+            ),
+            5.0,
+            1.0,
+        )
+        self._draw_text(
+            key,
+            "Active" if enabled else "Disabled",
+            bounds.center_x,
+            bounds.center_y,
+            color,
+            8.5,
+            anchor_x="center",
+            anchor_y="center",
+        )
+    def _draw_brain_route_connection_table(
+        self,
+        content: arcade.Rect,
+        y: float,
+        rows: tuple[BrainConnectionRowView, ...],
+        *,
+        weight_scale: float,
+    ) -> float:
+        """Draw the preserved additional enabled signal-route section."""
+        self._draw_text(
+            "brain_connection_route_title",
+            f"ADDITIONAL ENABLED SIGNAL ROUTE ({len(rows)})",
+            content.left,
+            y - 14.0,
+            self.theme.text_primary,
+            9.2,
+            bold=True,
+        )
+        y -= 30.0
+        if not rows:
+            self._draw_text(
+                "brain_connection_route_empty",
+                "No additional route connections",
+                content.left + 4.0,
+                y - 19.0,
+                self.theme.text_muted,
+                9.5,
+            )
+            return y - 60.0
+        for index, row in enumerate(rows):
+            bounds = arcade.LBWH(
+                content.left,
+                y - self.BRAIN_ROUTE_ROW_HEIGHT,
+                content.width,
+                self.BRAIN_ROUTE_ROW_HEIGHT,
+            )
+            weight_color = self._brain_connection_weight_color(
+                row.weight,
+                weight_scale,
+            )
+            self._draw_rounded_rect_fill(
+                arcade.LBWH(
+                    bounds.left,
+                    bounds.bottom + 2.0,
+                    bounds.width,
+                    bounds.height - 4.0,
+                ),
+                self._brain_connection_row_background_color(
+                    row.weight,
+                    weight_scale,
+                    enabled=row.enabled,
+                ),
+                5.0,
+            )
+            badge_width = 58.0
+            weight_width = 52.0
+            right_gap = 6.0
+            badge = arcade.LBWH(
+                bounds.right - badge_width,
+                bounds.center_y - 10.0,
+                badge_width,
+                20.0,
+            )
+            weight_right = badge.left - right_gap
+            endpoint_width = max(
+                24.0,
+                weight_right - weight_width - right_gap - bounds.left,
+            )
+            self._draw_text(
+                f"brain_connection_route_{index}_relation",
+                (row.relation or "Route").upper(),
+                bounds.left + 4.0,
+                bounds.top - 15.0,
+                self.theme.text_muted,
+                8.5,
+            )
+            self._draw_text(
+                f"brain_connection_route_{index}_endpoint",
+                self._fit_line(row.endpoint_label, endpoint_width - 8.0),
+                bounds.left + 4.0,
+                bounds.bottom + 12.0,
+                self.theme.text_primary,
+                10.5,
+            )
+            self._draw_text(
+                f"brain_connection_route_{index}_weight",
+                self._brain_connection_weight_text(row.weight),
+                weight_right,
+                bounds.bottom + 12.0,
+                weight_color,
+                10.5,
+                anchor_x="right",
+            )
+            self._draw_brain_connection_status_badge(
+                f"brain_connection_route_{index}_status",
+                badge,
+                row.enabled,
+                weight_color,
+            )
+            arcade.draw_line(
+                bounds.left,
+                bounds.bottom,
+                bounds.right,
+                bounds.bottom,
+                self._brain_color_alpha(self.theme.panel_border, 115),
+                0.75,
+            )
+            y -= self.BRAIN_ROUTE_ROW_HEIGHT
+        return y - 20.0
     def _cached_brain_node_inspector_lines(
         self,
         brain: object,
@@ -1975,6 +2814,7 @@ class BrainInspectorComponent:
             state.inspector_brain is brain
             and state.inspector_layout is layout
             and state.inspector_node_key == node.key
+            and state.inspector_lines
         ):
             return state.inspector_lines
 

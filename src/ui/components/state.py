@@ -19,6 +19,29 @@ from src.ui.layouts.species_tree import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class BrainConnectionRowView:
+    """Describe one connection rendered by the brain node inspector."""
+
+    endpoint_label: str
+    endpoint_key: int
+    source_key: int
+    target_key: int
+    weight: float | None
+    enabled: bool
+    relation: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrainNodeInspectorView:
+    """Cache structured node details and connection rows for one selection."""
+
+    details: tuple[tuple[str, str], ...]
+    incoming_rows: tuple[BrainConnectionRowView, ...]
+    outgoing_rows: tuple[BrainConnectionRowView, ...]
+    route_rows: tuple[BrainConnectionRowView, ...]
+
+
 @dataclass(slots=True)
 class PanelState:
     """Track floating-panel, navigation, and speed-control interaction."""
@@ -50,6 +73,9 @@ class BrainWindowState:
     selected_node_key: int | None = None
     node_inspector_open: bool = True
     inspector_page: str = "node"
+    connection_direction: str = "both"
+    connection_filter: str = "all"
+    connection_sort_descending: bool = True
     behavior_scroll_offset: float = 0.0
     why_scroll_offset: float = 0.0
     expanded_behavior: str | None = None
@@ -64,6 +90,7 @@ class BrainWindowState:
     inspector_layout: BrainGraphLayout | None = None
     inspector_node_key: int | None = None
     inspector_lines: tuple[str, ...] = ()
+    inspector_view: BrainNodeInspectorView | None = None
 
 
 @dataclass(slots=True)

@@ -76,6 +76,18 @@ class UiRenderer(
         "_brain_selected_node_key": ("_brain_state", "selected_node_key"),
         "_brain_node_inspector_open": ("_brain_state", "node_inspector_open"),
         "_brain_inspector_page": ("_brain_state", "inspector_page"),
+        "_brain_connection_direction": (
+            "_brain_state",
+            "connection_direction",
+        ),
+        "_brain_connection_filter": (
+            "_brain_state",
+            "connection_filter",
+        ),
+        "_brain_connection_sort_descending": (
+            "_brain_state",
+            "connection_sort_descending",
+        ),
         "_brain_behavior_scroll_offset": (
             "_brain_state",
             "behavior_scroll_offset",
@@ -625,6 +637,35 @@ class UiRenderer(
             if self._contains_hitbox("brain_inspector_page_why", x, y):
                 self._brain_inspector_page = "why"
                 return True
+            if self._brain_inspector_page == "node":
+                for direction in ("both", "incoming", "outgoing"):
+                    if self._contains_hitbox(
+                        f"brain_connection_direction_{direction}",
+                        x,
+                        y,
+                    ):
+                        self._brain_connection_direction = direction
+                        self._scroll_offsets["brain_node_inspector"] = 0.0
+                        return True
+                for connection_filter in ("all", "active"):
+                    if self._contains_hitbox(
+                        f"brain_connection_filter_{connection_filter}",
+                        x,
+                        y,
+                    ):
+                        self._brain_connection_filter = connection_filter
+                        self._scroll_offsets["brain_node_inspector"] = 0.0
+                        return True
+                if self._contains_hitbox(
+                    "brain_connection_sort_weight",
+                    x,
+                    y,
+                ):
+                    self._brain_connection_sort_descending = not (
+                        self._brain_connection_sort_descending
+                    )
+                    self._scroll_offsets["brain_node_inspector"] = 0.0
+                    return True
             if self._brain_inspector_page == "behaviors":
                 for behavior in self.BRAIN_BEHAVIOR_ACCENTS:
                     hitbox_key = self._brain_behavior_card_hitbox_key(
