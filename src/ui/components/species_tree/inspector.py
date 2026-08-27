@@ -14,7 +14,7 @@ from src.analysis import (
     BEHAVIOR_RADAR_LABELS,
     InspectorReport,
     action_node_label,
-    calculate_behavior_scores,
+    calculate_genotypic_behavior_scores,
     classify_connection_transition,
     generate_inspector_report,
     generate_radar_chart_image,
@@ -136,15 +136,15 @@ class SpeciesTreeInspectorComponent:
         ThreadPoolExecutor
             Computed result.
         """
-        executor = self._species_tree_radar_executor
+        executor = self._behavior_radar_executor
         if executor is None:
-            # A single worker serializes Matplotlib access and avoids creating a
-            # new thread for each selected species.
+            # A single worker serializes Matplotlib access for species and
+            # creature profiles and avoids creating threads per selection.
             executor = ThreadPoolExecutor(
                 max_workers=1,
-                thread_name_prefix="species-radar",
+                thread_name_prefix="behavior-radar",
             )
-            self._species_tree_radar_executor = executor
+            self._behavior_radar_executor = executor
         return executor
     def _clear_species_radar_state(self) -> None:
         """Clear species radar state.
@@ -449,21 +449,34 @@ class SpeciesTreeInspectorComponent:
             if record.parent_species_id is not None
             else None
         )
-        child_genome = self._species_representative_genome(
+        child_traits = self._species_representative_traits(
             child_representative
         )
-        parent_genome = self._species_representative_genome(
+        parent_traits = self._species_representative_traits(
             parent_representative
         )
-        if child_genome is not None:
-            child_scores = calculate_behavior_scores(
-                child_genome,
+        if child_traits is not None:
+            child_scores = calculate_genotypic_behavior_scores(
+                child_traits[0],
                 output_keys,
+                physical_traits=child_traits[1],
+                vision_traits=child_traits[2],
+                flocking_traits=child_traits[3],
+                trait_config=world.config.trait,
+                vision_config=world.config.vision,
             )
             parent_scores = (
                 None
-                if parent_genome is None
-                else calculate_behavior_scores(parent_genome, output_keys)
+                if parent_traits is None
+                else calculate_genotypic_behavior_scores(
+                    parent_traits[0],
+                    output_keys,
+                    physical_traits=parent_traits[1],
+                    vision_traits=parent_traits[2],
+                    flocking_traits=parent_traits[3],
+                    trait_config=world.config.trait,
+                    vision_config=world.config.vision,
+                )
             )
             # Radar image generation uses Matplotlib and must not stall Arcade's
             # render loop; the finished image is consumed on a later frame.
@@ -472,6 +485,7 @@ class SpeciesTreeInspectorComponent:
                 child_scores,
                 parent_scores,
                 BEHAVIOR_RADAR_LABELS,
+                primary_label="Selected species",
             )
         else:
             self._species_tree_radar_error = "representative_unavailable"
@@ -678,8 +692,10 @@ class SpeciesTreeInspectorComponent:
             weights_complete=shift.weights_complete,
         )
     @staticmethod
-    def _species_representative_genome(representative: object) -> object | None:
-        """Return species representative genome.
+    def _species_representative_traits(
+        representative: object,
+    ) -> tuple[object, object, object, object] | None:
+        """Return a complete species representative genotype tuple.
 
         Parameters
         ----------
@@ -688,7 +704,7 @@ class SpeciesTreeInspectorComponent:
 
         Returns
         -------
-        object | None
+        tuple[object, object, object, object] | None
             Computed result.
         """
         if not isinstance(representative, tuple) or len(representative) != 4:
@@ -696,7 +712,7 @@ class SpeciesTreeInspectorComponent:
         genome = representative[0]
         if not hasattr(genome, "nodes") or not hasattr(genome, "connections"):
             return None
-        return genome
+        return representative
     def _draw_species_inspector(
         self,
         bounds: arcade.Rect,

@@ -424,10 +424,149 @@ def calculate_behavior_scores(
     )
 
 
+def calculate_genotypic_behavior_scores(
+    genome: Any,
+    output_keys: Iterable[int],
+    *,
+    physical_traits: Any | None = None,
+    vision_traits: Any | None = None,
+    flocking_traits: Any | None = None,
+    trait_config: Any | None = None,
+    vision_config: Any | None = None,
+) -> tuple[float, ...]:
+    """Return behavioral tendencies from neural and inherited trait genes.
+
+    Neural output tendencies retain half of each combined axis.  The other half
+    is the mean of the semantically related non-NEAT traits.  Axes without a
+    related inherited tendency, or whose trait group is unavailable, preserve
+    their neural-only value.
+    """
+    scores = list(calculate_behavior_scores(genome, output_keys))
+
+    def normalized_trait(
+        source: Any | None,
+        attribute: str,
+        config: Any | None,
+        minimum_attribute: str,
+        maximum_attribute: str,
+        *,
+        invert: bool = False,
+    ) -> float | None:
+        if source is None or config is None:
+            return None
+        try:
+            value = float(getattr(source, attribute))
+            minimum = float(getattr(config, minimum_attribute))
+            maximum = float(getattr(config, maximum_attribute))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not all(isfinite(item) for item in (value, minimum, maximum)):
+            return None
+        span = maximum - minimum
+        if span <= 0.0:
+            return None
+        normalized = _bounded_score((value - minimum) / span)
+        return 1.0 - normalized if invert else normalized
+
+    def bounded_trait(
+        source: Any | None,
+        attribute: str,
+        *,
+        invert: bool = False,
+    ) -> float | None:
+        if source is None:
+            return None
+        try:
+            value = float(getattr(source, attribute))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not isfinite(value):
+            return None
+        bounded = _bounded_score(value)
+        return 1.0 - bounded if invert else bounded
+
+    def blend(axis: int, traits: Iterable[float | None]) -> None:
+        available = tuple(value for value in traits if value is not None)
+        if not available:
+            return
+        trait_score = sum(available) / len(available)
+        scores[axis] = (scores[axis] + trait_score) / 2.0
+
+    blend(
+        0,
+        (
+            normalized_trait(
+                physical_traits,
+                "movement_cost_multiplier",
+                trait_config,
+                "min_movement_cost_multiplier",
+                "max_movement_cost_multiplier",
+                invert=True,
+            ),
+        ),
+    )
+    blend(
+        1,
+        (
+            normalized_trait(
+                physical_traits,
+                "stomach_capacity",
+                trait_config,
+                "min_stomach_capacity",
+                "max_stomach_capacity",
+            ),
+            normalized_trait(
+                physical_traits,
+                "digestion_rate",
+                trait_config,
+                "min_digestion_rate",
+                "max_digestion_rate",
+            ),
+            normalized_trait(
+                physical_traits,
+                "digestion_efficiency",
+                trait_config,
+                "min_digestion_efficiency",
+                "max_digestion_efficiency",
+            ),
+        ),
+    )
+    blend(
+        2,
+        (
+            bounded_trait(flocking_traits, "separation_gene", invert=True),
+            bounded_trait(flocking_traits, "alignment_gene"),
+            bounded_trait(flocking_traits, "cohesion_gene"),
+        ),
+    )
+    blend(
+        5,
+        (
+            normalized_trait(
+                vision_traits,
+                "range",
+                vision_config,
+                "min_range",
+                "max_range",
+            ),
+            normalized_trait(
+                vision_traits,
+                "angle",
+                vision_config,
+                "min_angle",
+                "max_angle",
+            ),
+        ),
+    )
+    return tuple(_bounded_score(score) for score in scores)
+
+
 def generate_radar_chart_image(
     child_scores: Sequence[float],
     parent_scores: Sequence[float] | None,
     labels: Sequence[str],
+    *,
+    primary_label: str = "Selected species",
 ) -> Image.Image:
     """Render a transparent radar chart and return a detached RGBA image."""
     if len(child_scores) != len(labels):
@@ -487,7 +626,7 @@ def generate_radar_chart_image(
             closed_child,
             color=child_border,
             linewidth=2.6,
-            label="Selected species",
+            label=primary_label,
         )
         axis.fill(closed_angles, closed_child, color=child_fill, alpha=0.30)
         axis.set_ylim(0.0, 1.0)

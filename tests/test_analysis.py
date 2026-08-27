@@ -11,6 +11,7 @@ from src.analysis import (
     BEHAVIOR_RADAR_LABELS,
     action_node_label,
     calculate_behavior_scores,
+    calculate_genotypic_behavior_scores,
     classify_connection_transition,
     generate_inspector_report,
     generate_radar_chart_image,
@@ -562,6 +563,104 @@ class BehaviorRadarAnalysisTest(unittest.TestCase):
         scores = calculate_behavior_scores(self.genome({}), range(12))
 
         self.assertEqual(scores, (0.5,) * 6)
+
+    def test_genotypic_scores_blend_neural_and_related_traits_by_layer(self) -> None:
+        config = build_sim_config()
+        physical = SimpleNamespace(
+            radius=config.trait.max_radius,
+            movement_cost_multiplier=config.trait.min_movement_cost_multiplier,
+            stomach_capacity=config.trait.max_stomach_capacity,
+            digestion_rate=config.trait.max_digestion_rate,
+            digestion_efficiency=config.trait.max_digestion_efficiency,
+        )
+        vision = SimpleNamespace(
+            range=config.vision.max_range,
+            angle=config.vision.max_angle,
+        )
+        flocking = SimpleNamespace(
+            separation_gene=0.0,
+            alignment_gene=1.0,
+            cohesion_gene=1.0,
+            social_tag_x=1.0,
+            social_tag_y=1.0,
+        )
+
+        scores = calculate_genotypic_behavior_scores(
+            self.genome({key: 0.0 for key in range(12)}),
+            range(12),
+            physical_traits=physical,
+            vision_traits=vision,
+            flocking_traits=flocking,
+            trait_config=config.trait,
+            vision_config=config.vision,
+        )
+
+        self.assertEqual(scores, (0.75, 0.75, 0.75, 0.5, 0.5, 0.75))
+
+    def test_genotypic_scores_ignore_radius_and_social_identity_tags(self) -> None:
+        config = build_sim_config()
+        genome = self.genome({key: 0.0 for key in range(12)})
+
+        def scores(radius: float, tag: float) -> tuple[float, ...]:
+            return calculate_genotypic_behavior_scores(
+                genome,
+                range(12),
+                physical_traits=SimpleNamespace(
+                    radius=radius,
+                    movement_cost_multiplier=1.0,
+                    stomach_capacity=1.6,
+                    digestion_rate=0.2,
+                    digestion_efficiency=0.9,
+                ),
+                vision_traits=SimpleNamespace(range=150.0, angle=0.95),
+                flocking_traits=SimpleNamespace(
+                    separation_gene=0.5,
+                    alignment_gene=0.5,
+                    cohesion_gene=0.5,
+                    social_tag_x=tag,
+                    social_tag_y=1.0 - tag,
+                ),
+                trait_config=config.trait,
+                vision_config=config.vision,
+            )
+
+        self.assertEqual(
+            scores(config.trait.min_radius, 0.0),
+            scores(config.trait.max_radius, 1.0),
+        )
+
+    def test_genotypic_scores_fall_back_to_neural_and_clamp_traits(self) -> None:
+        config = build_sim_config()
+        genome = self.genome({key: 0.0 for key in range(12)})
+        self.assertEqual(
+            calculate_genotypic_behavior_scores(genome, range(12)),
+            calculate_behavior_scores(genome, range(12)),
+        )
+
+        scores = calculate_genotypic_behavior_scores(
+            genome,
+            range(12),
+            physical_traits=SimpleNamespace(
+                movement_cost_multiplier=-100.0,
+                stomach_capacity=100.0,
+                digestion_rate=100.0,
+                digestion_efficiency=100.0,
+            ),
+            vision_traits=SimpleNamespace(range=1000.0, angle=1000.0),
+            flocking_traits=SimpleNamespace(
+                separation_gene=-5.0,
+                alignment_gene=5.0,
+                cohesion_gene=5.0,
+            ),
+            trait_config=config.trait,
+            vision_config=config.vision,
+        )
+
+        self.assertTrue(all(0.0 <= score <= 1.0 for score in scores))
+        self.assertEqual(scores[0], 0.75)
+        self.assertEqual(scores[1], 0.75)
+        self.assertEqual(scores[2], 0.75)
+        self.assertEqual(scores[5], 0.75)
 
     def test_radar_image_is_detached_and_figures_are_closed(self) -> None:
         import matplotlib.pyplot as plt

@@ -93,7 +93,11 @@ for optional_module in ("neat", "pymunk"):
         sys.modules[optional_module] = ModuleType(optional_module)
 
 from configs.sim_config import LiveFoodConfig, build_sim_config
-from src.analysis import generate_inspector_report
+from src.analysis import (
+    BEHAVIOR_RADAR_LABELS,
+    generate_inspector_report,
+    generate_radar_chart_image,
+)
 from src.behavior_observer import (
     BehaviorKind,
     BehaviorObserverDiagnostics,
@@ -3047,6 +3051,196 @@ class FloatingSimulationUiTest(unittest.TestCase):
         self.assertEqual(self.renderer._inspector_energy_ratio(high), 1.0)
         self.assertEqual(self.renderer._inspector_energy_ratio(low), 0.0)
 
+    def test_creature_radar_uses_individual_genome_and_traits_once(self) -> None:
+        world = self.make_inspector_world()
+        world.config = self.renderer.config
+        selected = world.selected_creature
+        selected.physical_traits = PhysicalTraits(
+            radius=18.0,
+            movement_cost_multiplier=1.1,
+        )
+        selected.flocking_traits = FlockingTraits(0.2, 0.7, 0.8)
+        genome = SimpleNamespace(
+            nodes={key: SimpleNamespace(bias=0.0) for key in range(12)},
+            connections={},
+        )
+        brain = SimpleNamespace(genome_id=44, genome=genome)
+        world.neat_controller = SimpleNamespace(
+            brain_for=lambda creature_id: brain,
+            genome_id_for=lambda creature_id: brain.genome_id,
+            config=SimpleNamespace(
+                genome_config=SimpleNamespace(output_keys=tuple(range(12)))
+            ),
+        )
+        future: Future[object] = Future()
+        executor = SimpleNamespace(submit=Mock(return_value=future))
+        self.renderer._species_tree_radar_executor = executor
+
+        with patch(
+            "src.ui.components.panels.inspector.calculate_genotypic_behavior_scores",
+            return_value=(0.5,) * 6,
+        ) as calculate:
+            self.renderer._sync_creature_radar(world, selected)
+            self.renderer._sync_creature_radar(world, selected)
+
+        calculate.assert_called_once_with(
+            genome,
+            tuple(range(12)),
+            physical_traits=selected.physical_traits,
+            vision_traits=selected.vision,
+            flocking_traits=selected.flocking_traits,
+            trait_config=world.config.trait,
+            vision_config=world.config.vision,
+        )
+        executor.submit.assert_called_once_with(
+            generate_radar_chart_image,
+            (0.5,) * 6,
+            None,
+            BEHAVIOR_RADAR_LABELS,
+            primary_label="Selected creature",
+        )
+        self.assertEqual(self.renderer._creature_radar_identity, (938, 44))
+
+    def test_creature_radar_replaces_selection_and_ignores_stale_result(self) -> None:
+        world = self.make_inspector_world()
+        world.config = self.renderer.config
+        first = world.selected_creature
+        genome = SimpleNamespace(
+            nodes={key: SimpleNamespace(bias=0.0) for key in range(12)},
+            connections={},
+        )
+        brain = SimpleNamespace(genome_id=44, genome=genome)
+        world.neat_controller = SimpleNamespace(
+            brain_for=lambda creature_id: brain,
+            config=SimpleNamespace(
+                genome_config=SimpleNamespace(output_keys=tuple(range(12)))
+            ),
+        )
+        first_future: Future[object] = Future()
+        second_future: Future[object] = Future()
+        executor = SimpleNamespace(
+            submit=Mock(side_effect=(first_future, second_future))
+        )
+        self.renderer._species_tree_radar_executor = executor
+
+        self.renderer._sync_creature_radar(world, first)
+        world.selected_creature = SimpleNamespace(
+            creature_id=939,
+            name="Herbivore 939",
+            vision=first.vision,
+        )
+        self.renderer._sync_creature_radar(world, world.selected_creature)
+
+        self.assertTrue(first_future.cancelled())
+        self.assertEqual(self.renderer._creature_radar_identity, (939, 44))
+        self.assertEqual(executor.submit.call_count, 2)
+
+        stale: Future[object] = Future()
+        stale.set_result(object())
+        self.renderer._creature_radar_future = stale
+        self.renderer._creature_radar_identity = (938, 44)
+        self.renderer._panel_open["inspector"] = True
+        with patch("src.ui.renderer.arcade.Texture", create=True) as texture:
+            self.renderer._consume_creature_radar_result(world)
+        texture.assert_not_called()
+        self.assertIsNone(self.renderer._creature_radar_texture)
+
+    def test_creature_radar_is_above_all_inspector_cards_and_responsive(self) -> None:
+        world = self.make_inspector_world()
+        viewport = arcade.LBWH(100.0, 100.0, 360.0, 2400.0)
+        radar_bounds: list[arcade.Rect] = []
+        card_bounds: list[arcade.Rect] = []
+
+        with (
+            patch.object(
+                self.renderer,
+                "_draw_creature_radar_chart_in_bounds",
+                side_effect=lambda bounds: radar_bounds.append(bounds),
+            ),
+            patch.object(
+                self.renderer,
+                "_draw_inspector_card_section",
+                side_effect=lambda _viewport, _section, bounds: card_bounds.append(bounds),
+            ),
+        ):
+            self.renderer._draw_inspector_content(world, viewport)
+
+        self.assertEqual(len(radar_bounds), 1)
+        self.assertTrue(card_bounds)
+        self.assertGreater(radar_bounds[0].bottom, card_bounds[0].top)
+        self.assertLessEqual(radar_bounds[0].width, viewport.width - 32.0)
+        self.assertEqual(
+            self.renderer._creature_radar_chart_size(180.0),
+            180.0,
+        )
+        self.assertEqual(
+            self.renderer._creature_radar_chart_size(1000.0),
+            self.renderer.CREATURE_RADAR_MAX_SIZE,
+        )
+
+    def test_creature_radar_unavailable_placeholder_and_panel_close_cleanup(self) -> None:
+        world = self.make_inspector_world()
+        self.renderer._sync_creature_radar(world, world.selected_creature)
+        self.renderer._draw_creature_radar_chart_in_bounds(
+            arcade.LBWH(100.0, 100.0, 220.0, 220.0)
+        )
+        self.assertEqual(
+            self.renderer._text_cache["creature_radar_status"].text,
+            "Behavioral profile unavailable",
+        )
+
+        future: Future[object] = Future()
+        self.renderer._creature_radar_future = future
+        self.renderer._creature_radar_texture = object()
+        self.renderer._creature_radar_identity = (938, 44)
+        self.renderer._panel_open["inspector"] = True
+        self.renderer._control_hitboxes["inspector_close"] = arcade.LBWH(
+            10.0, 10.0, 20.0, 20.0
+        )
+        self.renderer.handle_mouse_press(world, 20.0, 20.0)
+
+        self.assertTrue(future.cancelled())
+        self.assertIsNone(self.renderer._creature_radar_identity)
+        self.assertIsNone(self.renderer._creature_radar_texture)
+
+    def test_creature_radar_loading_success_and_render_failure_states(self) -> None:
+        world = self.make_inspector_world()
+        self.renderer._panel_open["inspector"] = True
+        self.renderer._creature_radar_identity = (938, 44)
+        pending: Future[object] = Future()
+        self.renderer._creature_radar_future = pending
+        bounds = arcade.LBWH(100.0, 100.0, 220.0, 220.0)
+
+        self.renderer._draw_creature_radar_chart_in_bounds(bounds)
+        self.assertEqual(
+            self.renderer._text_cache["creature_radar_status"].text,
+            "Loading behavioral profile...",
+        )
+
+        pending.set_result(object())
+        with patch(
+            "src.ui.renderer.arcade.Texture",
+            return_value="creature-texture",
+            create=True,
+        ):
+            self.renderer._consume_creature_radar_result(world)
+        self.assertEqual(
+            self.renderer._creature_radar_texture,
+            "creature-texture",
+        )
+
+        failed: Future[object] = Future()
+        failed.set_exception(RuntimeError("render failed"))
+        self.renderer._creature_radar_texture = None
+        self.renderer._creature_radar_future = failed
+        self.renderer._consume_creature_radar_result(world)
+        self.renderer._draw_creature_radar_chart_in_bounds(bounds)
+        self.assertEqual(self.renderer._creature_radar_error, "render_failed")
+        self.assertEqual(
+            self.renderer._text_cache["creature_radar_status"].text,
+            "Behavioral profile unavailable",
+        )
+
     def test_inspector_draw_registers_scroll_region_and_action_hitboxes(self) -> None:
         world = self.make_inspector_world()
         self.renderer._panel_bounds["inspector"] = arcade.LBWH(100, 100, 368, 330)
@@ -5361,6 +5555,66 @@ class SpeciesTreeWindowTest(unittest.TestCase):
         self.renderer.open_species_tree(world)
         self.assertIsNone(self.renderer._species_tree_radar_texture)
 
+    def test_species_radar_scores_complete_child_and_parent_representatives(
+        self,
+    ) -> None:
+        records = {
+            1: self.make_record(1, None),
+            2: self.make_record(2, 1),
+        }
+        genomes = [
+            SimpleNamespace(
+                nodes={key: SimpleNamespace(bias=0.0) for key in range(12)},
+                connections={},
+            )
+            for _ in range(2)
+        ]
+        physical = [
+            PhysicalTraits(radius=16.0),
+            PhysicalTraits(radius=18.0),
+        ]
+        vision = [
+            SimpleNamespace(range=140.0, angle=0.8),
+            SimpleNamespace(range=175.0, angle=1.4),
+        ]
+        flocking = [
+            FlockingTraits(0.6, 0.4, 0.3),
+            FlockingTraits(0.2, 0.8, 0.7),
+        ]
+        representatives = {
+            1: (genomes[0], physical[0], vision[0], flocking[0]),
+            2: (genomes[1], physical[1], vision[1], flocking[1]),
+        }
+        world = self.make_world(records, representatives=representatives)
+        future: Future[object] = Future()
+        executor = SimpleNamespace(submit=Mock(return_value=future))
+        self.renderer._species_tree_radar_executor = executor
+        self.renderer._species_tree_selected_id = 2
+
+        with patch(
+            "src.ui.components.species_tree.inspector.calculate_genotypic_behavior_scores",
+            side_effect=((0.6,) * 6, (0.4,) * 6),
+        ) as calculate:
+            self.renderer._ensure_species_inspector_report(world, records)
+
+        self.assertEqual(calculate.call_count, 2)
+        child_call, parent_call = calculate.call_args_list
+        self.assertIs(child_call.args[0], genomes[1])
+        self.assertIs(child_call.kwargs["physical_traits"], physical[1])
+        self.assertIs(child_call.kwargs["vision_traits"], vision[1])
+        self.assertIs(child_call.kwargs["flocking_traits"], flocking[1])
+        self.assertIs(parent_call.args[0], genomes[0])
+        self.assertIs(parent_call.kwargs["physical_traits"], physical[0])
+        self.assertIs(parent_call.kwargs["vision_traits"], vision[0])
+        self.assertIs(parent_call.kwargs["flocking_traits"], flocking[0])
+        executor.submit.assert_called_once_with(
+            generate_radar_chart_image,
+            (0.6,) * 6,
+            (0.4,) * 6,
+            BEHAVIOR_RADAR_LABELS,
+            primary_label="Selected species",
+        )
+
     def test_radar_draw_bounds_are_above_text_and_inside_viewport(self) -> None:
         viewport = arcade.LBWH(100.0, 100.0, 320.0, 500.0)
         self.renderer._species_tree_radar_texture = object()
@@ -5456,15 +5710,21 @@ class SpeciesTreeWindowTest(unittest.TestCase):
 
     def test_close_cancels_radar_work_and_shuts_down_executor(self) -> None:
         future: Future[object] = Future()
+        creature_future: Future[object] = Future()
         executor = Mock()
         self.renderer._species_tree_radar_future = future
+        self.renderer._creature_radar_future = creature_future
+        self.renderer._creature_radar_identity = (938, 44)
         self.renderer._species_tree_radar_executor = executor
         self.renderer._species_tree_radar_species_id = 2
 
         self.renderer.close()
 
         self.assertTrue(future.cancelled())
+        self.assertTrue(creature_future.cancelled())
         self.assertIsNone(self.renderer._species_tree_radar_future)
+        self.assertIsNone(self.renderer._creature_radar_future)
+        self.assertIsNone(self.renderer._creature_radar_identity)
         self.assertIsNone(self.renderer._species_tree_radar_executor)
         executor.shutdown.assert_called_once_with(
             wait=False,

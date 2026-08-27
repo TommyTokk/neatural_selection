@@ -15,7 +15,7 @@ from src.creature.action import ACTION_OUTPUT_NAMES
 from src.analysis import (
     BEHAVIOR_RADAR_LABELS,
     InspectorReport,
-    calculate_behavior_scores,
+    calculate_genotypic_behavior_scores,
     generate_inspector_report,
     generate_radar_chart_image,
 )
@@ -73,6 +73,10 @@ class _InspectorCardSection:
 class InspectorPanelComponent:
     """Group related behavior extracted from ``UiRenderer``."""
 
+    CREATURE_RADAR_MIN_SIZE = 220.0
+    CREATURE_RADAR_MAX_SIZE = 320.0
+    CREATURE_RADAR_WIDTH_RATIO = 0.72
+
     def _draw_inspector_panel(self, world: World) -> None:
         """Draw inspector panel.
 
@@ -86,6 +90,7 @@ class InspectorPanelComponent:
         selected = world.selected_creature
 
         if selected is None:
+            self._clear_creature_radar_state()
             self._draw_rounded_rect(
                 content,
                 self.theme.card_background,
@@ -208,6 +213,8 @@ class InspectorPanelComponent:
         if selected is None:
             return
 
+        self._sync_creature_radar(world, selected)
+        self._consume_creature_radar_result(world)
         sections, species_id, species_color = self._inspector_card_sections(
             world,
             selected,
@@ -217,6 +224,9 @@ class InspectorPanelComponent:
         content_width = max(24.0, viewport.width - horizontal_padding * 2.0)
         header_height = 86.0 if species_id is not None else 62.0
         section_gap = 14.0
+        radar_heading_height = 26.0
+        radar_size = self._creature_radar_chart_size(content_width)
+        radar_height = radar_heading_height + radar_size
         action_gap = 10.0
         action_height = 40.0
         actions_height = action_height * 3.0 + action_gap * 2.0
@@ -227,6 +237,8 @@ class InspectorPanelComponent:
         total_height = (
             12.0
             + header_height
+            + section_gap
+            + radar_height
             + section_gap
             + sum(section_heights)
             + section_gap * len(sections)
@@ -255,6 +267,28 @@ class InspectorPanelComponent:
             content_width,
         )
         cursor -= header_height + section_gap
+
+        self._draw_text_in_viewport(
+            viewport,
+            "inspector_behavior_profile_heading",
+            "BEHAVIORAL PROFILE",
+            content_left,
+            cursor,
+            self.theme.text_muted,
+            9,
+            bold=True,
+            anchor_y="top",
+        )
+        cursor -= radar_heading_height
+        radar_bounds = arcade.LBWH(
+            content_left + (content_width - radar_size) / 2.0,
+            cursor - radar_size,
+            radar_size,
+            radar_size,
+        )
+        if self._rect_intersects(radar_bounds, viewport):
+            self._draw_creature_radar_chart_in_bounds(radar_bounds)
+        cursor -= radar_size + section_gap
 
         for section, height in zip(sections, section_heights):
             bounds = arcade.LBWH(
@@ -293,6 +327,143 @@ class InspectorPanelComponent:
         )
         if scroll_limit > 0.0:
             self._draw_scrollbar(viewport, scroll_offset, scroll_limit)
+
+    def _clear_creature_radar_state(self) -> None:
+        """Cancel and clear the selected-creature behavioral profile."""
+        future = self._creature_radar_future
+        if future is not None:
+            future.cancel()
+        self._creature_radar_future = None
+        self._creature_radar_texture = None
+        self._creature_radar_identity = None
+        self._creature_radar_error = None
+
+    def _sync_creature_radar(self, world: World, selected: object) -> None:
+        """Schedule a radar render when the selected genotype changes."""
+        creature_id = int(getattr(selected, "creature_id", 0))
+        controller = getattr(world, "neat_controller", None)
+        brain_for = getattr(controller, "brain_for", None)
+        brain = brain_for(creature_id) if callable(brain_for) else None
+        genome_id = None if brain is None else getattr(brain, "genome_id", None)
+        identity = (
+            creature_id,
+            None if genome_id is None else int(genome_id),
+        )
+        if identity == self._creature_radar_identity:
+            return
+
+        self._clear_creature_radar_state()
+        self._creature_radar_identity = identity
+        self._scroll_offsets["inspector"] = 0.0
+        genome = None if brain is None else getattr(brain, "genome", None)
+        controller_config = getattr(controller, "config", None)
+        genome_config = getattr(controller_config, "genome_config", None)
+        output_keys = tuple(getattr(genome_config, "output_keys", ()) or ())
+        if (
+            genome is None
+            or not hasattr(genome, "nodes")
+            or not hasattr(genome, "connections")
+            or not output_keys
+        ):
+            self._creature_radar_error = "genome_unavailable"
+            return
+
+        config = getattr(world, "config", None)
+        trait_config = getattr(config, "trait", None)
+        vision_config = getattr(config, "vision", None)
+        scores = calculate_genotypic_behavior_scores(
+            genome,
+            output_keys,
+            physical_traits=getattr(selected, "physical_traits", None),
+            vision_traits=getattr(selected, "vision", None),
+            flocking_traits=getattr(selected, "flocking_traits", None),
+            trait_config=trait_config,
+            vision_config=vision_config,
+        )
+        self._creature_radar_future = self._radar_executor().submit(
+            generate_radar_chart_image,
+            scores,
+            None,
+            BEHAVIOR_RADAR_LABELS,
+            primary_label="Selected creature",
+        )
+
+    def _consume_creature_radar_result(self, world: World) -> None:
+        """Convert a completed creature radar image on Arcade's draw thread."""
+        future = self._creature_radar_future
+        if future is None or not future.done():
+            return
+        self._creature_radar_future = None
+        selected = getattr(world, "selected_creature", None)
+        selected_id = (
+            None
+            if selected is None
+            else int(getattr(selected, "creature_id", 0))
+        )
+        if (
+            not self._panel_open.get("inspector", False)
+            or self._creature_radar_identity is None
+            or self._creature_radar_identity[0] != selected_id
+        ):
+            return
+        try:
+            radar_image = future.result()
+        except Exception:
+            self._creature_radar_error = "render_failed"
+            return
+
+        hitbox_algorithm = getattr(
+            getattr(arcade, "hitbox", None),
+            "algo_bounding_box",
+            None,
+        )
+        texture_options = (
+            {}
+            if hitbox_algorithm is None
+            else {"hit_box_algorithm": hitbox_algorithm}
+        )
+        self._creature_radar_texture = arcade.Texture(
+            radar_image,
+            **texture_options,
+        )
+
+    def _creature_radar_chart_size(self, content_width: float) -> float:
+        """Return a responsive creature chart size within the card column."""
+        available_width = max(0.0, content_width)
+        preferred_width = max(
+            self.CREATURE_RADAR_MIN_SIZE,
+            content_width * self.CREATURE_RADAR_WIDTH_RATIO,
+        )
+        return min(
+            self.CREATURE_RADAR_MAX_SIZE,
+            available_width,
+            preferred_width,
+        )
+
+    def _draw_creature_radar_chart_in_bounds(
+        self,
+        chart_bounds: arcade.Rect,
+    ) -> None:
+        """Draw the creature chart or its asynchronous status placeholder."""
+        texture = self._creature_radar_texture
+        if texture is not None:
+            arcade.draw_texture_rect(texture, chart_bounds)
+            return
+        message = (
+            "Loading behavioral profile..."
+            if self._creature_radar_future is not None
+            else "Behavioral profile unavailable"
+        )
+        self._draw_text(
+            "creature_radar_status",
+            message,
+            chart_bounds.center_x,
+            chart_bounds.center_y,
+            self.theme.text_muted,
+            11,
+            anchor_x="center",
+            anchor_y="center",
+        )
 
     def _inspector_card_sections(
         self,

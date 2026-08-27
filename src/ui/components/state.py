@@ -60,6 +60,11 @@ class PanelState:
     active_drag: str | None = None
     drag_offset: tuple[float, float] = (0.0, 0.0)
     inspector_content_height: float = 0.0
+    radar_executor: ThreadPoolExecutor | None = None
+    creature_radar_texture: arcade.Texture | None = None
+    creature_radar_identity: tuple[int, int | None] | None = None
+    creature_radar_future: Future[object] | None = None
+    creature_radar_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -127,7 +132,6 @@ class SpeciesTreeState:
     radar_texture: arcade.Texture | None = None
     radar_species_id: int | None = None
     radar_future: Future[object] | None = None
-    radar_executor: ThreadPoolExecutor | None = None
     radar_error: str | None = None
     horizontal_offset: float = 0.0
     vertical_offset: float = 0.0

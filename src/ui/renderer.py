@@ -69,6 +69,22 @@ class UiRenderer(
             "_panel_state",
             "inspector_content_height",
         ),
+        "_creature_radar_texture": (
+            "_panel_state",
+            "creature_radar_texture",
+        ),
+        "_creature_radar_identity": (
+            "_panel_state",
+            "creature_radar_identity",
+        ),
+        "_creature_radar_future": (
+            "_panel_state",
+            "creature_radar_future",
+        ),
+        "_creature_radar_error": (
+            "_panel_state",
+            "creature_radar_error",
+        ),
         "_brain_window_open": ("_brain_state", "open"),
         "_brain_window_bounds": ("_brain_state", "bounds"),
         "_brain_graph_zoom": ("_brain_state", "graph_zoom"),
@@ -156,8 +172,12 @@ class UiRenderer(
             "radar_species_id",
         ),
         "_species_tree_radar_future": ("_species_tree_state", "radar_future"),
+        "_behavior_radar_executor": (
+            "_panel_state",
+            "radar_executor",
+        ),
         "_species_tree_radar_executor": (
-            "_species_tree_state",
+            "_panel_state",
             "radar_executor",
         ),
         "_species_tree_radar_error": ("_species_tree_state", "radar_error"),
@@ -358,9 +378,10 @@ class UiRenderer(
 
     def close(self) -> None:
         """Release asynchronous UI resources owned by this renderer."""
+        self._clear_creature_radar_state()
         self._clear_species_radar_state()
-        executor = self._species_tree_radar_executor
-        self._species_tree_radar_executor = None
+        executor = self._behavior_radar_executor
+        self._behavior_radar_executor = None
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
@@ -725,10 +746,14 @@ class UiRenderer(
         for panel_name in self.PANEL_KEYS:
             if self._contains_hitbox(f"{panel_name}_close", x, y):
                 self._panel_open[panel_name] = False
+                if panel_name == "inspector":
+                    self._clear_creature_radar_state()
                 self._active_panel_drag = None
                 return True
         if self._contains_hitbox("panel_toggle_inspector", x, y):
             self._panel_open["inspector"] = not self._panel_open["inspector"]
+            if not self._panel_open["inspector"]:
+                self._clear_creature_radar_state()
             return True
         if self._contains_hitbox("panel_toggle_stats", x, y):
             self._panel_open["stats"] = not self._panel_open["stats"]
