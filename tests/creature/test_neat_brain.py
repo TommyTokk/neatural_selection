@@ -1611,6 +1611,114 @@ class RecurrentNetworkStateTest(unittest.TestCase):
         self.assertEqual(network.activate([1.0]), [0.0])
         self.assertEqual(network.activate([1.0]), [1.0])
 
+    def test_current_node_activation_reads_latest_buffer_without_advancing(self) -> None:
+        """Expose latest recurrent values without evaluating the network.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            Assertions verify read-only access to the active recurrent buffer.
+        """
+        # Compare exported state around reads to prove diagnostics are non-mutating.
+        brain = self.make_brain()
+
+        brain.network.activate([1.0])
+        state_after_first = brain.export_network_state()
+
+        self.assertEqual(brain.current_node_activation(-1), 1.0)
+        self.assertEqual(brain.current_node_activation(1), 1.0)
+        self.assertEqual(brain.current_node_activation(2), 0.0)
+        self.assertEqual(brain.current_node_activation(0), 0.0)
+        self.assertEqual(brain.export_network_state(), state_after_first)
+
+        brain.network.activate([0.0])
+
+        self.assertEqual(brain.current_node_activation(-1), 0.0)
+        self.assertEqual(brain.current_node_activation(1), 0.0)
+        self.assertEqual(brain.current_node_activation(2), 1.0)
+        self.assertEqual(brain.current_node_activation(0), 0.0)
+
+    def test_runtime_node_accessors_reject_unavailable_and_non_finite_values(
+        self,
+    ) -> None:
+        """Return unavailable rather than publishing invalid diagnostic data.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            Assertions verify missing and non-finite values are rejected.
+        """
+        # Exercise missing nodes, pre-decision outputs, and invalid numeric values.
+        brain = self.make_brain()
+
+        self.assertIsNone(brain.current_node_activation(999))
+        self.assertIsNone(brain.current_output_signal(0))
+        self.assertIsNone(brain.current_output_signal(1))
+
+        brain.last_outputs = [0.25]
+        self.assertEqual(brain.current_output_signal(0), 0.25)
+
+        brain.network.values[brain.network.active][1] = float("nan")
+        brain.last_outputs[0] = float("inf")
+        self.assertIsNone(brain.current_node_activation(1))
+        self.assertIsNone(brain.current_output_signal(0))
+
+    def test_runtime_node_accessors_tolerate_non_recurrent_networks(self) -> None:
+        """Keep lightweight evaluators without recurrent buffers supported.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            Assertions verify unsupported evaluator shapes return unavailable.
+        """
+        # Use the existing stateless fake to cover the compatibility fallback.
+        brain = NeatBrain(
+            genome_id=1,
+            genome=SimpleNamespace(),
+            network=FakeNetwork([]),
+            last_outputs=[0.5],
+        )
+
+        self.assertIsNone(brain.current_node_activation(0))
+        self.assertIsNone(brain.current_output_signal(0))
+
+    def test_current_output_signal_uses_compiled_output_order(self) -> None:
+        """Map centered output values through the compiled node ordering.
+
+        Parameters
+        ----------
+        None
+            This callable receives no external parameters.
+        Returns
+        -------
+        None
+            Assertions verify node identifiers resolve to the correct signal.
+        """
+        # Use non-sequential node IDs so index-based assumptions would fail.
+        network = SimpleNamespace(output_nodes=[7, 3])
+        brain = NeatBrain(
+            genome_id=1,
+            genome=SimpleNamespace(),
+            network=network,
+            last_outputs=[0.25, -0.5],
+        )
+
+        self.assertEqual(brain.current_output_signal(7), 0.25)
+        self.assertEqual(brain.current_output_signal(3), -0.5)
+        self.assertIsNone(brain.current_output_signal(0))
+
     def test_state_export_is_shallow_isolated_and_restorable(self) -> None:
         """Verify shallow state copies are isolated and restorable.
 

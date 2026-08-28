@@ -179,6 +179,14 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         )
         self.assertEqual(self.renderer._brain_inspector_page, "node")
 
+    def test_ui_animation_clock_advances_independently(self) -> None:
+        self.renderer.update(0.25)
+        self.assertEqual(self.renderer._ui_animation_time, 0.25)
+
+        self.renderer.update(-1.0)
+        self.renderer.update(float("nan"))
+        self.assertEqual(self.renderer._ui_animation_time, 0.25)
+
     def test_why_page_button_and_scroll_state_are_independent(self) -> None:
         self.renderer._control_hitboxes[
             "brain_inspector_page_why"
@@ -1385,12 +1393,16 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             for source, target, weight, enabled in connection_specs
         }
         genome = SimpleNamespace(nodes=nodes, connections=connections)
+        runtime_activations = {-1: 0.5, 1: -0.125, 0: 0.75}
+        runtime_signals = {0: 0.25}
         brain = SimpleNamespace(
             genome_id=10,
             genome=genome,
             last_inputs=[0.5],
             last_outputs=[0.25],
             last_action=None,
+            current_node_activation=runtime_activations.get,
+            current_output_signal=runtime_signals.get,
             sensor_usage=lambda input_keys, output_keys: tuple(
                 SimpleNamespace(
                     current_value=0.5,
@@ -1416,9 +1428,15 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             config=self.renderer.config,
             fitness_for=lambda creature: None,
         )
-        return SimpleNamespace(world=world, selected=selected, brain=brain)
+        return SimpleNamespace(
+            world=world,
+            selected=selected,
+            brain=brain,
+            runtime_activations=runtime_activations,
+            runtime_signals=runtime_signals,
+        )
 
-    def test_inspector_lines_show_static_metadata_and_disabled_connections(self) -> None:
+    def test_structured_inspector_keeps_metadata_and_disabled_connections(self) -> None:
         fixture = self.make_brain_world()
         fixture.brain.genome.connections[(-1, 1)].enabled = False
         layout = build_brain_graph_layout(
@@ -1430,20 +1448,22 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             ["accelerate"],
         )
 
-        lines = self.renderer._brain_node_inspector_lines(
+        view = self.renderer._brain_node_inspector_view(
             fixture.brain,
             layout,
             layout.nodes[1],
         )
-        text = "\n".join(lines)
+        details = dict(view.details)
 
-        self.assertIn("Layer: Hidden 1", text)
-        self.assertIn("Activation: tanh", text)
-        self.assertIn("sensor [ID -1] | +0.800 | Disabled", text)
-        self.assertIn("accelerate [ID 0] | -0.600 | Enabled", text)
-        self.assertIn("ADDITIONAL ENABLED SIGNAL ROUTE (0)", text)
-        self.assertNotIn("Current value", text)
-        self.assertNotIn("Contrib", text)
+        self.assertEqual(details["Layer"], "Hidden 1")
+        self.assertEqual(details["Activation function"], "tanh")
+        self.assertNotIn("Activation", details)
+        self.assertNotIn("Response", details)
+        self.assertFalse(view.incoming_rows[0].enabled)
+        self.assertEqual(view.incoming_rows[0].weight, 0.8)
+        self.assertTrue(view.outgoing_rows[0].enabled)
+        self.assertEqual(view.outgoing_rows[0].weight, -0.6)
+        self.assertEqual(view.route_rows, ())
 
     def test_inspector_separates_direct_genes_from_additional_signal_route(
         self,
@@ -1472,21 +1492,194 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             ["accelerate"],
         )
 
-        lines = self.renderer._brain_node_inspector_lines(
+        view = self.renderer._brain_node_inspector_view(
             fixture.brain,
             layout,
             layout.nodes[1],
         )
-        text = "\n".join(lines)
 
-        self.assertIn("sensor [ID -1] | +0.800 | Enabled", text)
-        self.assertIn("Hidden 2 [ID 2] | -0.600 | Enabled", text)
-        self.assertIn("ADDITIONAL ENABLED SIGNAL ROUTE (1)", text)
-        self.assertIn(
-            "Downstream: Hidden 2 [ID 2] -> accelerate [ID 0] "
-            "| +0.300 | Enabled",
-            text,
+        self.assertEqual(view.incoming_rows[0].endpoint_label, "sensor")
+        self.assertEqual(view.incoming_rows[0].weight, 0.8)
+        self.assertEqual(view.outgoing_rows[0].endpoint_label, "Hidden 2")
+        self.assertEqual(view.outgoing_rows[0].weight, -0.6)
+        self.assertEqual(len(view.route_rows), 1)
+        self.assertEqual(view.route_rows[0].relation, "Downstream")
+        self.assertEqual(view.route_rows[0].weight, 0.3)
+
+    def test_runtime_details_match_each_node_kind(self) -> None:
+        fixture = self.make_brain_world()
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
         )
+
+        input_details = self.renderer._brain_node_runtime_details(
+            fixture.brain,
+            layout.nodes[-1],
+        )
+        hidden_details = self.renderer._brain_node_runtime_details(
+            fixture.brain,
+            layout.nodes[1],
+        )
+        output_details = self.renderer._brain_node_runtime_details(
+            fixture.brain,
+            layout.nodes[0],
+        )
+
+        self.assertEqual(input_details, (("Sensor value", "+0.500"),))
+        self.assertEqual(hidden_details, (("Current activation", "-0.125"),))
+        self.assertEqual(
+            output_details,
+            (
+                ("Current activation", "+0.750"),
+                ("Action signal", "+0.250"),
+            ),
+        )
+
+    def test_runtime_details_are_included_in_scrollable_content_height(self) -> None:
+        fixture = self.make_brain_world()
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+        node = layout.nodes[0]
+        view = self.renderer._brain_node_inspector_view(
+            fixture.brain,
+            layout,
+            node,
+        )
+        incoming = self.renderer._brain_visible_connection_rows(view.incoming_rows)
+        outgoing = self.renderer._brain_visible_connection_rows(view.outgoing_rows)
+        routes = self.renderer._brain_sorted_connection_rows(view.route_rows)
+        static_height = self.renderer._brain_connection_content_height(
+            view,
+            incoming,
+            outgoing,
+            routes,
+            show_incoming=True,
+            show_outgoing=True,
+        )
+        runtime_details = self.renderer._brain_node_runtime_details(
+            fixture.brain,
+            node,
+        )
+        live_height = self.renderer._brain_connection_content_height(
+            view,
+            incoming,
+            outgoing,
+            routes,
+            show_incoming=True,
+            show_outgoing=True,
+            detail_count=len(view.details) + len(runtime_details),
+        )
+
+        self.assertEqual(live_height - static_height, 40.0)
+
+    def test_node_detail_columns_protect_live_value_with_explicit_padding(self) -> None:
+        fixture = self.make_brain_world()
+        layout = build_brain_graph_layout(
+            fixture.brain.genome,
+            [-1],
+            [0],
+            arcade.LBWH(0, 0, 600, 300),
+            ["sensor"],
+            ["accelerate"],
+        )
+        self.renderer._brain_selected_node_key = 1
+
+        self.renderer._draw_brain_node_inspector(
+            fixture.brain,
+            layout,
+            arcade.LBWH(100, 100, 220, 440),
+        )
+
+        label = self.renderer._text_cache["brain_node_detail_5_label"]
+        value = self.renderer._text_cache["brain_node_detail_5_value"]
+        self.assertGreaterEqual(
+            value.x - (label.x + label.width),
+            self.renderer.BRAIN_NODE_DETAIL_COLUMN_GAP - 1.0,
+        )
+        self.assertGreaterEqual(
+            value.width,
+            self.renderer.BRAIN_NODE_DETAIL_VALUE_MIN_WIDTH,
+        )
+        self.assertEqual(value.text, "-0.125")
+
+    def test_activation_pulse_scales_with_force_and_changes_over_time(self) -> None:
+        self.renderer._ui_animation_time = 0.0
+
+        weak = self.renderer._brain_node_activation_pulse_style(0.2)
+        strong = self.renderer._brain_node_activation_pulse_style(-1.0)
+
+        self.assertIsNotNone(weak)
+        self.assertIsNotNone(strong)
+        self.assertGreater(strong[0], weak[0])
+        self.assertGreater(strong[1], weak[1])
+        self.assertGreater(strong[2], weak[2])
+        self.assertIsNone(self.renderer._brain_node_activation_pulse_style(0.0))
+        self.assertIsNone(
+            self.renderer._brain_node_activation_pulse_style(float("nan"))
+        )
+
+        self.renderer.update(0.1)
+        self.assertNotEqual(
+            self.renderer._brain_node_activation_pulse_style(-1.0),
+            strong,
+        )
+
+    def test_selected_graph_node_alone_receives_activation_pulse(self) -> None:
+        fixture = self.make_brain_world(branched=True)
+        self.renderer._brain_selected_node_key = 1
+        self.renderer._brain_selection_identity = (5, 10)
+
+        with patch.object(
+            self.renderer,
+            "_draw_brain_node_activation_pulse",
+        ) as draw_pulse:
+            self.renderer._draw_brain_graph(
+                fixture.world,
+                arcade.LBWH(0, 0, 800, 500),
+            )
+
+        draw_pulse.assert_called_once()
+        self.assertIs(draw_pulse.call_args.args[0], fixture.brain)
+        self.assertEqual(draw_pulse.call_args.args[1], 1)
+
+    def test_activation_pulse_draw_uses_signed_activity_color(self) -> None:
+        fixture = self.make_brain_world()
+        self.renderer._ui_animation_time = 0.0
+        expected_style = self.renderer._brain_node_activation_pulse_style(-0.125)
+
+        with patch(
+            "src.ui.components.brain.graph.arcade.draw_circle_outline"
+        ) as draw_outline:
+            self.renderer._draw_brain_node_activation_pulse(
+                fixture.brain,
+                1,
+                (40.0, 60.0),
+                12.0,
+            )
+
+        draw_outline.assert_called_once()
+        radius_offset, alpha, line_width = expected_style
+        self.assertEqual(draw_outline.call_args.args[0:2], (40.0, 60.0))
+        self.assertAlmostEqual(draw_outline.call_args.args[2], 12.0 + radius_offset)
+        self.assertEqual(
+            draw_outline.call_args.args[3],
+            self.renderer._brain_color_alpha(
+                self.renderer._brain_activity_color(-0.125),
+                alpha,
+            ),
+        )
+        self.assertEqual(draw_outline.call_args.args[4], line_width)
 
     def test_structured_connection_view_filters_and_sorts_enabled_genes(self) -> None:
         fixture = self.make_brain_world()
@@ -2370,7 +2563,7 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
         self.assertGreater(first_frame_measurements, 0)
         self.assertEqual(measure.call_count, first_frame_measurements)
 
-    def test_node_inspector_lines_are_built_once_per_stable_selection(
+    def test_node_inspector_caches_structure_but_refreshes_runtime_details(
         self,
     ) -> None:
         fixture = self.make_brain_world()
@@ -2383,25 +2576,35 @@ class UiRendererBrainWindowScrollTest(unittest.TestCase):
             ["accelerate"],
         )
         node = layout.nodes[1]
+        bounds = arcade.LBWH(100, 100, 300, 500)
+        self.renderer._brain_selected_node_key = node.key
 
         with patch.object(
             self.renderer,
-            "_brain_node_inspector_lines",
-            wraps=self.renderer._brain_node_inspector_lines,
-        ) as build:
-            first = self.renderer._cached_brain_node_inspector_lines(
+            "_brain_node_inspector_view",
+            wraps=self.renderer._brain_node_inspector_view,
+        ) as build_structure:
+            self.renderer._draw_brain_node_inspector(
                 fixture.brain,
                 layout,
-                node,
+                bounds,
             )
-            second = self.renderer._cached_brain_node_inspector_lines(
+            first = self.renderer._text_cache[
+                "brain_node_detail_5_value"
+            ].text
+            fixture.runtime_activations[node.key] = 0.625
+            self.renderer._draw_brain_node_inspector(
                 fixture.brain,
                 layout,
-                node,
+                bounds,
             )
+            second = self.renderer._text_cache[
+                "brain_node_detail_5_value"
+            ].text
 
-        self.assertIs(first, second)
-        build.assert_called_once_with(fixture.brain, layout, node)
+        self.assertEqual(first, "-0.125")
+        self.assertEqual(second, "+0.625")
+        build_structure.assert_called_once_with(fixture.brain, layout, node)
 
     def test_scrollable_blocks_wrap_when_requested_and_count_visual_lines(
         self,

@@ -51,6 +51,8 @@ _EMPTY_NEAT_NODE_LABELS: dict[int, str] = {}
 class BrainGraphComponent:
     """Group related behavior extracted from ``UiRenderer``."""
 
+    BRAIN_NODE_PULSE_MIN_ACTIVATION = 0.005
+
     def _draw_brain_graph(
         self,
         world: World,
@@ -226,19 +228,18 @@ class BrainGraphComponent:
                     1.5,
                 )
             if key == selected_key:
-                arcade.draw_circle_outline(
-                    position[0],
-                    position[1],
-                    radius + 7.0,
-                    self._brain_node_kind_color(node.kind),
-                    3.0,
+                self._draw_brain_node_activation_pulse(
+                    brain,
+                    key,
+                    position,
+                    radius,
                 )
                 arcade.draw_circle_outline(
                     position[0],
                     position[1],
-                    radius + 11.0,
-                    self._brain_color_alpha(self._brain_node_kind_color(node.kind), 90),
-                    2.0,
+                    radius + 6.0,
+                    self._brain_node_kind_color(node.kind),
+                    3.0,
                 )
             self._draw_brain_node(position, fill_color, outline_color, radius=radius)
             hit_radius = max(12.0, radius + 4.0)
@@ -278,6 +279,64 @@ class BrainGraphComponent:
                         top - bottom,
                     )
         return layout
+    def _brain_node_activation_value(
+        self,
+        brain: object,
+        node_key: int,
+    ) -> float | None:
+        """Return a finite live activation for graph animation."""
+        reader = getattr(brain, "current_node_activation", None)
+        if not callable(reader):
+            return None
+        try:
+            activation = float(reader(node_key))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return activation if isfinite(activation) else None
+    def _brain_node_activation_pulse_style(
+        self,
+        activation: float | None,
+    ) -> tuple[float, int, float] | None:
+        """Map activation magnitude and UI time to pulse radius, alpha, and width."""
+        if activation is None or not isfinite(activation):
+            return None
+        strength = max(0.0, min(1.0, abs(activation)))
+        if strength < self.BRAIN_NODE_PULSE_MIN_ACTIVATION:
+            return None
+        frequency = 0.65 + 1.85 * strength
+        phase = 0.5 + 0.5 * sin(
+            2.0 * pi * self._ui_animation_time * frequency
+        )
+        radius_offset = 8.0 + phase * (2.0 + 6.0 * strength)
+        alpha = int(
+            (55.0 + 175.0 * strength)
+            * (1.0 - 0.60 * phase)
+        )
+        line_width = 1.25 + 1.75 * strength
+        return radius_offset, alpha, line_width
+    def _draw_brain_node_activation_pulse(
+        self,
+        brain: object,
+        node_key: int,
+        position: tuple[float, float],
+        radius: float,
+    ) -> None:
+        """Draw an activation-scaled pulse around the selected graph node."""
+        activation = self._brain_node_activation_value(brain, node_key)
+        style = self._brain_node_activation_pulse_style(activation)
+        if activation is None or style is None:
+            return
+        radius_offset, alpha, line_width = style
+        arcade.draw_circle_outline(
+            position[0],
+            position[1],
+            radius + radius_offset,
+            self._brain_color_alpha(
+                self._brain_activity_color(activation),
+                alpha,
+            ),
+            line_width,
+        )
     def _brain_graph_layout(
         self,
         selected: object,

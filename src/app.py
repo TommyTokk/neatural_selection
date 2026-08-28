@@ -63,6 +63,7 @@ class NeatGameView(arcade.View):
         return super().on_resize(width, height)
 
     def on_update(self, delta_time: float) -> None:
+        self.ui_renderer.update(delta_time)
         self.world.update(delta_time)
 
     def on_draw(self) -> None:

@@ -694,6 +694,20 @@ class CreateAndRunMenuTest(unittest.TestCase):
         view.on_key_release(arcade.key.RCOMMAND, 0)
         self.assertEqual(view._command_keys_down, set())
 
+    def test_game_view_advances_ui_animation_before_world_update(self) -> None:
+        calls: list[tuple[str, float]] = []
+        ui = SimpleNamespace(
+            update=lambda delta_time: calls.append(("ui", delta_time)),
+        )
+        view = self._game_view_with_ui(ui)
+        view.world.update = lambda delta_time: calls.append(
+            ("world", delta_time)
+        )
+
+        view.on_update(0.125)
+
+        self.assertEqual(calls, [("ui", 0.125), ("world", 0.125)])
+
     def test_game_view_forwards_command_state_with_scroll(self) -> None:
         calls: list[tuple[object, ...]] = []
         ui = SimpleNamespace(

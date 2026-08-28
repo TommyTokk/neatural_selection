@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import isfinite
+
 import arcade
 
 from configs.sim_config import SimConfig
@@ -356,6 +358,18 @@ class UiRenderer(
         self._scroll_regions = self._interaction.scroll_regions
         self._scroll_offsets = self._interaction.scroll_offsets
         self._scroll_limits = self._interaction.scroll_limits
+        self._ui_animation_time = 0.0
+
+    def update(self, delta_time: float) -> None:
+        """Advance UI-only animation time independently of simulation state."""
+        try:
+            elapsed = float(delta_time)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if isfinite(elapsed) and elapsed > 0.0:
+            self._ui_animation_time = (
+                self._ui_animation_time + elapsed
+            ) % 3600.0
 
     def draw(self, world: World) -> None:
         """Draw every simulation UI layer.

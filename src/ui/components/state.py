@@ -94,7 +94,6 @@ class BrainWindowState:
     inspector_brain: object | None = None
     inspector_layout: BrainGraphLayout | None = None
     inspector_node_key: int | None = None
-    inspector_lines: tuple[str, ...] = ()
     inspector_view: BrainNodeInspectorView | None = None
 
 

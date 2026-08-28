@@ -291,7 +291,6 @@ class BrainWindowComponent:
         state.inspector_brain = None
         state.inspector_layout = None
         state.inspector_node_key = None
-        state.inspector_lines = ()
         state.inspector_view = None
     def _clear_brain_render_caches(self) -> None:
         """Release cached brain layout, selection, and wrapped content."""

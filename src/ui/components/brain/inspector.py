@@ -82,6 +82,10 @@ class BrainInspectorComponent:
     BRAIN_BEHAVIOR_NOTICE_LINE_HEIGHT = 15.0
     BRAIN_BEHAVIOR_DIAGNOSTICS_HEIGHT = 138.0
     BRAIN_BEHAVIOR_DETAIL_LINE_HEIGHT = 17.0
+    BRAIN_NODE_DETAIL_COLUMN_GAP = 16.0
+    BRAIN_NODE_DETAIL_LABEL_MAX_WIDTH = 124.0
+    BRAIN_NODE_DETAIL_VALUE_MIN_WIDTH = 72.0
+    BRAIN_NODE_DETAIL_RIGHT_PADDING = 8.0
     BRAIN_WHY_HEADER_HEIGHT = BRAIN_BEHAVIOR_HEADER_HEIGHT
     BRAIN_WHY_NOTICE_HEIGHT = BRAIN_BEHAVIOR_NOTICE_HEIGHT
     BRAIN_WHY_CARD_HEIGHT = BRAIN_BEHAVIOR_CARD_HEIGHT
@@ -1859,6 +1863,7 @@ class BrainInspectorComponent:
         self._draw_brain_connection_inspector_content(
             content,
             self._cached_brain_node_inspector_view(brain, layout, node),
+            runtime_details=self._brain_node_runtime_details(brain, node),
             weight_scale=weight_scale,
         )
     def _brain_node_summary_layout(
@@ -2039,19 +2044,16 @@ class BrainInspectorComponent:
         elif gene is not None:
             details.extend(
                 (
-                    ("Activation", str(getattr(gene, "activation", "Unavailable"))),
+                    (
+                        "Activation function",
+                        str(getattr(gene, "activation", "Unavailable")),
+                    ),
                     ("Aggregation", str(getattr(gene, "aggregation", "Unavailable"))),
                     (
                         "Bias",
                         self._format_optional_number(
                             getattr(gene, "bias", None),
                             signed=True,
-                        ),
-                    ),
-                    (
-                        "Response",
-                        self._format_optional_number(
-                            getattr(gene, "response", None),
                         ),
                     ),
                 )
@@ -2143,6 +2145,45 @@ class BrainInspectorComponent:
             outgoing_rows=outgoing_rows,
             route_rows=tuple(route_rows),
         )
+    def _brain_node_runtime_details(
+        self,
+        brain: object,
+        node: BrainGraphNode,
+    ) -> tuple[tuple[str, str], ...]:
+        """Build uncached rows from the latest completed neural activation."""
+        activation_reader = getattr(brain, "current_node_activation", None)
+        activation = None
+        if callable(activation_reader):
+            try:
+                activation = activation_reader(node.key)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                activation = None
+        activation_label = (
+            "Sensor value"
+            if node.kind == BrainNodeKind.INPUT
+            else "Current activation"
+        )
+        details = [
+            (
+                activation_label,
+                self._format_optional_number(activation, signed=True),
+            )
+        ]
+        if node.kind == BrainNodeKind.OUTPUT:
+            signal_reader = getattr(brain, "current_output_signal", None)
+            signal = None
+            if callable(signal_reader):
+                try:
+                    signal = signal_reader(node.key)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    signal = None
+            details.append(
+                (
+                    "Action signal",
+                    self._format_optional_number(signal, signed=True),
+                )
+            )
+        return tuple(details)
     @staticmethod
     def _brain_connection_weight(connection: object) -> float | None:
         """Return a finite connection weight, or ``None`` when unavailable."""
@@ -2232,9 +2273,11 @@ class BrainInspectorComponent:
         content: arcade.Rect,
         view: BrainNodeInspectorView,
         *,
+        runtime_details: tuple[tuple[str, str], ...] = (),
         weight_scale: float,
     ) -> None:
         """Draw node details, controls, and scrollable connection tables."""
+        details = (*view.details, *runtime_details)
         incoming = self._brain_visible_connection_rows(view.incoming_rows)
         outgoing = self._brain_visible_connection_rows(view.outgoing_rows)
         routes = self._brain_sorted_connection_rows(view.route_rows)
@@ -2248,6 +2291,7 @@ class BrainInspectorComponent:
             routes,
             show_incoming=show_incoming,
             show_outgoing=show_outgoing,
+            detail_count=len(details),
         )
         scroll_limit = max(0.0, content_height - content.height)
         scroll_offset = max(
@@ -2282,23 +2326,27 @@ class BrainInspectorComponent:
                 bold=True,
             )
             y -= 26.0
-            label_width = min(92.0, inner.width * 0.32)
-            for index, (label, value) in enumerate(view.details):
+            label_width, value_left, value_width = (
+                self._brain_node_detail_columns(inner)
+            )
+            for index, (label, value) in enumerate(details):
                 self._draw_text(
                     f"brain_node_detail_{index}_label",
-                    label.upper(),
+                    self._fit_line(label.upper(), label_width),
                     inner.left,
                     y,
                     self.theme.text_muted,
                     8.5,
+                    width=label_width,
                 )
                 self._draw_text(
                     f"brain_node_detail_{index}_value",
-                    self._fit_line(value, inner.width - label_width - 8.0),
-                    inner.left + label_width,
+                    self._fit_line(value, value_width),
+                    value_left,
                     y,
                     self.theme.text_primary,
                     10.5,
+                    width=value_width,
                 )
                 y -= 20.0
             y -= 12.0
@@ -2350,6 +2398,38 @@ class BrainInspectorComponent:
             )
         if scroll_limit > 0.0:
             self._draw_scrollbar(content, scroll_offset, scroll_limit)
+    def _brain_node_detail_columns(
+        self,
+        content: arcade.Rect,
+    ) -> tuple[float, float, float]:
+        """Return non-overlapping label and value columns for node details."""
+        usable_width = max(
+            1.0,
+            content.width - self.BRAIN_NODE_DETAIL_RIGHT_PADDING,
+        )
+        maximum_label_width = max(
+            1.0,
+            usable_width
+            - self.BRAIN_NODE_DETAIL_COLUMN_GAP
+            - self.BRAIN_NODE_DETAIL_VALUE_MIN_WIDTH,
+        )
+        desired_label_width = min(
+            self.BRAIN_NODE_DETAIL_LABEL_MAX_WIDTH,
+            max(72.0, content.width * 0.42),
+        )
+        label_width = min(desired_label_width, maximum_label_width)
+        value_left = (
+            content.left
+            + label_width
+            + self.BRAIN_NODE_DETAIL_COLUMN_GAP
+        )
+        value_width = max(
+            1.0,
+            content.right
+            - self.BRAIN_NODE_DETAIL_RIGHT_PADDING
+            - value_left,
+        )
+        return label_width, value_left, value_width
     def _brain_connection_content_height(
         self,
         view: BrainNodeInspectorView,
@@ -2359,9 +2439,12 @@ class BrainInspectorComponent:
         *,
         show_incoming: bool,
         show_outgoing: bool,
+        detail_count: int | None = None,
     ) -> float:
         """Return vertical space occupied by the structured inspector content."""
-        height = 12.0 + 26.0 + len(view.details) * 20.0 + 12.0
+        if detail_count is None:
+            detail_count = len(view.details)
+        height = 12.0 + 26.0 + detail_count * 20.0 + 12.0
         height += 28.0 + 40.0 + 42.0
         if show_incoming:
             height += 30.0 + 26.0 + max(40.0, len(incoming) * self.BRAIN_CONNECTION_ROW_HEIGHT) + 16.0
@@ -2802,239 +2885,6 @@ class BrainInspectorComponent:
             )
             y -= self.BRAIN_ROUTE_ROW_HEIGHT
         return y - 20.0
-    def _cached_brain_node_inspector_lines(
-        self,
-        brain: object,
-        layout: BrainGraphLayout,
-        node: BrainGraphNode,
-    ) -> tuple[str, ...]:
-        """Return cached inspector content for the stable node selection."""
-        state = self._brain_state
-        if (
-            state.inspector_brain is brain
-            and state.inspector_layout is layout
-            and state.inspector_node_key == node.key
-            and state.inspector_lines
-        ):
-            return state.inspector_lines
-
-        lines = tuple(self._brain_node_inspector_lines(brain, layout, node))
-        state.inspector_brain = brain
-        state.inspector_layout = layout
-        state.inspector_node_key = node.key
-        state.inspector_lines = lines
-        return lines
-    def _brain_node_inspector_lines(
-        self,
-        brain: object,
-        layout: BrainGraphLayout,
-        node: BrainGraphNode,
-    ) -> list[str]:
-        """Return brain node inspector lines.
-
-        Parameters
-        ----------
-        brain
-            Value used by the operation.
-        layout
-            Value used by the operation.
-        node
-            Value used by the operation.
-
-        Returns
-        -------
-        list[str]
-            Computed collection.
-        """
-        if node.kind == BrainNodeKind.INPUT:
-            layer_label = "Input"
-        elif node.kind == BrainNodeKind.OUTPUT:
-            layer_label = "Output"
-        else:
-            layer_label = f"Hidden {node.depth}"
-        lines = [
-            "NODE DETAILS",
-            f"Layer: {layer_label}",
-            f"ID: {node.key}",
-        ]
-        gene = getattr(brain.genome, "nodes", {}).get(node.key)
-        if node.kind == BrainNodeKind.INPUT:
-            lines.append(f"Sensor: {node.label}")
-        elif gene is not None:
-            lines.extend(
-                (
-                    f"Activation: {getattr(gene, 'activation', 'Unavailable')}",
-                    f"Aggregation: {getattr(gene, 'aggregation', 'Unavailable')}",
-                    "Bias: "
-                    + self._format_optional_number(
-                        getattr(gene, "bias", None),
-                        signed=True,
-                    ),
-                    "Response: "
-                    + self._format_optional_number(
-                        getattr(gene, "response", None),
-                    ),
-                )
-            )
-
-        order = {key: index for index, key in enumerate(layout.nodes)}
-        connections = [
-            connection
-            for connection in getattr(brain.genome, "connections", {}).values()
-            if connection.key[0] in layout.nodes and connection.key[1] in layout.nodes
-        ]
-        connections_by_key = {
-            connection.key: connection for connection in connections
-        }
-        highlight = self._brain_highlight_for_node(layout, node.key)
-        incoming = sorted(
-            (connection for connection in connections if connection.key[1] == node.key),
-            key=lambda connection: order.get(connection.key[0], len(order)),
-        )
-        outgoing = sorted(
-            (connection for connection in connections if connection.key[0] == node.key),
-            key=lambda connection: order.get(connection.key[1], len(order)),
-        )
-        lines.extend(("", f"INCOMING CONNECTIONS ({len(incoming)})"))
-        if not incoming:
-            lines.append("No incoming connections")
-        else:
-            for connection in incoming:
-                source = layout.nodes[connection.key[0]]
-                lines.append(
-                    self._brain_connection_inspector_line(
-                        self._brain_node_display_name(source),
-                        source.key,
-                        connection,
-                    )
-                )
-        lines.extend(("", f"OUTGOING CONNECTIONS ({len(outgoing)})"))
-        if not outgoing:
-            lines.append("No outgoing connections")
-        else:
-            for connection in outgoing:
-                target = layout.nodes[connection.key[1]]
-                lines.append(
-                    self._brain_connection_inspector_line(
-                        self._brain_node_display_name(target),
-                        target.key,
-                        connection,
-                    )
-                )
-        additional_route_keys = sorted(
-            highlight.edges - highlight.direct_edges,
-            key=lambda key: (
-                order.get(key[0], len(order)),
-                order.get(key[1], len(order)),
-            ),
-        )
-        lines.extend(
-            (
-                "",
-                f"ADDITIONAL ENABLED SIGNAL ROUTE ({len(additional_route_keys)})",
-            )
-        )
-        if not additional_route_keys:
-            lines.append("No additional route connections")
-        else:
-            for connection_key in additional_route_keys:
-                connection = connections_by_key[connection_key]
-                in_upstream = connection_key in highlight.upstream_edges
-                in_downstream = connection_key in highlight.downstream_edges
-                relation = (
-                    "Upstream + downstream"
-                    if in_upstream and in_downstream
-                    else "Upstream"
-                    if in_upstream
-                    else "Downstream"
-                )
-                source = layout.nodes[connection_key[0]]
-                target = layout.nodes[connection_key[1]]
-                lines.append(
-                    self._brain_route_connection_inspector_line(
-                        relation,
-                        source,
-                        target,
-                        connection,
-                    )
-                )
-        return lines
-    def _brain_connection_inspector_line(
-        self,
-        endpoint_label: str,
-        endpoint_key: int,
-        connection: object,
-    ) -> str:
-        """Return brain connection inspector line.
-
-        Parameters
-        ----------
-        endpoint_label
-            Value used by the operation.
-        endpoint_key
-            Value used by the operation.
-        connection
-            Value used by the operation.
-
-        Returns
-        -------
-        str
-            Formatted or resolved value.
-        """
-        return (
-            f"{endpoint_label} [ID {endpoint_key}] | "
-            f"{self._brain_connection_inspector_details(connection)}"
-        )
-    def _brain_route_connection_inspector_line(
-        self,
-        relation: str,
-        source: BrainGraphNode,
-        target: BrainGraphNode,
-        connection: object,
-    ) -> str:
-        """Return brain route connection inspector line.
-
-        Parameters
-        ----------
-        relation
-            Value used by the operation.
-        source
-            Value used by the operation.
-        target
-            Value used by the operation.
-        connection
-            Value used by the operation.
-
-        Returns
-        -------
-        str
-            Formatted or resolved value.
-        """
-        return (
-            f"{relation}: {self._brain_node_display_name(source)} "
-            f"[ID {source.key}] -> {self._brain_node_display_name(target)} "
-            f"[ID {target.key}] | "
-            f"{self._brain_connection_inspector_details(connection)}"
-        )
-    def _brain_connection_inspector_details(self, connection: object) -> str:
-        """Return brain connection inspector details.
-
-        Parameters
-        ----------
-        connection
-            Value used by the operation.
-
-        Returns
-        -------
-        str
-            Formatted or resolved value.
-        """
-        try:
-            weight = float(getattr(connection, "weight", 0.0))
-        except (TypeError, ValueError):
-            weight = 0.0
-        state = "Enabled" if bool(getattr(connection, "enabled", False)) else "Disabled"
-        return f"{weight:+.3f} | {state}"
     def _draw_brain_footer(
         self,
         world: World,

@@ -309,6 +309,58 @@ dict[str, Any] | None
         # Delegate shape checks and copying to the network-level helper.
         return self._export_network_state(self.network)
 
+    def current_node_activation(self, node_key: int) -> float | None:
+        """Return one node's latest finite recurrent activation.
+
+Parameters
+----------
+node_key
+    NEAT input, hidden, or output node identifier.
+Returns
+-------
+float | None
+    Value in the active recurrent buffer, or ``None`` when unavailable.
+"""
+        # Read the active buffer directly so diagnostics never advance the brain.
+        values = getattr(self.network, "values", None)
+        active = getattr(self.network, "active", None)
+        if (
+            isinstance(active, bool)
+            or active not in (0, 1)
+            or not isinstance(values, list)
+            or len(values) != 2
+            or not isinstance(values[active], dict)
+        ):
+            return None
+        try:
+            value = float(values[active][node_key])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return value if isfinite(value) else None
+
+    def current_output_signal(self, node_key: int) -> float | None:
+        """Return the latest centered signal published by one output node.
+
+Parameters
+----------
+node_key
+    NEAT output-node identifier.
+Returns
+-------
+float | None
+    Centered output value, or ``None`` before a decision or for non-outputs.
+"""
+        # Map the compiled output-node order onto the normalized output snapshot.
+        output_nodes = getattr(self.network, "output_nodes", None)
+        if not isinstance(output_nodes, (list, tuple)):
+            return None
+        try:
+            index = output_nodes.index(node_key)
+            value = float(self.last_outputs[index])
+        except (ValueError, IndexError, TypeError, OverflowError):
+            return None
+        return value if isfinite(value) else None
+
     @staticmethod
     def _export_network_state(network: Any) -> dict[str, Any] | None:
         """Copy recurrent state from one compiled network.
