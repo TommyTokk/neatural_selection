@@ -585,7 +585,7 @@ tuple[SensorUsage, ...]
         return tuple(result)
 
     def _normalize_outputs(self, raw_outputs: Any) -> list[float]:
-        """Return 14 independent, finite neural outputs centered in [-1, 1].
+        """Return 16 independent, finite neural outputs centered in [-1, 1].
 
 Parameters
 ----------

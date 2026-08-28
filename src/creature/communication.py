@@ -481,28 +481,28 @@ class PheromoneSystem:
         if right <= left or top <= bottom:
             raise ValueError("world_bounds must have positive width and height.")
 
-        self.config = config
-        self.grid_width = grid_width
-        self.grid_height = grid_height
-        self.world_bounds = bounds
-        self.boundary_mode = PheromoneBoundaryMode(config.boundary_mode)
-        self.cell_size_x = (right - left) / (grid_width - 1)
-        self.cell_size_y = (top - bottom) / (grid_height - 1)
-        self.inverse_cell_size_x_squared = 1.0 / self.cell_size_x**2
-        self.inverse_cell_size_y_squared = 1.0 / self.cell_size_y**2
-        self._diffusion_coefficient = float(config.diffusion_coefficient)
-        self._decay_rate = float(config.decay_rate)
-        self._maximum = float(config.max_concentration)
+        self.config = config #Keep config reference for runtime inspection.
+        self.grid_width = grid_width #Keep grid width for runtime inspection.
+        self.grid_height = grid_height #Keep grid height for runtime inspection.
+        self.world_bounds = bounds #Keep world bounds for runtime inspection. 
+        self.boundary_mode = PheromoneBoundaryMode(config.boundary_mode) #Keep boundary mode for runtime inspection.
+        self.cell_size_x = (right - left) / (grid_width - 1) #Compute cell size in X direction.
+        self.cell_size_y = (top - bottom) / (grid_height - 1) #Compute cell size in Y direction.
+        self.inverse_cell_size_x_squared = 1.0 / self.cell_size_x**2 #Compute inverse cell size squared in X direction.
+        self.inverse_cell_size_y_squared = 1.0 / self.cell_size_y**2 #Compute inverse cell size squared in Y direction.
+        self._diffusion_coefficient = float(config.diffusion_coefficient) #Keep diffusion coefficient for runtime inspection.
+        self._decay_rate = float(config.decay_rate) #Keep decay rate for runtime inspection.
+        self._maximum = float(config.max_concentration) #Keep maximum concentration for runtime inspection.
         inverse_geometry_sum = (
             self.inverse_cell_size_x_squared
             + self.inverse_cell_size_y_squared
-        )
+        ) # Compute sum of inverse cell sizes squared for stability calculation.
         self.maximum_stable_timestep = (
             float("inf")
             if self._diffusion_coefficient == 0.0
             else 0.5 / (self._diffusion_coefficient * inverse_geometry_sum)
-        )
-        self.field = np.zeros((grid_width, grid_height, 3), dtype=np.float32)
+        ) # Compute maximum stable timestep based on diffusion coefficient and geometry.
+        self.field = np.zeros((grid_width, grid_height, 3), dtype=np.float32) #Initialize the pheromone field as a zeroed RGB tensor.
         self.update_count = 0
 
     def sample(self, x: float, y: float) -> np.ndarray:
@@ -628,15 +628,17 @@ class PheromoneSystem:
             If the probe collection does not have shape ``(3, 2)``.
         """
         # Preserve probe ordering for the sensor-gradient contract.
+        # Flatten only the probe dimension while retaining RGB as the last axis.
+        # The trailing shape is (2,) because each probe has two coordinates (x, y).
         points = self._validated_positions(positions, trailing_shape=(2,))
         if points.shape != (3, 2):
             raise ValueError("positions must contain exactly three probes.")
-        values = self._sample_positions(points)
+        values = self._sample_positions(points) #Sample the RGB values at the three probe positions.
         return PheromoneSnapshot(
             local=tuple(float(value) for value in values[0]),
             forward_left=tuple(float(value) for value in values[1]),
             forward_right=tuple(float(value) for value in values[2]),
-        )
+        ) #Return a PheromoneSnapshot containing the sampled RGB values for each probe.
 
     def sense_many(self, positions: object, out: np.ndarray | None = None) -> np.ndarray:
         """Sample three RGB probes for each creature in a batch.

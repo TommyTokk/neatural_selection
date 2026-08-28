@@ -465,7 +465,7 @@ $$
 \mathbf{z}=N_{G_N}(\mathbf{x}),
 $$
 
-where $\mathbf{x}\in\mathbb{R}^{43}$ is the ordered sensor vector and $G_N$ is the neural genome. Output centering is activation-aware. For example, a sigmoid result is transformed by $y=2\operatorname{clip}_{[0,1]}(z)-1$, while $tanh$ and clamped outputs are clipped directly to $[-1,1]$; unsupported finite activation outputs pass through $tanh$. Invalid or missing outputs become zero. This centering makes a neutral sigmoid value of $0.5$ correspond to zero action evidence.
+where $\mathbf{x}\in\mathbb{R}^{46}$ is the ordered sensor vector and $G_N$ is the neural genome. Output centering is activation-aware. For example, a sigmoid result is transformed by $y=2\operatorname{clip}_{[0,1]}(z)-1$, while $tanh$ and clamped outputs are clipped directly to $[-1,1]$; unsupported finite activation outputs pass through $tanh$. Invalid or missing outputs become zero. This centering makes a neutral sigmoid value of $0.5$ correspond to zero action evidence.
 
 _Implementation: [network evaluation and normalization](src/creature/neat/brain.py) · [initial activation choices](configs/neat_herbivore.ini)_
 
@@ -475,7 +475,7 @@ _Implementation: [controller fallback](src/creature/neat/controller.py) · [neut
 
 ### 5.2 Action contract
 
-The action schema contains exactly 15 ordered outputs:
+The action schema contains exactly 16 ordered outputs:
 
 | Index | Action | Range | Interpretation |
 |---:|---|---:|---|
@@ -1099,6 +1099,15 @@ Lineages persist only through survival and autonomous energy-funded births; no c
 
 _Implementation synthesis: [genotype](src/creature/genotype.py) · [brain](src/creature/neat/brain.py) · [metabolism](src/creature/metabolism.py) · [evolution and speciation](src/creature/evolution.py)_
 
-Several limitations follow from the formulation. The world is planar; creature bodies are circular and have equal mass; biomes and pheromones are discretized fields; the richness signal predicts the ordinary spawn distribution rather than current food occupancy; and clustered resources are not represented in that prediction. Reproduction is asexual, sensory channels are engineered summaries rather than raw physical receptor arrays, recurrent updates are discrete rather than continuous-time, and compatibility and species thresholds are computational constructs. The conserved budget tracks usable energy, stomach contents, and food energy rather than a complete material or life-reserve chemistry. Passive energy and behavioural measurements describe outcomes but do not define a selection objective. Behavioural rules and counterfactual probes improve interpretability but remain operational definitions, not proof of subjective intention. These simplifications create a tractable experimental system in which ecology, morphology, physiology, neural structure, social interaction, and evolutionary history can be measured under one deterministic simulation contract.
-
-_Sources and validation: [creature architecture tests](tests/creature/test_architecture.py) · [genotype determinism tests](tests/creature/test_genotype_determinism.py) · [scheduler validation](tests/test_scheduler_validation.py) · [behaviour observer tests](tests/test_behavior_observer.py)_
+---
+Several limitations follow from the formulation. The world is planar, creature
+bodies are circular and equal in mass, and biomes and pheromones are discretized
+fields. The richness sensors predict the ordinary spawn distribution rather than
+current food occupancy, and clustered resources are not included in that
+prediction. Reproduction is asexual, sensory channels are engineered summaries,
+and recurrent updates occur at discrete intervals. Species compatibility and
+behaviour categories are operational computational definitions rather than claims
+about biological species or subjective intention. The biomass budget covers usable
+energy, stomach contents, and food, but not a complete material chemistry or life
+reserve. These simplifications make the combined ecological and evolutionary system
+tractable, deterministic, and measurable.
