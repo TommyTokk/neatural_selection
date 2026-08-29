@@ -172,6 +172,7 @@ class LiveFoodConfigTest(unittest.TestCase):
         world, config = self.make_runtime_world()
         old_map = world.biome_map
         old_density_grid = old_map._expected_density_grid
+        old_sensor_grid = old_map._sensor_richness_grid
         original_max_food = config.food.max_food_items
         original_burst_items = config.food.low_food_burst_items
         original_forest_weight = config.biome.forest_spawn_weight
@@ -200,6 +201,10 @@ class LiveFoodConfigTest(unittest.TestCase):
         self.assertIsNot(
             world.biome_map._expected_density_grid,
             old_density_grid,
+        )
+        self.assertIsNot(
+            world.biome_map._sensor_richness_grid,
+            old_sensor_grid,
         )
         self.assertEqual(
             world.biome_map.spawn_weights[Biome.FOREST],

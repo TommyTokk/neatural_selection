@@ -438,7 +438,7 @@ class PersistenceManagerTest(unittest.TestCase):
             "biome_fertility_ema_updated_at",
             state["creatures"][0],
         )
-        self.assertEqual(state["brain_contract"]["sensor_schema"], 8)
+        self.assertEqual(state["brain_contract"]["sensor_schema"], 9)
         self.assertEqual(state["brain_contract"]["inputs"], 46)
         self.assertNotIn("previous_biome", state["world"])
         self.assertNotIn("physics_accumulator", state["world"])
@@ -1166,7 +1166,7 @@ class PersistenceManagerTest(unittest.TestCase):
                 restored.neat_controller,
             )
             self.assertEqual(current_state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 8)
+            self.assertEqual(current_state["brain_contract"]["sensor_schema"], 9)
             self.assertEqual(current_state["brain_contract"]["inputs"], 46)
             self.assertEqual(current_state["brain_contract"]["outputs"], 16)
             self.assertEqual(current_state["brain_contract"]["action_schema"], 3)
@@ -1239,6 +1239,64 @@ class PersistenceManagerTest(unittest.TestCase):
                 len(restored.neat_controller.config.genome_config.output_keys),
                 16,
             )
+        finally:
+            world.close()
+            if restored is not None:
+                restored.close()
+
+    def test_schema_8_checkpoint_requires_explicit_neural_epoch_reset(self) -> None:
+        from src.world import World
+
+        self.config.persistence.enable_telemetry = False
+        self.config.population.initial_creatures = 1
+        self.config.food.initial_food_items = 2
+        world = World(self.config, simulation_paths=self.simulation_paths)
+        restored = None
+        try:
+            creature = world.creatures[0]
+            creature.age_seconds = 12.5
+            world.elapsed_time = 37.0
+            state = PersistenceManager._capture_state(world, world.neat_controller)
+            state["brain_contract"]["sensor_schema"] = 8
+            saved_position = state["creatures"][0]["position"]
+            saved_age = state["creatures"][0]["age_seconds"]
+            saved_traits = state["creatures"][0]["physical_traits"]
+            saved_foods = copy.deepcopy(state["foods"])
+            evolved_genome = state["population"]["genomes"][
+                state["creatures"][0]["genome_id"]
+            ]
+
+            with self.assertRaisesRegex(
+                CheckpointContractError,
+                "sensor schema 8",
+            ):
+                PersistenceManager._restore_world(
+                    copy.deepcopy(state),
+                    self.config,
+                    self.simulation_paths,
+                )
+
+            restored = PersistenceManager._restore_world(
+                state,
+                self.config,
+                self.simulation_paths,
+                allow_brain_contract_reset=True,
+            )
+
+            restored_creature = restored.creatures[0]
+            self.assertTrue(restored.brain_contract_reset_occurred)
+            self.assertEqual(restored.elapsed_time, 37.0)
+            self.assertEqual(restored_creature.position, saved_position)
+            self.assertEqual(restored_creature.age_seconds, saved_age)
+            self.assertEqual(restored_creature.physical_traits, saved_traits)
+            self.assertEqual(
+                [food.position for food in restored.foods],
+                [food_state["position"] for food_state in saved_foods],
+            )
+            restored_brain = restored.neat_controller.brain_for(
+                restored_creature.creature_id
+            )
+            self.assertIsNot(restored_brain.genome, evolved_genome)
         finally:
             world.close()
             if restored is not None:

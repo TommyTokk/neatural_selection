@@ -73,7 +73,7 @@ class SchemaSevenSensingTest(unittest.TestCase):
         """
         # Keep the test contract has exact count test intent explicit.
         self.assertEqual(SENSOR_CONTRACT.input_count, 46)
-        self.assertEqual(SENSOR_CONTRACT.schema_version, 8)
+        self.assertEqual(SENSOR_CONTRACT.schema_version, 9)
 
     def test_write_inputs_matches_allocating_compatibility_api(self) -> None:
         """Exercise test write inputs matches allocating compatibility api behavior.
@@ -1039,7 +1039,7 @@ class CheckpointContractPolicyTest(unittest.TestCase):
                 world.neat_controller,
             )
             self.assertEqual(state["version"], CHECKPOINT_VERSION)
-            self.assertEqual(state["brain_contract"]["sensor_schema"], 8)
+            self.assertEqual(state["brain_contract"]["sensor_schema"], 9)
             self.assertEqual(state["brain_contract"]["inputs"], 46)
             serialized_keys: set[str] = set()
 

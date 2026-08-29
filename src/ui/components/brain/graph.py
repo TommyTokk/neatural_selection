@@ -1519,13 +1519,13 @@ class BrainGraphComponent:
         str
             Formatted or resolved value.
         """
-        def value(index: int, values: list[float]) -> float:
+        def value(name: str, values: list[float]) -> float:
             """Return value.
 
             Parameters
             ----------
-            index
-                Value used by the operation.
+            name
+                Sensor name resolved through the current input contract.
             values
                 Value used by the operation.
 
@@ -1534,18 +1534,29 @@ class BrainGraphComponent:
             float
                 Computed result.
             """
+            try:
+                index = SENSOR_INPUT_NAMES.index(name)
+            except ValueError:
+                return 0.0
             return values[index] if index < len(values) else 0.0
 
         return (
-            f"F {value(10, inputs):.2f}/{value(11, inputs):.2f}  "
-            f"C {value(12, inputs):.2f}/{value(13, inputs):.2f}  "
-            f"W {value(14, inputs):.2f}/{value(15, inputs):.2f}  "
-            f"G {value(16, inputs):.2f}  "
-            f"B {value(17, inputs):.2f}/{value(18, inputs):.2f}/"
-            f"{value(19, inputs):.2f}/{value(20, inputs):.2f}  "
-            f"FL {value(23, inputs):.2f}/{value(24, inputs):.2f}/"
-            f"{value(25, inputs):.2f}/{value(26, inputs):.2f}  "
-            f"E {value(3, inputs):.2f}  L {value(43, inputs):.2f}"
+            f"F {value('food_proximity', inputs):.2f}/"
+            f"{value('food_angle', inputs):.2f}  "
+            f"C {value('creature_proximity', inputs):.2f}/"
+            f"{value('creature_angle', inputs):.2f}  "
+            f"W {value('wall_proximity', inputs):.2f}/"
+            f"{value('wall_angle', inputs):.2f}  "
+            f"G {value('is_grabbing', inputs):.2f}  "
+            f"B {value('local_richness', inputs):.2f}/"
+            f"{value('lateral_gradient', inputs):.2f}/"
+            f"{value('forward_gradient', inputs):.2f}  "
+            f"FL {value('flock_effective_count', inputs):.2f}/"
+            f"{value('flock_center_forward', inputs):.2f}/"
+            f"{value('flock_center_right', inputs):.2f}/"
+            f"{value('flock_relative_velocity_forward', inputs):.2f}  "
+            f"E {value('energy_percent', inputs):.2f}  "
+            f"L {value('pheromone_forward_green', inputs):.2f}"
         )
     def _brain_output_readout(self, outputs: list[float]) -> str:
         """Return brain output readout.

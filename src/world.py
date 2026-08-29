@@ -603,6 +603,7 @@ class World:
         self.biome_map = BiomeGenerationHandler(
             config.biome,
             config.food_clusters,
+            config.biome_sensor,
         ).generate(
             self.environment_world_bounds
         )
@@ -2235,6 +2236,11 @@ class World:
             self._biome_richness_at(*here),
             self._biome_richness_at(*forward_left),
             self._biome_richness_at(*forward_right),
+            contrast_gain=getattr(
+                self.config.biome_sensor,
+                "gradient_contrast_gain",
+                3.0,
+            ),
         )
 
     def _biome_richness_at(self, x: float, y: float) -> float:
@@ -2242,7 +2248,7 @@ class World:
         if biome_map is None:
             return 0.0
         return self._clamp(
-            float(biome_map.expected_food_density_at(x, y)),
+            float(biome_map.sensed_food_richness_at(x, y)),
             0.0,
             1.0,
         )

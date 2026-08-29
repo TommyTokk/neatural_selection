@@ -340,6 +340,37 @@ class BiomeConfig:
 class BiomeSensorConfig:
     forward_distance: float = 96.0
     side_offset: float = 48.0
+    field_smoothing_sigma: float = 55.0
+    gradient_contrast_gain: float = 3.0
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        for name in (
+            "forward_distance",
+            "side_offset",
+            "field_smoothing_sigma",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be a finite number, got {value!r}.")
+            if not isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"{name} must be finite and nonnegative, got {value!r}."
+                )
+
+        gain = self.gradient_contrast_gain
+        if isinstance(gain, bool) or not isinstance(gain, (int, float)):
+            raise ValueError(
+                "gradient_contrast_gain must be a finite number, "
+                f"got {gain!r}."
+            )
+        if not isfinite(gain) or gain <= 0.0:
+            raise ValueError(
+                "gradient_contrast_gain must be finite and positive, "
+                f"got {gain!r}."
+            )
 
 
 @dataclass(slots=True)
@@ -1390,6 +1421,7 @@ class SimConfig:
         self.action.validate()
         self.scheduler.validate()
         self.population.validate()
+        self.biome_sensor.validate()
 
 
 def build_sim_config() -> SimConfig:

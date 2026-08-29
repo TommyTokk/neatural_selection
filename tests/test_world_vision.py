@@ -148,6 +148,10 @@ class FakeBiomeMap:
         del x, y
         return self.richness
 
+    def sensed_food_richness_at(self, x: float, y: float) -> float:
+        del x, y
+        return self.richness
+
 
 class WorldVisionMutationTest(unittest.TestCase):
     def test_communication_intents_commit_together_and_scale_deposits_by_dt(self) -> None:
@@ -475,7 +479,7 @@ class WorldVisionMutationTest(unittest.TestCase):
     def test_biome_gradients_are_body_frame_relative_contrasts(self) -> None:
         world = self.make_world_for_biome_sensors()
         world.biome_map = SimpleNamespace(
-            expected_food_density_at=lambda x, y: 0.5 + y / 200.0
+            sensed_food_richness_at=lambda x, y: 0.5 + y / 200.0
         )
         creature = self.biome_sensor_creature()
 

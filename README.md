@@ -116,14 +116,16 @@ $$
 
 Thus the default cell values are $1$ in forest, approximately $0.509$ in bushes, and approximately $0.182$ in prairie. The positive uniform component deliberately prevents prairie from becoming an absolute zero-food region. If every biome weight is zero, the expected-density grid falls back to one everywhere because actual placement also falls back to uniform sampling.
 
-At an arbitrary world position, density is interpolated from the four surrounding cell-centre values. For fractional cell coordinates $(u,v)$,
+At an arbitrary world position, the exact ordinary-food spawn probability is interpolated from the four surrounding cell-centre values. For fractional cell coordinates $(u,v)$,
 
 $$
 d(x,y)=(1-u)(1-v)d_{00}+u(1-v)d_{10}
  +(1-u)vd_{01}+uvd_{11}.
 $$
 
-This continuous field is both an analytical prediction of the ordinary spawn process and the quantity exposed to biome sensors. It is not a count of currently present food. Biomes otherwise have no direct effect on locomotion, life, or metabolic cost; they influence creatures indirectly through resource placement and sensed resource expectation.
+Biome sensing uses a separate Gaussian scale-space field obtained by convolving this raw grid horizontally and vertically with float64 Gaussian kernels. The default standard deviation is $\sigma=55$ world units, converted independently into horizontal and vertical cell units, and each kernel is truncated at $4\sigma$. Edge-value extension prevents the world boundary from creating a false outward gradient. Bilinear interpolation of this smoothed field yields receptive-field expected richness. Smoothing does not alter the raw spawn-probability grid or ordinary-food placement. This scale-space construction regularizes derivatives of a discrete spatial signal ([Lindeberg](https://arxiv.org/abs/2311.11317)).
+
+Both fields predict the ordinary biome-weighted spawn process. Neither counts currently present food or represents clustered-patch occupancy. Biomes otherwise have no direct effect on locomotion, life, or metabolic cost; they influence creatures indirectly through resource placement and sensed resource expectation.
 
 _Implementation: [expected-density cache and interpolation](src/biome.py) · [richness sensing tests](tests/test_biome_sensing.py)_
 
@@ -304,7 +306,7 @@ _Implementation: [diagnostic records](src/creature/model.py) · [ledger commit](
 
 ### 4.1 Sensor contract
 
-The current sensing schema is version 8 and contains exactly 46 ordered inputs. This ordering is a formal interface: it must match the `num_inputs = 46` declaration used to construct every NEAT network. A schema change therefore represents a change in the meaning of evolved genomes, not a cosmetic renaming.
+The current sensing schema is version 9 and contains exactly 46 ordered inputs. This ordering is a formal interface: it must match the `num_inputs = 46` declaration used to construct every NEAT network. A schema change therefore represents a change in the meaning of evolved genomes, not a cosmetic renaming.
 
 _Implementation: [sensor contract and serialization](src/creature/vision.py) · [NEAT input declaration](configs/neat_herbivore.ini) · [controller contract validation](src/creature/neat/controller.py)_
 
@@ -394,20 +396,20 @@ $$
 \mathbf{p}_R=\mathbf{p}+f\mathbf{h}-s_b\mathbf{l}.
 $$
 
-Let $d_0$, $d_L$, and $d_R$ be the interpolated expected food densities at those locations. The three neural inputs are
+Let $h$, $L$, and $R$ be receptive-field expected richness sampled from the Gaussian-smoothed sensor field at those locations, and let $A=(L+R)/2$. The three neural inputs are
 
 $$
 \begin{aligned}
-r_{\mathrm{local}}&=d_0,\\
-g_{\mathrm{lat}}&=\operatorname{clip}_{[-1,1]}
-\left(\frac{d_L-d_R}{d_0+\epsilon}\right),\\
-g_{\mathrm{fwd}}&=\operatorname{clip}_{[-1,1]}
-\left(\frac{(d_L+d_R)/2-d_0}{d_0+\epsilon}\right),
+r_{\mathrm{local}}&=h,\\
+g_{\mathrm{lat}}&=\tanh\!\left(\frac{k}{2}
+\log\frac{L+\epsilon}{R+\epsilon}\right),\\
+g_{\mathrm{fwd}}&=\tanh\!\left(\frac{k}{2}
+\log\frac{A+\epsilon}{h+\epsilon}\right),
 \end{aligned}
-\qquad \epsilon=0.001.
+\qquad k=3,\quad \epsilon=0.001.
 $$
 
-A positive lateral gradient means the expected resource field is richer on the left; a positive forward gradient means the average of the two forward probes is richer than the current position. Division by local richness makes the gradient approximately scale-invariant, while $\epsilon$ keeps zero-richness boundaries finite. These signals predict ordinary-food spawn propensity. They do not report live food, clustered-patch occupancy, or food hidden behind another body; those facts enter only through visual and contact mechanisms.
+A positive lateral gradient means the expected resource field is richer on the left; a positive forward gradient means the average of the two forward probes is richer than the current position. Log-ratio contrast is bounded smoothly by $\tanh$, is antisymmetric when its compared samples are exchanged, and is approximately invariant to multiplicative richness scale. The $\epsilon$ term keeps zero-richness boundaries finite. These signals are local scalar-field observations suitable for source-seeking behavior, not a direction oracle ([Li and Guo](https://personal.stevens.edu/~yguo1/paper/ICRA12_ShuaiLi.pdf)). They predict ordinary biome-weighted spawning and do not report live pellets, clustered-patch occupancy, or food hidden behind another body; those facts enter only through visual and contact mechanisms.
 
 _Implementation: [probe geometry and richness sampling](src/world.py) · [gradient formulation](src/creature/vision.py) · [biome sensing tests](tests/test_biome_sensing.py)_
 
@@ -445,7 +447,7 @@ _Implementation: [family and flock snapshots](src/creature/vision.py) · [family
 
 Acoustic sensing selects the strongest audible non-self emission after distance attenuation, with emitter identity used only as a deterministic tie-breaker. The neural inputs are received strength, tone, and the sine/cosine of direction in the listener's body frame; emitter identity and semantic meaning are not exposed.
 
-Chemical sensing bilinearly samples one raw RGB field at $\mathbf{p}_0$, $\mathbf{p}_L$, and $\mathbf{p}_R$. For every color it exposes local intensity, a normalized lateral gradient, and a normalized forward gradient using the same body-relative formulation as biome richness. Colors carry no built-in meaning: recurrent controllers may evolve distinct uses for Red, Green, and Blue or ignore any channel.
+Chemical sensing bilinearly samples one raw RGB field at $\mathbf{p}_0$, $\mathbf{p}_L$, and $\mathbf{p}_R$. For every color it exposes local intensity, a normalized lateral gradient, and a normalized forward gradient using the same body-relative probe geometry as biome richness. Colors carry no built-in meaning: recurrent controllers may evolve distinct uses for Red, Green, and Blue or ignore any channel.
 
 _Implementation: [acoustic and pheromone observations](src/creature/communication.py) · [shared probe positions](src/world.py)_
 

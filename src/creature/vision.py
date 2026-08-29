@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, MutableSequence, Sequence
 from dataclasses import dataclass, field
-from math import atan2, cos, hypot, pi, sin, sqrt
+from math import atan2, cos, hypot, log, pi, sin, sqrt, tanh
 
 import numpy as np
 
@@ -92,7 +92,7 @@ int
 
 
 SENSOR_CONTRACT = SensorContract(
-    8,
+    9,
     SENSOR_INPUT_NAMES,
     "configs/neat_herbivore.ini",
 )
@@ -136,6 +136,7 @@ class BiomeSensorSnapshot:
         here: float,
         forward_left: float,
         forward_right: float,
+        contrast_gain: float = 3.0,
     ) -> BiomeSensorSnapshot:
         """Execute from probe samples behavior.
 
@@ -147,6 +148,8 @@ forward_left
     Input used by this creature-domain operation.
 forward_right
     Input used by this creature-domain operation.
+contrast_gain
+    Positive gain applied to the bounded log-ratio contrasts.
 Returns
 -------
 BiomeSensorSnapshot
@@ -155,13 +158,21 @@ BiomeSensorSnapshot
         local = cls._clamp(float(here), 0.0, 1.0)
         left = cls._clamp(float(forward_left), 0.0, 1.0)
         right = cls._clamp(float(forward_right), 0.0, 1.0)
-        denominator = local + BIOME_GRADIENT_EPSILON
-        lateral = cls._clamp((left - right) / denominator, -1.0, 1.0)
         ahead_average = (left + right) * 0.5
-        forward = cls._clamp(
-            (ahead_average - local) / denominator,
-            -1.0,
-            1.0,
+        half_gain = float(contrast_gain) * 0.5
+        lateral = tanh(
+            half_gain
+            * log(
+                (left + BIOME_GRADIENT_EPSILON)
+                / (right + BIOME_GRADIENT_EPSILON)
+            )
+        )
+        forward = tanh(
+            half_gain
+            * log(
+                (ahead_average + BIOME_GRADIENT_EPSILON)
+                / (local + BIOME_GRADIENT_EPSILON)
+            )
         )
         return cls(
             local_richness=local,

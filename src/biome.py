@@ -7,7 +7,57 @@ from math import floor
 import numpy as np
 from opensimplex import OpenSimplex
 
-from configs.sim_config import BiomeConfig, FoodClusterConfig
+from configs.sim_config import BiomeConfig, BiomeSensorConfig, FoodClusterConfig
+
+
+_GAUSSIAN_TRUNCATE = 4.0
+
+
+def _gaussian_kernel_1d(sigma_cells: float) -> np.ndarray:
+    if sigma_cells <= 0.0:
+        return np.ones(1, dtype=np.float64)
+    radius = max(1, int(np.ceil(_GAUSSIAN_TRUNCATE * sigma_cells)))
+    offsets = np.arange(-radius, radius + 1, dtype=np.float64)
+    kernel = np.exp(-0.5 * np.square(offsets / sigma_cells))
+    kernel /= kernel.sum(dtype=np.float64)
+    return kernel
+
+
+def _convolve_edge_1d(
+    values: np.ndarray,
+    kernel: np.ndarray,
+    *,
+    axis: int,
+) -> np.ndarray:
+    radius = kernel.size // 2
+    if radius == 0:
+        return np.array(values, dtype=np.float64, copy=True)
+    padding = [(0, 0)] * values.ndim
+    padding[axis] = (radius, radius)
+    padded = np.pad(values, padding, mode="edge")
+    return np.apply_along_axis(
+        lambda line: np.convolve(line, kernel, mode="valid"),
+        axis,
+        padded,
+    )
+
+
+def _gaussian_smooth_density(
+    density: np.ndarray,
+    *,
+    sigma_x_cells: float,
+    sigma_y_cells: float,
+) -> np.ndarray:
+    horizontal = _convolve_edge_1d(
+        np.asarray(density, dtype=np.float64),
+        _gaussian_kernel_1d(sigma_x_cells),
+        axis=1,
+    )
+    return _convolve_edge_1d(
+        horizontal,
+        _gaussian_kernel_1d(sigma_y_cells),
+        axis=0,
+    )
 
 
 class Biome(IntEnum):
@@ -33,9 +83,15 @@ class BiomeMap:
     spawn_weights: dict[Biome, float]
     uniform_spawn_chance: float
     max_spawn_attempts: int
+    field_smoothing_sigma: float = 55.0
     prairie_max: float = 0.0
     bush_max: float = 1.0
     _expected_density_grid: np.ndarray = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _sensor_richness_grid: np.ndarray = field(
         init=False,
         repr=False,
         compare=False,
@@ -78,6 +134,22 @@ class BiomeMap:
             "_expected_density_grid",
             expected_density_grid,
         )
+        left, bottom, right, top = self.world_bounds
+        cell_width = max(0.0001, right - left) / self.grid_width
+        cell_height = max(0.0001, top - bottom) / self.grid_height
+        sigma_world = max(0.0, float(self.field_smoothing_sigma))
+        sensor_richness_grid = _gaussian_smooth_density(
+            expected_density_grid,
+            sigma_x_cells=sigma_world / cell_width,
+            sigma_y_cells=sigma_world / cell_height,
+        )
+        sensor_richness_grid = np.asarray(sensor_richness_grid, dtype=np.float64)
+        sensor_richness_grid.setflags(write=False)
+        object.__setattr__(
+            self,
+            "_sensor_richness_grid",
+            sensor_richness_grid,
+        )
 
     @property
     def grid_height(self) -> int:
@@ -95,6 +167,17 @@ class BiomeMap:
         return self.spawn_weights[self.biome_at(x, y)]
 
     def expected_food_density_at(self, x: float, y: float) -> float:
+        return self._bilinear_grid_value(self._expected_density_grid, x, y)
+
+    def sensed_food_richness_at(self, x: float, y: float) -> float:
+        return self._bilinear_grid_value(self._sensor_richness_grid, x, y)
+
+    def _bilinear_grid_value(
+        self,
+        grid: np.ndarray,
+        x: float,
+        y: float,
+    ) -> float:
         left, bottom, right, top = self.world_bounds
         cell_width = max(0.0001, right - left) / self.grid_width
         cell_height = max(0.0001, top - bottom) / self.grid_height
@@ -113,10 +196,10 @@ class BiomeMap:
         row0 = max(0, min(self.grid_height - 1, row0))
         row1 = max(0, min(self.grid_height - 1, row1))
 
-        c00 = float(self._expected_density_grid[row0, column0])
-        c10 = float(self._expected_density_grid[row0, column1])
-        c01 = float(self._expected_density_grid[row1, column0])
-        c11 = float(self._expected_density_grid[row1, column1])
+        c00 = float(grid[row0, column0])
+        c10 = float(grid[row0, column1])
+        c01 = float(grid[row1, column0])
+        c11 = float(grid[row1, column1])
         expected_density = (
             c00 * (1.0 - u) * (1.0 - v)
             + c10 * u * (1.0 - v)
@@ -147,9 +230,11 @@ class BiomeGenerationHandler:
         self,
         config: BiomeConfig,
         cluster_config: FoodClusterConfig | None = None,
+        sensor_config: BiomeSensorConfig | None = None,
     ) -> None:
         self.config = config
         self.cluster_config = cluster_config
+        self.sensor_config = sensor_config or BiomeSensorConfig()
 
     def generate(
         self,
@@ -172,6 +257,7 @@ class BiomeGenerationHandler:
                 min(1.0, self.config.uniform_spawn_chance),
             ),
             max_spawn_attempts=max(1, self.config.max_spawn_attempts),
+            field_smoothing_sigma=self.sensor_config.field_smoothing_sigma,
             prairie_max=float(prairie_max),
             bush_max=float(bush_max),
         )

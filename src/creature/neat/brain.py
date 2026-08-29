@@ -129,38 +129,41 @@ NeatBrain
         decision_dt: float | None = None,
     ) -> Action:
         """Decide on an action based on the current sensor snapshot.
-                This method processes the sensor inputs through the neural network and
-                normalizes the outputs to produce a valid action for the creature.
-        
-                Args:
-                    snapshot (SensorSnapshot): The current sensor snapshot of the creature's environment.
-        
-                Returns:
-                    Action: The action decided by the neural network based on the sensor inputs.
-        
+
+        This method evaluates the creature's discrete recurrent NEAT neural network
+        using the provided sensory snapshot, normalizes/centers the resulting activations
+        according to each output's transfer function, applies temporal smoothing to herding
+        drive, and packages the results into a bounded `Action` instance.
+
         Parameters
         ----------
-        snapshot
-            Input used by this creature-domain operation.
-        capture_inputs
-            Input used by this creature-domain operation.
-        decision_dt
-            Input used by this creature-domain operation.
+        snapshot : SensorSnapshot
+            The current sensory snapshot containing the creature's 46 environmental,
+            endogenous, visual, social, acoustic, and chemical inputs.
+        capture_inputs : bool, default=False
+            If True, stores an immutable copy of the input vector and network activation
+            state for scientific telemetry, debugging, and inspector overlays.
+        decision_dt : float or None, default=None
+            Simulated elapsed time since the previous decision step, used to scale
+            cadence-independent exponential filters (e.g. herding smoothing).
+
         Returns
         -------
         Action
-            Result produced by this creature-domain operation.
-        
+            The structured action command containing motor forces, turning commands,
+            biological intents, acoustic/chemical communication signals, and resting state.
+
         Raises
         ------
         RuntimeError
-            If runtime state violates the callable invariant.
+            If the number of serialized sensor inputs does not match the network's declared
+            input node count.
         """
-        # Keep decide behavior explicit in its owning subsystem.
-
+        # Prepare and validate the sensor input buffer
         if len(self._input_buffer) != snapshot.sensor_contract.input_count:
             self._input_buffer = [0.0] * snapshot.sensor_contract.input_count
         snapshot.write_inputs(self._input_buffer)
+
         network_input_nodes = getattr(self.network, "input_nodes", None)
         if (
             network_input_nodes is not None
@@ -171,13 +174,22 @@ NeatBrain
                 f"Vision: {len(self._input_buffer)}, "
                 f"network: {len(network_input_nodes)}"
             )
+
+        # Diagnostic & telemetry input capture (if enabled)
         if capture_inputs:
             self.capture_input_snapshot()
             self._last_activation_network_state = self.export_network_state()
         self.last_input_names = snapshot.sensor_contract.input_names
+
+        # Recurrent neural network forward pass
         raw_outputs = self.network.activate(self._input_buffer)
+
+        # Output centering and activation-specific normalization
+        # Centers sigmoid [0, 1] -> [-1, 1] so 0.5 maps to neutral (0.0), while clipping tanh/clamped.
         centered_outputs = self._normalize_outputs(raw_outputs)
         self.last_outputs = centered_outputs
+
+        # Temporal smoothing of herding drive across decision cadences
         self.last_raw_herding = self._positive_action_output(
             centered_outputs[BrainOutputIndex.HERDING]
         )
@@ -189,13 +201,16 @@ NeatBrain
             1.0,
         )
 
+        # Construct and bound the structured Action dataclass (16 outputs)
         self.last_action = Action(
+            # Locomotion commands: symmetric [-1.0, 1.0] for forward/reverse thrust and turning
             accelerate=self._clamp(
                 centered_outputs[BrainOutputIndex.ACCELERATE], -1.0, 1.0
             ),
             rotate=self._clamp(
                 centered_outputs[BrainOutputIndex.ROTATE], -1.0, 1.0
             ),
+            # Biological and transactional intents: unipolar [0.0, 1.0]
             want_reproduce=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.REPRODUCE]
             ),
@@ -218,6 +233,7 @@ NeatBrain
                 centered_outputs[BrainOutputIndex.PANIC]
             ),
             herding=self.herding_state,
+            # Communication channels (acoustic tone & volume, RGB pheromone emissions)
             emit_sound=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.ACOUSTIC_EMISSION]
             ),
@@ -233,6 +249,7 @@ NeatBrain
             emit_blue=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.EMIT_BLUE]
             ),
+            # Vitality & rest: unipolar [0.0, 1.0]
             rest=self._positive_action_output(
                 centered_outputs[BrainOutputIndex.REST]
             ),

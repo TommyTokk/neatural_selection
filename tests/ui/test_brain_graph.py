@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unittest
 
+from src.creature.vision import SENSOR_INPUT_NAMES
+from src.ui.components.brain.graph import BrainGraphComponent
 from src.ui.layouts.brain_graph import (
     BrainEdgeKind,
     BrainNodeKind,
@@ -63,6 +65,21 @@ def layout_for(genome: FakeGenome):
 
 
 class BrainGraphLayoutTest(unittest.TestCase):
+    def test_compact_biome_readout_resolves_exactly_three_named_channels(
+        self,
+    ) -> None:
+        inputs = [0.0] * len(SENSOR_INPUT_NAMES)
+        inputs[SENSOR_INPUT_NAMES.index("local_richness")] = 0.11
+        inputs[SENSOR_INPUT_NAMES.index("lateral_gradient")] = 0.22
+        inputs[SENSOR_INPUT_NAMES.index("forward_gradient")] = 0.33
+        inputs[SENSOR_INPUT_NAMES.index("own_infant_proximity")] = 0.44
+
+        readout = BrainGraphComponent()._brain_input_readout(inputs)
+        biome_values = readout.split("B ", 1)[1].split("  FL", 1)[0]
+
+        self.assertEqual(biome_values, "0.11/0.22/0.33")
+        self.assertNotIn("0.44", biome_values)
+
     def test_input_column_preserves_configured_top_to_bottom_order(self) -> None:
         input_keys = list(range(-1, -28, -1))
         layout = build_brain_graph_layout(
